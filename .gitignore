@@ -1,0 +1,26 @@
+﻿node_modules/
+dist/
+coverage/
+.env
+.DS_Store
+*.log
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+.idea/
+.vscode/
+.turbo/
+.nyc_output/
+
+
+# IntegraGLPI extras (baseline)
+.env.*
+!.env.example
+.env.local
+Thumbs.db
+*.cache
+.phpunit.result.cache
+vendor/
+*.sql.bak
+*.dump
+.claude/

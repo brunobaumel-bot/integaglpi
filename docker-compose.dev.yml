@@ -1,0 +1,68 @@
+version: '3'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: glpi-integaglpi-postgres
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_DB=${DB_NAME}
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: glpi-integaglpi-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+
+  integration-service:
+    build:
+      context: ./integration-service
+      dockerfile: Dockerfile
+    container_name: glpi-integaglpi-integration
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=development
+      - DB_HOST=postgres
+      - REDIS_HOST=redis
+      - PORT=3001
+    ports:
+      - "3001:3001"
+    depends_on:
+      - postgres
+      - redis
+
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    container_name: glpi-integaglpi-ai
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=development
+      - PORT=4000
+      - AI_ENABLED=${AI_ENABLED:-false}
+      - AI_PROVIDER=${AI_PROVIDER:-mock}
+    ports:
+      - "4000:4000"
+    depends_on:
+      - integration-service
+
+volumes:
+  postgres_data:
+  redis_data:

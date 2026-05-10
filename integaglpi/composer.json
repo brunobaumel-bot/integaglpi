@@ -1,0 +1,21 @@
+{
+  "name": "codex/glpi-plugin-integaglpi",
+  "description": "GLPI integaglpi plugin (WhatsApp ↔ GLPI) for GLPI 11",
+  "type": "glpi-plugin",
+  "license": "GPL-3.0-or-later",
+  "require": {
+    "php": "^8.2"
+  },
+  "autoload": {
+    "psr-4": {
+      "GlpiPlugin\\Integaglpi\\": "src/"
+    }
+  },
+  "require-dev": {
+    "squizlabs/php_codesniffer": "^3.11"
+  },
+  "scripts": {
+    "lint": "phpcs --standard=PSR12 setup.php hook.php inc src front templates tests",
+    "format": "phpcbf --standard=PSR12 setup.php hook.php inc src front templates tests"
+  }
+}
