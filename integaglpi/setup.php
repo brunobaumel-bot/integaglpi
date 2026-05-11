@@ -3,11 +3,14 @@
 declare(strict_types=1);
 
 use Glpi\Plugin\Hooks;
+use GlpiPlugin\Integaglpi\AuditMenu;
 use GlpiPlugin\Integaglpi\Install\Installer;
 use GlpiPlugin\Integaglpi\Plugin;
 use GlpiPlugin\Integaglpi\Profile;
 use GlpiPlugin\Integaglpi\Queue;
+use GlpiPlugin\Integaglpi\RoutingSafetyMenu;
 use GlpiPlugin\Integaglpi\Service\TicketSyncService;
+use GlpiPlugin\Integaglpi\TicketConversation;
 use GlpiPlugin\Integaglpi\TicketRuntime;
 
 if (file_exists(__DIR__ . '/vendor/autoload.php')) {
@@ -32,6 +35,7 @@ if (file_exists(__DIR__ . '/vendor/autoload.php')) {
 require_once __DIR__ . '/inc/define.php';
 // Legacy (non-namespaced) tab provider shim.
 require_once __DIR__ . '/inc/ticketruntime.class.php';
+require_once __DIR__ . '/inc/ticketconversation.class.php';
 
 define('PLUGIN_INTEGAGLPI_VERSION', '0.2.0');
 
@@ -45,6 +49,76 @@ function plugin_integaglpi_logThrowable(\Throwable $exception, string $context):
     // GLPI production environments may not expose Toolbox::logError().
     // Use plain error_log() to ensure failures are always visible.
     error_log($message . "\n" . $exception->getTraceAsString());
+}
+
+function plugin_integaglpi_is_admin_profile(array $profile): bool
+{
+    $name = strtolower(trim((string) ($profile['name'] ?? '')));
+
+    return in_array($name, ['super-admin', 'super admin', 'admin', 'administrator', 'administrador'], true);
+}
+
+function plugin_integaglpi_ensure_profile_rights(): void
+{
+    global $DB;
+
+    if (!isset($DB) || !is_object($DB)) {
+        return;
+    }
+
+    $rights = Profile::getAllRights();
+    $profiles = [];
+    foreach ($DB->request(['FROM' => 'glpi_profiles']) as $profile) {
+        $profileId = (int) ($profile['id'] ?? 0);
+        if ($profileId > 0) {
+            $profiles[$profileId] = $profile;
+        }
+    }
+
+    foreach ($rights as $right) {
+        $field = (string) ($right['field'] ?? '');
+        if ($field === '') {
+            continue;
+        }
+
+        $existingRows = [];
+        foreach ($DB->request(['FROM' => 'glpi_profilerights', 'WHERE' => ['name' => $field]]) as $row) {
+            $existingRows[(int) ($row['profiles_id'] ?? 0)] = $row;
+        }
+
+        foreach ($profiles as $profileId => $profile) {
+            $isAdmin = plugin_integaglpi_is_admin_profile($profile);
+            $adminRights = READ | UPDATE;
+            $defaultRights = (int) ($right['default'] ?? 0);
+            $desiredRights = $isAdmin ? $adminRights : $defaultRights;
+            $existing = $existingRows[$profileId] ?? null;
+
+            if ($existing === null) {
+                $result = $DB->insert('glpi_profilerights', [
+                    'profiles_id' => $profileId,
+                    'name' => $field,
+                    'rights' => $desiredRights,
+                ]);
+                if ($result === false) {
+                    error_log('[integaglpi][rights] insert failed profile=' . $profileId . ' name=' . $field . ' error=' . $DB->error());
+                }
+                continue;
+            }
+
+            // Do not overwrite custom permissions. Only fix the install-time
+            // zero-rights state for administrator profiles.
+            if ($isAdmin && (int) ($existing['rights'] ?? 0) === 0) {
+                $result = $DB->update(
+                    'glpi_profilerights',
+                    ['rights' => $adminRights],
+                    ['profiles_id' => $profileId, 'name' => $field]
+                );
+                if ($result === false) {
+                    error_log('[integaglpi][rights] admin update failed profile=' . $profileId . ' name=' . $field . ' error=' . $DB->error());
+                }
+            }
+        }
+    }
 }
 
 function plugin_version_integaglpi(): array
@@ -110,11 +184,12 @@ function plugin_init_integaglpi(): void
     $PLUGIN_HOOKS[Hooks::ITEM_ADD][PLUGIN_INTEGAGLPI_NAME][\Ticket::class] = 'plugin_integaglpi_item_add_ticket';
     $PLUGIN_HOOKS[Hooks::ITEM_ADD][PLUGIN_INTEGAGLPI_NAME][\ITILFollowup::class] = 'plugin_integaglpi_item_add_followup';
     $PLUGIN_HOOKS[Hooks::ITEM_ADD][PLUGIN_INTEGAGLPI_NAME][\ITILSolution::class] = 'plugin_integaglpi_item_solution';
+    $PLUGIN_HOOKS[Hooks::ITEM_ADD][PLUGIN_INTEGAGLPI_NAME][\Document_Item::class] = 'plugin_integaglpi_item_add_document_item';
     $PLUGIN_HOOKS[Hooks::ITEM_UPDATE][PLUGIN_INTEGAGLPI_NAME][\Ticket::class] = 'plugin_integaglpi_ticket_update';
     $PLUGIN_HOOKS[Hooks::ITEM_UPDATE][PLUGIN_INTEGAGLPI_NAME][\ITILSolution::class] = 'plugin_integaglpi_item_solution';
     // JS assets are injected by renderers (see Support\AssetRenderer) because
     // some environments return 404 for /plugins/... static assets.
-    $pluginMenuEntries = [Queue::class];
+    $pluginMenuEntries = [Queue::class, AuditMenu::class, RoutingSafetyMenu::class];
     if (class_exists('PluginIntegaglpiAttendanceCenterMenu', false)) {
         $pluginMenuEntries[] = 'PluginIntegaglpiAttendanceCenterMenu';
     }
@@ -130,19 +205,9 @@ function plugin_init_integaglpi(): void
     \Plugin::registerClass(Profile::class, ['addtabon' => ['Profile']]);
 
     // Ensure the canonical right exists even on older installs (no reinstall needed).
-    // This is safe and idempotent in GLPI.
-    if (class_exists('ProfileRight')) {
-        try {
-            ProfileRight::addProfileRights([Plugin::RIGHT_NAME]);
-        } catch (\Throwable $e) {
-            $message = $e->getMessage();
-            // Duplicate entry means the right row already exists for at least one profile.
-            // This is expected after the first successful registration.
-            if (!str_contains($message, '(1062)') && !str_contains($message, '1062')) {
-                error_log('[integaglpi][rights] addProfileRights failed: ' . $message);
-            }
-        }
-    }
+    // This path is deliberately idempotent and does not call addProfileRights()
+    // because GLPI may throw on duplicate profilerights rows.
+    plugin_integaglpi_ensure_profile_rights();
 
     // Phase 7.4C self-heal: GLPI only re-runs plugin_integaglpi_install() when the
     // operator clicks "Install/Upgrade" in the plugins admin UI. Since 7.4C did not
@@ -156,13 +221,18 @@ function plugin_init_integaglpi(): void
     } catch (\Throwable $e) {
         error_log('[integaglpi][init][ensureSchema] ' . $e->getMessage());
     }
-    // Register only one tab provider to avoid duplicate "WhatsApp" tabs.
-    // Keep the legacy shim as the canonical provider for GLPI tabs.
+    // Register separate lightweight tab providers: diagnostic context and operational conversation.
     \Plugin::registerClass('PluginIntegaglpiTicketRuntime', [
         'addtabon' => [\Ticket::class],
     ]);
     \CommonGLPI::registerStandardTab(\Ticket::class, 'PluginIntegaglpiTicketRuntime');
+    \Plugin::registerClass('PluginIntegaglpiTicketConversation', [
+        'addtabon' => [\Ticket::class],
+    ]);
+    \CommonGLPI::registerStandardTab(\Ticket::class, 'PluginIntegaglpiTicketConversation');
     \Plugin::registerClass(Queue::class);
+    \Plugin::registerClass(AuditMenu::class);
+    \Plugin::registerClass(RoutingSafetyMenu::class);
 }
 
 function plugin_integaglpi_install(): bool
@@ -170,9 +240,7 @@ function plugin_integaglpi_install(): bool
     try {
         Installer::install();
 
-        foreach (Profile::getAllRights() as $right) {
-            ProfileRight::addProfileRights([$right['field']]);
-        }
+        plugin_integaglpi_ensure_profile_rights();
     } catch (\Throwable $exception) {
         plugin_integaglpi_logThrowable($exception, 'install');
         return false;

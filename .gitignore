@@ -16,6 +16,7 @@ yarn.lock
 # IntegraGLPI extras (baseline)
 .env.*
 !.env.example
+!.env.production.example
 .env.local
 Thumbs.db
 *.cache

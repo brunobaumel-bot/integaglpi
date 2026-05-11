@@ -6,6 +6,7 @@ namespace GlpiPlugin\Integaglpi\Service;
 
 use GlpiPlugin\Integaglpi\External\ExternalDatabase;
 use GlpiPlugin\Integaglpi\External\ExternalSchemaManager;
+use GlpiPlugin\Integaglpi\External\Repository\QueueRepository;
 use GlpiPlugin\Integaglpi\External\Repository\RoutingOptionRepository;
 use PDO;
 use RuntimeException;
@@ -17,6 +18,8 @@ final class RoutingOptionService
     private ?PDO $pdo = null;
 
     private ?RoutingOptionRepository $repository = null;
+
+    private ?QueueRepository $queueRepository = null;
 
     public function __construct(?PluginConfigService $pluginConfigService = null)
     {
@@ -101,6 +104,18 @@ final class RoutingOptionService
             throw new RuntimeException(__('Selected GLPI user does not exist.', 'glpiintegaglpi'));
         }
 
+        if ($queueId <= 0 && $groupId <= 0 && $isActive) {
+            throw new RuntimeException(__('Active routing options must have a queue or a GLPI group so queue_id can be linked.', 'glpiintegaglpi'));
+        }
+
+        if ($groupId > 0) {
+            $queueId = $this->ensureQueueForRoutingOption($queueId, $label, $groupId);
+        }
+
+        if ($isActive && $queueId <= 0) {
+            throw new RuntimeException(__('Active routing option cannot be saved without queue_id.', 'glpiintegaglpi'));
+        }
+
         $payload = [
             'option_key'           => $optionKey,
             'label'                => $label,
@@ -167,6 +182,48 @@ final class RoutingOptionService
         $this->repository = new RoutingOptionRepository($this->getPdo());
 
         return $this->repository;
+    }
+
+    private function getQueueRepository(): QueueRepository
+    {
+        if ($this->queueRepository instanceof QueueRepository) {
+            return $this->queueRepository;
+        }
+
+        $this->queueRepository = new QueueRepository($this->getPdo());
+
+        return $this->queueRepository;
+    }
+
+    private function ensureQueueForRoutingOption(int $queueId, string $label, int $groupId): int
+    {
+        $payload = [
+            'name' => $label,
+            'description' => __('Auto-managed by routing option configuration.', 'glpiintegaglpi'),
+            'is_active' => true,
+            'default_group_id' => $groupId,
+        ];
+
+        $repository = $this->getQueueRepository();
+
+        if ($queueId > 0) {
+            $currentQueue = $repository->findById($queueId);
+            if ($currentQueue === null) {
+                throw new RuntimeException(__('Selected routing queue does not exist.', 'glpiintegaglpi'));
+            }
+
+            if (
+                (string) ($currentQueue['name'] ?? '') !== $label
+                || (int) ($currentQueue['default_group_id'] ?? 0) !== $groupId
+                || empty($currentQueue['is_active'])
+            ) {
+                return $repository->save($payload, $queueId);
+            }
+
+            return $queueId;
+        }
+
+        return $repository->save($payload);
     }
 
     private function groupExists(int $groupId): bool

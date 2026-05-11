@@ -8,8 +8,8 @@ use RuntimeException;
 
 final class IntegrationServiceClient
 {
-    private const ENDPOINT_OUTBOUND = 'http://127.0.0.1:3001/internal/glpi/messages/outbound';
-    private const ENDPOINT_TICKET_SOLVED = 'http://127.0.0.1:3001/internal/glpi/notifications/ticket-solved';
+    private const PATH_OUTBOUND = '/internal/glpi/messages/outbound';
+    private const PATH_TICKET_SOLVED = '/internal/glpi/notifications/ticket-solved';
     private const TIMEOUT_SECONDS   = 5;
 
     public function __construct(private readonly ?PluginConfigService $pluginConfigService = null)
@@ -25,7 +25,7 @@ final class IntegrationServiceClient
      */
     public function sendOutbound(array $payload): array
     {
-        return $this->postJson(self::ENDPOINT_OUTBOUND, $payload, 'outbound');
+        return $this->postJson($this->endpoint(self::PATH_OUTBOUND), $payload, 'outbound');
     }
 
     /**
@@ -37,7 +37,7 @@ final class IntegrationServiceClient
      */
     public function sendTicketSolvedNotification(array $payload): array
     {
-        return $this->postJson(self::ENDPOINT_TICKET_SOLVED, $payload, 'notification][ticket_solved');
+        return $this->postJson($this->endpoint(self::PATH_TICKET_SOLVED), $payload, 'notification][ticket_solved');
     }
 
     /**
@@ -86,13 +86,22 @@ final class IntegrationServiceClient
 
         $body = json_decode((string) $raw, true);
         if (!is_array($body)) {
-            $body = ['raw' => (string) $raw];
+            $body = [
+                'message' => __('Resposta inesperada não JSON do integration-service.', 'glpiintegaglpi'),
+                'raw_excerpt' => substr((string) $raw, 0, 200),
+            ];
         }
 
         $success = $status >= 200 && $status < 300;
 
         if (!$success) {
-            error_log('[integaglpi][' . $logContext . '][ERROR] http_status=' . $status . ' body=' . (string) $raw);
+            if ($status === 401) {
+                $body['message'] = __('integration-service retornou HTTP 401: verifique URL e chave.', 'glpiintegaglpi');
+            } elseif (!isset($body['message'])) {
+                $body['message'] = sprintf(__('integration-service retornou HTTP %d.', 'glpiintegaglpi'), $status);
+            }
+
+            error_log('[integaglpi][' . $logContext . '][ERROR] http_status=' . $status . ' body_excerpt=' . substr((string) $raw, 0, 500));
         }
 
         return [
@@ -132,5 +141,12 @@ final class IntegrationServiceClient
             . 'Set it in the plugin configuration page (integration_auth_key) '
             . 'or expose INTEGRATION_SERVICE_API_KEY to the PHP environment.'
         );
+    }
+
+    private function endpoint(string $path): string
+    {
+        $configService = $this->pluginConfigService ?? new PluginConfigService();
+
+        return rtrim($configService->getIntegrationServiceUrl(), '/') . $path;
     }
 }

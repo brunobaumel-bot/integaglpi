@@ -10,7 +10,9 @@ $configUrl = \GlpiPlugin\Integaglpi\Plugin::getQueueAdminUrl();
 $integaglpiHealthProxyUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/front/health.proxy.php';
 $configService = new \GlpiPlugin\Integaglpi\Service\PluginConfigService();
 $routingOptionService = new \GlpiPlugin\Integaglpi\Service\RoutingOptionService($configService);
+$routingSafetyService = new \GlpiPlugin\Integaglpi\Service\RoutingSafetyService($configService);
 $routingOptions = $isConfigured ? $routingOptionService->getAll() : [];
+$routingConfig = $isConfigured ? $routingSafetyService->getRoutingConfig() : [];
 $messageConfig = $configService->getMessageConfig();
 $activeTab = (string) ($_GET['tab'] ?? 'connection');
 if (!in_array($activeTab, ['connection', 'queues', 'messages'], true)) {
@@ -77,6 +79,17 @@ $tabUrl = static fn (string $tab): string => $configUrl . '?tab=' . rawurlencode
                         <input type="password" name="db_password" class="form-control" value="" placeholder="<?= $this->escape(__('Leave blank to keep the current password.', 'glpiintegaglpi')); ?>">
                     </div>
                     <div class="col-md-12">
+                        <label class="form-label"><?= $this->escape(__('Integration-service URL', 'glpiintegaglpi')); ?></label>
+                        <input
+                            type="url"
+                            name="integration_service_url"
+                            class="form-control"
+                            value="<?= $this->escape((string) ($connectionConfig['integration_service_url'] ?? 'http://127.0.0.1:3001')); ?>"
+                            required
+                        >
+                        <small class="text-muted"><?= $this->escape(__('Base URL used by the plugin to call Node. Production normally uses http://127.0.0.1:3002.', 'glpiintegaglpi')); ?></small>
+                    </div>
+                    <div class="col-md-12">
                         <label class="form-label"><?= $this->escape(__('Integration service auth key', 'glpiintegaglpi')); ?></label>
                         <input type="password" name="integration_auth_key" class="form-control" value="" autocomplete="new-password" placeholder="<?= $this->escape(__('Leave blank to keep the current key. Must match Node .env INTEGRATION_SERVICE_API_KEY.', 'glpiintegaglpi')); ?>">
                         <small class="text-muted"><?= $this->escape(__('Bearer token sent to the Node integration-service for outbound WhatsApp messages.', 'glpiintegaglpi')); ?></small>
@@ -111,6 +124,70 @@ $tabUrl = static fn (string $tab): string => $configUrl . '?tab=' . rawurlencode
             <?= $this->escape(__('Configure the external PostgreSQL connection before managing routing options.', 'glpiintegaglpi')); ?>
         </div>
     <?php } else { ?>
+        <div class="card mb-3">
+            <div class="card-header"><?= $this->escape(__('Fallback global de roteamento', 'glpiintegaglpi')); ?></div>
+            <div class="card-body">
+                <form method="post" action="<?= $this->escape($configUrl); ?>?tab=queues">
+                    <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken(); ?>
+                    <div class="row g-3 align-items-end">
+                        <div class="col-md-3">
+                            <div class="form-check mb-2">
+                                <input
+                                    class="form-check-input"
+                                    type="checkbox"
+                                    name="fallback_enabled"
+                                    value="1"
+                                    <?= !empty($routingConfig['fallback_enabled']) ? "checked='checked'" : ''; ?>
+                                >
+                                <label class="form-check-label">
+                                    <?= $this->escape(__('Habilitar fallback apos tentativas invalidas', 'glpiintegaglpi')); ?>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label"><?= $this->escape(__('Fila fallback', 'glpiintegaglpi')); ?></label>
+                            <select name="fallback_queue_id" class="form-select">
+                                <option value="0"><?= $this->escape(__('— none —', 'glpiintegaglpi')); ?></option>
+                                <?php foreach ($queues as $queue) { ?>
+                                    <?php $selected = (int) ($routingConfig['fallback_queue_id'] ?? 0) === (int) ($queue['id'] ?? 0); ?>
+                                    <option value="<?= (int) ($queue['id'] ?? 0); ?>" <?= $selected ? "selected='selected'" : ''; ?>>
+                                        <?= $this->escape((string) ($queue['name'] ?? '')); ?>
+                                    </option>
+                                <?php } ?>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label"><?= $this->escape(__('Grupo GLPI fallback', 'glpiintegaglpi')); ?></label>
+                            <?php Group::dropdown([
+                                'name' => 'fallback_glpi_group_id',
+                                'value' => (int) ($routingConfig['fallback_glpi_group_id'] ?? 0),
+                                'display_emptychoice' => true,
+                            ]); ?>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label"><?= $this->escape(__('Tentativas invalidas', 'glpiintegaglpi')); ?></label>
+                            <input
+                                type="number"
+                                name="max_invalid_queue_attempts"
+                                class="form-control"
+                                min="1"
+                                max="10"
+                                value="<?= (int) ($routingConfig['max_invalid_queue_attempts'] ?? 3); ?>"
+                            >
+                        </div>
+                        <div class="col-md-1">
+                            <button type="submit" name="save_routing_fallback" value="1" class="btn btn-primary w-100">
+                                <?= $this->escape(__('Salvar', 'glpiintegaglpi')); ?>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="form-text mt-2">
+                        <?= $this->escape(__('Fallback so e aplicado quando a fila e o grupo GLPI estiverem validos.', 'glpiintegaglpi')); ?>
+                    </div>
+                </form>
+            </div>
+        </div>
+
         <div class="card mb-3">
             <div class="card-header"><?= $this->escape(__('Nova fila / opção de roteamento', 'glpiintegaglpi')); ?></div>
             <div class="card-body">

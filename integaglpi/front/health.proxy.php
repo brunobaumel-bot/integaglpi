@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use GlpiPlugin\Integaglpi\Plugin;
+use GlpiPlugin\Integaglpi\Service\PluginConfigService;
 
 include '../../../inc/includes.php';
 
@@ -34,7 +35,7 @@ if (!Session::haveRight(Plugin::RIGHT_NAME, READ)) {
     ], 403);
 }
 
-$healthUrl = 'http://127.0.0.1:3001/health';
+$healthUrl = rtrim((new PluginConfigService())->getIntegrationServiceUrl(), '/') . '/health';
 
 $ch = curl_init($healthUrl);
 if ($ch === false) {

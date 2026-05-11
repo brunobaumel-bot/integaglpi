@@ -24,11 +24,47 @@
 
     return fetch(url, {
       method: 'POST',
+      credentials: 'same-origin',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json',
         'X-Requested-With': 'XMLHttpRequest'
       },
       body: params.toString()
+    });
+  }
+
+  function readJsonOrFriendlyError(response) {
+    const status = response.status;
+    const contentType = response.headers.get('content-type') || '';
+
+    return response.text().then((body) => {
+      const trimmed = String(body || '').trimStart();
+      if (trimmed.charAt(0) === '<') {
+        throw new Error('Resposta inesperada não JSON. Recarregue a página e verifique sua sessão/permissão.');
+      }
+
+      let payload = null;
+      if (trimmed !== '') {
+        try {
+          payload = JSON.parse(trimmed);
+        } catch (parseError) {
+          throw new Error('Resposta inesperada não JSON.');
+        }
+      }
+
+      if (!response.ok || (payload && payload.success === false)) {
+        const message = payload && (payload.message || payload.error)
+          ? String(payload.message || payload.error)
+          : 'HTTP ' + status;
+        throw new Error(message);
+      }
+
+      if (contentType.indexOf('application/json') === -1 && payload === null) {
+        throw new Error('Resposta inesperada não JSON.');
+      }
+
+      return payload || { success: true };
     });
   }
 
@@ -97,6 +133,7 @@
 
     button.disabled = true;
     postUrlEncoded(configUrl, payload)
+      .then(readJsonOrFriendlyError)
       .then(() => {
         alert('Fila enviada. Recarregando...');
         window.location.reload();
@@ -261,6 +298,7 @@
 
     button.disabled = true;
     postUrlEncoded(actionUrl, payload)
+      .then(readJsonOrFriendlyError)
       .then(() => {
         alert('Ação enviada. Recarregando...');
         window.location.reload();
@@ -334,4 +372,3 @@
       });
   }
 })();
-

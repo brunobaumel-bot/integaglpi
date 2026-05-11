@@ -12,6 +12,7 @@ final class PluginConfigService
     private const CONTEXT_CONNECTION = 'connection';
     private const CONTEXT_MESSAGE = 'message';
     private const CONTEXT_INDEX = 'uniq_integaglpi_configs_context';
+    private const DEFAULT_INTEGRATION_SERVICE_URL = 'http://127.0.0.1:3001';
     private const MESSAGE_DEFAULTS = [
         'welcome_message' => 'Olá! Como podemos ajudar?',
         'menu_message' => 'Escolha uma das opções de atendimento.',
@@ -45,8 +46,17 @@ final class PluginConfigService
             'db_user' => '',
             'db_password' => '',
             'db_sslmode' => 'prefer',
+            'integration_service_url' => self::DEFAULT_INTEGRATION_SERVICE_URL,
             'integration_auth_key' => '',
         ];
+    }
+
+    public function getIntegrationServiceUrl(): string
+    {
+        $config = $this->getConnectionConfig();
+        $configured = $this->normalizeUrl($config['integration_service_url'] ?? null);
+
+        return $configured !== '' ? $configured : self::DEFAULT_INTEGRATION_SERVICE_URL;
     }
 
     public function getIntegrationAuthKey(): string
@@ -96,6 +106,7 @@ final class PluginConfigService
             ),
             'db_password' => $passwordInput !== '' ? $passwordInput : (string) ($currentConfig['db_password'] ?? ''),
             'db_sslmode' => $this->normalizeSslMode($input['db_sslmode'] ?? null),
+            'integration_service_url' => $this->requireIntegrationServiceUrl($input['integration_service_url'] ?? null),
             'integration_auth_key' => $authKeyInput !== ''
                 ? $authKeyInput
                 : (string) ($currentConfig['integration_auth_key'] ?? ''),
@@ -176,6 +187,8 @@ final class PluginConfigService
         $table = PLUGIN_INTEGAGLPI_CONFIG_TABLE;
         $columns = [
             'context' => "ALTER TABLE `{$table}` ADD COLUMN `context` VARCHAR(64) NOT NULL DEFAULT 'connection' AFTER `id`",
+            'integration_service_url' => "ALTER TABLE `{$table}` ADD COLUMN `integration_service_url` VARCHAR(255) NOT NULL DEFAULT '" . self::DEFAULT_INTEGRATION_SERVICE_URL . "'",
+            'integration_auth_key' => "ALTER TABLE `{$table}` ADD COLUMN `integration_auth_key` TEXT DEFAULT NULL",
         ];
         foreach (array_keys(self::MESSAGE_DEFAULTS) as $messageColumn) {
             $columns[$messageColumn] = "ALTER TABLE `{$table}` ADD COLUMN `{$messageColumn}` TEXT DEFAULT NULL";
@@ -273,6 +286,31 @@ final class PluginConfigService
     private function normalizeString(mixed $value): string
     {
         return trim((string) $value);
+    }
+
+    private function normalizeUrl(mixed $value): string
+    {
+        return rtrim($this->normalizeString($value), "/ \t\n\r\0\x0B");
+    }
+
+    private function requireIntegrationServiceUrl(mixed $value): string
+    {
+        $url = $this->normalizeUrl($value);
+
+        if ($url === '') {
+            return self::DEFAULT_INTEGRATION_SERVICE_URL;
+        }
+
+        $parts = parse_url($url);
+        if (
+            !is_array($parts)
+            || !in_array(strtolower((string) ($parts['scheme'] ?? '')), ['http', 'https'], true)
+            || trim((string) ($parts['host'] ?? '')) === ''
+        ) {
+            throw new RuntimeException(__('Integration-service URL must be a valid http(s) URL.', 'glpiintegaglpi'));
+        }
+
+        return $url;
     }
 
     private function messageOrDefault(mixed $value, string $key): string

@@ -35,6 +35,7 @@ final class Installer
                     db_user VARCHAR(255) NOT NULL DEFAULT '',
                     db_password TEXT DEFAULT NULL,
                     db_sslmode VARCHAR(32) NOT NULL DEFAULT 'prefer',
+                    integration_service_url VARCHAR(255) NOT NULL DEFAULT 'http://127.0.0.1:3001',
                     integration_auth_key TEXT DEFAULT NULL,
                     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -42,16 +43,20 @@ final class Installer
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 SQL
             );
-        } elseif (!$DB->fieldExists($table, 'integration_auth_key')) {
-            // Phase 7.4C: idempotent column addition on existing installs.
-            // Replaces the previous hardcoded constant in IntegrationServiceClient.
-            $migration->displayMessage("Adding integration_auth_key column to {$table}");
-            $migration->addPostQuery(
-                <<<SQL
-                ALTER TABLE {$table}
-                ADD COLUMN integration_auth_key TEXT DEFAULT NULL
-                SQL
-            );
+        } else {
+            $columns = [
+                'integration_service_url' => "ALTER TABLE {$table} ADD COLUMN integration_service_url VARCHAR(255) NOT NULL DEFAULT 'http://127.0.0.1:3001'",
+                'integration_auth_key' => "ALTER TABLE {$table} ADD COLUMN integration_auth_key TEXT DEFAULT NULL",
+            ];
+
+            foreach ($columns as $column => $sql) {
+                if ($DB->fieldExists($table, $column)) {
+                    continue;
+                }
+
+                $migration->displayMessage("Adding {$column} column to {$table}");
+                $migration->addPostQuery($sql);
+            }
         }
 
         $migration->executeMigration();
@@ -98,42 +103,49 @@ final class Installer
                 return;
             }
 
-            if ($DB->fieldExists($table, 'integration_auth_key')) {
-                return;
-            }
+            $columns = [
+                'integration_service_url' => "ALTER TABLE `{$table}` ADD COLUMN `integration_service_url` VARCHAR(255) NOT NULL DEFAULT 'http://127.0.0.1:3001'",
+                'integration_auth_key' => "ALTER TABLE `{$table}` ADD COLUMN `integration_auth_key` TEXT DEFAULT NULL",
+            ];
 
-            // Idempotent ADD COLUMN. doQuery() is the GLPI 11 replacement for
-            // the deprecated query(); the legacy query() block is what plugins
-            // are forbidden from using, not doQuery().
-            $sql = "ALTER TABLE `{$table}` "
-                . "ADD COLUMN `integration_auth_key` TEXT DEFAULT NULL";
-            $result = @$DB->doQuery($sql);
+            foreach ($columns as $column => $sql) {
+                if ($DB->fieldExists($table, $column)) {
+                    continue;
+                }
 
-            if ($result) {
+                // Idempotent ADD COLUMN. doQuery() is the GLPI 11 replacement for
+                // the deprecated query(); the legacy query() block is what plugins
+                // are forbidden from using, not doQuery().
+                $result = @$DB->doQuery($sql);
+
+                if ($result) {
+                    error_log(sprintf(
+                        '[integaglpi][installer][ensureSchema] %s column added to %s',
+                        $column,
+                        $table
+                    ));
+                    continue;
+                }
+
+                // Race tolerated: two concurrent requests may both pass fieldExists()
+                // and both attempt the ALTER. MySQL serializes DDL; the loser gets
+                // error 1060 ("Duplicate column name"), which means the column is
+                // now present — exactly the desired end state.
+                $errorMessage = (string) $DB->error();
+                if (
+                    str_contains($errorMessage, '1060')
+                    || stripos($errorMessage, 'Duplicate column') !== false
+                ) {
+                    continue;
+                }
+
                 error_log(sprintf(
-                    '[integaglpi][installer][ensureSchema] integration_auth_key column added to %s',
-                    $table
+                    '[integaglpi][installer][ensureSchema] ALTER failed adding %s on %s: %s',
+                    $column,
+                    $table,
+                    $errorMessage
                 ));
-                return;
             }
-
-            // Race tolerated: two concurrent requests may both pass fieldExists()
-            // and both attempt the ALTER. MySQL serializes DDL; the loser gets
-            // error 1060 ("Duplicate column name"), which means the column is
-            // now present — exactly the desired end state.
-            $errorMessage = (string) $DB->error();
-            if (
-                str_contains($errorMessage, '1060')
-                || stripos($errorMessage, 'Duplicate column') !== false
-            ) {
-                return;
-            }
-
-            error_log(sprintf(
-                '[integaglpi][installer][ensureSchema] ALTER failed on %s: %s',
-                $table,
-                $errorMessage
-            ));
         } catch (Throwable $exception) {
             // Never break a request because of a schema self-heal failure.
             error_log('[integaglpi][installer][ensureSchema] ' . $exception->getMessage());
