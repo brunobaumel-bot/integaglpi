@@ -6,7 +6,10 @@ import type { SqlExecutor } from '../src/infra/db/postgres.js';
 class FakeExecutor implements SqlExecutor {
   public queries: Array<{ text: string; params?: unknown[] }> = [];
 
-  public constructor(private readonly currentDeliveryStatus: string | null) {}
+  public constructor(
+    private readonly currentDeliveryStatus: string | null,
+    private readonly insertedRowCount = 1,
+  ) {}
 
   public async query<R>(text: string, params?: unknown[]): Promise<any> {
     this.queries.push({ text, params });
@@ -23,8 +26,8 @@ class FakeExecutor implements SqlExecutor {
 
     if (text.includes('INSERT INTO')) {
       return {
-        rows: [{ id: 'event-1' } as R],
-        rowCount: 1,
+        rows: this.insertedRowCount > 0 ? [{ id: 'event-1' } as R] : [],
+        rowCount: this.insertedRowCount,
         command: 'INSERT',
         oid: 0,
         fields: [],
@@ -74,5 +77,26 @@ describe('PostgresMessageRepository delivery status ordering', () => {
     expect(updateQuery?.params?.[2]).toBe('delivered');
     expect(updateQuery?.params?.[4]).toBe('131047');
     expect(updateQuery?.params?.[5]).toBe('Template required');
+  });
+
+  it('treats duplicate meta_message_id plus status events as idempotent', async () => {
+    const executor = new FakeExecutor('sent', 0);
+    const repository = new PostgresMessageRepository(executor);
+
+    const result = await repository.recordDeliveryStatus({
+      metaMessageId: 'wamid.duplicate',
+      status: 'delivered',
+      receivedAt: new Date('2026-05-17T12:00:00.000Z'),
+    });
+
+    const insertQuery = executor.queries.find((query) => query.text.includes('ON CONFLICT (meta_message_id, status) DO NOTHING'));
+    const updateQuery = executor.queries.find((query) => query.text.includes('UPDATE'));
+    expect(insertQuery).toBeDefined();
+    expect(result).toEqual({
+      matched: true,
+      insertedEvent: false,
+      currentStatus: 'delivered',
+    });
+    expect(updateQuery?.params?.[2]).toBe('delivered');
   });
 });

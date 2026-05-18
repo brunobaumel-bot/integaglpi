@@ -130,9 +130,33 @@ export class InboundWebhookService {
 
     for (const statusUpdate of statusUpdates) {
       const status = normalizeMetaDeliveryStatus(statusUpdate.status);
+      const logContext = {
+        correlation_id: correlationId,
+        meta_message_id_masked: maskSensitiveId(statusUpdate.metaMessageId),
+        recipient_id_masked: statusUpdate.recipientId ? maskSensitiveId(statusUpdate.recipientId) : null,
+        delivery_status: statusUpdate.status.trim().toLowerCase(),
+      };
       if (status === null) {
+        logger.info(
+          {
+            ...logContext,
+            event_type: 'DELIVERY_STATUS_IGNORED',
+            status: 'ignored',
+            reason: 'unsupported_status',
+          },
+          '[integration-service][delivery][DELIVERY_STATUS_IGNORED]',
+        );
         continue;
       }
+
+      logger.info(
+        {
+          ...logContext,
+          event_type: 'DELIVERY_STATUS_RECEIVED',
+          status: 'received',
+        },
+        '[integration-service][delivery][DELIVERY_STATUS_RECEIVED]',
+      );
 
       const result = await this.messageRepository.recordDeliveryStatus({
         metaMessageId: statusUpdate.metaMessageId,
@@ -145,16 +169,24 @@ export class InboundWebhookService {
           : new Date(),
       });
 
+      const deliveryEventType = result.matched && result.insertedEvent
+        ? 'DELIVERY_STATUS_UPDATED'
+        : 'DELIVERY_STATUS_IGNORED';
+      const ignoreReason = result.matched
+        ? 'duplicate_status_event'
+        : 'message_not_found';
       logger.info(
         {
-          correlation_id: correlationId,
-          meta_message_id_masked: maskSensitiveId(statusUpdate.metaMessageId),
+          ...logContext,
           delivery_status: status,
           matched: result.matched,
-          event_type: 'MESSAGE_DELIVERY_STATUS',
-          status: result.matched ? 'processed' : 'unmatched',
+          inserted_event: result.insertedEvent,
+          current_status: result.currentStatus,
+          event_type: deliveryEventType,
+          status: deliveryEventType === 'DELIVERY_STATUS_UPDATED' ? 'updated' : 'ignored',
+          ...(deliveryEventType === 'DELIVERY_STATUS_IGNORED' ? { reason: ignoreReason } : {}),
         },
-        '[integration-service][delivery][STATUS_RECEIVED]',
+        `[integration-service][delivery][${deliveryEventType}]`,
       );
       this.recordAudit({
         correlationId,
@@ -165,8 +197,12 @@ export class InboundWebhookService {
         severity: result.matched ? 'info' : 'warning',
         source: 'InboundWebhookService',
         payload: {
+          delivery_event_type: deliveryEventType,
           delivery_status: status,
           matched: result.matched,
+          inserted_event: result.insertedEvent,
+          current_status: result.currentStatus,
+          ...(deliveryEventType === 'DELIVERY_STATUS_IGNORED' ? { reason: ignoreReason } : {}),
         },
       });
 

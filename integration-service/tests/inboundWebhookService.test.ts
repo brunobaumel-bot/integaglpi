@@ -27,6 +27,7 @@ import type { KeyLock } from '../src/domain/contracts/KeyLock.js';
 import type { MessageSettingKey } from '../src/domain/services/SettingsService.js';
 import type { ContactEntityMemory } from '../src/domain/repositories/ContactEntityMemoryRepository.js';
 import type { ContactProfileData } from '../src/domain/services/ContactProfileService.js';
+import { logger } from '../src/infra/logger/logger.js';
 
 class FakeKeyLock implements KeyLock {
   public async withLock<T>(_key: string, work: () => Promise<T>): Promise<T> {
@@ -83,6 +84,7 @@ class FakeMessageRepository implements MessageRepository {
   public mediaInfoUpdates: Array<{ messageId: string; mediaInfo: Record<string, unknown> }> = [];
   public reservedInputs: ReserveInboundMessageInput[] = [];
   public deliveryStatusInputs: RecordDeliveryStatusInput[] = [];
+  public deliveryStatusResult: RecordDeliveryStatusResult | null = null;
 
   public async reserveInbound(input: ReserveInboundMessageInput): Promise<InboundMessage | null> {
     this.reservedInputs.push(input);
@@ -120,7 +122,7 @@ class FakeMessageRepository implements MessageRepository {
   public async recordDeliveryStatus(input: RecordDeliveryStatusInput): Promise<RecordDeliveryStatusResult> {
     this.deliveryStatusInputs.push(input);
 
-    return {
+    return this.deliveryStatusResult ?? {
       matched: true,
       insertedEvent: true,
       currentStatus: input.status,
@@ -977,6 +979,7 @@ describe('InboundWebhookService', () => {
       ],
     } as const;
 
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
     const result = await service.process(statusOnlyPayload, { correlationId: 'WA-20260510153022-a8f3c2' });
 
     expect(result).toEqual({
@@ -992,8 +995,29 @@ describe('InboundWebhookService', () => {
         status: 'success',
         severity: 'info',
         source: 'InboundWebhookService',
+        payload: expect.objectContaining({
+          delivery_event_type: 'DELIVERY_STATUS_UPDATED',
+        }),
       }),
     );
+    expect(info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event_type: 'DELIVERY_STATUS_RECEIVED',
+        delivery_status: 'delivered',
+        meta_message_id_masked: expect.not.stringContaining('wamid.status-only'),
+      }),
+      '[integration-service][delivery][DELIVERY_STATUS_RECEIVED]',
+    );
+    expect(info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event_type: 'DELIVERY_STATUS_UPDATED',
+        delivery_status: 'delivered',
+        matched: true,
+        inserted_event: true,
+      }),
+      '[integration-service][delivery][DELIVERY_STATUS_UPDATED]',
+    );
+    info.mockRestore();
     expect(contactResolutionService.resolve).not.toHaveBeenCalled();
     expect(glpiClient.createTicket).not.toHaveBeenCalled();
     expect(messageRepository.reservedInputs).toHaveLength(0);
@@ -1049,6 +1073,142 @@ describe('InboundWebhookService', () => {
       errorMessageSanitized: expect.stringContaining('[URL_REMOVIDA]'),
     }));
     expect(messageRepository.deliveryStatusInputs[0]?.errorMessageSanitized).not.toContain('5541999999999');
+  });
+
+  it('records read status without processing inbound flow', async () => {
+    const webhookEventRepository = new FakeWebhookEventRepository();
+    const messageRepository = new FakeMessageRepository();
+    const conversationRepository = new FakeConversationRepository();
+    const contactResolutionService = { resolve: vi.fn() };
+    const glpiClient = { createTicket: vi.fn(), addFollowUp: vi.fn() };
+    const service = makeInboundService(
+      webhookEventRepository,
+      messageRepository,
+      conversationRepository,
+      contactResolutionService,
+      glpiClient,
+    );
+    const payload = {
+      object: 'whatsapp_business_account',
+      entry: [{
+        id: 'entry-1',
+        changes: [{
+          field: 'messages',
+          value: {
+            metadata: { display_phone_number: '5511300000000' },
+            statuses: [{
+              id: 'wamid.read',
+              status: 'read',
+              timestamp: '1779028860',
+              recipient_id: '5541999999999',
+            }],
+          },
+        }],
+      }],
+    } as const;
+
+    await service.process(payload, { correlationId: 'WA-20260510153022-a8f3c2' });
+
+    expect(messageRepository.deliveryStatusInputs).toEqual([
+      expect.objectContaining({
+        metaMessageId: 'wamid.read',
+        status: 'read',
+        receivedAt: new Date(1779028860 * 1000),
+      }),
+    ]);
+    expect(messageRepository.reservedInputs).toHaveLength(0);
+    expect(contactResolutionService.resolve).not.toHaveBeenCalled();
+    expect(glpiClient.createTicket).not.toHaveBeenCalled();
+  });
+
+  it('logs duplicate delivery status as ignored while preserving idempotent repository write', async () => {
+    const webhookEventRepository = new FakeWebhookEventRepository();
+    const messageRepository = new FakeMessageRepository();
+    messageRepository.deliveryStatusResult = {
+      matched: true,
+      insertedEvent: false,
+      currentStatus: 'delivered',
+    };
+    const service = makeInboundService(
+      webhookEventRepository,
+      messageRepository,
+      new FakeConversationRepository(),
+      { resolve: vi.fn() },
+      { createTicket: vi.fn(), addFollowUp: vi.fn() },
+      { audit: { recordAuditEventFireAndForget: vi.fn() } as unknown as AuditService },
+    );
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+    const payload = {
+      object: 'whatsapp_business_account',
+      entry: [{
+        id: 'entry-1',
+        changes: [{
+          field: 'messages',
+          value: {
+            metadata: { display_phone_number: '5511300000000' },
+            statuses: [{ id: 'wamid.duplicate', status: 'delivered' }],
+          },
+        }],
+      }],
+    } as const;
+
+    await service.process(payload, { correlationId: 'WA-20260510153022-a8f3c2' });
+
+    expect(messageRepository.deliveryStatusInputs).toHaveLength(1);
+    expect(info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event_type: 'DELIVERY_STATUS_IGNORED',
+        status: 'ignored',
+        reason: 'duplicate_status_event',
+        inserted_event: false,
+      }),
+      '[integration-service][delivery][DELIVERY_STATUS_IGNORED]',
+    );
+    info.mockRestore();
+  });
+
+  it('logs unmatched delivery status as ignored without leaking the full WAMID', async () => {
+    const webhookEventRepository = new FakeWebhookEventRepository();
+    const messageRepository = new FakeMessageRepository();
+    messageRepository.deliveryStatusResult = {
+      matched: false,
+      insertedEvent: false,
+      currentStatus: null,
+    };
+    const service = makeInboundService(
+      webhookEventRepository,
+      messageRepository,
+      new FakeConversationRepository(),
+      { resolve: vi.fn() },
+      { createTicket: vi.fn(), addFollowUp: vi.fn() },
+    );
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+    const payload = {
+      object: 'whatsapp_business_account',
+      entry: [{
+        id: 'entry-1',
+        changes: [{
+          field: 'messages',
+          value: {
+            metadata: { display_phone_number: '5511300000000' },
+            statuses: [{ id: 'wamid.not-found', status: 'delivered' }],
+          },
+        }],
+      }],
+    } as const;
+
+    await service.process(payload, { correlationId: 'WA-20260510153022-a8f3c2' });
+
+    expect(info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event_type: 'DELIVERY_STATUS_IGNORED',
+        reason: 'message_not_found',
+        matched: false,
+        meta_message_id_masked: expect.not.stringContaining('wamid.not-found'),
+      }),
+      '[integration-service][delivery][DELIVERY_STATUS_IGNORED]',
+    );
+    info.mockRestore();
   });
 
   it('is safe under concurrency for the same message_id (processes only once)', async () => {

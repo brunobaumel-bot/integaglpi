@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseMetaInboundMessages } from '../src/adapters/meta/parseMetaWebhookPayload.js';
+import { parseMetaInboundMessages, parseMetaStatusUpdates } from '../src/adapters/meta/parseMetaWebhookPayload.js';
 import type { MetaWebhookPayload } from '../src/adapters/meta/metaWebhookTypes.js';
 
 function payloadWithMessage(message: Record<string, unknown>): MetaWebhookPayload {
@@ -23,6 +23,29 @@ function payloadWithMessage(message: Record<string, unknown>): MetaWebhookPayloa
                 },
               ],
               messages: [message as never],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function payloadWithStatus(status: Record<string, unknown>): MetaWebhookPayload {
+  return {
+    object: 'whatsapp_business_account',
+    entry: [
+      {
+        id: 'entry-1',
+        changes: [
+          {
+            field: 'messages',
+            value: {
+              metadata: {
+                display_phone_number: '5511300000000',
+                phone_number_id: '1050089564861532',
+              },
+              statuses: [status],
             },
           },
         ],
@@ -90,5 +113,38 @@ describe('parseMetaInboundMessages', () => {
       fileName: 'arquivo.pdf',
       caption: null,
     });
+  });
+});
+
+describe('parseMetaStatusUpdates', () => {
+  it('extracts Meta statuses with WAMID, recipient, timestamp and error details', () => {
+    const [status] = parseMetaStatusUpdates(payloadWithStatus({
+      id: 'wamid.delivery',
+      status: 'failed',
+      timestamp: '1779028800',
+      recipient_id: '5541999999999',
+      errors: [{
+        code: 131047,
+        title: 'Re-engagement message',
+        message: 'Message failed',
+        error_data: { details: 'Use a template' },
+      }],
+    }));
+
+    expect(status).toEqual({
+      eventId: 'entry-1:messages:status:wamid.delivery:failed',
+      eventType: 'status',
+      metaMessageId: 'wamid.delivery',
+      status: 'failed',
+      timestamp: '1779028800',
+      recipientId: '5541999999999',
+      errorCode: '131047',
+      errorMessage: 'Re-engagement message - Message failed - Use a template',
+    });
+  });
+
+  it('ignores incomplete statuses without id or status', () => {
+    expect(parseMetaStatusUpdates(payloadWithStatus({ id: 'wamid.no-status' }))).toEqual([]);
+    expect(parseMetaStatusUpdates(payloadWithStatus({ status: 'delivered' }))).toEqual([]);
   });
 });
