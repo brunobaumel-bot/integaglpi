@@ -22,9 +22,8 @@ class PluginIntegaglpiRight
     public static function getRights($interface = 'central'): array
     {
         return [
-            READ   => __('Visualizar conversas WhatsApp', 'integaglpi'),
-            UPDATE => __('Operar atendimentos (Assumir/Encerrar)', 'integaglpi'),
+            READ   => __('IntegraGLPI: acessar Console, Diagnóstico, Contratos e Horas, IA Supervisora read-only', 'integaglpi'),
+            UPDATE => __('IntegraGLPI: operar atendimentos e administrar Configurações, Mensagens, Templates, Contratos e Supervisor', 'integaglpi'),
         ];
     }
 }
-

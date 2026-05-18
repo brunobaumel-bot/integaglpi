@@ -16,7 +16,7 @@ const conversation: Conversation = {
   updatedAt: new Date(),
 };
 
-function makeService(metaOverrides: Record<string, unknown> = {}, audit?: AuditService) {
+function makeService(metaOverrides: Record<string, unknown> = {}, audit?: AuditService, messageConfigurationService: unknown = null) {
   const conversationRepository = {
     findByIdAndGlpiTicketId: vi.fn().mockResolvedValue(conversation),
     touch: vi.fn().mockResolvedValue(undefined),
@@ -37,13 +37,26 @@ function makeService(metaOverrides: Record<string, unknown> = {}, audit?: AuditS
     'real',
     '5511300000000',
     audit ?? null,
+    null,
+    messageConfigurationService as never,
   );
 
   return { service, conversationRepository, messageRepository, metaClient };
 }
 
 describe('OutboundMessageService solution approval notification', () => {
-  it('sends solved notification with approve/reopen buttons', async () => {
+  const approveReopenButtons = [
+    {
+      id: `solution_approve:2112319051:${conversation.id}`,
+      title: 'Aprovar',
+    },
+    {
+      id: `solution_reopen:2112319051:${conversation.id}`,
+      title: 'Reabrir',
+    },
+  ];
+
+  it('sends solved notification with approval/reopen buttons', async () => {
     const { service, metaClient, messageRepository } = makeService();
 
     const result = await service.sendSolutionApprovalRequest({
@@ -65,18 +78,9 @@ describe('OutboundMessageService solution approval notification', () => {
         'Solução:',
         'Troca de senha realizada & acesso validado.',
         '',
-        'Como deseja prosseguir?',
+        'Você aprova a solução?',
       ].join('\n'),
-      [
-        {
-          id: `solution_approve:2112319051:${conversation.id}`,
-          title: 'Aprovar',
-        },
-        {
-          id: `solution_reopen:2112319051:${conversation.id}`,
-          title: 'Reabrir',
-        },
-      ],
+      approveReopenButtons,
     );
     expect(messageRepository.insertOutbound).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -87,7 +91,7 @@ describe('OutboundMessageService solution approval notification', () => {
           'Solução:',
           'Troca de senha realizada & acesso validado.',
           '',
-          'Como deseja prosseguir?',
+          'Você aprova a solução?',
         ].join('\n'),
         rawPayload: expect.objectContaining({
           ticket_id: 2112319051,
@@ -97,11 +101,11 @@ describe('OutboundMessageService solution approval notification', () => {
             body_text_preview: [
               'Seu chamado #2112319051 foi solucionado.',
               '',
-              'Solução:',
-              'Troca de senha realizada & acesso validado.',
-              '',
-              'Como deseja prosseguir?',
-            ].join('\n'),
+            'Solução:',
+            'Troca de senha realizada & acesso validado.',
+            '',
+            'Você aprova a solução?',
+          ].join('\n'),
             has_solution_content: true,
           }),
         }),
@@ -159,7 +163,7 @@ describe('OutboundMessageService solution approval notification', () => {
         'Solução:',
         'Foi aplicado ajuste no cadastro.',
         '',
-        'Como deseja prosseguir?',
+        'Você aprova a solução?',
       ].join('\n'),
     });
   });
@@ -189,14 +193,14 @@ describe('OutboundMessageService solution approval notification', () => {
       'Primeira linha & validação',
       'Segunda <linha>',
       '',
-      'Como deseja prosseguir?',
+      'Você aprova a solução?',
     ].join('\n');
 
     expect(result.httpStatus).toBe(201);
     expect(metaClient.sendReplyButtons).toHaveBeenCalledWith(
       '5511999999999',
       expectedText,
-      expect.any(Array),
+      approveReopenButtons,
     );
     expect(messageRepository.insertOutbound).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -252,19 +256,57 @@ describe('OutboundMessageService solution approval notification', () => {
     expect(result.httpStatus).toBe(201);
     expect(metaClient.sendReplyButtons).toHaveBeenCalledWith(
       '5511999999999',
-      'Seu chamado #2112319051 foi solucionado. Como deseja prosseguir?',
-      expect.any(Array),
+      'Seu chamado #2112319051 foi solucionado. Você aprova a solução?',
+      approveReopenButtons,
     );
     expect(messageRepository.insertOutbound).toHaveBeenCalledWith(
       expect.objectContaining({
         idempotencyKey: 'notify_ticket_solved_2112319051',
         rawPayload: expect.objectContaining({
           request: expect.objectContaining({
-            body_text_preview: 'Seu chamado #2112319051 foi solucionado. Como deseja prosseguir?',
+            body_text_preview: 'Seu chamado #2112319051 foi solucionado. Você aprova a solução?',
             has_solution_content: false,
           }),
         }),
       }),
+    );
+  });
+
+  it('uses configured approval prompt and button titles when available', async () => {
+    const messageConfigurationService = {
+      resolveSendPlan: vi.fn().mockResolvedValue({
+        eventKey: 'solution_approve_reopen_prompt',
+        sendType: 'interactive_buttons',
+        text: 'Chamado #{ticket_id} resolvido. Confirma?',
+        active: true,
+        shouldSend: true,
+        reason: null,
+        templateName: null,
+        language: 'pt_BR',
+        buttons: [
+          { id: 'ignored-approve-id', title: 'Aprovar solução' },
+          { id: 'ignored-reopen-id', title: 'Reabrir chamado' },
+        ],
+        listOptions: [],
+      }),
+    };
+    const { service, metaClient } = makeService({}, undefined, messageConfigurationService);
+
+    const result = await service.sendSolutionApprovalRequest({
+      ticket_id: 2112319051,
+      conversation_id: conversation.id,
+      glpi_user_id: 1,
+      idempotency_key: 'notify_ticket_solved_2112319051_configured',
+    });
+
+    expect(result.httpStatus).toBe(201);
+    expect(metaClient.sendReplyButtons).toHaveBeenCalledWith(
+      '5511999999999',
+      'Chamado 2112319051 resolvido. Confirma?',
+      [
+        { id: `solution_approve:2112319051:${conversation.id}`, title: 'Aprovar solução' },
+        { id: `solution_reopen:2112319051:${conversation.id}`, title: 'Reabrir chamado' },
+      ],
     );
   });
 });

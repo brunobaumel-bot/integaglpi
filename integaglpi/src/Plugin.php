@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace GlpiPlugin\Integaglpi;
 
+use GlpiPlugin\Integaglpi\Service\PluginConfigService;
 use Html;
 use Session;
 
@@ -133,6 +134,195 @@ final class Plugin
         return self::getWebBasePath() . '/front/routing.options.form.php';
     }
 
+    public static function getAuditUrl(): string
+    {
+        return self::getWebBasePath() . '/front/audit.php';
+    }
+
+    public static function getOperationLogUrl(): string
+    {
+        return self::getAuditUrl();
+    }
+
+    public static function getRoutingSafetyUrl(): string
+    {
+        return self::getWebBasePath() . '/front/routing.safety.php';
+    }
+
+    public static function getSupervisorBackofficeUrl(): string
+    {
+        return self::getWebBasePath() . '/front/supervisor.php';
+    }
+
+    public static function getQualityDashboardUrl(): string
+    {
+        return self::getWebBasePath() . '/front/quality.dashboard.php';
+    }
+
+    public static function getOperationalDiagnosticsUrl(): string
+    {
+        return self::getWebBasePath() . '/front/operational.diagnostics.php';
+    }
+
+    public static function getContractHoursUrl(): string
+    {
+        return self::getWebBasePath() . '/front/contracts.hours.php';
+    }
+
+    public static function getAiQualityUrl(): string
+    {
+        return self::getWebBasePath() . '/front/ai.quality.php';
+    }
+
+    public static function getTicketUrl(int $ticketId): string
+    {
+        global $CFG_GLPI;
+
+        return rtrim($CFG_GLPI['root_doc'] ?? '', '/') . '/front/ticket.form.php?' . http_build_query([
+            'id' => max(0, $ticketId),
+        ]);
+    }
+
+    public static function canAuditRead(): bool
+    {
+        return self::canRead()
+            && (
+                self::hasRightBool('config', READ)
+                || self::hasRightBool('profile', READ)
+                || self::canUpdate()
+            );
+    }
+
+    public static function canSupervisorRead(): bool
+    {
+        return self::hasRightBool(self::RIGHT_NAME, READ)
+            && (
+                self::hasRightBool(self::RIGHT_NAME, UPDATE)
+                || self::hasRightBool('config', READ)
+                || self::hasRightBool('profile', READ)
+            );
+    }
+
+    public static function requireSupervisorRead(): void
+    {
+        Session::checkRight(self::RIGHT_NAME, READ);
+
+        if (self::canSupervisorRead()) {
+            return;
+        }
+
+        Session::checkRight('config', READ);
+    }
+
+    public static function canQualityDashboardRead(): bool
+    {
+        return self::canSupervisorRead();
+    }
+
+    public static function requireQualityDashboardRead(): void
+    {
+        self::requireSupervisorRead();
+    }
+
+    public static function canOperationalDiagnosticsRead(): bool
+    {
+        return self::canSupervisorRead();
+    }
+
+    public static function requireOperationalDiagnosticsRead(): void
+    {
+        self::requireSupervisorRead();
+    }
+
+    public static function canContractRead(): bool
+    {
+        return self::hasRightBool(self::RIGHT_NAME, READ);
+    }
+
+    public static function requireContractRead(): void
+    {
+        Session::checkRight(self::RIGHT_NAME, READ);
+    }
+
+    public static function canContractUpdate(): bool
+    {
+        return self::hasRightBool(self::RIGHT_NAME, UPDATE);
+    }
+
+    public static function isAiSupervisorEnabled(): bool
+    {
+        $value = strtolower(self::getRuntimeConfigValue('AI_SUPERVISOR_ENABLED'));
+        if ($value !== '') {
+            return in_array($value, ['1', 'true', 'yes', 'on'], true);
+        }
+
+        try {
+            return (new PluginConfigService())->isAiSupervisorEnabled();
+        } catch (\Throwable $exception) {
+            error_log('[integaglpi][ai_quality][config] failed reading persisted flag: ' . $exception->getMessage());
+            return false;
+        }
+    }
+
+    public static function getRuntimeConfigValue(string $key): string
+    {
+        $key = trim($key);
+        if ($key === '') {
+            return '';
+        }
+
+        $envValue = getenv($key);
+        if (is_string($envValue) && trim($envValue) !== '') {
+            return trim($envValue);
+        }
+
+        if (defined($key)) {
+            return trim((string) constant($key));
+        }
+
+        $lowerKey = strtolower($key);
+        $configSources = [
+            $GLOBALS['CFG_GLPI']['plugin_integaglpi'] ?? null,
+            $GLOBALS['CFG_GLPI']['integaglpi'] ?? null,
+            $GLOBALS['PLUGIN_INTEGAGLPI_CONFIG'] ?? null,
+        ];
+
+        foreach ($configSources as $source) {
+            if (!is_array($source)) {
+                continue;
+            }
+
+            foreach ([$key, $lowerKey] as $candidateKey) {
+                if (!array_key_exists($candidateKey, $source)) {
+                    continue;
+                }
+
+                $value = trim((string) $source[$candidateKey]);
+                if ($value !== '') {
+                    return $value;
+                }
+            }
+        }
+
+        return '';
+    }
+
+    public static function requireContractUpdate(): void
+    {
+        Session::checkRight(self::RIGHT_NAME, UPDATE);
+    }
+
+    public static function requireAuditRead(): void
+    {
+        self::requireRead();
+
+        if (self::canAuditRead()) {
+            return;
+        }
+
+        Session::checkRight('config', READ);
+    }
+
     public static function renderCsrfToken(): string
     {
         return Html::hidden('_glpi_csrf_token', [
@@ -217,5 +407,10 @@ final class Plugin
         if ($token !== '') {
             $tokens[] = $token;
         }
+    }
+
+    private static function hasRightBool(string $rightName, int $right): bool
+    {
+        return (bool) Session::haveRight($rightName, $right);
     }
 }

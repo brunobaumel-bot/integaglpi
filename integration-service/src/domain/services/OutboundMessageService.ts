@@ -5,17 +5,29 @@ import { extractMetaError } from '../../adapters/meta/MetaClient.js';
 import { GlpiRequestError } from '../../errors/GlpiRequestError.js';
 import { logger } from '../../infra/logger/logger.js';
 import type { ConversationRepository } from '../../repositories/contracts/ConversationRepository.js';
+import type { InactivityTrackingRepository } from '../../repositories/contracts/InactivityTrackingRepository.js';
 import type { MessageRepository } from '../../repositories/contracts/MessageRepository.js';
 import type { AuditService } from './AuditService.js';
 import { createCorrelationId } from './correlationId.js';
+import type { MessageConfigurationService } from './MessageConfigurationService.js';
 
 export interface OutboundMessageRequestBody {
   ticket_id: number;
   conversation_id: string;
   text: string;
-  message_type: 'text';
+  message_type: 'text' | 'document' | 'image' | 'interactive_buttons' | 'interactive_list' | 'template';
   glpi_user_id: number;
   idempotency_key?: string;
+  template_name?: string;
+  language?: string;
+  buttons?: Array<{ id: string; title: string }>;
+  list_options?: Array<{ id: string; title: string; description?: string }>;
+  media?: {
+    filename: string;
+    mime_type: string;
+    content_base64: string;
+    document_id?: number;
+  };
 }
 
 export interface SolutionApprovalNotificationRequestBody {
@@ -44,7 +56,13 @@ export type OutboundFailureBody = {
   meta_error?: MetaErrorDetail;
 };
 
-export type OutboundResponseBody = OutboundSuccessBody | OutboundFailureBody;
+export type OutboundIgnoredBody = {
+  status: 'ignored';
+  error_code: string;
+  message: string;
+};
+
+export type OutboundResponseBody = OutboundSuccessBody | OutboundFailureBody | OutboundIgnoredBody;
 
 export interface OutboundSendResult {
   httpStatus: number;
@@ -117,7 +135,7 @@ function sanitizeSolutionContent(content: string | undefined, limit = 1200): str
 function buildSolutionNotificationText(ticketId: number, solutionContent?: string): string {
   const sanitizedSolution = sanitizeSolutionContent(solutionContent);
   if (sanitizedSolution.length === 0) {
-    return `Seu chamado #${ticketId} foi solucionado. Como deseja prosseguir?`;
+    return `Seu chamado #${ticketId} foi solucionado. Como você avalia este atendimento?`;
   }
 
   return [
@@ -126,12 +144,41 @@ function buildSolutionNotificationText(ticketId: number, solutionContent?: strin
     'Solução:',
     sanitizedSolution,
     '',
-    'Como deseja prosseguir?',
+    'Como você avalia este atendimento?',
   ].join('\n');
+}
+
+function applyMessageTemplate(text: string, values: Record<string, string | number | null | undefined>): string {
+  return text.replace(/\{([a-zA-Z0-9_]+)\}|#\{([a-zA-Z0-9_]+)\}/g, (match, keyA: string, keyB: string) => {
+    const key = keyA || keyB;
+    const value = values[key];
+
+    return value === null || value === undefined ? match : String(value);
+  });
+}
+
+const OUTBOUND_MEDIA_MIME_ALLOWLIST = new Set([
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+]);
+const INACTIVITY_AUTOCLOSE_REASON = 'Encerrado por falta de retorno do usuário';
+
+function normalizeMimeType(value: string | undefined): string {
+  return (value ?? '').split(';', 1)[0]?.trim().toLowerCase() ?? '';
+}
+
+function fallbackAttachmentText(): string {
+  return 'Não consegui enviar o anexo pelo WhatsApp. Acesse o GLPI para visualizar o arquivo.';
 }
 
 function previewText(text: string, limit = 500): string {
   return text.length > limit ? `${text.slice(0, limit).trimEnd()}...` : text;
+}
+
+function isInactivityAutocloseContent(text: string | undefined): boolean {
+  return Boolean(text?.includes(INACTIVITY_AUTOCLOSE_REASON));
 }
 
 export class OutboundMessageService {
@@ -142,6 +189,8 @@ export class OutboundMessageService {
     private readonly outboundSendMode: 'mock' | 'real',
     private readonly metaPhoneNumberId: string,
     private readonly auditService: AuditService | null = null,
+    private readonly inactivityTrackingRepository: InactivityTrackingRepository | null = null,
+    private readonly messageConfigurationService: MessageConfigurationService | null = null,
   ) {}
 
   public async send(body: OutboundMessageRequestBody, options: OutboundSendOptions = {}): Promise<OutboundSendResult> {
@@ -177,6 +226,45 @@ export class OutboundMessageService {
         idempotency_key: normalizedIdempotency,
       },
     });
+
+    if (isInactivityAutocloseContent(body.text) && normalizedIdempotency?.startsWith('notify_followup')) {
+      logger.info(
+        {
+          ticket_id: body.ticket_id,
+          conversation_id: body.conversation_id,
+          correlation_id: correlationId,
+          event_type: 'MESSAGE_IGNORED',
+          status: 'ignored',
+          error_code: 'INACTIVITY_AUTOCLOSE_FOLLOWUP_SUPPRESSED',
+          idempotency_key: normalizedIdempotency,
+        },
+        '[integration-service][outbound][IGNORED_INACTIVITY_AUTOCLOSE_FOLLOWUP]',
+      );
+      this.recordAudit({
+        correlationId,
+        ticketId: body.ticket_id,
+        conversationId: body.conversation_id,
+        direction: 'outbound',
+        eventType: 'MESSAGE_IGNORED',
+        status: 'ignored',
+        severity: 'info',
+        source: 'OutboundMessageService',
+        errorMessage: 'INACTIVITY_AUTOCLOSE_FOLLOWUP_SUPPRESSED',
+        payload: {
+          idempotency_key: normalizedIdempotency,
+          reason: 'inactivity_autoclose_followup_already_notified',
+        },
+      });
+
+      return {
+        httpStatus: 200,
+        body: {
+          status: 'ignored',
+          error_code: 'INACTIVITY_AUTOCLOSE_FOLLOWUP_SUPPRESSED',
+          message: 'Inactivity autoclose follow-up notification suppressed because the autoclose notice was already sent.',
+        },
+      };
+    }
 
     if (normalizedIdempotency !== null) {
       const existing = await this.messageRepository.findByIdempotencyKey(normalizedIdempotency);
@@ -259,35 +347,40 @@ export class OutboundMessageService {
     }
 
     if (conversation.status === 'closed') {
-      logger.error(
+      logger.warn(
         {
           ticket_id: body.ticket_id,
           conversation_id: body.conversation_id,
           correlation_id: correlationId,
-          event_type: 'MESSAGE_FAILED',
-          status: 'failed',
+          event_type: 'MESSAGE_IGNORED',
+          status: 'ignored',
           error_code: 'CONVERSATION_CLOSED',
         },
-        '[integration-service][outbound][ERROR]',
+        '[integration-service][outbound][IGNORED_CLOSED_CONVERSATION]',
       );
       this.recordAudit({
         correlationId,
         ticketId: body.ticket_id,
         conversationId: body.conversation_id,
         direction: 'outbound',
-        eventType: 'MESSAGE_FAILED',
-        status: 'failed',
-        severity: 'warning',
+        eventType: 'MESSAGE_IGNORED',
+        status: 'ignored',
+        severity: 'info',
         source: 'OutboundMessageService',
         errorMessage: 'CONVERSATION_CLOSED',
+        payload: {
+          error_code: 'CONVERSATION_CLOSED',
+          message_type: body.message_type,
+          reason: 'closed_conversation_guard',
+        },
       });
 
       return {
-        httpStatus: 409,
+        httpStatus: 200,
         body: {
-          status: 'failed',
+          status: 'ignored',
           error_code: 'CONVERSATION_CLOSED',
-          message: 'Cannot send outbound messages to a closed conversation.',
+          message: 'Outbound message ignored because the conversation is closed.',
         },
       };
     }
@@ -295,6 +388,18 @@ export class OutboundMessageService {
     const recipientPhone = conversation.phoneE164;
     const senderPhone = `whatsapp:${this.metaPhoneNumberId}`;
     const toForMeta = digitsOnlyForMeta(recipientPhone);
+
+    if (body.message_type === 'document' || body.message_type === 'image') {
+      return this.sendOutboundMedia({
+        body: body as OutboundMessageRequestBody & { message_type: 'document' | 'image' },
+        conversationId: conversation.id,
+        senderPhone,
+        recipientPhone,
+        toForMeta,
+        normalizedIdempotency,
+        correlationId,
+      });
+    }
 
     let messageId: string;
     let metaResponse: unknown;
@@ -320,10 +425,7 @@ export class OutboundMessageService {
       );
     } else {
       try {
-        metaResponse = await this.metaClient.sendTextMessage({
-          to: toForMeta,
-          body: body.text,
-        });
+        metaResponse = await this.sendConfiguredMetaMessage(body, toForMeta);
         messageId = extractMetaMessageId(metaResponse);
       } catch (error: unknown) {
         const httpStatus  = error instanceof GlpiRequestError ? error.statusCode   : undefined;
@@ -387,6 +489,10 @@ export class OutboundMessageService {
       request: {
         text: body.text,
         message_type: body.message_type,
+        template_name: body.message_type === 'template' ? body.template_name : undefined,
+        language: body.message_type === 'template' ? body.language : undefined,
+        buttons: body.message_type === 'interactive_buttons' ? body.buttons : undefined,
+        list_options: body.message_type === 'interactive_list' ? body.list_options : undefined,
         recipient_phone: recipientPhone,
         to_for_meta: toForMeta,
       },
@@ -407,6 +513,11 @@ export class OutboundMessageService {
     });
 
     await this.conversationRepository.touch(conversation.id, new Date());
+    await this.trackInactivityOutbound({
+      conversationId: conversation.id,
+      ticketId: body.ticket_id,
+      idempotencyKey: normalizedIdempotency,
+    });
 
     logger.info(
       {
@@ -473,6 +584,32 @@ export class OutboundMessageService {
       '[integration-service][notification][solution][REQUEST]',
     );
 
+    if (isInactivityAutocloseContent(body.solution_content)) {
+      this.recordAudit({
+        correlationId,
+        ticketId: body.ticket_id,
+        conversationId: body.conversation_id,
+        direction: 'outbound',
+        eventType: 'TICKET_CLOSED',
+        status: 'ignored',
+        severity: 'info',
+        source: 'OutboundMessageService',
+        errorMessage: 'INACTIVITY_AUTOCLOSE_SOLUTION_SUPPRESSED',
+        payload: {
+          idempotency_key: idempotencyKey,
+          reason: 'inactivity_autoclose_does_not_send_csat',
+        },
+      });
+      return {
+        httpStatus: 200,
+        body: {
+          status: 'ignored',
+          error_code: 'INACTIVITY_AUTOCLOSE_SOLUTION_SUPPRESSED',
+          message: 'Inactivity autoclose solution notification suppressed.',
+        },
+      };
+    }
+
     const existing = await this.messageRepository.findByIdempotencyKey(idempotencyKey);
     if (existing !== null) {
       this.recordAudit({
@@ -528,22 +665,47 @@ export class OutboundMessageService {
     const recipientPhone = conversation.phoneE164;
     const senderPhone = `whatsapp:${this.metaPhoneNumberId}`;
     const toForMeta = digitsOnlyForMeta(recipientPhone);
-    const interactiveText = buildSolutionNotificationText(body.ticket_id, body.solution_content);
-    const fallbackText = interactiveText;
-    const buttons = [
-      {
-        id: `solution_approve:${body.ticket_id}:${body.conversation_id}`,
-        title: 'Aprovar',
-      },
-      {
-        id: `solution_reopen:${body.ticket_id}:${body.conversation_id}`,
-        title: 'Reabrir',
-      },
-    ];
+    const configuredNotification = await this.buildSolutionApprovalMessage({
+      ticketId: body.ticket_id,
+      conversationId: body.conversation_id,
+      solutionContent: body.solution_content,
+      windowOpen: Date.now() - conversation.lastMessageAt.getTime() < 24 * 60 * 60 * 1000,
+    });
+    if (!configuredNotification.shouldSend) {
+      this.recordAudit({
+        correlationId,
+        ticketId: body.ticket_id,
+        conversationId: body.conversation_id,
+        direction: 'outbound',
+        eventType: 'TICKET_CLOSED',
+        status: 'ignored',
+        severity: 'warning',
+        source: 'OutboundMessageService',
+        errorMessage: configuredNotification.reason ?? 'SOLUTION_NOTIFICATION_NOT_SENT_BY_RULE',
+        payload: {
+          idempotency_key: idempotencyKey,
+          event_key: configuredNotification.eventKey,
+          reason: configuredNotification.reason,
+        },
+      });
+
+      return {
+        httpStatus: 200,
+        body: {
+          status: 'ignored',
+          error_code: configuredNotification.reason ?? 'SOLUTION_NOTIFICATION_NOT_SENT_BY_RULE',
+          message: 'Solution notification was not sent by configured WhatsApp window/template rule.',
+        },
+      };
+    }
+
+    const interactiveText = configuredNotification.text;
+    const fallbackText = configuredNotification.text;
+    const buttons = configuredNotification.buttons;
 
     let messageId: string;
     let metaResponse: unknown;
-    let sendMode: 'interactive' | 'text_fallback' | 'mock' = 'interactive';
+    let sendMode: 'interactive' | 'text_fallback' | 'template' | 'mock' = configuredNotification.sendType === 'template' ? 'template' : 'interactive';
 
     if (this.outboundSendMode === 'mock') {
       messageId = `mock.wamid.${randomUUID()}`;
@@ -555,9 +717,46 @@ export class OutboundMessageService {
       sendMode = 'mock';
     } else {
       try {
-        metaResponse = await this.metaClient.sendReplyButtons(toForMeta, interactiveText, buttons);
+        if (configuredNotification.sendType === 'template' && configuredNotification.templateName) {
+          metaResponse = await this.metaClient.sendTemplateMessage({
+            to: toForMeta,
+            templateName: configuredNotification.templateName,
+            language: configuredNotification.language,
+          });
+        } else {
+          metaResponse = await this.metaClient.sendReplyButtons(toForMeta, interactiveText, buttons);
+        }
         messageId = extractMetaMessageId(metaResponse);
       } catch (error: unknown) {
+        if (configuredNotification.sendType === 'template') {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          this.recordAudit({
+            correlationId,
+            ticketId: body.ticket_id,
+            conversationId: body.conversation_id,
+            direction: 'outbound',
+            eventType: 'TICKET_CLOSED',
+            status: 'failed',
+            severity: 'error',
+            source: 'OutboundMessageService',
+            errorMessage,
+            payload: {
+              event_key: configuredNotification.eventKey,
+              template_name: configuredNotification.templateName,
+              reason: 'template_send_failed_no_free_text_fallback',
+            },
+          });
+
+          return {
+            httpStatus: 502,
+            body: {
+              status: 'failed',
+              error_code: 'META_TEMPLATE_SEND_FAILED',
+              message: errorMessage,
+            },
+          };
+        }
+
         logger.warn(
           {
             ticket_id: body.ticket_id,
@@ -569,10 +768,7 @@ export class OutboundMessageService {
           },
           '[integration-service][notification][solution][INTERACTIVE_FALLBACK_TEXT]',
         );
-        metaResponse = await this.metaClient.sendTextMessage({
-          to: toForMeta,
-          body: fallbackText,
-        });
+        metaResponse = await this.metaClient.sendTextMessage({ to: toForMeta, body: fallbackText });
         messageId = extractMetaMessageId(metaResponse);
         sendMode = 'text_fallback';
       }
@@ -588,6 +784,7 @@ export class OutboundMessageService {
       rawPayload: {
         outbound_send_mode: this.outboundSendMode,
         notification_type: 'ticket_solved_solution_buttons',
+        csat_enabled: true,
         glpi_user_id: body.glpi_user_id,
         ticket_id: body.ticket_id,
         solution_id: body.solution_id ?? null,
@@ -635,6 +832,7 @@ export class OutboundMessageService {
       source: 'OutboundMessageService',
       payload: {
         notification_type: 'ticket_solved_solution_buttons',
+        csat_enabled: true,
         postgres_message_row_id: inserted.id,
         send_mode: sendMode,
       },
@@ -652,7 +850,391 @@ export class OutboundMessageService {
     };
   }
 
+  private async sendConfiguredMetaMessage(body: OutboundMessageRequestBody, toForMeta: string): Promise<unknown> {
+    if (body.message_type === 'interactive_buttons') {
+      const buttons = Array.isArray(body.buttons) ? body.buttons : [];
+      if (buttons.length < 1 || buttons.length > 3) {
+        throw new Error('INTERACTIVE_BUTTONS_REQUIRE_1_TO_3_OPTIONS');
+      }
+
+      return this.metaClient.sendReplyButtons(toForMeta, body.text, buttons);
+    }
+
+    if (body.message_type === 'interactive_list') {
+      const options = Array.isArray(body.list_options) ? body.list_options : [];
+      if (options.length < 1 || options.length > 10) {
+        throw new Error('INTERACTIVE_LIST_REQUIRES_1_TO_10_OPTIONS');
+      }
+
+      return this.metaClient.sendListMessage(toForMeta, body.text, options);
+    }
+
+    if (body.message_type === 'template') {
+      const templateName = body.template_name?.trim() ?? '';
+      if (templateName === '') {
+        throw new Error('TEMPLATE_NAME_REQUIRED');
+      }
+
+      return this.metaClient.sendTemplateMessage({
+        to: toForMeta,
+        templateName,
+        language: body.language?.trim() || 'pt_BR',
+      });
+    }
+
+    return this.metaClient.sendTextMessage({
+      to: toForMeta,
+      body: body.text,
+    });
+  }
+
+  private async buildSolutionApprovalMessage(input: {
+    ticketId: number;
+    conversationId: string;
+    solutionContent?: string;
+    windowOpen: boolean;
+  }): Promise<{
+    eventKey: string;
+    text: string;
+    buttons: Array<{ id: string; title: string }>;
+    shouldSend: boolean;
+    reason: string | null;
+    sendType: 'interactive_buttons' | 'template';
+    templateName: string | null;
+    language: string;
+  }> {
+    const defaultButtons = [
+      { id: `solution_approve:${input.ticketId}:${input.conversationId}`, title: 'Aprovar' },
+      { id: `solution_reopen:${input.ticketId}:${input.conversationId}`, title: 'Reabrir' },
+    ];
+    const fallbackText = buildSolutionNotificationText(input.ticketId, input.solutionContent)
+      .replace('Como você avalia este atendimento?', 'Você aprova a solução?');
+
+    if (this.messageConfigurationService === null) {
+      return {
+        eventKey: 'solution_approve_reopen_prompt',
+        text: fallbackText,
+        buttons: defaultButtons,
+        shouldSend: true,
+        reason: null,
+        sendType: 'interactive_buttons',
+        templateName: null,
+        language: 'pt_BR',
+      };
+    }
+
+    const plan = await this.messageConfigurationService.resolveSendPlan('solution_approve_reopen_prompt', {
+      windowOpen: input.windowOpen,
+      allowTemplateSend: true,
+    });
+    const configuredTitles = plan.buttons
+      .map((button) => button.title.trim())
+      .filter((title) => title !== '')
+      .slice(0, 2);
+    const buttons = defaultButtons.map((button, index) => ({
+      ...button,
+      title: configuredTitles[index] ?? button.title,
+    }));
+    const sanitizedSolution = sanitizeSolutionContent(input.solutionContent);
+    let text = applyMessageTemplate(plan.text.trim() !== '' ? plan.text : fallbackText, {
+      ticket_id: input.ticketId,
+      ticketId: input.ticketId,
+      solution: sanitizedSolution,
+    });
+    if (sanitizedSolution !== '' && !text.includes(sanitizedSolution) && !text.includes('{solution}')) {
+      text = [text, '', 'Solução:', sanitizedSolution].join('\n');
+    }
+
+    return {
+      eventKey: plan.eventKey,
+      text,
+      buttons,
+      shouldSend: plan.shouldSend,
+      reason: plan.reason,
+      sendType: plan.sendType === 'template' ? 'template' : 'interactive_buttons',
+      templateName: plan.templateName,
+      language: plan.language || 'pt_BR',
+    };
+  }
+
+  private async sendOutboundMedia(input: {
+    body: OutboundMessageRequestBody & { message_type: 'document' | 'image' };
+    conversationId: string;
+    senderPhone: string;
+    recipientPhone: string;
+    toForMeta: string;
+    normalizedIdempotency: string | null;
+    correlationId: string;
+  }): Promise<OutboundSendResult> {
+    const { body, conversationId, senderPhone, recipientPhone, toForMeta, normalizedIdempotency, correlationId } = input;
+    const media = body.media;
+    const mimeType = normalizeMimeType(media?.mime_type);
+
+    if (!media || !OUTBOUND_MEDIA_MIME_ALLOWLIST.has(mimeType)) {
+      logger.warn(
+        {
+          ticket_id: body.ticket_id,
+          conversation_id: conversationId,
+          correlation_id: correlationId,
+          event_type: 'OUTBOUND_MEDIA_UNSUPPORTED',
+          status: 'failed',
+          message_type: body.message_type,
+          mime_type: mimeType || null,
+        },
+        '[integration-service][outbound][OUTBOUND_MEDIA_UNSUPPORTED]',
+      );
+      return {
+        httpStatus: 400,
+        body: {
+          status: 'failed',
+          error_code: 'UNSUPPORTED_MEDIA_TYPE',
+          message: 'Unsupported outbound media type.',
+        },
+      };
+    }
+
+    let buffer: Buffer;
+    try {
+      buffer = Buffer.from(media.content_base64, 'base64');
+    } catch {
+      return {
+        httpStatus: 400,
+        body: {
+          status: 'failed',
+          error_code: 'INVALID_MEDIA_CONTENT',
+          message: 'Invalid outbound media content.',
+        },
+      };
+    }
+
+    if (buffer.byteLength === 0 || buffer.byteLength > 15_728_640) {
+      logger.warn(
+        {
+          ticket_id: body.ticket_id,
+          conversation_id: conversationId,
+          correlation_id: correlationId,
+          event_type: 'OUTBOUND_MEDIA_TOO_LARGE',
+          status: 'failed',
+          message_type: body.message_type,
+          mime_type: mimeType,
+          filename: media.filename,
+          size: buffer.byteLength,
+        },
+        '[integration-service][outbound][OUTBOUND_MEDIA_TOO_LARGE]',
+      );
+      return {
+        httpStatus: 400,
+        body: {
+          status: 'failed',
+          error_code: 'MEDIA_SIZE_INVALID',
+          message: 'Outbound media is empty or too large.',
+        },
+      };
+    }
+
+    let messageId: string;
+    let metaResponse: unknown;
+    let sendMode: 'media' | 'text_fallback' | 'mock' = 'media';
+    const safeFilename = media.filename.replace(/[^\w.\- ()\[\]]+/g, '_').slice(0, 180) || 'document.pdf';
+
+    logger.info(
+      {
+        ticket_id: body.ticket_id,
+        conversation_id: conversationId,
+        correlation_id: correlationId,
+        event_type: 'OUTBOUND_MEDIA_PREPARED',
+        status: 'pending',
+        message_type: body.message_type,
+        mime_type: mimeType,
+        filename: safeFilename,
+        document_id: media.document_id ?? null,
+        size: buffer.byteLength,
+      },
+      '[integration-service][outbound][OUTBOUND_MEDIA_PREPARED]',
+    );
+
+    if (this.outboundSendMode === 'mock') {
+      messageId = `mock.wamid.${randomUUID()}`;
+      metaResponse = {
+        mode: 'mock',
+        skipped_meta_api: true,
+        message_type: body.message_type,
+        filename: safeFilename,
+      };
+      sendMode = 'mock';
+    } else {
+      try {
+        logger.info(
+          {
+            ticket_id: body.ticket_id,
+            conversation_id: conversationId,
+            correlation_id: correlationId,
+            event_type: 'OUTBOUND_MEDIA_UPLOAD_STARTED',
+            status: 'pending',
+            message_type: body.message_type,
+            mime_type: mimeType,
+            filename: safeFilename,
+            document_id: media.document_id ?? null,
+          },
+          '[integration-service][outbound][OUTBOUND_MEDIA_UPLOAD_STARTED]',
+        );
+        const uploadedMediaId = await this.metaClient.uploadMedia({
+          buffer,
+          mimeType,
+          filename: safeFilename,
+        });
+        metaResponse = body.message_type === 'image'
+          ? await this.metaClient.sendImageMessage({
+            to: toForMeta,
+            mediaId: uploadedMediaId,
+            caption: body.text,
+          })
+          : await this.metaClient.sendDocumentMessage({
+            to: toForMeta,
+            mediaId: uploadedMediaId,
+            filename: safeFilename,
+            caption: body.text,
+          });
+        messageId = extractMetaMessageId(metaResponse);
+      } catch (error: unknown) {
+        logger.error(
+          {
+            ticket_id: body.ticket_id,
+            conversation_id: conversationId,
+            correlation_id: correlationId,
+            event_type: 'OUTBOUND_MEDIA_UPLOAD_FAILED',
+            status: 'failed',
+            message_type: body.message_type,
+            mime_type: mimeType,
+            filename: safeFilename,
+            document_id: media.document_id ?? null,
+            error_message: error instanceof Error ? error.message : String(error),
+          },
+          '[integration-service][outbound][OUTBOUND_MEDIA_UPLOAD_FAILED]',
+        );
+        metaResponse = await this.metaClient.sendTextMessage({
+          to: toForMeta,
+          body: fallbackAttachmentText(),
+        });
+        messageId = extractMetaMessageId(metaResponse);
+        sendMode = 'text_fallback';
+      }
+    }
+
+    const rawPayload = {
+      outbound_send_mode: this.outboundSendMode,
+      glpi_user_id: body.glpi_user_id,
+      ticket_id: body.ticket_id,
+      request: {
+        text: body.text,
+        message_type: body.message_type,
+        recipient_phone: recipientPhone,
+        to_for_meta: toForMeta,
+        media: {
+          filename: safeFilename,
+          mime_type: mimeType,
+          size: buffer.byteLength,
+          document_id: media.document_id ?? null,
+        },
+      },
+      response: metaResponse,
+      send_mode: sendMode,
+    };
+
+    const inserted = await this.messageRepository.insertOutbound({
+      messageId,
+      conversationId,
+      senderPhone,
+      recipientPhone,
+      messageType: sendMode === 'text_fallback' ? 'text' : body.message_type,
+      messageText: sendMode === 'text_fallback' ? fallbackAttachmentText() : body.text,
+      rawPayload,
+      mediaInfo: sendMode === 'text_fallback' ? null : {
+        direction: 'outbound',
+        message_type: body.message_type,
+        filename: safeFilename,
+        mime_type: mimeType,
+        size: buffer.byteLength,
+        document_id: media.document_id ?? null,
+        send_mode: sendMode,
+      },
+      processingStatus: 'sent',
+      glpiSyncStatus: 'synced',
+      idempotencyKey: normalizedIdempotency,
+    });
+
+    await this.conversationRepository.touch(conversationId, new Date());
+    await this.trackInactivityOutbound({
+      conversationId,
+      ticketId: body.ticket_id,
+      idempotencyKey: normalizedIdempotency,
+    });
+
+    logger.info(
+      {
+        ticket_id: body.ticket_id,
+        conversation_id: conversationId,
+        message_id: inserted.messageId,
+        correlation_id: correlationId,
+        event_type: 'MESSAGE_SENT',
+        status: 'success',
+        postgres_message_row_id: inserted.id,
+        idempotency_key: normalizedIdempotency,
+        outbound_send_mode: this.outboundSendMode,
+        send_mode: sendMode,
+        message_type: body.message_type,
+      },
+      '[integration-service][outbound][SEND]',
+    );
+    logger.info(
+      {
+        ticket_id: body.ticket_id,
+        conversation_id: conversationId,
+        message_id: inserted.messageId,
+        correlation_id: correlationId,
+        event_type: sendMode === 'text_fallback' ? 'OUTBOUND_MEDIA_FALLBACK_SENT' : 'OUTBOUND_MEDIA_SENT',
+        status: 'success',
+        postgres_message_row_id: inserted.id,
+        send_mode: sendMode,
+        message_type: body.message_type,
+        mime_type: mimeType,
+        filename: safeFilename,
+        document_id: media.document_id ?? null,
+      },
+      sendMode === 'text_fallback'
+        ? '[integration-service][outbound][OUTBOUND_MEDIA_FALLBACK_SENT]'
+        : '[integration-service][outbound][OUTBOUND_MEDIA_SENT]',
+    );
+
+    return {
+      httpStatus: 201,
+      body: {
+        status: 'sent',
+        message_id: inserted.messageId,
+        conversation_id: conversationId,
+        postgres_message_row_id: inserted.id,
+        idempotent: false,
+      },
+    };
+  }
+
   private recordAudit(input: Parameters<AuditService['recordAuditEventFireAndForget']>[0]): void {
     this.auditService?.recordAuditEventFireAndForget(input);
+  }
+
+  private async trackInactivityOutbound(input: {
+    conversationId: string;
+    ticketId: number;
+    idempotencyKey: string | null;
+  }): Promise<void> {
+    if (!this.inactivityTrackingRepository || input.idempotencyKey?.startsWith('inactivity:')) {
+      return;
+    }
+
+    await this.inactivityTrackingRepository.trackOutboundActivity({
+      conversationId: input.conversationId,
+      ticketId: input.ticketId,
+      occurredAt: new Date(),
+    });
   }
 }

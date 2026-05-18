@@ -50,6 +50,7 @@ describe('GlpiClient', () => {
       content: 'Body',
       requesterPhone: '+5511999999999',
       requesterName: 'User',
+      entitiesId: 42,
     });
 
     expect(ticketId).toBe(123);
@@ -76,6 +77,292 @@ describe('GlpiClient', () => {
         }),
       }),
     );
+  });
+
+  it('rejects ticket creation without a valid entity', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const httpClient = {
+      request: vi.fn(),
+    };
+
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    await expect(client.createTicket({
+      title: 'No entity',
+      content: 'Body',
+      requesterPhone: '+5511999999999',
+      requesterName: 'User',
+      entitiesId: 0,
+    })).rejects.toThrow('GLPI_TICKET_ENTITY_REQUIRED');
+    expect(httpClient.request).not.toHaveBeenCalled();
+  });
+
+  it('wraps initSession aborts as a controlled GLPI timeout error', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const { GlpiRequestError } = await import('../src/errors/GlpiRequestError.js');
+    const abortError = new Error('This operation was aborted.') as Error & { name: string; code: number };
+    abortError.name = 'AbortError';
+    abortError.code = 20;
+    const httpClient = {
+      request: vi.fn().mockRejectedValue(abortError),
+    };
+
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    await expect(client.createTicket({
+      title: 'Timeout',
+      content: 'Body',
+      requesterPhone: '+5511999999999',
+      requesterName: 'User',
+      entitiesId: 42,
+    })).rejects.toMatchObject({
+      name: 'GlpiRequestError',
+      message: 'GLPI initSession timed out.',
+      stage: 'glpi_init_session',
+      requestUrl: 'https://glpi.example.local/apirest.php/initSession/',
+      responseBody: expect.objectContaining({
+        error_type: 'timeout',
+        error_name: 'AbortError',
+        error_message: 'This operation was aborted.',
+        error_code: 20,
+        timeout_ms: 5000,
+      }),
+    } satisfies Partial<InstanceType<typeof GlpiRequestError>>);
+  });
+
+  it('wraps ticket create aborts with the ticket-create stage and runtime timeout', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const abortError = new Error('This operation was aborted.') as Error & { name: string; code: number };
+    abortError.name = 'AbortError';
+    abortError.code = 20;
+    const responses = [
+      new Response(JSON.stringify({ session_token: 'session-123' }), { status: 200 }),
+    ];
+    const httpClient = {
+      request: vi.fn()
+        .mockImplementationOnce(async () => responses.shift())
+        .mockRejectedValueOnce(abortError),
+    };
+
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    await expect(client.createTicket({
+      title: 'Timeout',
+      content: 'Body',
+      requesterPhone: '+5511999999999',
+      requesterName: 'User',
+      entitiesId: 42,
+    }, { timeoutMs: 45_000 })).rejects.toMatchObject({
+      name: 'GlpiRequestError',
+      message: 'GLPI request timed out.',
+      stage: 'glpi_ticket_create',
+      requestUrl: 'https://glpi.example.local/apirest.php/Ticket',
+      responseBody: expect.objectContaining({
+        error_type: 'timeout',
+        error_name: 'AbortError',
+        error_message: 'This operation was aborted.',
+        error_code: 20,
+        timeout_ms: 45_000,
+      }),
+    });
+    expect(httpClient.request).toHaveBeenNthCalledWith(
+      2,
+      'https://glpi.example.local/apirest.php/Ticket',
+      expect.objectContaining({
+        timeoutMs: 45_000,
+      }),
+    );
+  });
+
+  it('maps entitiesId > 0 to GLPI entities_id on ticket create', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const responses = [
+      new Response(JSON.stringify({ session_token: 'session-xyz' }), { status: 200 }),
+      new Response(JSON.stringify({ id: 555 }), { status: 200 }),
+    ];
+
+    const httpClient = {
+      request: vi.fn().mockImplementation(async () => responses.shift()),
+    };
+
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    await client.createTicket({
+      title: 'Ent',
+      content: 'Body',
+      requesterPhone: '+5511999999999',
+      requesterName: null,
+      entitiesId: 42,
+    });
+
+    const ticketCall = (httpClient.request as ReturnType<typeof vi.fn>).mock.calls[1];
+    const body = JSON.parse(String(ticketCall[1].body)) as {
+      input: Array<{ entities_id?: number }>;
+    };
+
+    expect(body.input[0]?.entities_id).toBe(42);
+  });
+
+  it('adds linked GLPI requester user to ticket create payload when available', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const responses = [
+      new Response(JSON.stringify({ session_token: 'session-xyz' }), { status: 200 }),
+      new Response(JSON.stringify({ id: 555 }), { status: 200 }),
+    ];
+
+    const httpClient = {
+      request: vi.fn().mockImplementation(async () => responses.shift()),
+    };
+
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    await client.createTicket({
+      title: 'Ent',
+      content: 'Body',
+      requesterPhone: '+5511999999999',
+      requesterName: 'Maria',
+      entitiesId: 42,
+      requesterUserId: 77,
+    });
+
+    const ticketCall = (httpClient.request as ReturnType<typeof vi.fn>).mock.calls[1];
+    const body = JSON.parse(String(ticketCall[1].body)) as {
+      input: Array<{ _users_id_requester?: number }>;
+    };
+
+    expect(body.input[0]?._users_id_requester).toBe(77);
+  });
+
+  it('searches GLPI users by normalized email without creating a local fallback match', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const responses = [
+      new Response(JSON.stringify({ session_token: 'session-123' }), { status: 200 }),
+      new Response(JSON.stringify({
+        data: [
+          {
+            2: 44,
+            1: 'Maria Silva',
+            5: 'maria@example.com',
+            8: 1,
+          },
+        ],
+      }), { status: 200 }),
+    ];
+
+    const httpClient = {
+      request: vi.fn().mockImplementation(async () => responses.shift()),
+    };
+
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    const users = await client.findUsersByEmail(' MARIA@EXAMPLE.COM ');
+
+    expect(users).toEqual([
+      { id: 44, name: 'Maria Silva', email: 'maria@example.com', isActive: true },
+    ]);
+    const searchCall = (httpClient.request as ReturnType<typeof vi.fn>).mock.calls[1];
+    expect(searchCall[0]).toContain('/search/User?');
+    expect(decodeURIComponent(String(searchCall[0]))).toContain('criteria[0][field]=5');
+    expect(decodeURIComponent(String(searchCall[0]))).toContain('criteria[0][value]=maria@example.com');
+  });
+
+  it('finds an entity-selection ticket by correlation marker without exposing Meta or plugin tokens', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const responses = [
+      new Response(JSON.stringify({ session_token: 'session-123' }), { status: 200 }),
+      new Response(JSON.stringify({
+        data: [
+          {
+            2: 2112319301,
+            1: 'Atendimento WhatsApp',
+            12: 1,
+            80: 119,
+          },
+        ],
+      }), { status: 200 }),
+    ];
+
+    const httpClient = {
+      request: vi.fn().mockImplementation(async () => responses.shift()),
+    };
+
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+    const ticket = await client.findTicketForEntitySelection({
+      correlationMarker: '[IntegraGLPI correlation_id: entity_selection:conv-1:119]',
+      requesterPhone: '+5511999999999',
+      entitiesId: 119,
+    });
+
+    expect(ticket).toEqual({
+      id: 2112319301,
+      status: 1,
+      entitiesId: 119,
+    });
+    const searchCall = (httpClient.request as ReturnType<typeof vi.fn>).mock.calls[1];
+    expect(searchCall[0]).toContain('/search/Ticket?');
+    expect(decodeURIComponent(String(searchCall[0]))).toContain('criteria[0][field]=21');
+    const decodedSearchUrl = decodeURIComponent(String(searchCall[0])).replace(/\+/g, ' ');
+    expect(decodedSearchUrl).toContain(
+      'criteria[0][value]=[IntegraGLPI correlation_id: entity_selection:conv-1:119]',
+    );
+  });
+
+  it('creates a restricted GLPI requester user without password, admin profile or active login', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const responses = [
+      new Response(JSON.stringify({ session_token: 'session-123' }), { status: 200 }),
+      new Response(JSON.stringify({ id: 77 }), { status: 200 }),
+    ];
+
+    const httpClient = {
+      request: vi.fn().mockImplementation(async () => responses.shift()),
+    };
+
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    const userId = await client.createRestrictedRequesterUser({
+      email: ' MARIA@EXAMPLE.COM ',
+      requesterName: 'Maria Silva',
+      companyName: 'Etica',
+      phoneE164: '+5541999999999',
+      entitiesId: 54,
+    });
+
+    expect(userId).toBe(77);
+    const createUserCall = (httpClient.request as ReturnType<typeof vi.fn>).mock.calls[1];
+    expect(createUserCall[0]).toBe('https://glpi.example.local/apirest.php/User');
+    const body = JSON.parse(String(createUserCall[1].body)) as {
+      input: Array<Record<string, unknown>>;
+    };
+
+    expect(body.input[0]).toMatchObject({
+      name: 'maria@example.com',
+      realname: 'Maria Silva',
+      firstname: '',
+      phone: '+5541999999999',
+      entities_id: 54,
+      is_active: 0,
+    });
+    expect(body.input[0]).not.toHaveProperty('password');
+    expect(body.input[0]).not.toHaveProperty('profiles_id');
+  });
+
+  it('blocks restricted GLPI user creation without a real entity', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const httpClient = {
+      request: vi.fn(),
+    };
+
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    await expect(client.createRestrictedRequesterUser({
+      email: 'maria@example.com',
+      requesterName: 'Maria Silva',
+      companyName: 'Etica',
+      phoneE164: '+5541999999999',
+      entitiesId: 0,
+    })).rejects.toThrow('GLPI_USER_ENTITY_REQUIRED');
+    expect(httpClient.request).not.toHaveBeenCalled();
   });
 
   it('creates a follow-up using the existing ticket path and Session-Token', async () => {
@@ -114,6 +401,103 @@ describe('GlpiClient', () => {
               content: 'Mensagem recebida via WhatsApp',
             },
           ],
+        }),
+      }),
+    );
+  });
+
+  it('uploads a GLPI document with the ticket entity in uploadManifest when provided', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const responses = [
+      new Response(JSON.stringify({ session_token: 'session-123' }), { status: 200 }),
+      new Response(JSON.stringify({ id: 3844 }), { status: 200 }),
+    ];
+
+    const httpClient = {
+      request: vi.fn().mockImplementation(async () => responses.shift()),
+    };
+
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    const documentId = await client.uploadDocument({
+      fileBuffer: Buffer.from('pdf'),
+      filename: 'contrato.pdf',
+      mimeType: 'application/pdf',
+      entitiesId: 54,
+    });
+
+    expect(documentId).toBe(3844);
+    const uploadCall = (httpClient.request as ReturnType<typeof vi.fn>).mock.calls[1];
+    const formData = uploadCall[1].body as FormData;
+    const manifest = JSON.parse(String(formData.get('uploadManifest'))) as {
+      input: { entities_id?: number; is_recursive?: number; name?: string };
+    };
+
+    expect(uploadCall[0]).toBe('https://glpi.example.local/apirest.php/Document');
+    expect(manifest.input).toMatchObject({
+      name: 'contrato.pdf',
+      entities_id: 54,
+      is_recursive: 0,
+    });
+  });
+
+  it('links a document to a ticket using Document_Item payload', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const responses = [
+      new Response(JSON.stringify({ session_token: 'session-123' }), { status: 200 }),
+      new Response(JSON.stringify({ id: 9001 }), { status: 200 }),
+    ];
+
+    const httpClient = {
+      request: vi.fn().mockImplementation(async () => responses.shift()),
+    };
+
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    await client.linkDocumentToTicket(3844, 2112319214);
+
+    expect(httpClient.request).toHaveBeenCalledTimes(2);
+    expect(httpClient.request).toHaveBeenNthCalledWith(
+      2,
+      'https://glpi.example.local/apirest.php/Document_Item',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          input: [{ documents_id: 3844, items_id: 2112319214, itemtype: 'Ticket' }],
+        }),
+      }),
+    );
+  });
+
+  it('retries document linking through the ticket sub-item endpoint when Document_Item is denied', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const responses = [
+      new Response(JSON.stringify({ session_token: 'session-123' }), { status: 200 }),
+      new Response(JSON.stringify(['ERROR_GLPI_ADD', [{ id: false, message: 'Você não tem permissão para executar essa ação.' }]]), { status: 400 }),
+      new Response(JSON.stringify({ id: 9002 }), { status: 200 }),
+    ];
+
+    const httpClient = {
+      request: vi.fn().mockImplementation(async () => responses.shift()),
+    };
+
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    await client.linkDocumentToTicket(3844, 2112319214);
+
+    expect(httpClient.request).toHaveBeenCalledTimes(3);
+    expect(httpClient.request).toHaveBeenNthCalledWith(
+      2,
+      'https://glpi.example.local/apirest.php/Document_Item',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(httpClient.request).toHaveBeenNthCalledWith(
+      3,
+      'https://glpi.example.local/apirest.php/Ticket/2112319214/Document_Item',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          input: [{ documents_id: 3844 }],
         }),
       }),
     );
@@ -170,6 +554,132 @@ describe('GlpiClient', () => {
         }),
         headers: expect.objectContaining({
           'Session-Token': 'session-123',
+        }),
+      }),
+    );
+  });
+
+  it('closes a ticket for inactivity by creating an ITILSolution and validating closed status', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const responses = [
+      new Response(JSON.stringify({ session_token: 'session-123' }), { status: 200 }),
+      new Response(JSON.stringify({ id: 2112319227, status: 2 }), { status: 200 }),
+      new Response(JSON.stringify({ id: 7001 }), { status: 200 }),
+      new Response(JSON.stringify({ id: 2112319227, status: 5 }), { status: 200 }),
+      new Response(JSON.stringify({ message: 'Updated' }), { status: 200 }),
+      new Response(JSON.stringify({ id: 2112319227, status: 6 }), { status: 200 }),
+    ];
+    const httpClient = {
+      request: vi.fn().mockImplementation(async () => responses.shift()),
+    };
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    await client.solveTicketByInactivity(2112319227, 'Encerrado por falta de retorno do usuário');
+
+    expect(httpClient.request).toHaveBeenCalledWith(
+      'https://glpi.example.local/apirest.php/Ticket/2112319227/ITILSolution',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          input: [{
+            items_id: 2112319227,
+            itemtype: 'Ticket',
+            content: 'Encerrado por falta de retorno do usuário',
+          }],
+        }),
+      }),
+    );
+    expect(httpClient.request).toHaveBeenCalledWith(
+      'https://glpi.example.local/apirest.php/Ticket/2112319227',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({
+          input: {
+            id: 2112319227,
+            status: 6,
+            _accepted: 1,
+          },
+        }),
+      }),
+    );
+  });
+
+  it('falls back to ticket status update before closing when inactivity solution does not solve the ticket', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const responses = [
+      new Response(JSON.stringify({ session_token: 'session-123' }), { status: 200 }),
+      new Response(JSON.stringify({ id: 2112319227, status: 2 }), { status: 200 }),
+      new Response(JSON.stringify({ id: 7001 }), { status: 200 }),
+      new Response(JSON.stringify({ id: 2112319227, status: 2 }), { status: 200 }),
+      new Response(JSON.stringify({ message: 'Updated' }), { status: 200 }),
+      new Response(JSON.stringify({ id: 2112319227, status: 5 }), { status: 200 }),
+      new Response(JSON.stringify({ message: 'Updated' }), { status: 200 }),
+      new Response(JSON.stringify({ id: 2112319227, status: 6 }), { status: 200 }),
+    ];
+    const httpClient = {
+      request: vi.fn().mockImplementation(async () => responses.shift()),
+    };
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    await client.solveTicketByInactivity(2112319227, 'Encerrado por falta de retorno do usuário');
+
+    expect(httpClient.request).toHaveBeenCalledWith(
+      'https://glpi.example.local/apirest.php/Ticket/2112319227',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({
+          input: {
+            id: 2112319227,
+            status: 5,
+            content: 'Encerrado por falta de retorno do usuário',
+          },
+        }),
+      }),
+    );
+    expect(httpClient.request).toHaveBeenCalledWith(
+      'https://glpi.example.local/apirest.php/Ticket/2112319227',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({
+          input: {
+            id: 2112319227,
+            status: 6,
+            _accepted: 1,
+          },
+        }),
+      }),
+    );
+  });
+
+  it('closes an already solved ticket for inactivity without creating another solution', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const responses = [
+      new Response(JSON.stringify({ session_token: 'session-123' }), { status: 200 }),
+      new Response(JSON.stringify({ id: 2112319227, status: 5 }), { status: 200 }),
+      new Response(JSON.stringify({ message: 'Updated' }), { status: 200 }),
+      new Response(JSON.stringify({ id: 2112319227, status: 6 }), { status: 200 }),
+    ];
+    const httpClient = {
+      request: vi.fn().mockImplementation(async () => responses.shift()),
+    };
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    await client.solveTicketByInactivity(2112319227, 'Encerrado por falta de retorno do usuário');
+
+    expect(httpClient.request).not.toHaveBeenCalledWith(
+      'https://glpi.example.local/apirest.php/Ticket/2112319227/ITILSolution',
+      expect.anything(),
+    );
+    expect(httpClient.request).toHaveBeenCalledWith(
+      'https://glpi.example.local/apirest.php/Ticket/2112319227',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({
+          input: {
+            id: 2112319227,
+            status: 6,
+            _accepted: 1,
+          },
         }),
       }),
     );

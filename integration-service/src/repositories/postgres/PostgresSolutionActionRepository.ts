@@ -22,6 +22,8 @@ interface SolutionActionRow extends QueryResultRow {
   final_ticket_status: number | null;
   error_code: string | null;
   error_message: string | null;
+  csat_rating: 'very_satisfied' | 'satisfied' | 'dissatisfied' | null;
+  supervisor_review_required: boolean | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -40,6 +42,8 @@ function mapSolutionActionRow(row: SolutionActionRow): SolutionAction {
     finalTicketStatus: row.final_ticket_status,
     errorCode: row.error_code,
     errorMessage: row.error_message,
+    csatRating: row.csat_rating,
+    supervisorReviewRequired: row.supervisor_review_required ?? false,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -59,9 +63,11 @@ export class PostgresSolutionActionRepository implements SolutionActionRepositor
           phone_e164,
           action,
           status,
-          previous_ticket_status
+          previous_ticket_status,
+          csat_rating,
+          supervisor_review_required
         )
-        VALUES ($1, $2, $3, $4, $5, $6, 'processing', $7)
+        VALUES ($1, $2, $3, $4, $5, $6, 'processing', $7, $8, $9)
         ON CONFLICT (whatsapp_message_id) DO NOTHING
         RETURNING *
       `,
@@ -73,6 +79,8 @@ export class PostgresSolutionActionRepository implements SolutionActionRepositor
         input.phoneE164,
         input.action,
         input.previousTicketStatus,
+        input.csatRating ?? null,
+        input.supervisorReviewRequired === true,
       ],
     );
 

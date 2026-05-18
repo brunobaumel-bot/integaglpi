@@ -1,0 +1,265 @@
+import type { QueryResultRow } from 'pg';
+
+import type { SqlExecutor } from '../../infra/db/postgres.js';
+import { DATABASE_TABLES } from '../../infra/db/databaseConstants.js';
+import type {
+  InactivityTrackingRecord,
+  InactivityTrackingRepository,
+  InactivityTrackingStatus,
+  TrackOutboundActivityInput,
+} from '../contracts/InactivityTrackingRepository.js';
+
+interface InactivityTrackingRow extends QueryResultRow {
+  conversation_id: string;
+  ticket_id: number | string | null;
+  conversation_status?: string | null;
+  phone_e164?: string | null;
+  status: string;
+  reminder_1_sent_at: Date | string | null;
+  reminder_2_sent_at: Date | string | null;
+  reminder_3_sent_at: Date | string | null;
+  autoclose_attempted_at: Date | string | null;
+  autoclose_completed_at: Date | string | null;
+  last_client_activity_at: Date | string | null;
+  last_outbound_activity_at: Date | string | null;
+  manual_hold_until: Date | string | null;
+  manual_hold_reason: string | null;
+  skip_reason: string | null;
+  updated_at: Date | string;
+}
+
+function asDate(value: Date | string | null): Date | null {
+  if (value === null) {
+    return null;
+  }
+  return value instanceof Date ? value : new Date(value);
+}
+
+function asNumber(value: number | string | null): number | null {
+  if (value === null || value === '') {
+    return null;
+  }
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function asStatus(value: string): InactivityTrackingStatus {
+  if (
+    value === 'pending'
+    || value === 'reminder_1_sent'
+    || value === 'reminder_2_sent'
+    || value === 'reminder_3_sent'
+    || value === 'autoclose_done'
+    || value === 'skipped_by_response'
+    || value === 'skipped_by_hold'
+    || value === 'skipped_by_closed_ticket'
+    || value === 'skipped_by_feature_flag'
+    || value === 'failed'
+  ) {
+    return value;
+  }
+
+  return 'pending';
+}
+
+function mapRow(row: InactivityTrackingRow): InactivityTrackingRecord {
+  return {
+    conversationId: row.conversation_id,
+    ticketId: asNumber(row.ticket_id),
+    conversationStatus: row.conversation_status ?? null,
+    phoneE164: row.phone_e164 ?? null,
+    status: asStatus(row.status),
+    reminder1SentAt: asDate(row.reminder_1_sent_at),
+    reminder2SentAt: asDate(row.reminder_2_sent_at),
+    reminder3SentAt: asDate(row.reminder_3_sent_at),
+    autocloseAttemptedAt: asDate(row.autoclose_attempted_at),
+    autocloseCompletedAt: asDate(row.autoclose_completed_at),
+    lastClientActivityAt: asDate(row.last_client_activity_at),
+    lastOutboundActivityAt: asDate(row.last_outbound_activity_at),
+    manualHoldUntil: asDate(row.manual_hold_until),
+    manualHoldReason: row.manual_hold_reason,
+    skipReason: row.skip_reason,
+    updatedAt: asDate(row.updated_at) ?? new Date(),
+  };
+}
+
+export class PostgresInactivityTrackingRepository implements InactivityTrackingRepository {
+  public constructor(private readonly executor: SqlExecutor) {}
+
+  public async trackOutboundActivity(input: TrackOutboundActivityInput): Promise<void> {
+    await this.executor.query(
+      `
+        INSERT INTO ${DATABASE_TABLES.inactivityTracking} (
+          conversation_id,
+          ticket_id,
+          status,
+          last_outbound_activity_at,
+          skip_reason,
+          updated_at
+        )
+        VALUES ($1, $2, 'pending', $3, NULL, NOW())
+        ON CONFLICT (conversation_id) DO UPDATE
+        SET
+          ticket_id = EXCLUDED.ticket_id,
+          status = 'pending',
+          reminder_1_sent_at = NULL,
+          reminder_2_sent_at = NULL,
+          reminder_3_sent_at = NULL,
+          autoclose_attempted_at = NULL,
+          autoclose_completed_at = NULL,
+          last_outbound_activity_at = EXCLUDED.last_outbound_activity_at,
+          skip_reason = NULL,
+          updated_at = NOW()
+      `,
+      [input.conversationId, input.ticketId, input.occurredAt],
+    );
+  }
+
+  public async findDueCandidates(limit: number): Promise<InactivityTrackingRecord[]> {
+    const result = await this.executor.query<InactivityTrackingRow>(
+      `
+        SELECT
+          t.*,
+          c.status AS conversation_status,
+          c.phone_e164,
+          COALESCE(c.glpi_ticket_id, t.ticket_id) AS ticket_id,
+          activity.last_client_activity_at,
+          COALESCE(activity.last_outbound_activity_at, t.last_outbound_activity_at) AS last_outbound_activity_at
+        FROM ${DATABASE_TABLES.inactivityTracking} t
+        JOIN ${DATABASE_TABLES.conversations} c ON c.id = t.conversation_id
+        LEFT JOIN LATERAL (
+          SELECT
+            MAX(created_at) FILTER (WHERE direction = 'inbound') AS last_client_activity_at,
+            MAX(created_at) FILTER (
+              WHERE direction = 'outbound'
+                AND (idempotency_key IS NULL OR idempotency_key NOT LIKE 'inactivity:%')
+            ) AS last_outbound_activity_at
+          FROM ${DATABASE_TABLES.messages}
+          WHERE conversation_id = t.conversation_id
+        ) activity ON TRUE
+        WHERE t.status IN ('pending', 'reminder_1_sent', 'reminder_2_sent', 'reminder_3_sent')
+        ORDER BY COALESCE(activity.last_outbound_activity_at, t.last_outbound_activity_at, t.updated_at) ASC
+        LIMIT $1
+      `,
+      [limit],
+    );
+
+    return result.rows.map(mapRow);
+  }
+
+  public async findByConversationId(conversationId: string): Promise<InactivityTrackingRecord | null> {
+    const result = await this.executor.query<InactivityTrackingRow>(
+      `
+        SELECT
+          t.*,
+          c.status AS conversation_status,
+          c.phone_e164,
+          COALESCE(c.glpi_ticket_id, t.ticket_id) AS ticket_id,
+          activity.last_client_activity_at,
+          COALESCE(activity.last_outbound_activity_at, t.last_outbound_activity_at) AS last_outbound_activity_at
+        FROM ${DATABASE_TABLES.inactivityTracking} t
+        JOIN ${DATABASE_TABLES.conversations} c ON c.id = t.conversation_id
+        LEFT JOIN LATERAL (
+          SELECT
+            MAX(created_at) FILTER (WHERE direction = 'inbound') AS last_client_activity_at,
+            MAX(created_at) FILTER (
+              WHERE direction = 'outbound'
+                AND (idempotency_key IS NULL OR idempotency_key NOT LIKE 'inactivity:%')
+            ) AS last_outbound_activity_at
+          FROM ${DATABASE_TABLES.messages}
+          WHERE conversation_id = t.conversation_id
+        ) activity ON TRUE
+        WHERE t.conversation_id = $1
+        LIMIT 1
+      `,
+      [conversationId],
+    );
+
+    return result.rowCount ? mapRow(result.rows[0]) : null;
+  }
+
+  public async markReminderSent(conversationId: string, reminderNumber: 1 | 2 | 3, sentAt: Date): Promise<void> {
+    const status = `reminder_${reminderNumber}_sent`;
+    const column = `reminder_${reminderNumber}_sent_at`;
+    await this.executor.query(
+      `
+        UPDATE ${DATABASE_TABLES.inactivityTracking}
+        SET ${column} = COALESCE(${column}, $2),
+            status = $3,
+            skip_reason = NULL,
+            updated_at = NOW()
+        WHERE conversation_id = $1
+      `,
+      [conversationId, sentAt, status],
+    );
+  }
+
+  public async tryMarkAutocloseAttempted(conversationId: string, attemptedAt: Date): Promise<boolean> {
+    const result = await this.executor.query(
+      `
+        UPDATE ${DATABASE_TABLES.inactivityTracking}
+        SET autoclose_attempted_at = COALESCE(autoclose_attempted_at, $2),
+            updated_at = NOW()
+        WHERE conversation_id = $1
+          AND autoclose_attempted_at IS NULL
+          AND autoclose_completed_at IS NULL
+      `,
+      [conversationId, attemptedAt],
+    );
+
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  public async markAutocloseCompleted(conversationId: string, completedAt: Date): Promise<void> {
+    await this.executor.query(
+      `
+        UPDATE ${DATABASE_TABLES.inactivityTracking}
+        SET autoclose_completed_at = COALESCE(autoclose_completed_at, $2),
+            status = 'autoclose_done',
+            skip_reason = NULL,
+            updated_at = NOW()
+        WHERE conversation_id = $1
+      `,
+      [conversationId, completedAt],
+    );
+  }
+
+  public async markSkipped(conversationId: string, status: InactivityTrackingStatus, reason: string): Promise<void> {
+    await this.executor.query(
+      `
+        UPDATE ${DATABASE_TABLES.inactivityTracking}
+        SET status = $2,
+            skip_reason = $3,
+            updated_at = NOW()
+        WHERE conversation_id = $1
+      `,
+      [conversationId, status, reason],
+    );
+  }
+
+  public async markFailed(conversationId: string, reason: string): Promise<void> {
+    await this.executor.query(
+      `
+        UPDATE ${DATABASE_TABLES.inactivityTracking}
+        SET status = 'failed',
+            skip_reason = $2,
+            updated_at = NOW()
+        WHERE conversation_id = $1
+      `,
+      [conversationId, reason.slice(0, 500)],
+    );
+  }
+
+  public async setManualHold(conversationId: string, holdUntil: Date | null, reason: string | null): Promise<void> {
+    await this.executor.query(
+      `
+        UPDATE ${DATABASE_TABLES.inactivityTracking}
+        SET manual_hold_until = $2,
+            manual_hold_reason = $3,
+            updated_at = NOW()
+        WHERE conversation_id = $1
+      `,
+      [conversationId, holdUntil, reason],
+    );
+  }
+}

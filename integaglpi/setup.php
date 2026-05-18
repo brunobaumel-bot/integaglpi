@@ -3,14 +3,19 @@
 declare(strict_types=1);
 
 use Glpi\Plugin\Hooks;
-use GlpiPlugin\Integaglpi\AuditMenu;
+use GlpiPlugin\Integaglpi\AttendanceCenterMenu;
+use GlpiPlugin\Integaglpi\ContractsHoursMenu;
 use GlpiPlugin\Integaglpi\Install\Installer;
+use GlpiPlugin\Integaglpi\OperationLogMenu;
+use GlpiPlugin\Integaglpi\OperationalDiagnosticsMenu;
 use GlpiPlugin\Integaglpi\Plugin;
 use GlpiPlugin\Integaglpi\Profile;
+use GlpiPlugin\Integaglpi\QualityDashboardMenu;
 use GlpiPlugin\Integaglpi\Queue;
+use GlpiPlugin\Integaglpi\RoutingOptionsMenu;
 use GlpiPlugin\Integaglpi\RoutingSafetyMenu;
 use GlpiPlugin\Integaglpi\Service\TicketSyncService;
-use GlpiPlugin\Integaglpi\TicketConversation;
+use GlpiPlugin\Integaglpi\SupervisorBackofficeMenu;
 use GlpiPlugin\Integaglpi\TicketRuntime;
 
 if (file_exists(__DIR__ . '/vendor/autoload.php')) {
@@ -35,7 +40,6 @@ if (file_exists(__DIR__ . '/vendor/autoload.php')) {
 require_once __DIR__ . '/inc/define.php';
 // Legacy (non-namespaced) tab provider shim.
 require_once __DIR__ . '/inc/ticketruntime.class.php';
-require_once __DIR__ . '/inc/ticketconversation.class.php';
 
 define('PLUGIN_INTEGAGLPI_VERSION', '0.2.0');
 
@@ -144,42 +148,6 @@ function plugin_init_integaglpi(): void
 {
     global $PLUGIN_HOOKS;
 
-    if (!class_exists('PluginIntegaglpiAttendanceCenterMenu', false) && class_exists('CommonDBTM')) {
-        // phpcs:disable PSR1.Classes.ClassDeclaration.MissingNamespace
-        class PluginIntegaglpiAttendanceCenterMenu extends CommonDBTM
-        {
-            public static $rightname = \GlpiPlugin\Integaglpi\Plugin::RIGHT_NAME;
-
-            public static function getTypeName($nb = 0): string
-            {
-                return __('Central de Atendimento', 'glpiintegaglpi');
-            }
-
-            public static function getMenuName($nb = 0): string
-            {
-                return __('Central de Atendimento', 'glpiintegaglpi');
-            }
-
-            /**
-             * @return array<string, mixed>
-             */
-            public static function getMenuContent(): array
-            {
-                return [
-                    'title' => self::getMenuName(),
-                    'page'  => \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/front/central.php',
-                    'icon'  => 'ti ti-headset',
-                ];
-            }
-
-            public static function canView(): bool
-            {
-                return \Session::haveRight(\GlpiPlugin\Integaglpi\Plugin::RIGHT_NAME, READ);
-            }
-        }
-        // phpcs:enable PSR1.Classes.ClassDeclaration.MissingNamespace
-    }
-
     $PLUGIN_HOOKS['csrf_compliant'][PLUGIN_INTEGAGLPI_NAME] = true;
     $PLUGIN_HOOKS[Hooks::ITEM_ADD][PLUGIN_INTEGAGLPI_NAME][\Ticket::class] = 'plugin_integaglpi_item_add_ticket';
     $PLUGIN_HOOKS[Hooks::ITEM_ADD][PLUGIN_INTEGAGLPI_NAME][\ITILFollowup::class] = 'plugin_integaglpi_item_add_followup';
@@ -189,12 +157,17 @@ function plugin_init_integaglpi(): void
     $PLUGIN_HOOKS[Hooks::ITEM_UPDATE][PLUGIN_INTEGAGLPI_NAME][\ITILSolution::class] = 'plugin_integaglpi_item_solution';
     // JS assets are injected by renderers (see Support\AssetRenderer) because
     // some environments return 404 for /plugins/... static assets.
-    $pluginMenuEntries = [Queue::class, AuditMenu::class, RoutingSafetyMenu::class];
-    if (class_exists('PluginIntegaglpiAttendanceCenterMenu', false)) {
-        $pluginMenuEntries[] = 'PluginIntegaglpiAttendanceCenterMenu';
-    }
     $PLUGIN_HOOKS[Hooks::MENU_TOADD][PLUGIN_INTEGAGLPI_NAME] = [
-        'plugins' => $pluginMenuEntries,
+        'plugins' => [
+            Queue::class,
+            OperationLogMenu::class,
+            RoutingSafetyMenu::class,
+            AttendanceCenterMenu::class,
+            SupervisorBackofficeMenu::class,
+            QualityDashboardMenu::class,
+            OperationalDiagnosticsMenu::class,
+            ContractsHoursMenu::class,
+        ],
     ];
     $PLUGIN_HOOKS['config_page'][PLUGIN_INTEGAGLPI_NAME] = 'front/config.form.php';
 
@@ -226,13 +199,15 @@ function plugin_init_integaglpi(): void
         'addtabon' => [\Ticket::class],
     ]);
     \CommonGLPI::registerStandardTab(\Ticket::class, 'PluginIntegaglpiTicketRuntime');
-    \Plugin::registerClass('PluginIntegaglpiTicketConversation', [
-        'addtabon' => [\Ticket::class],
-    ]);
-    \CommonGLPI::registerStandardTab(\Ticket::class, 'PluginIntegaglpiTicketConversation');
     \Plugin::registerClass(Queue::class);
-    \Plugin::registerClass(AuditMenu::class);
+    \Plugin::registerClass(OperationLogMenu::class);
     \Plugin::registerClass(RoutingSafetyMenu::class);
+    \Plugin::registerClass(RoutingOptionsMenu::class);
+    \Plugin::registerClass(AttendanceCenterMenu::class);
+    \Plugin::registerClass(SupervisorBackofficeMenu::class);
+    \Plugin::registerClass(QualityDashboardMenu::class);
+    \Plugin::registerClass(OperationalDiagnosticsMenu::class);
+    \Plugin::registerClass(ContractsHoursMenu::class);
 }
 
 function plugin_integaglpi_install(): bool

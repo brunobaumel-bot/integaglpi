@@ -6,6 +6,7 @@ namespace GlpiPlugin\Integaglpi;
 
 use CommonGLPI;
 use GlpiPlugin\Integaglpi\Renderer\TicketTabRenderer;
+use GlpiPlugin\Integaglpi\Service\TicketContextService;
 use GlpiPlugin\Integaglpi\Service\TicketRuntimeService;
 use Session;
 
@@ -18,26 +19,34 @@ class TicketRuntime extends CommonGLPI
         return _n('WhatsApp runtime', 'WhatsApp runtimes', $nb, 'glpiintegaglpi');
     }
 
-    public function getTabNameForItem(CommonGLPI $item, $withtemplate = 0): string
+    public function getTabNameForItem(CommonGLPI $item, $withtemplate = 0)
     {
-        error_log('[integaglpi][tabs] getTabNameForItem called');
-
         if (!$item instanceof \Ticket || $item->isNewItem()) {
             return '';
         }
 
-        return 'WhatsApp';
+        if (!\Session::haveRight(Plugin::RIGHT_NAME, READ)) {
+            return '';
+        }
+
+        return [
+            1 => __('Conversas WhatsApp', 'glpiintegaglpi'),
+            2 => __('Contexto WhatsApp', 'glpiintegaglpi'),
+        ];
     }
 
     public static function displayTabContentForItem(CommonGLPI $item, $tabnum = 1, $withtemplate = 0): bool
     {
-        error_log('[integaglpi][tabs] displayTabContentForItem called');
-
         if (!$item instanceof \Ticket) {
             return false;
         }
 
-        (new TicketTabRenderer(new TicketRuntimeService()))->render($item);
+        if (!\Session::haveRight(Plugin::RIGHT_NAME, READ)) {
+            return false;
+        }
+
+        $view = ((int) $tabnum) === 2 ? 'context' : 'conversations';
+        (new TicketTabRenderer(new TicketRuntimeService(), new TicketContextService()))->render($item, $view);
 
         return true;
     }

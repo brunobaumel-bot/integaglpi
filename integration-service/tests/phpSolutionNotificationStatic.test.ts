@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 const repoRoot = join(process.cwd(), '..');
 const notificationServicePath = join(repoRoot, 'integaglpi', 'src', 'Service', 'NotificationService.php');
+const hookPath = join(repoRoot, 'integaglpi', 'hook.php');
 
 async function readNotificationService(): Promise<string> {
   return await readFile(notificationServicePath, 'utf8');
@@ -50,5 +51,33 @@ describe('PHP solved-ticket notification source', () => {
     expect(source).toContain('matchesPendingSolutionContent');
     expect(source).toContain('followup][skip_solution_content');
     expect(source).toContain('hash_equals($solutionText, $followupText)');
+  });
+
+  it('sends ticket attachments as outbound media when a supported GLPI document is readable', async () => {
+    const source = await readNotificationService();
+
+    expect(source).toContain('buildDocumentOutboundPayload');
+    expect(source).toContain("'message_type' => $messageType");
+    expect(source).toContain("'content_base64' => base64_encode($content)");
+    expect(source).toContain('EVENT_TICKET_DOCUMENT_ADDED');
+    expect(source).toContain("if (!isset($payload['message_type']))");
+  });
+
+  it('uses an honest fallback when a ticket attachment cannot be sent as media', async () => {
+    const source = await readNotificationService();
+
+    expect(source).toContain('Não consegui enviar o anexo pelo WhatsApp. Acesse o GLPI para visualizar o arquivo.');
+    expect(source).toContain('porque o arquivo excede o limite permitido');
+    expect(source).toContain('porque o tipo de arquivo não é suportado');
+    expect(source).toContain('$mediaPayload !== null');
+  });
+
+  it('allows manual ticket document links but skips REST-created inbound media links', async () => {
+    const source = await readFile(hookPath, 'utf8');
+
+    expect(source).toContain("$itemtype === \\Ticket::class || $itemtype === 'Ticket'");
+    expect(source).toContain("str_contains($requestUri, '/apirest.php')");
+    expect(source).toContain('do not echo it back');
+    expect(source).toContain('$ticketId = $itemsId;');
   });
 });

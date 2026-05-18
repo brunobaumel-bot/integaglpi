@@ -29,7 +29,8 @@ function integaglpiBuildOutboundPayload(
     int $ticketId,
     string $conversationId,
     string $replyText,
-    int $userId
+    int $userId,
+    ?array $media = null
 ): array {
     $idempotencyKey = sprintf(
         '%04x%04x-%04x-%04x-%04x-%04x%04x%04x',
@@ -40,13 +41,81 @@ function integaglpiBuildOutboundPayload(
         mt_rand(0, 0xffff), mt_rand(0, 0xffff), mt_rand(0, 0xffff)
     );
 
-    return [
+    $payload = [
         'ticket_id'       => $ticketId,
         'conversation_id' => $conversationId,
         'text'            => $replyText,
-        'message_type'    => 'text',
+        'message_type'    => $media !== null && str_starts_with((string) ($media['mime_type'] ?? ''), 'image/')
+            ? 'image'
+            : ($media !== null ? 'document' : 'text'),
         'glpi_user_id'    => $userId,
         'idempotency_key' => $idempotencyKey,
+    ];
+
+    if ($media !== null) {
+        $payload['media'] = $media;
+    }
+
+    return $payload;
+}
+
+function integaglpiHasReplyUpload(): bool
+{
+    return isset($_FILES['reply_file'])
+        && is_array($_FILES['reply_file'])
+        && (int) ($_FILES['reply_file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE;
+}
+
+/**
+ * @return array{filename: string, mime_type: string, content_base64: string}
+ */
+function integaglpiBuildReplyMediaPayload(array $file): array
+{
+    $error = (int) ($file['error'] ?? UPLOAD_ERR_NO_FILE);
+    if ($error !== UPLOAD_ERR_OK) {
+        throw new RuntimeException('Falha ao receber o arquivo enviado.');
+    }
+
+    $tmpName = (string) ($file['tmp_name'] ?? '');
+    if ($tmpName === '' || !is_uploaded_file($tmpName) || !is_readable($tmpName)) {
+        throw new RuntimeException('Arquivo enviado inválido.');
+    }
+
+    $size = (int) ($file['size'] ?? 0);
+    if ($size <= 0 || $size > 15_728_640) {
+        throw new RuntimeException('Não consegui enviar o anexo pelo WhatsApp porque o arquivo excede o limite permitido. Acesse o GLPI para visualizar.');
+    }
+
+    $detectedMime = '';
+    if (class_exists('finfo')) {
+        $finfo = new finfo(FILEINFO_MIME_TYPE);
+        $candidate = $finfo->file($tmpName);
+        $detectedMime = is_string($candidate) ? strtolower($candidate) : '';
+    }
+    if ($detectedMime === '' && function_exists('mime_content_type')) {
+        $candidate = @mime_content_type($tmpName);
+        $detectedMime = is_string($candidate) ? strtolower($candidate) : '';
+    }
+    $mime = explode(';', $detectedMime, 2)[0];
+    if (!in_array($mime, ['application/pdf', 'image/jpeg', 'image/png', 'image/gif'], true)) {
+        throw new RuntimeException('Não consegui enviar o anexo pelo WhatsApp porque o tipo de arquivo não é suportado. Acesse o GLPI para visualizar.');
+    }
+
+    $originalName = basename(str_replace(['\\', '/'], DIRECTORY_SEPARATOR, (string) ($file['name'] ?? '')));
+    $safeName = preg_replace('/[^\w.\- ()\[\]]+/', '_', $originalName) ?: '';
+    if ($safeName === '') {
+        $safeName = str_starts_with($mime, 'image/') ? 'imagem.png' : 'documento.pdf';
+    }
+
+    $content = file_get_contents($tmpName);
+    if ($content === false || $content === '') {
+        throw new RuntimeException('Não foi possível ler o arquivo enviado.');
+    }
+
+    return [
+        'filename' => substr($safeName, 0, 180),
+        'mime_type' => $mime,
+        'content_base64' => base64_encode($content),
     ];
 }
 
@@ -77,6 +146,7 @@ if ($method === 'POST') {
         $ticketId       = (int)   ($_POST['ticket_id']       ?? 0);
         $conversationId = trim((string) ($_POST['conversation_id'] ?? ''));
         $replyText      = trim((string) ($_POST['reply_text']      ?? ''));
+        $mediaPayload   = null;
 
         if ($ticketId <= 0) {
             integaglpiJsonResponse(['success' => false, 'message' => 'ticket_id inválido.', 'error' => 'invalid_ticket_id'], 400);
@@ -84,8 +154,22 @@ if ($method === 'POST') {
         if ($conversationId === '') {
             integaglpiJsonResponse(['success' => false, 'message' => 'conversation_id obrigatório.', 'error' => 'missing_conversation_id'], 400);
         }
-        if ($replyText === '') {
-            integaglpiJsonResponse(['success' => false, 'message' => 'A mensagem não pode ser vazia.', 'error' => 'empty_reply_text'], 400);
+        if (integaglpiHasReplyUpload()) {
+            try {
+                $mediaPayload = integaglpiBuildReplyMediaPayload($_FILES['reply_file']);
+            } catch (RuntimeException $exception) {
+                integaglpiJsonResponse([
+                    'success' => false,
+                    'message' => $exception->getMessage(),
+                    'error' => 'invalid_attachment',
+                ], 400);
+            }
+            if ($replyText === '') {
+                $replyText = sprintf('Anexo do chamado #%d: %s.', $ticketId, $mediaPayload['filename']);
+            }
+        }
+        if ($replyText === '' && $mediaPayload === null) {
+            integaglpiJsonResponse(['success' => false, 'message' => 'Informe uma mensagem ou anexe um arquivo.', 'error' => 'empty_reply'], 400);
         }
 
         $ticket = new \Ticket();
@@ -94,7 +178,7 @@ if ($method === 'POST') {
         }
         $ticket->check($ticketId, UPDATE);
 
-        $payload = integaglpiBuildOutboundPayload($ticketId, $conversationId, $replyText, $currentUserId);
+        $payload = integaglpiBuildOutboundPayload($ticketId, $conversationId, $replyText, $currentUserId, $mediaPayload);
 
         error_log('[integaglpi][outbound][BEFORE_NODE] ' . json_encode([
             'method'          => 'POST',
@@ -102,7 +186,9 @@ if ($method === 'POST') {
             'conversation_id' => $conversationId,
             'glpi_user_id'    => $currentUserId,
             'idempotency_key' => $payload['idempotency_key'],
+            'message_type'    => $payload['message_type'],
             'text_len'        => mb_strlen($replyText),
+            'has_media'       => $mediaPayload !== null,
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 
         $client = new IntegrationServiceClient();

@@ -4,13 +4,20 @@ declare(strict_types=1);
 
 namespace GlpiPlugin\Integaglpi\Service;
 
+use GlpiPlugin\Integaglpi\Plugin;
 use RuntimeException;
 
 final class IntegrationServiceClient
 {
     private const PATH_OUTBOUND = '/internal/glpi/messages/outbound';
     private const PATH_TICKET_SOLVED = '/internal/glpi/notifications/ticket-solved';
+    private const PATH_CONVERSATION_ENTITY = '/internal/glpi/conversations/%s/entity';
+    private const PATH_DIAGNOSTICS = '/internal/glpi/diagnostics';
+    private const PATH_QUALITY_DASHBOARD = '/internal/glpi/quality-dashboard';
+    private const PATH_AI_QUALITY_ANALYZE = '/internal/glpi/ai-quality/analyze';
+    private const PATH_AI_QUALITY_FEEDBACK = '/internal/glpi/ai-quality/feedback';
     private const TIMEOUT_SECONDS   = 5;
+    private const ENTITY_SELECTION_TIMEOUT_SECONDS = 8;
 
     public function __construct(private readonly ?PluginConfigService $pluginConfigService = null)
     {
@@ -44,7 +51,120 @@ final class IntegrationServiceClient
      * @param array<string, mixed> $payload
      * @return array{status: int, body: array<string, mixed>, success: bool}
      */
-    private function postJson(string $endpoint, array $payload, string $logContext): array
+    public function confirmConversationEntity(string $conversationId, array $payload): array
+    {
+        $path = sprintf(self::PATH_CONVERSATION_ENTITY, rawurlencode($conversationId));
+
+        return $this->postJson(
+            $this->endpoint($path),
+            $payload,
+            'entity_selection',
+            self::ENTITY_SELECTION_TIMEOUT_SECONDS
+        );
+    }
+
+    /**
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function getConversationEntityStatus(string $conversationId): array
+    {
+        $path = sprintf(self::PATH_CONVERSATION_ENTITY, rawurlencode($conversationId));
+
+        return $this->getJson($this->endpoint($path), 'entity_selection][status', self::TIMEOUT_SECONDS);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function requestAiQualityAnalysis(array $payload): array
+    {
+        return $this->postJson($this->endpoint(self::PATH_AI_QUALITY_ANALYZE), $payload, 'ai_quality][analyze', 35);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function submitAiQualityFeedback(array $payload): array
+    {
+        return $this->postJson($this->endpoint(self::PATH_AI_QUALITY_FEEDBACK), $payload, 'ai_quality][feedback');
+    }
+
+    /**
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function getDiagnostics(): array
+    {
+        return $this->getJson($this->endpoint(self::PATH_DIAGNOSTICS), 'diagnostics', 5);
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function getQualityDashboard(array $filters): array
+    {
+        $query = http_build_query(array_filter(
+            $filters,
+            static fn (mixed $value): bool => $value !== null && $value !== '' && $value !== []
+        ));
+        $path = self::PATH_QUALITY_DASHBOARD . ($query !== '' ? '?' . $query : '');
+
+        return $this->getJson($this->endpoint($path), 'quality_dashboard', 8);
+    }
+
+    /**
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    private function getJson(string $endpoint, string $logContext, int $timeoutSeconds): array
+    {
+        $ch = curl_init($endpoint);
+        if ($ch === false) {
+            throw new RuntimeException('[integaglpi][' . $logContext . '] curl_init failed');
+        }
+
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => $timeoutSeconds,
+            CURLOPT_HTTPGET        => true,
+            CURLOPT_HTTPHEADER     => [
+                'Accept: application/json',
+                'Authorization: Bearer ' . $this->getAuthKey(),
+            ],
+        ]);
+
+        $raw    = curl_exec($ch);
+        $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+
+        if ($raw === false || $curlError !== '') {
+            error_log('[integaglpi][' . $logContext . '][ERROR] curl_error=' . $curlError);
+            throw new RuntimeException('[integaglpi][' . $logContext . '] curl error: ' . $curlError);
+        }
+
+        $body = json_decode((string) $raw, true);
+        if (!is_array($body)) {
+            $body = [
+                'message' => __('Resposta inesperada não JSON do integration-service.', 'glpiintegaglpi'),
+            ];
+        }
+
+        $success = $status >= 200 && $status < 300;
+
+        return [
+            'status'  => $status,
+            'body'    => $body,
+            'success' => $success,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    private function postJson(string $endpoint, array $payload, string $logContext, ?int $timeoutSeconds = null): array
     {
         error_log('[integaglpi][' . $logContext . '][REQUEST] endpoint=' . $endpoint
             . ' keys=' . json_encode(array_keys($payload), JSON_UNESCAPED_UNICODE));
@@ -61,7 +181,7 @@ final class IntegrationServiceClient
 
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT        => self::TIMEOUT_SECONDS,
+            CURLOPT_TIMEOUT        => $timeoutSeconds ?? self::TIMEOUT_SECONDS,
             CURLOPT_POST           => true,
             CURLOPT_POSTFIELDS     => $json,
             CURLOPT_HTTPHEADER     => [
@@ -113,9 +233,10 @@ final class IntegrationServiceClient
 
     /**
      * Resolution order for the integration-service auth key:
-     *   1. Plugin configuration column `integration_auth_key` (preferred — admin manages via UI).
-     *   2. Process environment `INTEGRATION_SERVICE_API_KEY` (matches Node `.env`, eases migration
-     *      from the previous hardcoded constant — operator just needs the same value already in `.env`).
+     *   1. Plugin configuration column `integration_auth_key` (preferred - admin manages via UI).
+     *   2. Runtime config `INTEGRATION_SERVICE_API_KEY`: getenv(), PHP constant, CFG_GLPI plugin array
+     *      or PLUGIN_INTEGAGLPI_CONFIG. This bridges PHP-FPM/LSWS environments where getenv() is not
+     *      populated.
      *
      * The hardcoded constant `super_chave_forte_*` was removed in Phase 7.4C. Operators upgrading
      * from earlier installs must set the value via the config form OR ensure the PHP-FPM/LSWS
@@ -131,15 +252,15 @@ final class IntegrationServiceClient
             return $configured;
         }
 
-        $envKey = trim((string) getenv('INTEGRATION_SERVICE_API_KEY'));
-        if ($envKey !== '') {
-            return $envKey;
+        $runtimeKey = Plugin::getRuntimeConfigValue('INTEGRATION_SERVICE_API_KEY');
+        if ($runtimeKey !== '') {
+            return $runtimeKey;
         }
 
         throw new RuntimeException(
             '[integaglpi][outbound] integration auth key is not configured. '
             . 'Set it in the plugin configuration page (integration_auth_key) '
-            . 'or expose INTEGRATION_SERVICE_API_KEY to the PHP environment.'
+            . 'or configure INTEGRATION_SERVICE_API_KEY in the PHP runtime config.'
         );
     }
 

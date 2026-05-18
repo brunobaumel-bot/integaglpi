@@ -6,6 +6,7 @@ namespace GlpiPlugin\Integaglpi\Service;
 
 use CommonITILObject;
 use GlpiPlugin\Integaglpi\External\ExternalDatabase;
+use GlpiPlugin\Integaglpi\External\ExternalSchemaManager;
 use GlpiPlugin\Integaglpi\External\Repository\ConversationRepository;
 use GlpiPlugin\Integaglpi\External\Repository\MessageRepository;
 use PDO;
@@ -13,13 +14,33 @@ use Throwable;
 
 final class AttendanceCenterService
 {
-    private const DEFAULT_LIMIT = 20;
+    private const DEFAULT_LIMIT = 25;
     private const MAX_LIMIT = 50;
     private const MAX_REPLY_LENGTH = 4096;
     private const ALLOWED_STATUSES = [
         'open',
+        'closed',
+        'media_error',
         'pending_glpi',
         'awaiting_queue_selection',
+        'collecting_contact_profile',
+        'awaiting_entity_selection',
+    ];
+
+    private const STATUS_LABELS = [
+        'collecting_contact_profile' => 'Coletando perfil',
+        'awaiting_entity_selection' => 'Aguardando seleção de entidade',
+        'awaiting_queue_selection' => 'Aguardando escolha de fila',
+        'open' => 'Chamado aberto',
+        'closed' => 'Fechado',
+        'media_error' => 'Erro de mídia',
+        'pending_glpi' => 'Aguardando GLPI',
+    ];
+
+    private const PRE_TICKET_STATUSES = [
+        'awaiting_queue_selection',
+        'collecting_contact_profile',
+        'awaiting_entity_selection',
     ];
 
     private PluginConfigService $pluginConfigService;
@@ -45,6 +66,17 @@ final class AttendanceCenterService
     {
         $filters = $this->normalizeFilters($query);
         $pagination = $this->normalizePagination($query);
+        $glpiEntities = $this->loadGlpiEntityOptions();
+        $allowedEntityIds = array_values(array_filter(
+            array_map(static fn (array $entity): int => (int) ($entity['id'] ?? 0), $glpiEntities),
+            static fn (int $id): bool => $id > 0
+        ));
+        $requestedEntityId = (int) ($filters['entity_id'] ?? 0);
+        if ($requestedEntityId > 0 && !in_array($requestedEntityId, $allowedEntityIds, true)) {
+            $filters['entity_id'] = -1;
+        }
+        $filters['allowed_entity_ids'] = $allowedEntityIds;
+
         $baseData = [
             'filters' => $filters,
             'pagination' => [
@@ -56,10 +88,15 @@ final class AttendanceCenterService
             ],
             'rows' => [],
             'queues' => [],
+            'technicians' => [],
+            'glpi_entities' => $glpiEntities,
+            'glpi_entities_error' => null,
+            'diagnostics' => null,
+            'central_error_diagnostic' => null,
             'error' => null,
             'is_configured' => $this->pluginConfigService->isConfigured(),
             'allowed_statuses' => self::ALLOWED_STATUSES,
-            'limit_options' => [10, 20, 50],
+            'limit_options' => [25, 50],
         ];
 
         if (!$this->pluginConfigService->isConfigured()) {
@@ -83,6 +120,8 @@ final class AttendanceCenterService
                 ...$baseData,
                 'rows' => $this->decorateRows($rows),
                 'queues' => $repository->findAttendanceQueues(),
+                'technicians' => $this->buildTechnicianOptions($repository->findAttendanceTechnicianIds()),
+                'diagnostics' => $this->loadReadOnlyDiagnostics(),
                 'pagination' => [
                     'page' => $page,
                     'limit' => $pagination['limit'],
@@ -94,13 +133,23 @@ final class AttendanceCenterService
                 ],
             ];
         } catch (Throwable $exception) {
-            error_log('[integaglpi][central][error] ' . $exception->getMessage());
-            error_log($exception->getTraceAsString());
+            $diagnostic = $this->classifyCentralLoadException($exception);
+            error_log('[integaglpi][central][error] type=' . $diagnostic['type'] . ' sqlstate=' . ($diagnostic['sqlstate'] ?? '-') . ' detail=' . $diagnostic['log_detail']);
 
-            $baseData['error'] = __(
-                'Unable to load WhatsApp conversations right now. Please check the external PostgreSQL connection.',
-                'glpiintegaglpi'
-            );
+            if (($diagnostic['type'] ?? '') === 'schema') {
+                try {
+                    return $this->loadMinimalCentralFallback($baseData, $filters, $pagination, $diagnostic);
+                } catch (Throwable $fallbackException) {
+                    $fallbackDiagnostic = $this->classifyCentralLoadException($fallbackException);
+                    error_log('[integaglpi][central][fallback][error] type=' . $fallbackDiagnostic['type'] . ' sqlstate=' . ($fallbackDiagnostic['sqlstate'] ?? '-') . ' detail=' . $fallbackDiagnostic['log_detail']);
+                }
+            }
+
+            $baseData['error'] = (string) $diagnostic['user_message'];
+            if (\GlpiPlugin\Integaglpi\Plugin::canAuditRead()) {
+                $baseData['central_error_diagnostic'] = $diagnostic['admin_diagnostic'];
+                $baseData['diagnostics'] = $this->loadReadOnlyDiagnostics();
+            }
             return $baseData;
         }
     }
@@ -129,6 +178,15 @@ final class AttendanceCenterService
                     && $assignedUserId === $currentUserId
                     && $ticketId > 0
                     && $conversationId !== '';
+                $profileComplete = self::isProfileCollectionComplete($row['profile_collection_state'] ?? null);
+                $row['profile_collection_complete'] = $profileComplete;
+                $row['can_confirm_entity'] = (
+                    $effectiveStatus === 'awaiting_entity_selection'
+                    || ($effectiveStatus === 'collecting_contact_profile' && $profileComplete)
+                )
+                    && $ticketId <= 0
+                    && $conversationId !== '';
+                $row['can_edit_entity'] = !$row['can_confirm_entity'] && $conversationId !== '';
 
                 return $row;
             },
@@ -138,6 +196,387 @@ final class AttendanceCenterService
         $data['refreshed_at'] = gmdate('c');
 
         return $data;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function confirmConversationEntity(
+        string $conversationId,
+        int $glpiEntityId,
+        ?string $glpiEntityName,
+        int $userId,
+        bool $createTicket,
+        int $submittedTicketId = 0,
+        ?string $idempotencyKey = null
+    ): array {
+        $conversationId = trim($conversationId);
+        if ($glpiEntityId <= 0) {
+            return [
+                'ok' => false,
+                'http_status' => 400,
+                'error' => 'invalid_entity',
+                'message' => __('Selecione uma entidade GLPI válida.', 'glpiintegaglpi'),
+            ];
+        }
+
+        if ($conversationId === '' || $userId <= 0) {
+            return [
+                'ok' => false,
+                'http_status' => 400,
+                'error' => 'invalid_request',
+                'message' => __('Conversa ou usuário inválido.', 'glpiintegaglpi'),
+            ];
+        }
+
+        $selectedEntity = $this->findGlpiEntityOption($glpiEntityId);
+        if ($selectedEntity === null) {
+            return [
+                'ok' => false,
+                'http_status' => 400,
+                'error' => 'invalid_entity',
+                'message' => __('Selecione uma entidade GLPI válida disponível para sua sessão.', 'glpiintegaglpi'),
+            ];
+        }
+        $glpiEntityName = $selectedEntity['name'];
+
+        if (!$this->pluginConfigService->isConfigured()) {
+            return [
+                'ok' => false,
+                'http_status' => 503,
+                'error' => 'not_configured',
+                'message' => __('Integração não configurada.', 'glpiintegaglpi'),
+            ];
+        }
+
+        try {
+            $conversation = $this->getConversationRepository()->findByConversationId($conversationId);
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][entity_selection][lookup_error] ' . $exception->getMessage());
+
+            return [
+                'ok' => false,
+                'http_status' => 500,
+                'error' => 'lookup_failed',
+                'message' => __('Não foi possível validar a conversa agora. Atualize a Central.', 'glpiintegaglpi'),
+            ];
+        }
+
+        if ($conversation === null) {
+            return [
+                'ok' => false,
+                'http_status' => 404,
+                'error' => 'conversation_not_found',
+                'message' => __('Conversa não encontrada para confirmação de entidade.', 'glpiintegaglpi'),
+            ];
+        }
+
+        if ($this->hasValidTicketId($conversation['glpi_ticket_id'] ?? null)) {
+            return $this->buildEntitySelectionRecoveredSuccess($conversation);
+        }
+
+        $conversationStatus = strtolower(trim((string) ($conversation['conversation_status'] ?? '')));
+        if (
+            $conversationStatus !== 'awaiting_entity_selection'
+            && !(
+                $conversationStatus === 'collecting_contact_profile'
+                && self::isProfileCollectionComplete($conversation['profile_collection_state'] ?? null)
+            )
+        ) {
+            return [
+                'ok' => false,
+                'http_status' => 409,
+                'error' => 'conversation_status_not_allowed',
+                'message' => __('A conversa não está aguardando definição de entidade. Atualize a Central.', 'glpiintegaglpi'),
+            ];
+        }
+
+        if ($submittedTicketId > 0) {
+            return [
+                'ok' => false,
+                'http_status' => 409,
+                'error' => 'ticket_already_linked',
+                'message' => __('Esta conversa já possui chamado vinculado. Atualize a Central.', 'glpiintegaglpi'),
+            ];
+        }
+
+        try {
+            $client = new IntegrationServiceClient($this->pluginConfigService);
+            $response = $client->confirmConversationEntity($conversationId, [
+                'glpi_entity_id' => $glpiEntityId,
+                'glpi_entity_name' => $glpiEntityName,
+                'glpi_user_id' => $userId,
+                'create_ticket' => $createTicket,
+                'permission_validated' => true,
+                'idempotency_key' => $this->normalizeEntitySelectionIdempotencyKey(
+                    $conversationId,
+                    $glpiEntityId,
+                    $idempotencyKey
+                ),
+            ]);
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][entity_selection][error] ' . $exception->getMessage());
+            $recovered = $this->recoverEntitySelectionSuccess($conversationId);
+            if ($recovered !== null) {
+                return $recovered;
+            }
+
+            return [
+                'ok' => false,
+                'http_status' => 502,
+                'error' => 'integration_error',
+                'message' => __('A criação pode ter sido concluída no GLPI. Não tente novamente até a reconciliação ser verificada.', 'glpiintegaglpi'),
+            ];
+        }
+
+        $body = $response['body'];
+        $status = (int) $response['status'];
+        if (!$response['success']) {
+            $recovered = $this->recoverEntitySelectionSuccess($conversationId);
+            if ($recovered !== null) {
+                return $recovered;
+            }
+
+            return [
+                'ok' => false,
+                'http_status' => $status > 0 ? $status : 502,
+                'error' => (string) ($body['error_code'] ?? 'entity_selection_failed'),
+                'message' => (string) ($body['message'] ?? __('Falha ao confirmar entidade.', 'glpiintegaglpi')),
+                'body' => $body,
+            ];
+        }
+
+        return [
+            'ok' => true,
+            'http_status' => $status,
+            'status' => (string) ($body['status'] ?? ($status === 202 ? 'processing' : 'succeeded')),
+            'message' => (string) ($body['message'] ?? __('Entidade confirmada com sucesso.', 'glpiintegaglpi')),
+            'conversation_id' => (string) ($body['conversation_id'] ?? $conversationId),
+            'glpi_ticket_id' => (int) ($body['glpi_ticket_id'] ?? 0),
+            'warning' => (string) ($body['warning'] ?? ''),
+            'body' => $body,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function updateConversationEntity(
+        string $conversationId,
+        int $glpiEntityId,
+        ?string $glpiEntityName,
+        int $userId,
+        bool $applyToTicket
+    ): array {
+        $conversationId = trim($conversationId);
+        if ($conversationId === '' || $userId <= 0) {
+            return [
+                'ok' => false,
+                'http_status' => 400,
+                'error' => 'invalid_request',
+                'message' => __('Conversa ou usuário inválido.', 'glpiintegaglpi'),
+            ];
+        }
+
+        if ($glpiEntityId <= 0) {
+            return [
+                'ok' => false,
+                'http_status' => 400,
+                'error' => 'invalid_entity',
+                'message' => __('Selecione uma entidade GLPI válida.', 'glpiintegaglpi'),
+            ];
+        }
+
+        $selectedEntity = $this->findGlpiEntityOption($glpiEntityId);
+        if ($selectedEntity === null) {
+            return [
+                'ok' => false,
+                'http_status' => 400,
+                'error' => 'invalid_entity',
+                'message' => __('Entidade GLPI inválida ou fora do escopo permitido.', 'glpiintegaglpi'),
+            ];
+        }
+        $glpiEntityName = (string) $selectedEntity['name'];
+
+        if (!$this->pluginConfigService->isConfigured()) {
+            return [
+                'ok' => false,
+                'http_status' => 503,
+                'error' => 'not_configured',
+                'message' => __('Integração não configurada.', 'glpiintegaglpi'),
+            ];
+        }
+
+        try {
+            $conversation = $this->getConversationRepository()->findByConversationId($conversationId);
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][entity_edit][lookup_error] ' . $exception->getMessage());
+
+            return [
+                'ok' => false,
+                'http_status' => 500,
+                'error' => 'lookup_failed',
+                'message' => __('Não foi possível validar a conversa agora. Atualize a Central.', 'glpiintegaglpi'),
+            ];
+        }
+
+        if ($conversation === null) {
+            return [
+                'ok' => false,
+                'http_status' => 404,
+                'error' => 'conversation_not_found',
+                'message' => __('Conversa não encontrada para alteração de entidade.', 'glpiintegaglpi'),
+            ];
+        }
+
+        try {
+            $updated = $this->getConversationRepository()->updateConversationEntity(
+                $conversationId,
+                $glpiEntityId,
+                $glpiEntityName,
+                $userId
+            );
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][entity_edit][error] ' . $exception->getMessage());
+
+            return [
+                'ok' => false,
+                'http_status' => 500,
+                'error' => 'entity_update_failed',
+                'message' => __('Não foi possível atualizar a entidade da conversa agora.', 'glpiintegaglpi'),
+            ];
+        }
+
+        if ($updated === null) {
+            return [
+                'ok' => false,
+                'http_status' => 404,
+                'error' => 'conversation_not_found',
+                'message' => __('Conversa não encontrada para alteração de entidade.', 'glpiintegaglpi'),
+            ];
+        }
+
+        $ticketId = (int) ($updated['glpi_ticket_id'] ?? 0);
+        $warning = '';
+        if ($ticketId > 0) {
+            $warning = $applyToTicket
+                ? __('A entidade da conversa e da memória foi atualizada. O ticket GLPI existente não foi movido nesta fase; altere a entidade no GLPI manualmente se necessário.', 'glpiintegaglpi')
+                : __('A entidade da conversa e da memória foi atualizada. O ticket GLPI existente não foi movido.', 'glpiintegaglpi');
+        }
+
+        return [
+            'ok' => true,
+            'http_status' => 200,
+            'message' => __('Entidade da conversa atualizada com auditoria.', 'glpiintegaglpi'),
+            'warning' => $warning,
+            'conversation_id' => $conversationId,
+            'glpi_ticket_id' => $ticketId,
+            'glpi_entity_id' => $glpiEntityId,
+            'glpi_entity_name' => $glpiEntityName,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function getConversationEntityStatus(string $conversationId): array
+    {
+        $conversationId = trim($conversationId);
+        if ($conversationId === '') {
+            return [
+                'ok' => false,
+                'http_status' => 400,
+                'error' => 'invalid_request',
+                'message' => __('Conversa inválida.', 'glpiintegaglpi'),
+            ];
+        }
+
+        if (!$this->pluginConfigService->isConfigured()) {
+            return [
+                'ok' => false,
+                'http_status' => 503,
+                'error' => 'not_configured',
+                'message' => __('Integração não configurada.', 'glpiintegaglpi'),
+            ];
+        }
+
+        try {
+            $response = (new IntegrationServiceClient($this->pluginConfigService))
+                ->getConversationEntityStatus($conversationId);
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][entity_selection][status_error] ' . $exception->getMessage());
+
+            return [
+                'ok' => false,
+                'http_status' => 502,
+                'error' => 'integration_error',
+                'message' => __('Não foi possível consultar o status da criação agora.', 'glpiintegaglpi'),
+            ];
+        }
+
+        $body = $response['body'];
+        $status = (int) $response['status'];
+        if (!$response['success']) {
+            return [
+                'ok' => false,
+                'http_status' => $status > 0 ? $status : 502,
+                'error' => (string) ($body['error_code'] ?? 'entity_status_failed'),
+                'message' => (string) ($body['message'] ?? __('Falha ao consultar status da tentativa.', 'glpiintegaglpi')),
+                'body' => $body,
+            ];
+        }
+
+        return [
+            'ok' => true,
+            'http_status' => 200,
+            'status' => (string) ($body['status'] ?? 'not_started'),
+            'message' => (string) ($body['message'] ?? __('Status da tentativa atualizado.', 'glpiintegaglpi')),
+            'conversation_id' => (string) ($body['conversation_id'] ?? $conversationId),
+            'glpi_ticket_id' => (int) ($body['glpi_ticket_id'] ?? 0),
+            'glpi_entity_id' => (int) ($body['glpi_entity_id'] ?? 0),
+            'glpi_entity_name' => (string) ($body['glpi_entity_name'] ?? ''),
+            'error_type' => (string) ($body['error_type'] ?? ''),
+            'error_message' => (string) ($body['error_message'] ?? ''),
+            'started_at' => (string) ($body['started_at'] ?? ''),
+            'finished_at' => (string) ($body['finished_at'] ?? ''),
+            'duration_seconds' => $body['duration_seconds'] ?? null,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $conversation
+     * @return array<string, mixed>
+     */
+    private function buildEntitySelectionRecoveredSuccess(array $conversation): array
+    {
+        return [
+            'ok' => true,
+            'http_status' => 200,
+            'message' => __('Chamado criado com sucesso.', 'glpiintegaglpi'),
+            'conversation_id' => (string) ($conversation['conversation_id'] ?? ''),
+            'glpi_ticket_id' => (int) ($conversation['glpi_ticket_id'] ?? 0),
+            'recovered' => true,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function recoverEntitySelectionSuccess(string $conversationId): ?array
+    {
+        try {
+            $conversation = $this->getConversationRepository()->findByConversationId($conversationId);
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][entity_selection][recover_error] ' . $exception->getMessage());
+
+            return null;
+        }
+
+        if ($conversation !== null && $this->hasValidTicketId($conversation['glpi_ticket_id'] ?? null)) {
+            return $this->buildEntitySelectionRecoveredSuccess($conversation);
+        }
+
+        return null;
     }
 
     /**
@@ -584,7 +1023,7 @@ final class AttendanceCenterService
         }
 
         try {
-            $this->solveGlpiTicket($ticketId);
+            $solutionResult = $this->solveGlpiTicket($ticketId);
         } catch (Throwable $exception) {
             error_log('[integaglpi][central][solve][error] ' . json_encode([
                 'ticket_id' => $ticketId,
@@ -596,16 +1035,176 @@ final class AttendanceCenterService
             return [
                 'ok' => false,
                 'http_status' => 500,
-                'error' => 'solve_failed',
-                'message' => __('Unable to solve this ticket right now.', 'glpiintegaglpi'),
+                'error' => 'glpi_solution_failed',
+                'message' => $this->friendlySolveExceptionMessage($exception),
+            ];
+        }
+
+        $notificationWarning = '';
+        if (($solutionResult['status'] ?? '') !== 'already_solved') {
+            try {
+                $notification = (new IntegrationServiceClient($this->pluginConfigService))
+                    ->sendTicketSolvedNotification([
+                        'ticket_id' => $ticketId,
+                        'conversation_id' => $conversationId,
+                        'glpi_user_id' => $userId,
+                        'idempotency_key' => 'central_solve_' . $ticketId . '_' . (int) ($solutionResult['solution_id'] ?? 0),
+                        'solution_id' => (int) ($solutionResult['solution_id'] ?? 0) > 0
+                            ? (int) $solutionResult['solution_id']
+                            : null,
+                        'solution_content' => 'Ticket resolvido via Central WhatsApp.',
+                        'solution_status' => (int) ($solutionResult['ticket_status'] ?? CommonITILObject::SOLVED),
+                    ]);
+                if (!$notification['success']) {
+                    $notificationWarning = __('Ticket solucionado no GLPI, mas houve falha ao avisar o cliente pelo WhatsApp.', 'glpiintegaglpi');
+                }
+            } catch (Throwable $exception) {
+                error_log('[integaglpi][central][solve][whatsapp_warning] ' . json_encode([
+                    'ticket_id' => $ticketId,
+                    'conversation_id' => $conversationId,
+                    'user_id' => $userId,
+                    'message' => $exception->getMessage(),
+                ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+                $notificationWarning = __('Ticket solucionado no GLPI, mas houve falha ao avisar o cliente pelo WhatsApp.', 'glpiintegaglpi');
+            }
+        }
+
+        if (($solutionResult['status'] ?? '') === 'status_update_failed') {
+            return [
+                'ok' => true,
+                'http_status' => 207,
+                'status' => 'solution_created_status_update_failed',
+                'message' => __('Solução criada, mas não foi possível atualizar o status do ticket por permissão GLPI.', 'glpiintegaglpi'),
+                'warning' => $notificationWarning,
+            ];
+        }
+
+        if ($notificationWarning !== '') {
+            return [
+                'ok' => true,
+                'http_status' => 207,
+                'status' => 'solved_whatsapp_failed',
+                'message' => $notificationWarning,
             ];
         }
 
         return [
             'ok' => true,
-            'status' => 'solved',
-            'message' => __('Chamado solucionado.', 'glpiintegaglpi'),
+            'status' => (string) ($solutionResult['status'] ?? 'solved'),
+            'message' => ($solutionResult['status'] ?? '') === 'already_solved'
+                ? __('Chamado já estava solucionado ou fechado.', 'glpiintegaglpi')
+                : __('Chamado solucionado.', 'glpiintegaglpi'),
         ];
+    }
+
+    /**
+     * @return list<array{id: int, name: string}>
+     */
+    private function loadGlpiEntityOptions(): array
+    {
+        global $DB;
+
+        try {
+            if (!isset($DB) || !is_object($DB) || !$DB->tableExists('glpi_entities')) {
+                return [];
+            }
+
+            $criteria = [
+                'SELECT' => ['id', 'name', 'completename'],
+                'FROM' => 'glpi_entities',
+                'ORDER' => ['completename', 'name', 'id'],
+                'LIMIT' => 250,
+            ];
+
+            $activeEntityIds = $this->getActiveEntityIds();
+            if ($activeEntityIds !== []) {
+                $criteria['WHERE'] = ['id' => $activeEntityIds];
+            }
+
+            $entities = [];
+            foreach ($DB->request($criteria) as $row) {
+                $id = (int) ($row['id'] ?? 0);
+                if ($id <= 0) {
+                    continue;
+                }
+                if (!$this->canUseEntity($id)) {
+                    continue;
+                }
+
+                $label = trim((string) ($row['completename'] ?? ''));
+                if ($label === '') {
+                    $label = trim((string) ($row['name'] ?? ''));
+                }
+                if ($label === '') {
+                    $label = 'Entidade #' . $id;
+                }
+
+                $entities[] = [
+                    'id' => $id,
+                    'name' => $label,
+                ];
+            }
+
+            return $entities;
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][central][entities][load_error] ' . $exception->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * @return array{id: int, name: string}|null
+     */
+    private function findGlpiEntityOption(int $entityId): ?array
+    {
+        foreach ($this->loadGlpiEntityOptions() as $entity) {
+            if ((int) $entity['id'] === $entityId) {
+                return $entity;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function getActiveEntityIds(): array
+    {
+        try {
+            if (class_exists('\Session') && method_exists('\Session', 'getActiveEntities')) {
+                $ids = \Session::getActiveEntities();
+                if (is_array($ids)) {
+                    return array_values(array_filter(array_map('intval', $ids), static fn (int $id): bool => $id > 0));
+                }
+            }
+        } catch (Throwable) {
+            return [];
+        }
+
+        return [];
+    }
+
+    private function canUseEntity(int $entityId): bool
+    {
+        if ($entityId <= 0 || !class_exists('\Session')) {
+            return false;
+        }
+
+        try {
+            if (method_exists('\Session', 'haveAccessToEntity')) {
+                return \Session::haveAccessToEntity($entityId);
+            }
+        } catch (Throwable) {
+            return false;
+        }
+
+        $entities = $_SESSION['glpiactiveentities'] ?? [];
+        if (!is_array($entities)) {
+            return false;
+        }
+
+        return in_array($entityId, array_map('intval', $entities), true);
     }
 
     /**
@@ -619,12 +1218,12 @@ final class AttendanceCenterService
         int $limit
     ): array {
         $conversationId = trim($conversationId);
-        if ($conversationId === '' || $ticketId <= 0) {
+        if ($conversationId === '') {
             return [
                 'ok' => false,
                 'http_status' => 400,
                 'error' => 'invalid_request',
-                'message' => __('Invalid conversation or ticket.', 'glpiintegaglpi'),
+                'message' => __('Conversa ou chamado inválido.', 'glpiintegaglpi'),
             ];
         }
 
@@ -638,13 +1237,25 @@ final class AttendanceCenterService
         }
 
         try {
-            $conversation = $this->getConversationRepository()->findBoundToTicket($ticketId, $conversationId);
-            if ($conversation === null) {
+            $conversation = $ticketId > 0
+                ? $this->getConversationRepository()->findBoundToTicket($ticketId, $conversationId)
+                : $this->getConversationRepository()->findByConversationId($conversationId);
+        if ($conversation === null) {
+            return [
+                'ok' => false,
+                'http_status' => 404,
+                'error' => 'not_found',
+                'message' => __('Conversa não encontrada para este identificador.', 'glpiintegaglpi'),
+            ];
+        }
+
+            $conversationStatus = trim((string) ($conversation['conversation_status'] ?? ''));
+            if ($ticketId <= 0 && !in_array($conversationStatus, self::PRE_TICKET_STATUSES, true)) {
                 return [
                     'ok' => false,
-                    'http_status' => 404,
-                    'error' => 'not_found',
-                    'message' => __('Conversation not found for this ticket.', 'glpiintegaglpi'),
+                    'http_status' => 409,
+                    'error' => 'ticket_required',
+                    'message' => __('This conversation already requires a valid ticket.', 'glpiintegaglpi'),
                 ];
             }
 
@@ -678,7 +1289,7 @@ final class AttendanceCenterService
 
     /**
      * @param array<string, mixed> $query
-     * @return array{status: string, queue_id: int|null, search: string}
+     * @return array<string, mixed>
      */
     private function normalizeFilters(array $query): array
     {
@@ -698,10 +1309,39 @@ final class AttendanceCenterService
             $search = substr($search, 0, 80);
         }
 
+        $technicianId = 0;
+        if (isset($query['technician_id']) && ctype_digit((string) $query['technician_id'])) {
+            $technicianId = max(0, (int) $query['technician_id']);
+        }
+
+        $entityId = 0;
+        if (isset($query['entity_id']) && ctype_digit((string) $query['entity_id'])) {
+            $entityId = max(0, (int) $query['entity_id']);
+        }
+
+        $windowStatus = $this->normalizeChoice((string) ($query['window_status'] ?? ''), ['open', 'closed']);
+        $inactivityFilter = $this->normalizeChoice((string) ($query['inactivity'] ?? ''), ['attention', 'sent', 'skipped']);
+        $deliveryFilter = $this->normalizeChoice((string) ($query['delivery'] ?? ''), ['failed', 'pending', 'sent', 'delivered', 'read']);
+        $operationalState = $this->normalizeChoice((string) ($query['operational_state'] ?? ''), [
+            'pre_ticket',
+            'awaiting_entity',
+            'processing',
+            'ambiguous_reconciliation',
+            'delivery_failed',
+            'inactivity_attention',
+            'risk',
+        ]);
+
         return [
             'status' => $status,
             'queue_id' => $queueId,
             'search' => $search,
+            'technician_id' => $technicianId,
+            'entity_id' => $entityId,
+            'window_status' => $windowStatus,
+            'inactivity' => $inactivityFilter,
+            'delivery' => $deliveryFilter,
+            'operational_state' => $operationalState,
         ];
     }
 
@@ -720,7 +1360,7 @@ final class AttendanceCenterService
         if (isset($query['limit']) && ctype_digit((string) $query['limit'])) {
             $limit = (int) $query['limit'];
         }
-        $limit = min(self::MAX_LIMIT, max(1, $limit));
+        $limit = min(self::MAX_LIMIT, max(25, $limit));
 
         return [
             'page' => $page,
@@ -749,9 +1389,768 @@ final class AttendanceCenterService
                 ?? $row['conversation_updated_at']
                 ?? ''
             );
+            $memoryEntityId = isset($row['memory_entity_id']) ? (int) $row['memory_entity_id'] : 0;
+            $row['memory_entity_id'] = $memoryEntityId;
+            $row['memory_entity_name'] = $memoryEntityId > 0
+                ? trim((string) ($row['memory_entity_name'] ?? ''))
+                : '';
+            $ticketId = $row['glpi_ticket_id'] ?? null;
+            $hasTicket = $this->hasValidTicketId($ticketId);
+            $row['is_pre_ticket'] = !$hasTicket;
+            $row['ticket_label'] = $hasTicket ? '#' . (int) $ticketId : __('Pré-Ticket', 'glpiintegaglpi');
+            $row['masked_phone'] = $this->maskPhone((string) ($row['phone_e164'] ?? ''));
+            $row['entity_label'] = $this->resolveEntityLabel($row);
+            $profileComplete = self::isProfileCollectionComplete($row['profile_collection_state'] ?? null);
+            $row['profile_collection_complete'] = $profileComplete;
+            $row['status_label'] = $this->statusLabel($row['effective_status']);
+            $row['next_action'] = $this->nextAction($row['effective_status'], $hasTicket, $profileComplete);
+            $row['stalled_seconds'] = $this->calculateStalledSeconds((string) ($row['activity_at'] ?? ''));
+            $row['stalled_label'] = $this->formatDuration((int) ($row['stalled_seconds'] ?? 0));
+            $row['entity_attempt_status_label'] = $this->entityAttemptStatusLabel(
+                (string) ($row['entity_attempt_status'] ?? ''),
+                (string) ($row['entity_attempt_error_message'] ?? '')
+            );
+            $row['entity_attempt_error_sanitized'] = $this->sanitizeEntityAttemptError(
+                (string) ($row['entity_attempt_error_message'] ?? '')
+            );
+            $row['inactivity_status_label'] = $this->inactivityStatusLabel(
+                (string) ($row['inactivity_event_status'] ?? ''),
+                (string) ($row['inactivity_tracking_status'] ?? '')
+            );
+            $row['inactivity_next_action'] = $this->inactivityNextAction(
+                (string) ($row['inactivity_event_status'] ?? ''),
+                (string) ($row['inactivity_event_reason'] ?? ''),
+                (string) ($row['inactivity_tracking_skip_reason'] ?? '')
+            );
+            $row['inactivity_last_error_sanitized'] = $this->sanitizeInactivityError(
+                (string) ($row['inactivity_meta_error_message_sanitized'] ?? ''),
+                (string) ($row['inactivity_event_reason'] ?? '')
+            );
+            $row['whatsapp_window'] = $this->buildWhatsappWindow((string) ($row['last_inbound_at'] ?? ''));
+            $row['last_delivery_status_label'] = self::deliveryStatusLabel((string) ($row['last_delivery_status'] ?? ''));
+            $row['last_delivery_error_sanitized'] = $this->sanitizeInactivityError(
+                (string) ($row['last_delivery_error_message_sanitized'] ?? ''),
+                ''
+            );
+            $row['business_hours_label'] = $this->buildBusinessHoursLabel();
+            $row['operational_state_label'] = $this->operationalStateLabel($row);
+            $row['risk_badges'] = $this->buildRiskBadges($row);
+            $row['last_message_preview'] = trim((string) ($row['last_message_preview'] ?? ''));
+            $row['contact_profile_snapshot'] = $this->decodeProfileSnapshot($row['profile_snapshot_json'] ?? null);
 
             return $row;
         }, $rows);
+    }
+
+    /**
+     * @param list<int> $userIds
+     * @return list<array{id: int, name: string}>
+     */
+    private function buildTechnicianOptions(array $userIds): array
+    {
+        $options = [];
+        foreach ($userIds as $userId) {
+            if ($userId <= 0) {
+                continue;
+            }
+            $options[] = [
+                'id' => $userId,
+                'name' => getUserName($userId),
+            ];
+        }
+
+        return $options;
+    }
+
+    /**
+     * @param list<string> $allowed
+     */
+    private function normalizeChoice(string $value, array $allowed): string
+    {
+        $value = trim($value);
+        return in_array($value, $allowed, true) ? $value : '';
+    }
+
+    /**
+     * @param array<string, mixed> $baseData
+     * @param array<string, mixed> $filters
+     * @param array<string, int> $pagination
+     * @param array<string, mixed> $diagnostic
+     * @return array<string, mixed>
+     */
+    private function loadMinimalCentralFallback(array $baseData, array $filters, array $pagination, array $diagnostic): array
+    {
+        $pdo = $this->getPdo();
+        $conversationColumns = $this->loadExternalTableColumns('glpi_plugin_integaglpi_conversations');
+        if ($conversationColumns === []) {
+            throw new \RuntimeException('CENTRAL_SCHEMA_MISSING_CONVERSATIONS');
+        }
+
+        $hasConversationColumn = static fn (string $column): bool => in_array($column, $conversationColumns, true);
+        $hasRuntime = $this->externalTableExists('glpi_plugin_integaglpi_conversation_runtime');
+        $hasContacts = $this->externalTableExists('glpi_plugin_integaglpi_contacts') && $hasConversationColumn('contact_id');
+        $hasQueues = $this->externalTableExists('glpi_plugin_integaglpi_queues');
+        $hasMessages = $this->externalTableExists('glpi_plugin_integaglpi_messages');
+
+        $select = [
+            'c.id AS conversation_id',
+            $hasConversationColumn('phone_e164') ? 'c.phone_e164' : "''::text AS phone_e164",
+            $hasConversationColumn('glpi_ticket_id') ? 'c.glpi_ticket_id' : 'NULL::bigint AS glpi_ticket_id',
+            $hasConversationColumn('glpi_entity_id') ? 'c.glpi_entity_id' : 'NULL::bigint AS glpi_entity_id',
+            $hasConversationColumn('glpi_entity_name') ? 'c.glpi_entity_name' : 'NULL::text AS glpi_entity_name',
+            $hasConversationColumn('status') ? 'c.status AS conversation_status' : "'open'::text AS conversation_status",
+            $hasConversationColumn('profile_collection_state') ? 'c.profile_collection_state' : 'NULL AS profile_collection_state',
+            $hasConversationColumn('last_message_at') ? 'c.last_message_at' : 'NULL::timestamptz AS last_message_at',
+            $hasConversationColumn('updated_at') ? 'c.updated_at AS conversation_updated_at' : 'NULL::timestamptz AS conversation_updated_at',
+            $hasContacts ? 'ct.name AS contact_name' : "''::text AS contact_name",
+            $hasRuntime ? 'COALESCE(rt.queue_id, ' . ($hasConversationColumn('queue_id') ? 'c.queue_id' : 'NULL') . ') AS queue_id' : ($hasConversationColumn('queue_id') ? 'c.queue_id' : 'NULL::bigint AS queue_id'),
+            $hasRuntime ? 'rt.assigned_user_id' : 'NULL::bigint AS assigned_user_id',
+            $hasRuntime ? 'rt.assigned_group_id' : 'NULL::bigint AS assigned_group_id',
+            $hasRuntime ? 'rt.status AS runtime_status' : 'NULL::text AS runtime_status',
+            $hasRuntime ? 'rt.updated_at AS runtime_updated_at' : 'NULL::timestamptz AS runtime_updated_at',
+            $hasQueues ? 'q.name AS queue_name' : "''::text AS queue_name",
+            $hasConversationColumn('last_message_at') ? 'c.last_message_at AS activity_at' : ($hasConversationColumn('updated_at') ? 'c.updated_at AS activity_at' : 'NULL::timestamptz AS activity_at'),
+            $hasMessages ? 'lm.message_text AS last_message_preview' : "''::text AS last_message_preview",
+            $hasMessages ? 'li.created_at AS last_inbound_at' : 'NULL::timestamptz AS last_inbound_at',
+            'NULL AS profile_snapshot_json',
+            'NULL::bigint AS memory_entity_id',
+            "''::text AS memory_entity_name",
+            "''::text AS entity_attempt_status",
+            'NULL::bigint AS entity_attempt_ticket_id',
+            "''::text AS entity_attempt_error_message",
+            'NULL::timestamptz AS entity_attempt_finished_at',
+            'NULL::int AS entity_attempt_duration_seconds',
+            'NULL::timestamptz AS entity_attempt_updated_at',
+            "''::text AS inactivity_tracking_status",
+            "''::text AS inactivity_tracking_skip_reason",
+            'NULL::timestamptz AS inactivity_tracking_updated_at',
+            "''::text AS inactivity_event_key",
+            "''::text AS inactivity_event_status",
+            "''::text AS inactivity_event_reason",
+            "''::text AS inactivity_delivery_status",
+            "''::text AS inactivity_meta_error_code",
+            "''::text AS inactivity_meta_error_message_sanitized",
+            'NULL::timestamptz AS inactivity_last_checked_at',
+            "''::text AS last_delivery_status",
+            "''::text AS last_meta_message_id",
+            "''::text AS last_delivery_error_code",
+            "''::text AS last_delivery_error_message_sanitized",
+            'NULL::timestamptz AS last_outbound_at',
+            'FALSE AS csat_dissatisfied',
+            'FALSE AS supervisor_review_required',
+            "''::text AS ai_quality_status",
+            "''::text AS ai_sentiment",
+            "''::text AS ai_resolution",
+            "'[]'::text AS ai_flags_json",
+            'FALSE AS ai_supervisor_review_required',
+            "''::text AS contract_alert_status",
+            'NULL::numeric AS contract_consumed_percent',
+        ];
+
+        $joins = [];
+        if ($hasContacts) {
+            $joins[] = 'LEFT JOIN glpi_plugin_integaglpi_contacts ct ON ct.id = c.contact_id';
+        }
+        if ($hasRuntime) {
+            $joins[] = 'LEFT JOIN glpi_plugin_integaglpi_conversation_runtime rt ON rt.conversation_id = c.id';
+        }
+        if ($hasQueues) {
+            $queueExpression = $hasRuntime
+                ? 'COALESCE(rt.queue_id, ' . ($hasConversationColumn('queue_id') ? 'c.queue_id' : 'NULL') . ')'
+                : ($hasConversationColumn('queue_id') ? 'c.queue_id' : 'NULL');
+            $joins[] = 'LEFT JOIN glpi_plugin_integaglpi_queues q ON q.id = ' . $queueExpression;
+        }
+        if ($hasMessages) {
+            $joins[] = "LEFT JOIN LATERAL (
+                SELECT m.message_text
+                FROM glpi_plugin_integaglpi_messages m
+                WHERE m.conversation_id = c.id
+                ORDER BY m.created_at DESC
+                LIMIT 1
+            ) lm ON TRUE";
+            $joins[] = "LEFT JOIN LATERAL (
+                SELECT m.created_at
+                FROM glpi_plugin_integaglpi_messages m
+                WHERE m.conversation_id = c.id AND m.direction = 'inbound'
+                ORDER BY m.created_at DESC
+                LIMIT 1
+            ) li ON TRUE";
+        }
+
+        [$whereSql, $params] = $this->buildMinimalCentralWhere($filters, $hasConversationColumn, $hasRuntime, $hasMessages);
+        $fromSql = 'FROM glpi_plugin_integaglpi_conversations c ' . implode(' ', $joins);
+
+        $count = $pdo->prepare('SELECT COUNT(*) ' . $fromSql . ' WHERE ' . $whereSql);
+        $this->bindMinimalCentralParams($count, $params);
+        $count->execute();
+        $total = (int) $count->fetchColumn();
+        $totalPages = max(1, (int) ceil($total / $pagination['limit']));
+        $page = min($pagination['page'], $totalPages);
+        $offset = ($page - 1) * $pagination['limit'];
+
+        $orderExpression = $hasConversationColumn('last_message_at')
+            ? 'c.last_message_at'
+            : ($hasConversationColumn('updated_at') ? 'c.updated_at' : 'c.id');
+
+        $statement = $pdo->prepare(
+            'SELECT ' . implode(",\n", $select) . ' ' . $fromSql
+            . ' WHERE ' . $whereSql
+            . ' ORDER BY ' . $orderExpression . ' DESC NULLS LAST'
+            . ' LIMIT :limit OFFSET :offset'
+        );
+        $this->bindMinimalCentralParams($statement, $params);
+        $statement->bindValue(':limit', $pagination['limit'], PDO::PARAM_INT);
+        $statement->bindValue(':offset', $offset, PDO::PARAM_INT);
+        $statement->execute();
+        $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+
+        return [
+            ...$baseData,
+            'rows' => $this->decorateRows(is_array($rows) ? $rows : []),
+            'queues' => $hasQueues ? $this->loadFallbackQueues($pdo) : [],
+            'technicians' => $hasRuntime ? $this->buildTechnicianOptions($this->loadFallbackTechnicianIds($pdo)) : [],
+            'error' => __('Console carregado em modo de compatibilidade porque o schema operacional está incompleto. Revise migrations pendentes antes de produção.', 'glpiintegaglpi'),
+            'central_error_diagnostic' => \GlpiPlugin\Integaglpi\Plugin::canAuditRead() ? $diagnostic['admin_diagnostic'] : null,
+            'diagnostics' => \GlpiPlugin\Integaglpi\Plugin::canAuditRead() ? $this->loadReadOnlyDiagnostics() : null,
+            'pagination' => [
+                'page' => $page,
+                'limit' => $pagination['limit'],
+                'offset' => $offset,
+                'total' => $total,
+                'total_pages' => $totalPages,
+                'has_previous' => $page > 1,
+                'has_next' => $page < $totalPages,
+            ],
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @param callable(string): bool $hasConversationColumn
+     * @return array{0: string, 1: array<string, array{value: mixed, type: int}>}
+     */
+    private function buildMinimalCentralWhere(array $filters, callable $hasConversationColumn, bool $hasRuntime, bool $hasMessages): array
+    {
+        $where = [];
+        $params = [];
+
+        if ($hasConversationColumn('status')) {
+            $where[] = "c.status != 'closed'";
+        }
+        if ($hasRuntime) {
+            $where[] = "(rt.status IS NULL OR rt.status != 'closed')";
+        }
+
+        $allowedEntityIds = is_array($filters['allowed_entity_ids'] ?? null)
+            ? array_values(array_filter(array_map('intval', $filters['allowed_entity_ids']), static fn (int $id): bool => $id > 0))
+            : [];
+        if ($hasConversationColumn('glpi_entity_id') && $allowedEntityIds !== []) {
+            $placeholders = [];
+            foreach ($allowedEntityIds as $index => $entityId) {
+                $placeholder = ':allowed_entity_' . $index;
+                $placeholders[] = $placeholder;
+                $params[$placeholder] = ['value' => $entityId, 'type' => PDO::PARAM_INT];
+            }
+            $where[] = '(c.glpi_entity_id IS NULL OR c.glpi_entity_id = 0 OR c.glpi_entity_id IN (' . implode(', ', $placeholders) . '))';
+        }
+
+        $status = trim((string) ($filters['status'] ?? ''));
+        if ($status !== '' && $hasConversationColumn('status')) {
+            $where[] = $hasRuntime ? 'COALESCE(rt.status, c.status) = :status' : 'c.status = :status';
+            $params[':status'] = ['value' => $status, 'type' => PDO::PARAM_STR];
+        }
+
+        $queueId = $filters['queue_id'] ?? null;
+        if (is_int($queueId) && $queueId > 0 && ($hasRuntime || $hasConversationColumn('queue_id'))) {
+            $where[] = $hasRuntime && $hasConversationColumn('queue_id')
+                ? 'COALESCE(rt.queue_id, c.queue_id) = :queue_id'
+                : ($hasRuntime ? 'rt.queue_id = :queue_id' : 'c.queue_id = :queue_id');
+            $params[':queue_id'] = ['value' => $queueId, 'type' => PDO::PARAM_INT];
+        }
+
+        $entityId = $filters['entity_id'] ?? null;
+        if (is_int($entityId) && $entityId > 0 && $hasConversationColumn('glpi_entity_id')) {
+            $where[] = 'c.glpi_entity_id = :entity_id';
+            $params[':entity_id'] = ['value' => $entityId, 'type' => PDO::PARAM_INT];
+        } elseif (is_int($entityId) && $entityId === -1) {
+            $where[] = '1 = 0';
+        }
+
+        $windowStatus = trim((string) ($filters['window_status'] ?? ''));
+        if ($hasMessages && in_array($windowStatus, ['open', 'closed'], true)) {
+            $exists = "EXISTS (
+                SELECT 1
+                FROM glpi_plugin_integaglpi_messages win
+                WHERE win.conversation_id = c.id
+                  AND win.direction = 'inbound'
+                  AND win.created_at >= NOW() - INTERVAL '24 hours'
+            )";
+            $where[] = $windowStatus === 'open' ? $exists : 'NOT ' . $exists;
+        }
+
+        $search = trim((string) ($filters['search'] ?? ''));
+        if ($search !== '') {
+            $searchConditions = [];
+            if ($hasConversationColumn('phone_e164')) {
+                $searchConditions[] = 'c.phone_e164 ILIKE :search_like';
+                $params[':search_like'] = ['value' => '%' . $search . '%', 'type' => PDO::PARAM_STR];
+            }
+            if (ctype_digit($search) && $hasConversationColumn('glpi_ticket_id')) {
+                $searchConditions[] = 'c.glpi_ticket_id = :search_ticket_id';
+                $params[':search_ticket_id'] = ['value' => (int) $search, 'type' => PDO::PARAM_INT];
+            }
+            if ($searchConditions !== []) {
+                $where[] = '(' . implode(' OR ', $searchConditions) . ')';
+            }
+        }
+
+        return [implode(' AND ', $where !== [] ? $where : ['1 = 1']), $params];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function loadExternalTableColumns(string $table): array
+    {
+        $statement = $this->getPdo()->prepare(
+            "SELECT column_name
+             FROM information_schema.columns
+             WHERE table_schema = current_schema()
+               AND table_name = :table"
+        );
+        $statement->execute([':table' => $table]);
+
+        return array_values(array_map('strval', $statement->fetchAll(PDO::FETCH_COLUMN) ?: []));
+    }
+
+    private function externalTableExists(string $table): bool
+    {
+        $statement = $this->getPdo()->prepare("SELECT to_regclass(:table) IS NOT NULL");
+        $statement->execute([':table' => $table]);
+
+        return (bool) $statement->fetchColumn();
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function loadFallbackQueues(PDO $pdo): array
+    {
+        try {
+            $statement = $pdo->query(
+                "SELECT id, name, is_active
+                 FROM glpi_plugin_integaglpi_queues
+                 ORDER BY name ASC"
+            );
+            $rows = $statement ? $statement->fetchAll(PDO::FETCH_ASSOC) : [];
+            return is_array($rows) ? $rows : [];
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function loadFallbackTechnicianIds(PDO $pdo): array
+    {
+        try {
+            $statement = $pdo->query(
+                "SELECT DISTINCT assigned_user_id
+                 FROM glpi_plugin_integaglpi_conversation_runtime
+                 WHERE assigned_user_id IS NOT NULL
+                   AND assigned_user_id > 0
+                 ORDER BY assigned_user_id ASC
+                 LIMIT 100"
+            );
+            return array_values(array_filter(
+                array_map('intval', $statement ? $statement->fetchAll(PDO::FETCH_COLUMN) : []),
+                static fn (int $id): bool => $id > 0
+            ));
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    /**
+     * @param array<string, array{value: mixed, type: int}> $params
+     */
+    private function bindMinimalCentralParams(\PDOStatement $statement, array $params): void
+    {
+        foreach ($params as $name => $definition) {
+            $statement->bindValue($name, $definition['value'], $definition['type']);
+        }
+    }
+
+    /**
+     * @return array{type: string, user_message: string, log_detail: string, admin_diagnostic: array<string, mixed>, sqlstate?: string|null}
+     */
+    private function classifyCentralLoadException(Throwable $exception): array
+    {
+        $message = $exception->getMessage();
+        $sqlState = $exception instanceof \PDOException ? (string) ($exception->errorInfo[0] ?? $exception->getCode()) : '';
+        $lower = strtolower($message);
+        $type = 'query';
+        $userMessage = __('Não foi possível carregar a Central agora. Verifique a consulta operacional ou o schema externo.', 'glpiintegaglpi');
+
+        if (str_contains($lower, 'could not connect') || str_contains($lower, 'connection refused') || str_contains($lower, 'timeout expired') || str_contains($lower, 'timed out')) {
+            $type = str_contains($lower, 'timeout') || str_contains($lower, 'timed out') ? 'timeout' : 'connection';
+            $userMessage = $type === 'timeout'
+                ? __('Timeout ao consultar o PostgreSQL externo. Tente novamente em instantes.', 'glpiintegaglpi')
+                : __('Não foi possível conectar ao PostgreSQL externo configurado.', 'glpiintegaglpi');
+        } elseif (str_contains($lower, 'password authentication failed') || str_contains($lower, 'authentication failed') || $sqlState === '28P01') {
+            $type = 'credential';
+            $userMessage = __('Credenciais do PostgreSQL externo foram recusadas.', 'glpiintegaglpi');
+        } elseif (str_contains($lower, 'permission denied') || $sqlState === '42501') {
+            $type = 'permission';
+            $userMessage = __('Usuário do PostgreSQL externo sem permissão para consultar a Central.', 'glpiintegaglpi');
+        } elseif (str_contains($lower, 'does not exist') || in_array($sqlState, ['42P01', '42703'], true)) {
+            $type = 'schema';
+            $userMessage = __('Schema externo incompleto para a Central. Aplique as migrations pendentes em TESTE antes do smoke.', 'glpiintegaglpi');
+        }
+
+        return [
+            'type' => $type,
+            'sqlstate' => $sqlState !== '' ? $sqlState : null,
+            'user_message' => $userMessage,
+            'log_detail' => $this->sanitizeDiagnosticText($message),
+            'admin_diagnostic' => [
+                'type' => $type,
+                'sqlstate' => $sqlState !== '' ? $sqlState : null,
+                'detail' => $this->sanitizeDiagnosticText($message),
+            ],
+        ];
+    }
+
+    private function sanitizeDiagnosticText(string $message): string
+    {
+        $message = preg_replace('/(password|passwd|pwd|token|secret|key)=([^\\s;]+)/i', '$1=***', $message) ?? $message;
+        $message = preg_replace('/postgres(?:ql)?:\\/\\/[^\\s]+/i', 'postgresql://***', $message) ?? $message;
+        $message = preg_replace('/\\b\\d{10,}\\b/', '********', $message) ?? $message;
+
+        return trim(substr($message, 0, 500));
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function loadReadOnlyDiagnostics(): ?array
+    {
+        try {
+            $response = (new IntegrationServiceClient($this->pluginConfigService))->getDiagnostics();
+            if (!empty($response['success']) && is_array($response['body'] ?? null)) {
+                return $response['body'];
+            }
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][central][diagnostics][error] ' . $exception->getMessage());
+        }
+
+        return null;
+    }
+
+    private function maskPhone(string $phone): string
+    {
+        $digits = preg_replace('/\D+/', '', $phone) ?? '';
+        if ($digits === '') {
+            return '';
+        }
+
+        return str_repeat('*', max(4, strlen($digits) - 4)) . substr($digits, -4);
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     */
+    private function resolveEntityLabel(array $row): string
+    {
+        $conversationEntity = trim((string) ($row['glpi_entity_name'] ?? ''));
+        if ($conversationEntity !== '') {
+            return $conversationEntity;
+        }
+
+        $memoryEntity = trim((string) ($row['memory_entity_name'] ?? ''));
+        if ($memoryEntity !== '') {
+            return $memoryEntity;
+        }
+
+        $entityId = (int) ($row['glpi_entity_id'] ?? 0);
+        if ($entityId > 0) {
+            return 'Entidade #' . $entityId;
+        }
+
+        return __('Sem entidade', 'glpiintegaglpi');
+    }
+
+    private function calculateStalledSeconds(string $activityAt): int
+    {
+        $activityAt = trim($activityAt);
+        if ($activityAt === '') {
+            return 0;
+        }
+
+        try {
+            $activity = new \DateTimeImmutable($activityAt);
+            $now = new \DateTimeImmutable('now');
+            return max(0, $now->getTimestamp() - $activity->getTimestamp());
+        } catch (Throwable) {
+            return 0;
+        }
+    }
+
+    private function formatDuration(int $seconds): string
+    {
+        if ($seconds <= 0) {
+            return '-';
+        }
+
+        $hours = intdiv($seconds, 3600);
+        if ($hours >= 24) {
+            return intdiv($hours, 24) . 'd';
+        }
+        if ($hours > 0) {
+            return $hours . 'h';
+        }
+
+        return max(1, intdiv($seconds, 60)) . 'min';
+    }
+
+    private function buildBusinessHoursLabel(): string
+    {
+        try {
+            $config = $this->pluginConfigService->getBusinessHoursConfig();
+            if (empty($config['business_hours_enabled'])) {
+                return __('Horário comercial desativado', 'glpiintegaglpi');
+            }
+
+            return __('Horário comercial configurado', 'glpiintegaglpi');
+        } catch (Throwable) {
+            return __('Horário comercial indisponível', 'glpiintegaglpi');
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     */
+    private function operationalStateLabel(array $row): string
+    {
+        $status = (string) ($row['effective_status'] ?? '');
+        $attemptStatus = (string) ($row['entity_attempt_status'] ?? '');
+        $attemptError = (string) ($row['entity_attempt_error_message'] ?? '');
+        $ticketId = (int) ($row['glpi_ticket_id'] ?? 0);
+
+        if (str_starts_with($attemptError, 'ambiguous_reconciliation:')) {
+            return __('Reconciliação ambígua', 'glpiintegaglpi');
+        }
+        if ($attemptStatus === 'processing') {
+            return __('Criação em andamento', 'glpiintegaglpi');
+        }
+        if ($ticketId <= 0) {
+            return match ($status) {
+                'awaiting_entity_selection' => __('Aguardando entidade', 'glpiintegaglpi'),
+                'collecting_contact_profile' => !empty($row['profile_collection_complete'])
+                    ? __('Perfil completo sem entidade', 'glpiintegaglpi')
+                    : __('Aguardando perfil', 'glpiintegaglpi'),
+                'awaiting_queue_selection' => __('Aguardando fila', 'glpiintegaglpi'),
+                default => __('Pré-ticket', 'glpiintegaglpi'),
+            };
+        }
+
+        return $status === 'closed'
+            ? __('Fechado', 'glpiintegaglpi')
+            : __('Ticket aberto', 'glpiintegaglpi');
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return list<array{label: string, class: string}>
+     */
+    private function buildRiskBadges(array $row): array
+    {
+        $badges = [];
+        $deliveryStatus = (string) ($row['last_delivery_status'] ?? '');
+        $inactivityStatus = (string) ($row['inactivity_event_status'] ?? '');
+        $attemptStatus = (string) ($row['entity_attempt_status'] ?? '');
+        $attemptError = (string) ($row['entity_attempt_error_message'] ?? '');
+        $window = is_array($row['whatsapp_window'] ?? null) ? $row['whatsapp_window'] : [];
+
+        if ($window !== [] && empty($window['is_open'])) {
+            $badges[] = ['label' => __('Janela 24h fechada', 'glpiintegaglpi'), 'class' => 'bg-warning text-dark'];
+        }
+        if ($deliveryStatus === 'failed') {
+            $badges[] = ['label' => __('Falha Meta', 'glpiintegaglpi'), 'class' => 'bg-danger'];
+        }
+        if ($inactivityStatus === 'failed') {
+            $badges[] = ['label' => __('Inatividade falhou', 'glpiintegaglpi'), 'class' => 'bg-danger'];
+        }
+        if ($attemptStatus === 'processing') {
+            $badges[] = ['label' => __('Processing', 'glpiintegaglpi'), 'class' => 'bg-info text-dark'];
+        }
+        if (str_starts_with($attemptError, 'ambiguous_reconciliation:')) {
+            $badges[] = ['label' => __('Reconciliação ambígua', 'glpiintegaglpi'), 'class' => 'bg-danger'];
+        }
+        if (!empty($row['csat_dissatisfied'])) {
+            $badges[] = ['label' => __('CSAT insatisfeito', 'glpiintegaglpi'), 'class' => 'bg-danger'];
+        }
+        if (!empty($row['ai_supervisor_review_required'])) {
+            $badges[] = ['label' => __('IA: revisão humana', 'glpiintegaglpi'), 'class' => 'bg-warning text-dark'];
+        }
+        if ((string) ($row['contract_alert_status'] ?? '') !== '' && (string) ($row['contract_alert_status'] ?? '') !== 'ok') {
+            $badges[] = ['label' => __('Contrato em atenção', 'glpiintegaglpi'), 'class' => 'bg-warning text-dark'];
+        }
+
+        return $badges;
+    }
+
+    private function statusLabel(string $status): string
+    {
+        $status = trim($status);
+        return self::STATUS_LABELS[$status] ?? ($status !== '' ? $status : __('Sem status', 'glpiintegaglpi'));
+    }
+
+    private function entityAttemptStatusLabel(string $status, string $errorMessage): string
+    {
+        if (str_starts_with($errorMessage, 'ambiguous_reconciliation:')) {
+            return __('Reconciliação ambígua', 'glpiintegaglpi');
+        }
+
+        return match ($status) {
+            'processing' => __('Criando chamado...', 'glpiintegaglpi'),
+            'succeeded' => __('Chamado criado/reconciliado', 'glpiintegaglpi'),
+            'failed_before_ticket' => __('Falha antes de vincular chamado', 'glpiintegaglpi'),
+            'failed_after_ticket' => __('Ticket criado, vínculo pendente', 'glpiintegaglpi'),
+            'cancelled' => __('Cancelada', 'glpiintegaglpi'),
+            default => '',
+        };
+    }
+
+    private function sanitizeEntityAttemptError(string $errorMessage): string
+    {
+        $errorMessage = trim($errorMessage);
+        if ($errorMessage === '') {
+            return '';
+        }
+
+        if (str_contains($errorMessage, 'glpi_ticket_create timeout')) {
+            return __('A criação pode ter sido concluída no GLPI. Não tente novamente até a reconciliação ser verificada.', 'glpiintegaglpi');
+        }
+
+        if (str_starts_with($errorMessage, 'ambiguous_reconciliation:')) {
+            return __('Há múltiplos chamados candidatos no GLPI. Exige decisão humana antes de nova tentativa.', 'glpiintegaglpi');
+        }
+
+        return mb_substr(preg_replace('/\s+/', ' ', $errorMessage) ?? $errorMessage, 0, 180);
+    }
+
+    private function inactivityStatusLabel(string $eventStatus, string $trackingStatus): string
+    {
+        $eventStatus = trim($eventStatus);
+        $trackingStatus = trim($trackingStatus);
+
+        return match ($eventStatus) {
+            'checked' => __('Checado', 'glpiintegaglpi'),
+            'eligible' => __('Elegível', 'glpiintegaglpi'),
+            'skipped' => __('Ignorado por regra', 'glpiintegaglpi'),
+            'planned' => __('Envio planejado', 'glpiintegaglpi'),
+            'sent' => __('Mensagem enviada', 'glpiintegaglpi'),
+            'failed' => __('Falha na inatividade', 'glpiintegaglpi'),
+            default => $trackingStatus !== '' ? $trackingStatus : '',
+        };
+    }
+
+    private function inactivityNextAction(string $eventStatus, string $eventReason, string $skipReason): string
+    {
+        $reason = trim($eventReason) !== '' ? trim($eventReason) : trim($skipReason);
+
+        if ($reason === 'skipped_missing_template_outside_24h') {
+            return __('Configurar template local ativo para enviar fora da janela 24h.', 'glpiintegaglpi');
+        }
+
+        return match ($eventStatus) {
+            'checked' => __('Aguardando próximo ciclo de inatividade', 'glpiintegaglpi'),
+            'eligible' => __('Mensagem de inatividade elegível para envio', 'glpiintegaglpi'),
+            'planned' => __('Envio de inatividade planejado', 'glpiintegaglpi'),
+            'sent' => __('Aguardar delivery/read da Meta', 'glpiintegaglpi'),
+            'failed' => __('Verificar erro de envio da Meta', 'glpiintegaglpi'),
+            'skipped' => $reason !== '' ? $reason : __('Sem ação por regra de inatividade', 'glpiintegaglpi'),
+            default => '',
+        };
+    }
+
+    private function sanitizeInactivityError(string $metaError, string $reason): string
+    {
+        $message = trim($metaError) !== '' ? trim($metaError) : trim($reason);
+        if ($message === '' || $message === 'candidates_found' || $message === 'no_eligible_candidates') {
+            return '';
+        }
+
+        return mb_substr(preg_replace('/\s+/', ' ', $message) ?? $message, 0, 180);
+    }
+
+    private function nextAction(string $status, bool $hasTicket, bool $profileComplete = false): string
+    {
+        if ($status === 'collecting_contact_profile' && $profileComplete && !$hasTicket) {
+            return __('Selecione a entidade para criar o chamado', 'glpiintegaglpi');
+        }
+
+        return match ($status) {
+            'awaiting_entity_selection' => __('Selecione a entidade para criar o chamado', 'glpiintegaglpi'),
+            'awaiting_queue_selection' => __('Selecione a fila', 'glpiintegaglpi'),
+            'collecting_contact_profile' => __('Aguarde o usuário responder', 'glpiintegaglpi'),
+            'media_error' => __('Verifique erro de mídia', 'glpiintegaglpi'),
+            'open' => __('Responda o cliente', 'glpiintegaglpi'),
+            'closed' => __('Acompanhe o chamado', 'glpiintegaglpi'),
+            default => $hasTicket
+                ? __('Acompanhe o chamado', 'glpiintegaglpi')
+                : __('Aguarde o usuário responder', 'glpiintegaglpi'),
+        };
+    }
+
+    private static function isProfileCollectionComplete(mixed $value): bool
+    {
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            $value = is_array($decoded) ? $decoded : [];
+        }
+
+        return is_array($value) && (string) ($value['step'] ?? '') === 'complete';
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function decodeProfileSnapshot(mixed $value): ?array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (!is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        $decoded = json_decode($value, true);
+        if (!is_array($decoded)) {
+            return null;
+        }
+
+        if (isset($decoded['snapshot_json'])) {
+            $snapshot = $decoded['snapshot_json'];
+            if (is_string($snapshot)) {
+                $snapshot = json_decode($snapshot, true);
+            }
+            if (is_array($snapshot)) {
+                $decoded = $snapshot;
+            }
+        }
+
+        if (!array_key_exists('last_equipment_tag', $decoded) && array_key_exists('equipment_tag', $decoded)) {
+            $decoded['last_equipment_tag'] = $decoded['equipment_tag'];
+        }
+        if (!array_key_exists('last_problem_summary', $decoded) && array_key_exists('problem_summary', $decoded)) {
+            $decoded['last_problem_summary'] = $decoded['problem_summary'];
+        }
+
+        return $decoded;
     }
 
     private function getConversationRepository(): ConversationRepository
@@ -794,6 +2193,7 @@ final class AttendanceCenterService
         }
 
         $this->pdo = ExternalDatabase::getConnection($this->pluginConfigService->getConnectionConfig());
+        ExternalSchemaManager::ensureSchema($this->pdo);
 
         return $this->pdo;
     }
@@ -818,6 +2218,21 @@ final class AttendanceCenterService
         }
     }
 
+    private function normalizeEntitySelectionIdempotencyKey(
+        string $conversationId,
+        int $glpiEntityId,
+        ?string $idempotencyKey
+    ): string {
+        $candidate = trim((string) $idempotencyKey);
+        if ($candidate !== '' && preg_match('/^[a-zA-Z0-9:._-]{1,180}$/', $candidate) === 1) {
+            return $candidate;
+        }
+
+        $safeConversationId = preg_replace('/[^a-zA-Z0-9._-]/', '_', $conversationId) ?: 'conversation';
+
+        return 'entity_selection:' . $safeConversationId . ':' . $glpiEntityId;
+    }
+
     private function isActiveGlpiUser(int $userId): bool
     {
         if ($userId <= 0 || !class_exists('\User')) {
@@ -833,7 +2248,28 @@ final class AttendanceCenterService
             && (int) ($user->fields['is_active'] ?? 1) === 1;
     }
 
-    private function solveGlpiTicket(int $ticketId): void
+    private function hasValidTicketId(mixed $value): bool
+    {
+        if (is_int($value)) {
+            return $value > 0;
+        }
+
+        if (is_float($value)) {
+            return floor($value) === $value && $value > 0;
+        }
+
+        if (is_string($value)) {
+            $trimmed = trim($value);
+            return $trimmed !== '' && ctype_digit($trimmed) && (int) $trimmed > 0;
+        }
+
+        return false;
+    }
+
+    /**
+     * @return array{status: string, solution_id?: int|null, status_updated?: bool, ticket_status?: int}
+     */
+    private function solveGlpiTicket(int $ticketId): array
     {
         if (!class_exists(\Ticket::class)) {
             throw new \RuntimeException(__('GLPI Ticket class is not available.', 'glpiintegaglpi'));
@@ -848,12 +2284,14 @@ final class AttendanceCenterService
             throw new \RuntimeException(__('Ticket not found.', 'glpiintegaglpi'));
         }
 
-        $updated = $ticket->update([
-            'id' => $ticketId,
-            'status' => CommonITILObject::SOLVED,
-        ]);
-        if ($updated === false) {
-            throw new \RuntimeException(__('Failed to update ticket status.', 'glpiintegaglpi'));
+        $currentStatus = (int) ($ticket->fields['status'] ?? 0);
+        if ($currentStatus === CommonITILObject::SOLVED || $currentStatus === CommonITILObject::CLOSED) {
+            return [
+                'status' => 'already_solved',
+                'solution_id' => null,
+                'status_updated' => false,
+                'ticket_status' => $currentStatus,
+            ];
         }
 
         $solution = new \ITILSolution();
@@ -867,6 +2305,42 @@ final class AttendanceCenterService
         if ($solutionId === false) {
             throw new \RuntimeException(__('Failed to add ticket solution.', 'glpiintegaglpi'));
         }
+
+        $updated = $ticket->update([
+            'id' => $ticketId,
+            'status' => CommonITILObject::SOLVED,
+        ]);
+        if ($updated === false) {
+            return [
+                'status' => 'status_update_failed',
+                'solution_id' => (int) $solutionId,
+                'status_updated' => false,
+                'ticket_status' => $currentStatus,
+            ];
+        }
+
+        return [
+            'status' => 'solved',
+            'solution_id' => (int) $solutionId,
+            'status_updated' => true,
+            'ticket_status' => CommonITILObject::SOLVED,
+        ];
+    }
+
+    private function friendlySolveExceptionMessage(Throwable $exception): string
+    {
+        $message = $exception->getMessage();
+        if (stripos($message, 'not found') !== false) {
+            return __('Ticket não encontrado no GLPI.', 'glpiintegaglpi');
+        }
+        if (stripos($message, 'solution') !== false) {
+            return __('Não foi possível criar a solução no GLPI. Verifique permissões do técnico.', 'glpiintegaglpi');
+        }
+        if (stripos($message, 'timeout') !== false || stripos($message, 'timed out') !== false) {
+            return __('Timeout ao comunicar com o GLPI durante a solução do chamado.', 'glpiintegaglpi');
+        }
+
+        return __('Falha específica ao solucionar chamado no GLPI. Verifique permissões e logs técnicos.', 'glpiintegaglpi');
     }
 
     private function logTransfer(
@@ -903,10 +2377,70 @@ final class AttendanceCenterService
                 'message_text' => (string) ($message['message_text'] ?? ''),
                 'processing_status' => (string) ($message['processing_status'] ?? ''),
                 'glpi_sync_status' => (string) ($message['glpi_sync_status'] ?? ''),
+                'meta_message_id' => (string) ($message['meta_message_id'] ?? ''),
+                'delivery_status' => (string) ($message['delivery_status'] ?? ''),
+                'delivery_status_label' => self::deliveryStatusLabel((string) ($message['delivery_status'] ?? '')),
+                'delivery_status_updated_at' => (string) ($message['delivery_status_updated_at'] ?? ''),
+                'meta_error_code' => (string) ($message['meta_error_code'] ?? ''),
+                'meta_error_message_sanitized' => (string) ($message['meta_error_message_sanitized'] ?? ''),
                 'created_at' => (string) ($message['created_at'] ?? ''),
                 'updated_at' => (string) ($message['updated_at'] ?? ''),
             ],
             $messages
         );
+    }
+
+    /**
+     * @return array{is_open: bool, label: string, expires_at: string, alert: string}
+     */
+    private function buildWhatsappWindow(string $lastInboundAt): array
+    {
+        $lastInboundAt = trim($lastInboundAt);
+        if ($lastInboundAt === '') {
+            return [
+                'is_open' => false,
+                'label' => __('Janela fechada — use template', 'glpiintegaglpi'),
+                'expires_at' => '',
+                'alert' => __('Sem mensagem inbound recente do cliente. Use template aprovado para iniciar contato.', 'glpiintegaglpi'),
+            ];
+        }
+
+        try {
+            $lastInbound = new \DateTimeImmutable($lastInboundAt);
+            $expiresAt = $lastInbound->modify('+24 hours');
+            $now = new \DateTimeImmutable('now', $expiresAt->getTimezone());
+            $isOpen = $expiresAt > $now;
+            $formatted = $expiresAt->format('H:i');
+
+            return [
+                'is_open' => $isOpen,
+                'label' => $isOpen
+                    ? sprintf(__('Janela aberta até %s', 'glpiintegaglpi'), $formatted)
+                    : __('Janela fechada — use template', 'glpiintegaglpi'),
+                'expires_at' => $expiresAt->format('c'),
+                'alert' => $isOpen
+                    ? ''
+                    : __('A janela de 24h está fechada. Use um template aprovado antes de enviar texto livre.', 'glpiintegaglpi'),
+            ];
+        } catch (Throwable) {
+            return [
+                'is_open' => false,
+                'label' => __('Janela fechada — use template', 'glpiintegaglpi'),
+                'expires_at' => '',
+                'alert' => __('Não foi possível calcular a janela de 24h com segurança.', 'glpiintegaglpi'),
+            ];
+        }
+    }
+
+    private static function deliveryStatusLabel(string $status): string
+    {
+        return match (strtolower(trim($status))) {
+            'pending' => __('Pendente', 'glpiintegaglpi'),
+            'sent' => __('Enviada', 'glpiintegaglpi'),
+            'delivered' => __('Entregue', 'glpiintegaglpi'),
+            'read' => __('Lida', 'glpiintegaglpi'),
+            'failed' => __('Falhou', 'glpiintegaglpi'),
+            default => '',
+        };
     }
 }

@@ -13,7 +13,9 @@ async function bootstrap(): Promise<void> {
   // Run before opening the HTTP port so the service never accepts webhooks without its own tables and indexes.
   await ensureDatabaseSchema();
 
-  const app = createApp(buildDependencies());
+  const dependencies = buildDependencies();
+  dependencies.inactivityAutomationService.start();
+  const app = createApp(dependencies);
   const server = createServer(app);
 
   server.listen(env.PORT, () => {

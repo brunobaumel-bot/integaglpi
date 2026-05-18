@@ -3,15 +3,17 @@ import type { MediaProcessingService } from './MediaProcessingService.js';
 import type { MetaClient } from '../../adapters/meta/MetaClient.js';
 import type { GlpiClient } from '../../adapters/glpi/GlpiClient.js';
 import type { Contact } from '../entities/Contact.js';
+import type { Conversation } from '../entities/Conversation.js';
 import type { ConversationRepository } from '../../repositories/contracts/ConversationRepository.js';
 import type { MessageRepository } from '../../repositories/contracts/MessageRepository.js';
 import type { WebhookEventRepository } from '../../repositories/contracts/WebhookEventRepository.js';
 import type { ActiveRoutingOption, RoutingRepository } from '../../repositories/contracts/RoutingRepository.js';
-import type { SolutionActionRepository } from '../../repositories/contracts/SolutionActionRepository.js';
+import type { CsatRating, SolutionActionRepository } from '../../repositories/contracts/SolutionActionRepository.js';
+import type { ContactEntityMemory, ContactEntityMemoryRepository } from '../repositories/ContactEntityMemoryRepository.js';
 
 import { logger } from '../../infra/logger/logger.js';
 import { serializeInboundFailure } from '../../infra/logger/serializeInboundFailure.js';
-import { parseMetaInboundMessages } from '../../adapters/meta/parseMetaWebhookPayload.js';
+import { parseMetaInboundMessages, parseMetaStatusUpdates } from '../../adapters/meta/parseMetaWebhookPayload.js';
 import { ContactResolutionService } from './ContactResolutionService.js';
 import type { ScheduleService } from './ScheduleService.js';
 import type { GlpiFailureStage } from '../../errors/GlpiRequestError.js';
@@ -19,6 +21,12 @@ import type { KeyLock } from '../contracts/KeyLock.js';
 import { buildMenuMessage, parseMenuDigitChoice } from './routingMenuMessage.js';
 import type { SettingsService } from './SettingsService.js';
 import type { AuditService } from './AuditService.js';
+import type { ContactEntityResolutionService } from './ContactEntityResolutionService.js';
+import type { ContactProfileCollectionState, ContactProfileService } from './ContactProfileService.js';
+import type { CustomerExperienceService } from './CustomerExperienceService.js';
+import type { MessageConfigurationService } from './MessageConfigurationService.js';
+import type { BusinessHoursService } from './BusinessHoursService.js';
+import { hasValidGlpiTicketId } from './EntitySelectionService.js';
 import { createCorrelationId } from './correlationId.js';
 
 export interface InboundWebhookProcessingResult {
@@ -39,6 +47,14 @@ const ROUTING_GLPI_CREATE_TIMEOUT_MS = 5_000;
 const GLPI_STATUS_SOLVED = 5;
 const GLPI_STATUS_CLOSED = 6;
 const GLPI_STATUS_PROCESSING = 2;
+const ENTITY_SELECTION_PENDING_MESSAGE =
+  'Recebemos as suas informações, em breve um de nossos técnicos irá seguir com o atendimento.';
+const REOPEN_REASON_OPTIONS: Array<{ key: ReopenReasonKey; eventKey: string; fallback: string }> = [
+  { key: 'problem_persists', eventKey: 'reopen_reason_problem_persists', fallback: 'O problema permanece' },
+  { key: 'missing_work', eventKey: 'reopen_reason_missing_work', fallback: 'Ficou faltando algo' },
+  { key: 'not_understood', eventKey: 'reopen_reason_not_understood', fallback: 'Não entendi a solução' },
+  { key: 'other', eventKey: 'reopen_reason_other', fallback: 'Outro motivo' },
+];
 
 interface RoutingMenuSendInput {
   toMeta: string;
@@ -47,15 +63,36 @@ interface RoutingMenuSendInput {
   menuBody: string;
   context: string;
   conversationId?: string | null;
+  correlationId?: string | null;
+  messageId?: string | null;
   prefixText?: string;
 }
 
 type SolutionButtonAction = 'approve' | 'reopen';
+type ReopenReasonKey = 'problem_persists' | 'missing_work' | 'not_understood' | 'other';
 
 interface ParsedSolutionButtonAction {
   action: SolutionButtonAction;
   ticketId: number;
   conversationId: string;
+  csatRating: CsatRating | null;
+  reopenReason: ReopenReasonKey | null;
+}
+
+interface EntitySelectionDeferralInput {
+  contact: Contact;
+  inboundMessage: ParsedMetaInboundMessage;
+  toMeta: string;
+  conversationId: string | null;
+  queueId?: number | null;
+  message: string;
+}
+
+interface CompletedProfileTransitionInput {
+  contact: Contact;
+  inboundMessage: ParsedMetaInboundMessage;
+  toMeta: string;
+  conversation: Conversation;
 }
 
 export class InboundWebhookService {
@@ -73,6 +110,12 @@ export class InboundWebhookService {
     private readonly mediaProcessingService: Pick<MediaProcessingService, 'processMedia'> | null = null,
     private readonly solutionActionRepository: SolutionActionRepository | null = null,
     private readonly auditService: AuditService | null = null,
+    private readonly contactEntityResolutionService: ContactEntityResolutionService | null = null,
+    private readonly contactEntityMemoryRepository: ContactEntityMemoryRepository | null = null,
+    private readonly contactProfileService: ContactProfileService | null = null,
+    private readonly customerExperienceService: Pick<CustomerExperienceService, 'resolveGlpiRequester'> | null = null,
+    private readonly messageConfigurationService: MessageConfigurationService | null = null,
+    private readonly businessHoursService: BusinessHoursService | null = null,
   ) {}
 
   public async process(
@@ -80,9 +123,60 @@ export class InboundWebhookService {
     options: InboundWebhookProcessOptions = {},
   ): Promise<InboundWebhookServiceResult> {
     const correlationId = options.correlationId ?? createCorrelationId();
+    const statusUpdates = parseMetaStatusUpdates(payload);
     const inboundMessages = parseMetaInboundMessages(payload);
 
-    if (inboundMessages.length === 0) {
+    const results: InboundWebhookProcessingResult[] = [];
+
+    for (const statusUpdate of statusUpdates) {
+      const status = normalizeMetaDeliveryStatus(statusUpdate.status);
+      if (status === null) {
+        continue;
+      }
+
+      const result = await this.messageRepository.recordDeliveryStatus({
+        metaMessageId: statusUpdate.metaMessageId,
+        status,
+        errorCode: sanitizeMetaStatusErrorCode(statusUpdate.errorCode),
+        errorMessageSanitized: sanitizeMetaStatusErrorMessage(statusUpdate.errorMessage),
+        correlationId,
+        receivedAt: statusUpdate.timestamp !== null && /^\d+$/.test(statusUpdate.timestamp)
+          ? new Date(Number(statusUpdate.timestamp) * 1000)
+          : new Date(),
+      });
+
+      logger.info(
+        {
+          correlation_id: correlationId,
+          meta_message_id_masked: maskSensitiveId(statusUpdate.metaMessageId),
+          delivery_status: status,
+          matched: result.matched,
+          event_type: 'MESSAGE_DELIVERY_STATUS',
+          status: result.matched ? 'processed' : 'unmatched',
+        },
+        '[integration-service][delivery][STATUS_RECEIVED]',
+      );
+      this.recordAudit({
+        correlationId,
+        messageId: statusUpdate.metaMessageId,
+        direction: 'outbound',
+        eventType: 'MESSAGE_DELIVERY_STATUS',
+        status: result.matched ? 'success' : 'ignored',
+        severity: result.matched ? 'info' : 'warning',
+        source: 'InboundWebhookService',
+        payload: {
+          delivery_status: status,
+          matched: result.matched,
+        },
+      });
+
+      results.push({
+        messageId: statusUpdate.metaMessageId,
+        outcome: 'processed',
+      });
+    }
+
+    if (inboundMessages.length === 0 && statusUpdates.length === 0) {
       await this.webhookEventRepository.create({
         eventId: `ignored:${Date.now()}`,
         eventType: 'ignored',
@@ -101,8 +195,6 @@ export class InboundWebhookService {
 
       return { results: [] };
     }
-
-    const results: InboundWebhookProcessingResult[] = [];
 
     for (const inboundMessage of inboundMessages) {
       results.push(await this.processSingleMessage(inboundMessage, correlationId));
@@ -248,16 +340,19 @@ export class InboundWebhookService {
           return;
         }
 
-        if (closedConversation?.glpiTicketId) {
+        const closedConversationTicketId = closedConversation && hasValidGlpiTicketId(closedConversation.glpiTicketId)
+          ? Number(closedConversation.glpiTicketId)
+          : null;
+        if (closedConversation && closedConversationTicketId !== null) {
           inboundGlpiStage = 'glpi_ticket_read';
-          knownExistingTicketStatus = await this.glpiClient.getTicketStatus(closedConversation.glpiTicketId);
+          knownExistingTicketStatus = await this.glpiClient.getTicketStatus(closedConversationTicketId);
           inboundGlpiStage = undefined;
 
           if (knownExistingTicketStatus === 'closed') {
             await this.sendClosedConversationMessage(
               toMeta,
               closedConversation.id,
-              closedConversation.glpiTicketId,
+              closedConversationTicketId,
             );
             closedConversationNoticeSent = true;
           }
@@ -265,7 +360,7 @@ export class InboundWebhookService {
 
         if (
           pendingGlpiOrphan
-          && pendingGlpiOrphan.glpiTicketId === null
+          && !hasValidGlpiTicketId(pendingGlpiOrphan.glpiTicketId)
         ) {
           logger.warn(
             {
@@ -304,11 +399,77 @@ export class InboundWebhookService {
           return;
         }
 
-        if (activeConversation?.status !== 'open' && !await this.scheduleService.isOpen()) {
-          const shouldSendMessage = this.scheduleService.shouldSendAfterHoursMessage(contact.phoneE164);
+        const activeProfileStep = activeConversation?.profileCollectionState
+          && typeof activeConversation.profileCollectionState === 'object'
+          && !Array.isArray(activeConversation.profileCollectionState)
+          ? String((activeConversation.profileCollectionState as Record<string, unknown>).step ?? '')
+          : '';
+        if (
+          activeConversation
+          && !hasValidGlpiTicketId(activeConversation.glpiTicketId)
+          && (
+            activeConversation.status === 'awaiting_entity_selection'
+            || (activeConversation.status === 'collecting_contact_profile' && activeProfileStep === 'complete')
+          )
+        ) {
+          if (activeConversation.status === 'collecting_contact_profile' && activeProfileStep === 'complete') {
+            await this.advanceCompletedProfileConversation({
+              contact,
+              inboundMessage,
+              toMeta,
+              conversation: activeConversation,
+            });
+            return;
+          }
+
+          conversationId = await this.deferTicketCreationForEntitySelection({
+            contact,
+            inboundMessage,
+            toMeta,
+            conversationId: activeConversation.id,
+            queueId: activeConversation.queueId,
+            message: ENTITY_SELECTION_PENDING_MESSAGE,
+          });
+          return;
+        }
+
+        if (activeConversation?.status !== 'open') {
+          const businessHoursDecision = this.businessHoursService
+            ? await this.businessHoursService.evaluate()
+            : {
+                enabled: true,
+                isOpen: await this.scheduleService.isOpen(),
+                eventKey: 'outside_business_hours_message',
+                cooldownMinutes: 60,
+                reason: 'legacy_schedule_service',
+              };
+          if (!businessHoursDecision.isOpen) {
+          const eventKey = businessHoursDecision.eventKey;
+          const shouldSendMessage = this.businessHoursService
+            ? await this.businessHoursService.shouldSendOutsideHoursMessage(
+                conversationId,
+                contact.phoneE164,
+                eventKey,
+                businessHoursDecision.cooldownMinutes,
+              )
+            : this.scheduleService.shouldSendAfterHoursMessage(contact.phoneE164);
+
           if (shouldSendMessage) {
-            const afterHoursMessage = await this.settingsService.getMessage('after_hours_message');
-            await this.metaClient.sendTextMessage({ to: toMeta, body: afterHoursMessage });
+            await this.sendOutsideBusinessHoursMessage({
+              eventKey,
+              toMeta,
+              contactPhone: contact.phoneE164,
+              conversationId,
+              correlationId,
+            });
+          } else {
+            await this.messageConfigurationService?.recordAutomationEvent({
+              conversationId,
+              phoneE164: contact.phoneE164,
+              eventKey,
+              status: 'not_sent_by_rule',
+              reason: 'cooldown',
+            });
           }
 
           logger.info(
@@ -317,16 +478,11 @@ export class InboundWebhookService {
               conversation_id: conversationId,
               conversation_status: existingConversation?.status ?? null,
               message_sent: shouldSendMessage,
+              reason: businessHoursDecision.reason,
             },
-            '[schedule][OUT_OF_HOURS]',
+            '[business_hours][OUT_OF_HOURS]',
           );
-          await this.messageRepository.updateState({
-            messageId: inboundMessage.messageId,
-            conversationId: conversationId ?? undefined,
-            processingStatus: 'processed',
-            glpiSyncStatus: 'synced',
-          });
-          return;
+          }
         }
 
         const isDetectableMedia =
@@ -375,7 +531,7 @@ export class InboundWebhookService {
         // For now the existing flow appends [image]/[audio]/[document] as text.
 
         const hasOpenConversationWithTicket =
-          activeConversation?.status === 'open' && activeConversation.glpiTicketId !== null;
+          activeConversation?.status === 'open' && hasValidGlpiTicketId(activeConversation.glpiTicketId);
         const willRoute = routingOptions.length > 0 && !hasOpenConversationWithTicket;
         const routingBranchReason =
           routingOptions.length === 0
@@ -413,6 +569,218 @@ export class InboundWebhookService {
             },
             '[integration-service][routing][STANDARD_FLOW]',
           );
+        }
+
+        if (activeConversation?.status === 'collecting_contact_profile') {
+          if (!this.contactProfileService) {
+            await this.metaClient.sendTextMessage({
+              to: toMeta,
+              body: 'Tivemos uma instabilidade ao coletar seus dados. Tente novamente mais tarde.',
+            });
+            await this.messageRepository.updateState({
+              messageId: inboundMessage.messageId,
+              conversationId: activeConversation.id,
+              processingStatus: 'processed',
+              glpiSyncStatus: 'error',
+            });
+            return;
+          }
+
+          const profileText = inboundMessage.messageText?.trim();
+          const existingProfile = await this.contactProfileService.findProfile(contact.phoneE164);
+          const reliableExistingProfile = this.contactProfileService.isReliableForConfirmation(existingProfile)
+            ? existingProfile
+            : null;
+          const rawState = activeConversation.profileCollectionState;
+          const hasPersistedState = Boolean(
+            rawState
+            && typeof rawState === 'object'
+            && !Array.isArray(rawState)
+            && Object.keys(rawState).length > 0,
+          );
+          const collectionState = hasPersistedState
+            ? this.contactProfileService.normalizeCollectionState(rawState)
+            : reliableExistingProfile
+              ? this.contactProfileService.startExistingProfileConfirmationState(reliableExistingProfile)
+              : this.contactProfileService.startNewCollectionState();
+
+          if (!profileText) {
+            await this.conversationRepository.updateProfileCollectionState(activeConversation.id, collectionState);
+            const prompt = this.contactProfileService.getCollectionPrompt(collectionState, reliableExistingProfile);
+            await this.sendContactProfilePrompt({
+              toMeta,
+              body: prompt,
+              state: collectionState,
+              conversationId: activeConversation.id,
+            });
+            logger.info(
+              { conversation_id: activeConversation.id },
+              '[integration-service][contact_profile][CONTACT_PROFILE_PROMPT_SENT]',
+            );
+            await this.messageRepository.updateState({
+              messageId: inboundMessage.messageId,
+              conversationId: activeConversation.id,
+              processingStatus: 'processed',
+              glpiSyncStatus: 'synced',
+            });
+            return;
+          }
+
+          logger.info(
+            { conversation_id: activeConversation.id },
+            '[integration-service][contact_profile][CONTACT_PROFILE_RESPONSE_RECEIVED]',
+          );
+          const stepResult = this.contactProfileService.processCollectionResponse({
+            phoneE164: contact.phoneE164,
+            state: collectionState,
+            text: profileText,
+            existingProfile: reliableExistingProfile,
+          });
+          await this.conversationRepository.updateProfileCollectionState(activeConversation.id, stepResult.state);
+          logger.info(
+            {
+              conversation_id: activeConversation.id,
+              profile_step: stepResult.state.step,
+              completed: stepResult.completed,
+            },
+            '[integration-service][contact_profile][CONTACT_PROFILE_PARSED]',
+          );
+
+          if (!stepResult.completed || !stepResult.profile) {
+            await this.sendContactProfilePrompt({
+              toMeta,
+              body: stepResult.reply,
+              state: stepResult.state,
+              conversationId: activeConversation.id,
+            });
+            logger.info(
+              { conversation_id: activeConversation.id, profile_step: stepResult.state.step },
+              '[integration-service][contact_profile][CONTACT_PROFILE_INCOMPLETE]',
+            );
+            await this.messageRepository.updateState({
+              messageId: inboundMessage.messageId,
+              conversationId: activeConversation.id,
+              processingStatus: 'processed',
+              glpiSyncStatus: 'synced',
+            });
+            return;
+          }
+
+          const profile = await this.contactProfileService.saveProfileData(
+            contact.phoneE164,
+            stepResult.profile,
+            activeConversation.id,
+          );
+          logger.info(
+            { conversation_id: activeConversation.id },
+            '[integration-service][contact_profile][CONTACT_PROFILE_SAVED]',
+          );
+          await this.contactProfileService.createSnapshot(
+            activeConversation.id,
+            contact.id,
+            contact.phoneE164,
+            profile,
+          );
+          logger.info(
+            { conversation_id: activeConversation.id },
+            '[integration-service][contact_profile][CONTACT_PROFILE_SNAPSHOT_CREATED]',
+          );
+
+          const rememberedEntity = await this.findRememberedEntity(contact.phoneE164);
+          const entityMode = this.contactEntityResolutionService
+            ? await this.contactEntityResolutionService.getMode()
+            : 'defer_until_known';
+          if (!rememberedEntity) {
+            await this.conversationRepository.updateQueueAndStatus(
+              activeConversation.id,
+              activeConversation.queueId ?? null,
+              'awaiting_entity_selection',
+            );
+            await this.metaClient.sendTextMessage({
+              to: toMeta,
+              body: ENTITY_SELECTION_PENDING_MESSAGE,
+            });
+            logger.info(
+              { conversation_id: activeConversation.id },
+              '[integration-service][contact_profile][TICKET_CREATION_DEFERRED_ENTITY_PENDING]',
+            );
+            await this.messageRepository.updateState({
+              messageId: inboundMessage.messageId,
+              conversationId: activeConversation.id,
+              processingStatus: 'processed',
+              glpiSyncStatus: 'synced',
+            });
+            return;
+          }
+
+          const assignment = activeConversation.queueId
+            ? await this.routingRepository.findAssignmentByQueueId(activeConversation.queueId)
+            : null;
+          const ticketPayload = await this.buildProfileAwareTicketPayload({
+            basePayload: this.buildNewTicketPayload(contact, inboundMessage),
+            contact,
+            conversationId: activeConversation.id,
+            queueLabel: stepResult.state.queue_label || (assignment?.queueId ? `Fila ${assignment.queueId}` : null),
+            profile,
+            entityMode,
+          });
+          const requesterUserId = await this.resolveRequesterUserId(
+            contact.phoneE164,
+            profile,
+            rememberedEntity.glpiEntityId,
+            activeConversation.id,
+          );
+          const ticketId = await this.glpiClient.createTicket(
+            {
+              title: ticketPayload.title,
+              content: ticketPayload.content,
+              requesterPhone: contact.phoneE164,
+              requesterName: contact.name,
+              entitiesId: rememberedEntity.glpiEntityId,
+              assignedUserId: assignment?.glpiUserId ?? null,
+              assignedGroupId: assignment?.glpiGroupId ?? null,
+              requesterUserId,
+            },
+            { timeoutMs: ROUTING_GLPI_CREATE_TIMEOUT_MS },
+          );
+
+          const linked = await this.conversationRepository.linkGlpiTicket(
+            activeConversation.id,
+            ticketId,
+            activeConversation.queueId,
+            rememberedEntity.glpiEntityId,
+            rememberedEntity.glpiEntityName,
+          );
+          if (linked) {
+            await this.metaClient.sendTextMessage({
+              to: toMeta,
+              body: await this.buildTicketCreatedConfirmation(null, ticketId),
+            });
+          }
+          await this.messageRepository.updateState({
+            messageId: inboundMessage.messageId,
+            conversationId: activeConversation.id,
+            processingStatus: 'processed',
+            glpiSyncStatus: linked ? 'synced' : 'error',
+          });
+          return;
+        }
+
+        if (activeConversation?.status === 'awaiting_queue_selection' && routingOptions.length === 0) {
+          const errorText = await this.settingsService.getMessage('error_fallback_message');
+          await this.metaClient.sendTextMessage({ to: toMeta, body: errorText });
+          logger.warn(
+            { conversation_id: activeConversation.id },
+            '[integration-service][routing][TICKET_CREATION_DEFERRED_QUEUE_PENDING]',
+          );
+          await this.conversationRepository.touch(activeConversation.id, new Date());
+          await this.messageRepository.updateState({
+            messageId: inboundMessage.messageId,
+            conversationId: activeConversation.id,
+            processingStatus: 'processed',
+            glpiSyncStatus: 'synced',
+          });
+          return;
         }
 
         if (willRoute) {
@@ -553,7 +921,7 @@ export class InboundWebhookService {
                 return;
               }
 
-              if (lockedConversation.glpiTicketId !== null) {
+              if (hasValidGlpiTicketId(lockedConversation.glpiTicketId)) {
                 logger.warn(
                   {
                     conversation_id: lockedConversation.id,
@@ -597,6 +965,170 @@ export class InboundWebhookService {
                 return;
               }
 
+              if (lockedConversation.status === 'awaiting_entity_selection') {
+                await this.metaClient.sendTextMessage({
+                  to: toMeta,
+                  body: 'Seu atendimento ja esta aguardando definicao de entidade pela nossa equipe.',
+                });
+                await this.messageRepository.updateState({
+                  messageId: inboundMessage.messageId,
+                  conversationId: lockedConversation.id,
+                  processingStatus: 'processed',
+                  glpiSyncStatus: 'synced',
+                });
+                return;
+              }
+
+              if (lockedConversation.status === 'collecting_contact_profile') {
+                const profileText = inboundMessage.messageText?.trim();
+                let profile = this.contactProfileService
+                  ? await this.contactProfileService.findProfile(contact.phoneE164)
+                  : null;
+                if (profileText && this.contactProfileService) {
+                  logger.info(
+                    { conversation_id: lockedConversation.id },
+                    '[integration-service][contact_profile][CONTACT_PROFILE_RESPONSE_RECEIVED]',
+                  );
+                  profile = await this.contactProfileService.saveProfileFromText(
+                    contact.id,
+                    contact.phoneE164,
+                    profileText,
+                    lockedConversation.id,
+                  );
+                  logger.info(
+                    {
+                      conversation_id: lockedConversation.id,
+                      profile_status: profile.profile_status,
+                    },
+                    '[integration-service][contact_profile][CONTACT_PROFILE_PARSED]',
+                  );
+                  logger.info(
+                    { conversation_id: lockedConversation.id },
+                    '[integration-service][contact_profile][CONTACT_PROFILE_SAVED]',
+                  );
+
+                  if (!(await this.contactProfileService.isProfileComplete(profile))) {
+                    await this.metaClient.sendTextMessage({
+                      to: toMeta,
+                      body: await this.contactProfileService.buildMissingFieldsPrompt(profile),
+                    });
+                    logger.info(
+                      { conversation_id: lockedConversation.id },
+                      '[integration-service][contact_profile][CONTACT_PROFILE_INCOMPLETE]',
+                    );
+                    await this.messageRepository.updateState({
+                      messageId: inboundMessage.messageId,
+                      conversationId: lockedConversation.id,
+                      processingStatus: 'processed',
+                      glpiSyncStatus: 'synced',
+                    });
+                    return;
+                  }
+
+                  await this.contactProfileService.createSnapshot(
+                    lockedConversation.id,
+                    contact.id,
+                    contact.phoneE164,
+                    profile,
+                  );
+                  logger.info(
+                    { conversation_id: lockedConversation.id },
+                    '[integration-service][contact_profile][CONTACT_PROFILE_SNAPSHOT_CREATED]',
+                  );
+                } else if (!profile || !this.contactProfileService) {
+                  await this.metaClient.sendTextMessage({
+                    to: toMeta,
+                    body: this.contactProfileService
+                      ? await this.contactProfileService.getInitialPrompt()
+                      : 'Envie empresa, nome, equipamento e resumo do problema em uma unica mensagem.',
+                  });
+                  logger.info(
+                    { conversation_id: lockedConversation.id },
+                    '[integration-service][contact_profile][CONTACT_PROFILE_INCOMPLETE]',
+                  );
+                  await this.messageRepository.updateState({
+                    messageId: inboundMessage.messageId,
+                    conversationId: lockedConversation.id,
+                    processingStatus: 'processed',
+                    glpiSyncStatus: 'synced',
+                  });
+                  return;
+                }
+
+                const rememberedEntity = await this.findRememberedEntity(contact.phoneE164);
+                const entityMode = this.contactEntityResolutionService
+                  ? await this.contactEntityResolutionService.getMode()
+                  : 'defer_until_known';
+                if (!rememberedEntity) {
+                  await this.conversationRepository.updateQueueAndStatus(
+                    lockedConversation.id,
+                    lockedConversation.queueId ?? null,
+                    'awaiting_entity_selection',
+                  );
+                  await this.metaClient.sendTextMessage({
+                    to: toMeta,
+                    body: ENTITY_SELECTION_PENDING_MESSAGE,
+                  });
+                  await this.messageRepository.updateState({
+                    messageId: inboundMessage.messageId,
+                    conversationId: lockedConversation.id,
+                    processingStatus: 'processed',
+                    glpiSyncStatus: 'synced',
+                  });
+                  return;
+                }
+
+                const assignment = lockedConversation.queueId
+                  ? await this.routingRepository.findAssignmentByQueueId(lockedConversation.queueId)
+                  : null;
+                const profileTicketPayload = await this.buildProfileAwareTicketPayload({
+                  basePayload: this.buildNewTicketPayload(contact, inboundMessage),
+                  contact,
+                  conversationId: lockedConversation.id,
+                  queueLabel: assignment?.queueId ? `Fila ${assignment.queueId}` : null,
+                  profile,
+                });
+                const requesterUserId = await this.resolveRequesterUserId(
+                  contact.phoneE164,
+                  profile,
+                  rememberedEntity.glpiEntityId,
+                  lockedConversation.id,
+                );
+                const ticketId = await this.glpiClient.createTicket(
+                  {
+                    title: profileTicketPayload.title,
+                    content: profileTicketPayload.content,
+                    requesterPhone: contact.phoneE164,
+                    requesterName: contact.name,
+                    entitiesId: rememberedEntity.glpiEntityId,
+                    assignedUserId: assignment?.glpiUserId ?? null,
+                    assignedGroupId: assignment?.glpiGroupId ?? null,
+                    requesterUserId,
+                  },
+                  { timeoutMs: ROUTING_GLPI_CREATE_TIMEOUT_MS },
+                );
+                const linked = await this.conversationRepository.linkGlpiTicket(
+                  lockedConversation.id,
+                  ticketId,
+                  lockedConversation.queueId,
+                  rememberedEntity.glpiEntityId,
+                  rememberedEntity.glpiEntityName,
+                );
+                await this.messageRepository.updateState({
+                  messageId: inboundMessage.messageId,
+                  conversationId: lockedConversation.id,
+                  processingStatus: 'processed',
+                  glpiSyncStatus: linked ? 'synced' : 'error',
+                });
+                if (linked) {
+                  await this.metaClient.sendTextMessage({
+                    to: toMeta,
+                    body: await this.buildTicketCreatedConfirmation(null, ticketId),
+                  });
+                }
+                return;
+              }
+
               if (lockedConversation.status !== 'awaiting_queue_selection') {
                 logger.warn(
                   {
@@ -622,7 +1154,91 @@ export class InboundWebhookService {
                 return;
               }
 
-              const routedTicketPayload = this.buildNewTicketPayload(contact, inboundMessage);
+              const qId = selectedOption.queueId;
+              const normalizedQueueId = typeof qId === 'number' && Number.isFinite(qId) ? qId : null;
+              const profileCollectionEnabled = this.contactProfileService
+                ? await this.contactProfileService.isCollectionEnabled()
+                : false;
+              const existingProfile = this.contactProfileService
+                ? await this.contactProfileService.findProfile(contact.phoneE164)
+                : null;
+              const reliableExistingProfile = this.contactProfileService?.isReliableForConfirmation(existingProfile)
+                ? existingProfile
+                : null;
+              if (this.contactProfileService && profileCollectionEnabled) {
+                const profileState = reliableExistingProfile
+                  ? this.contactProfileService.startExistingProfileConfirmationState(reliableExistingProfile, selectedOption.label)
+                  : this.contactProfileService.startNewCollectionState(selectedOption.label);
+                await this.conversationRepository.updateQueueAndStatus(
+                  lockedConversation.id,
+                  normalizedQueueId,
+                  'collecting_contact_profile',
+                );
+                await this.conversationRepository.updateProfileCollectionState(lockedConversation.id, profileState);
+                await this.sendContactProfilePrompt({
+                  toMeta,
+                  body: this.contactProfileService.getCollectionPrompt(profileState, reliableExistingProfile),
+                  state: profileState,
+                  conversationId: lockedConversation.id,
+                });
+                logger.info(
+                  { conversation_id: lockedConversation.id, profile_step: profileState.step },
+                  '[integration-service][contact_profile][CONTACT_PROFILE_COLLECTION_STARTED]',
+                );
+                logger.info(
+                  { conversation_id: lockedConversation.id, profile_step: profileState.step },
+                  '[integration-service][contact_profile][CONTACT_PROFILE_PROMPT_SENT]',
+                );
+                logger.info(
+                  { conversation_id: lockedConversation.id },
+                  '[integration-service][contact_profile][TICKET_CREATION_DEFERRED_PROFILE_PENDING]',
+                );
+                await this.messageRepository.updateState({
+                  messageId: inboundMessage.messageId,
+                  conversationId: lockedConversation.id,
+                  processingStatus: 'processed',
+                  glpiSyncStatus: 'synced',
+                });
+                return;
+              }
+
+              const rememberedEntity = await this.findRememberedEntity(contact.phoneE164);
+              const entityMode = this.contactEntityResolutionService
+                ? await this.contactEntityResolutionService.getMode()
+                : 'defer_until_known';
+              if (!rememberedEntity) {
+                await this.conversationRepository.updateQueueAndStatus(
+                  lockedConversation.id,
+                  normalizedQueueId,
+                  'awaiting_entity_selection',
+                );
+                await this.metaClient.sendTextMessage({
+                  to: toMeta,
+                  body: ENTITY_SELECTION_PENDING_MESSAGE,
+                });
+                await this.messageRepository.updateState({
+                  messageId: inboundMessage.messageId,
+                  conversationId: lockedConversation.id,
+                  processingStatus: 'processed',
+                  glpiSyncStatus: 'synced',
+                });
+                return;
+              }
+
+              const routedTicketPayload = await this.buildProfileAwareTicketPayload({
+                basePayload: this.buildNewTicketPayload(contact, inboundMessage),
+                contact,
+                conversationId: lockedConversation.id,
+                queueLabel: selectedOption.label,
+                profile: null,
+                entityMode,
+              });
+              const requesterUserId = await this.resolveRequesterUserId(
+                contact.phoneE164,
+                null,
+                rememberedEntity.glpiEntityId,
+                lockedConversation.id,
+              );
               let ticketId: number;
               try {
                 ticketId = await this.glpiClient.createTicket(
@@ -631,8 +1247,10 @@ export class InboundWebhookService {
                     content: routedTicketPayload.content,
                     requesterPhone: contact.phoneE164,
                     requesterName: contact.name,
+                    entitiesId: rememberedEntity.glpiEntityId,
                     assignedUserId: selectedOption.glpiUserId,
                     assignedGroupId: selectedOption.glpiGroupId,
+                    requesterUserId,
                   },
                   { timeoutMs: ROUTING_GLPI_CREATE_TIMEOUT_MS },
                 );
@@ -686,12 +1304,13 @@ export class InboundWebhookService {
               );
               inboundGlpiStage = undefined;
 
-              const qId = selectedOption.queueId;
               try {
                 const linked = await this.conversationRepository.linkGlpiTicket(
                   lockedConversation.id,
                   ticketId,
-                  typeof qId === 'number' && Number.isFinite(qId) ? qId : undefined,
+                  normalizedQueueId,
+                  rememberedEntity.glpiEntityId,
+                  rememberedEntity.glpiEntityName,
                 );
                 if (!linked) {
                   logger.warn(
@@ -797,12 +1416,57 @@ export class InboundWebhookService {
           return;
         }
 
+        const profileCollectionEnabled = this.contactProfileService
+          ? await this.contactProfileService.isCollectionEnabled()
+          : false;
+        if (profileCollectionEnabled && !activeConversation && routingOptions.length === 0) {
+          const profileConversation = await this.conversationRepository.create({
+            phoneE164: contact.phoneE164,
+            contactId: contact.id,
+            glpiTicketId: null,
+            status: 'collecting_contact_profile',
+            lastMessageAt: new Date(),
+          });
+          conversationId = profileConversation.id;
+          const profileState = this.contactProfileService!.startNewCollectionState();
+          await this.conversationRepository.updateProfileCollectionState(profileConversation.id, profileState);
+          await this.sendContactProfilePrompt({
+            toMeta,
+            body: this.contactProfileService!.getCollectionPrompt(profileState),
+            state: profileState,
+            conversationId: profileConversation.id,
+          });
+          logger.info(
+            { conversation_id: profileConversation.id },
+            '[integration-service][contact_profile][CONTACT_PROFILE_COLLECTION_STARTED]',
+          );
+          logger.info(
+            { conversation_id: profileConversation.id },
+            '[integration-service][contact_profile][CONTACT_PROFILE_PROMPT_SENT]',
+          );
+          logger.info(
+            { conversation_id: profileConversation.id },
+            '[integration-service][contact_profile][TICKET_CREATION_DEFERRED_PROFILE_PENDING]',
+          );
+          await this.conversationRepository.touch(profileConversation.id, new Date());
+          await this.messageRepository.updateState({
+            messageId: inboundMessage.messageId,
+            conversationId: profileConversation.id,
+            processingStatus: 'processed',
+            glpiSyncStatus: 'synced',
+          });
+          return;
+        }
+
         // ── Existe conversa com ticket vinculado → decisão baseada em status ──
-        if (existingConversation?.glpiTicketId) {
+        const existingConversationTicketId = existingConversation && hasValidGlpiTicketId(existingConversation.glpiTicketId)
+          ? Number(existingConversation.glpiTicketId)
+          : null;
+        if (existingConversation && existingConversationTicketId !== null) {
           let glpiTicketStatus = knownExistingTicketStatus;
           if (glpiTicketStatus === null) {
             inboundGlpiStage = 'glpi_ticket_read';
-            glpiTicketStatus = await this.glpiClient.getTicketStatus(existingConversation.glpiTicketId);
+            glpiTicketStatus = await this.glpiClient.getTicketStatus(existingConversationTicketId);
             inboundGlpiStage = undefined;
           }
 
@@ -821,7 +1485,7 @@ export class InboundWebhookService {
           logger.info(
             {
               conversation_id:    existingConversation.id,
-              old_ticket_id:      existingConversation.glpiTicketId,
+              old_ticket_id:      existingConversationTicketId,
               conversation_status: conversationStatus,
               glpi_ticket_status: glpiTicketStatus,
               action,
@@ -843,20 +1507,23 @@ export class InboundWebhookService {
               const mediaResult = await this.mediaProcessingService.processMedia({
                 messageType: inboundMessage.messageType,
                 mediaMetadata: inboundMessage.mediaMetadata,
-                ticketId: existingConversation.glpiTicketId,
+                ticketId: existingConversationTicketId,
+                conversationId: existingConversation.id,
+                messageId: inboundMessage.messageId,
+                correlationId,
               });
               followUpContent = mediaResult.followUpContent;
               mediaInfoRecord = mediaResult.mediaInfo as unknown as Record<string, unknown>;
               await this.messageRepository.updateMediaInfo(inboundMessage.messageId, mediaInfoRecord);
             } else if (isDetectableMedia) {
-              mediaInfoRecord = this.buildMediaMetadataMissingInfo(inboundMessage.messageType, existingConversation.glpiTicketId);
+              mediaInfoRecord = this.buildMediaMetadataMissingInfo(inboundMessage.messageType, existingConversationTicketId);
               await this.messageRepository.updateMediaInfo(inboundMessage.messageId, mediaInfoRecord);
               logger.error(
                 {
                   message_id: inboundMessage.messageId,
                   message_type: inboundMessage.messageType,
                   conversation_id: existingConversation.id,
-                  ticket_id: existingConversation.glpiTicketId,
+                  ticket_id: existingConversationTicketId,
                   correlation_id: correlationId,
                   event_type: 'MEDIA_REJECTED',
                   status: 'failed',
@@ -867,7 +1534,7 @@ export class InboundWebhookService {
               );
               this.recordAudit({
                 correlationId,
-                ticketId: existingConversation.glpiTicketId,
+                ticketId: existingConversationTicketId,
                 conversationId: existingConversation.id,
                 messageId: inboundMessage.messageId,
                 direction: 'inbound',
@@ -888,7 +1555,7 @@ export class InboundWebhookService {
 
             try {
               await this.glpiClient.addFollowUp({
-                ticketId: existingConversation.glpiTicketId,
+                ticketId: existingConversationTicketId,
                 content: followUpContent,
               });
             } catch (error: unknown) {
@@ -911,12 +1578,12 @@ export class InboundWebhookService {
               glpiSyncStatus: 'synced',
             });
             logger.info(
-              { actionTaken: 'append', conversationId: existingConversation.id, glpiTicketId: existingConversation.glpiTicketId },
+              { actionTaken: 'append', conversationId: existingConversation.id, glpiTicketId: existingConversationTicketId },
               'Inbound message appended as GLPI follow-up.',
             );
             this.recordAudit({
               correlationId,
-              ticketId: existingConversation.glpiTicketId,
+              ticketId: existingConversationTicketId,
               conversationId: existingConversation.id,
               messageId: inboundMessage.messageId,
               direction: 'inbound',
@@ -934,7 +1601,7 @@ export class InboundWebhookService {
             conversationId = existingConversation.id;
             inboundGlpiStage = 'glpi_followup_create';
             await this.glpiClient.addFollowUp({
-              ticketId: existingConversation.glpiTicketId,
+              ticketId: existingConversationTicketId,
               content: this.buildFollowUpContent(contact, inboundMessage),
             });
             inboundGlpiStage = undefined;
@@ -946,7 +1613,7 @@ export class InboundWebhookService {
               glpiSyncStatus: 'synced',
             });
             logger.info(
-              { actionTaken: 'reopen_conversation', conversationId: existingConversation.id, glpiTicketId: existingConversation.glpiTicketId },
+              { actionTaken: 'reopen_conversation', conversationId: existingConversation.id, glpiTicketId: existingConversationTicketId },
               'Inbound on closed conversation with open GLPI ticket: conversation reopened and follow-up added.',
             );
             return;
@@ -961,20 +1628,40 @@ export class InboundWebhookService {
             await this.sendClosedConversationMessage(
               toMeta,
               existingConversation.id,
-              existingConversation.glpiTicketId,
+              existingConversationTicketId,
             );
           }
 
           if (conversationStatus !== 'closed') {
             await this.conversationRepository.updateStatus(existingConversation.id, 'closed');
           }
+          const rememberedEntity = await this.findRememberedEntity(contact.phoneE164);
+          if (!rememberedEntity) {
+            conversationId = await this.deferTicketCreationForEntitySelection({
+              contact,
+              inboundMessage,
+              toMeta,
+              conversationId: null,
+              queueId: existingConversation.queueId,
+              message: ENTITY_SELECTION_PENDING_MESSAGE,
+            });
+            return;
+          }
           inboundGlpiStage = 'glpi_ticket_create';
           const newTicketPayload = this.buildNewTicketPayload(contact, inboundMessage);
+          const requesterUserId = await this.resolveRequesterUserId(
+            contact.phoneE164,
+            null,
+            rememberedEntity.glpiEntityId,
+            existingConversation.id,
+          );
           const newTicketId = await this.glpiClient.createTicket({
             title: newTicketPayload.title,
             content: newTicketPayload.content,
             requesterPhone: contact.phoneE164,
             requesterName: contact.name,
+            entitiesId: rememberedEntity.glpiEntityId,
+            requesterUserId,
           });
           this.logTicketCreatedWithFallback(contact, inboundMessage.messageId, newTicketId);
           inboundGlpiStage = undefined;
@@ -1013,19 +1700,47 @@ export class InboundWebhookService {
         }
 
         // ── Conversa ativa sem ticket → criar e vincular ──
-        if (activeConversation && !activeConversation.glpiTicketId) {
+        if (activeConversation && !hasValidGlpiTicketId(activeConversation.glpiTicketId)) {
+          const rememberedEntity = await this.findRememberedEntity(contact.phoneE164);
+          if (!rememberedEntity) {
+            conversationId = await this.deferTicketCreationForEntitySelection({
+              contact,
+              inboundMessage,
+              toMeta,
+              conversationId: activeConversation.id,
+              queueId: activeConversation.queueId,
+              message: activeConversation.status === 'awaiting_entity_selection'
+                ? 'Seu atendimento ja esta aguardando definicao de entidade pela nossa equipe.'
+                : ENTITY_SELECTION_PENDING_MESSAGE,
+            });
+            return;
+          }
           inboundGlpiStage = 'glpi_ticket_create';
           const ticketPayload = this.buildNewTicketPayload(contact, inboundMessage);
+          const requesterUserId = await this.resolveRequesterUserId(
+            contact.phoneE164,
+            null,
+            rememberedEntity.glpiEntityId,
+            activeConversation.id,
+          );
           const ticketId = await this.glpiClient.createTicket({
             title: ticketPayload.title,
             content: ticketPayload.content,
             requesterPhone: contact.phoneE164,
             requesterName: contact.name,
+            entitiesId: rememberedEntity.glpiEntityId,
+            requesterUserId,
           });
           this.logTicketCreatedWithFallback(contact, inboundMessage.messageId, ticketId);
           inboundGlpiStage = undefined;
 
-          const linked = await this.conversationRepository.linkGlpiTicket(activeConversation.id, ticketId);
+          const linked = await this.conversationRepository.linkGlpiTicket(
+            activeConversation.id,
+            ticketId,
+            activeConversation.queueId,
+            rememberedEntity.glpiEntityId,
+            rememberedEntity.glpiEntityName,
+          );
           if (!linked) {
             logger.warn(
               {
@@ -1069,13 +1784,33 @@ export class InboundWebhookService {
         }
 
         // ── Nenhuma conversa (ou fechada sem ticket) → novo ticket + nova conversa ──
+        const rememberedEntity = await this.findRememberedEntity(contact.phoneE164);
+        if (!rememberedEntity) {
+          conversationId = await this.deferTicketCreationForEntitySelection({
+            contact,
+            inboundMessage,
+            toMeta,
+            conversationId: null,
+            queueId: null,
+            message: ENTITY_SELECTION_PENDING_MESSAGE,
+          });
+          return;
+        }
         inboundGlpiStage = 'glpi_ticket_create';
         const ticketPayload = this.buildNewTicketPayload(contact, inboundMessage);
+        const requesterUserId = await this.resolveRequesterUserId(
+          contact.phoneE164,
+          null,
+          rememberedEntity.glpiEntityId,
+          null,
+        );
         const ticketId = await this.glpiClient.createTicket({
           title: ticketPayload.title,
           content: ticketPayload.content,
           requesterPhone: contact.phoneE164,
           requesterName: contact.name,
+          entitiesId: rememberedEntity.glpiEntityId,
+          requesterUserId,
         });
         this.logTicketCreatedWithFallback(contact, inboundMessage.messageId, ticketId);
         inboundGlpiStage = undefined;
@@ -1188,6 +1923,60 @@ export class InboundWebhookService {
     };
   }
 
+  private async buildProfileAwareTicketPayload(input: {
+    basePayload: { title: string; content: string };
+    contact: Contact;
+    conversationId: string;
+    queueLabel: string | null;
+    profile: Awaited<ReturnType<ContactProfileService['findProfile']>> | null;
+    entityMode?: 'use_default_entity' | 'defer_until_known' | string | null;
+  }): Promise<{ title: string; content: string }> {
+    if (!this.contactProfileService || !input.profile) {
+      return input.basePayload;
+    }
+
+    const snapshot = await this.contactProfileService.createSnapshot(
+      input.conversationId,
+      input.contact.id,
+      input.contact.phoneE164,
+      input.profile,
+    );
+
+    return this.contactProfileService.enrichTicketPayload({
+      baseTitle: input.basePayload.title,
+      baseContent: input.basePayload.content,
+      phoneE164: input.contact.phoneE164,
+      queueLabel: input.queueLabel,
+      profile: snapshot,
+      entityMode: input.entityMode,
+    });
+  }
+
+  private async resolveRequesterUserId(
+    phoneE164: string,
+    profile: Awaited<ReturnType<ContactProfileService['findProfile']>> | null,
+    entitiesId: number,
+    conversationId: string | null,
+  ): Promise<number | null> {
+    if (!this.customerExperienceService || !this.contactProfileService) {
+      return null;
+    }
+
+    const effectiveProfile = profile ?? await this.contactProfileService.findProfile(phoneE164);
+    if (!effectiveProfile) {
+      return null;
+    }
+
+    const result = await this.customerExperienceService.resolveGlpiRequester({
+      phoneE164,
+      profile: effectiveProfile,
+      entitiesId,
+      conversationId,
+    });
+
+    return result.glpiUserId;
+  }
+
   private buildFollowUpContent(contact: Contact, inboundMessage: ParsedMetaInboundMessage): string {
     const contentLines = [
       'Mensagem recebida via WhatsApp',
@@ -1248,6 +2037,41 @@ export class InboundWebhookService {
 
   private parseSolutionButtonAction(messageText: string | null): ParsedSolutionButtonAction | null {
     const value = messageText?.trim() ?? '';
+    const reopenReasonMatch = /^solution_reopen_reason:(problem_persists|missing_work|not_understood|other):(\d+):(.+)$/.exec(value);
+    if (reopenReasonMatch) {
+      const ticketId = Number.parseInt(reopenReasonMatch[2], 10);
+      const conversationId = reopenReasonMatch[3].trim();
+      if (!Number.isSafeInteger(ticketId) || ticketId <= 0 || conversationId.length === 0) {
+        return null;
+      }
+
+      return {
+        action: 'reopen',
+        ticketId,
+        conversationId,
+        csatRating: null,
+        reopenReason: reopenReasonMatch[1] as ReopenReasonKey,
+      };
+    }
+
+    const csatMatch = /^solution_csat:(very_satisfied|satisfied|dissatisfied):(\d+):(.+)$/.exec(value);
+    if (csatMatch) {
+      const ticketId = Number.parseInt(csatMatch[2], 10);
+      const conversationId = csatMatch[3].trim();
+      if (!Number.isSafeInteger(ticketId) || ticketId <= 0 || conversationId.length === 0) {
+        return null;
+      }
+
+      const csatRating = csatMatch[1] as CsatRating;
+      return {
+        action: csatRating === 'dissatisfied' ? 'reopen' : 'approve',
+        ticketId,
+        conversationId,
+        csatRating,
+        reopenReason: null,
+      };
+    }
+
     const match = /^(solution_approve|solution_reopen):(\d+):(.+)$/.exec(value);
     if (!match) {
       return null;
@@ -1263,6 +2087,8 @@ export class InboundWebhookService {
       action: match[1] === 'solution_approve' ? 'approve' : 'reopen',
       ticketId,
       conversationId,
+      csatRating: null,
+      reopenReason: null,
     };
   }
 
@@ -1306,7 +2132,64 @@ export class InboundWebhookService {
       return;
     }
 
-    const actionKey = `solution:${input.action.action}:${input.action.ticketId}:${conversation.id}`;
+    if (
+      input.action.action === 'reopen'
+      && input.action.csatRating === null
+      && input.action.reopenReason === null
+    ) {
+      await this.keyLock.withLock(`solution_action:${input.action.ticketId}`, async () => {
+        const ticket = await this.glpiClient.getTicket(input.action.ticketId);
+        if (ticket.status !== GLPI_STATUS_SOLVED) {
+          await this.sendExpiredSolutionActionMessage(input.toMeta, input.action);
+          logger.info(
+            {
+              ticket_id: input.action.ticketId,
+              conversation_id: conversation.id,
+              ticket_status: ticket.status,
+              action: input.action.action,
+            },
+            '[integration-service][solution][REOPEN_REASON_ACTION_EXPIRED]',
+          );
+          return;
+        }
+
+        await this.sendConfiguredReopenReasonPrompt(input.toMeta, input.action, input.correlationId);
+        this.recordAudit({
+          correlationId: input.correlationId,
+          ticketId: input.action.ticketId,
+          conversationId: conversation.id,
+          messageId: input.inboundMessage.messageId,
+          direction: 'inbound',
+          eventType: 'TICKET_UPDATED',
+          status: 'success',
+          severity: 'info',
+          source: 'InboundWebhookService',
+          payload: { action: 'solution_reopen_reason_prompt' },
+        });
+      });
+
+      await this.messageRepository.updateState({
+        messageId: input.inboundMessage.messageId,
+        conversationId: conversation.id,
+        processingStatus: 'processed',
+        glpiSyncStatus: 'synced',
+      });
+      return;
+    }
+
+    const actionKey = input.action.reopenReason
+      ? `solution:${input.action.action}:${input.action.ticketId}:${conversation.id}:${input.action.reopenReason}`
+      : `solution:${input.action.action}:${input.action.ticketId}:${conversation.id}`;
+    const csatRating = input.action.csatRating;
+    const baseAuditAction = input.action.action === 'approve' ? 'solution_approve' : 'solution_reopen';
+    const successAuditPayload =
+      csatRating === null
+        ? input.action.reopenReason
+          ? { action: baseAuditAction, reopen_reason: input.action.reopenReason }
+          : { action: baseAuditAction }
+        : input.action.action === 'approve'
+          ? { action: baseAuditAction, csat_rating: csatRating }
+          : { action: baseAuditAction, csat_rating: csatRating, supervisor_review_required: true };
 
     await this.keyLock.withLock(`solution_action:${input.action.ticketId}`, async () => {
       const ticket = await this.glpiClient.getTicket(input.action.ticketId);
@@ -1318,6 +2201,8 @@ export class InboundWebhookService {
         phoneE164: conversation.phoneE164,
         action: input.action.action,
         previousTicketStatus: ticket.status,
+        csatRating,
+        supervisorReviewRequired: csatRating === 'dissatisfied',
       });
 
       if (!reserved?.reserved) {
@@ -1378,7 +2263,12 @@ export class InboundWebhookService {
       try {
         if (input.action.action === 'approve') {
           solutionStage = 'glpi_solution_approve';
-          const auditContent = this.buildSolutionActionFollowUpContent(input.contact, conversation.id, 'approve');
+          const auditContent = await this.buildSolutionActionFollowUpContent(
+            input.contact,
+            conversation.id,
+            'approve',
+            csatRating,
+          );
           await this.glpiClient.approveTicketSolution(input.action.ticketId, auditContent);
           await this.conversationRepository.updateStatus(conversation.id, 'closed');
           await this.conversationRepository.touch(conversation.id, new Date());
@@ -1393,7 +2283,7 @@ export class InboundWebhookService {
             status: 'success',
             severity: 'info',
             source: 'InboundWebhookService',
-            payload: { action: 'solution_approve' },
+            payload: successAuditPayload,
           });
           logger.info(
             {
@@ -1403,9 +2293,24 @@ export class InboundWebhookService {
             },
             '[integration-service][solution][APPROVED]',
           );
+          await this.sendConfiguredCsatPrompt(input.toMeta, input.action, input.correlationId);
         } else {
           solutionStage = 'glpi_solution_reopen';
-          const auditContent = this.buildSolutionActionFollowUpContent(input.contact, conversation.id, 'reopen');
+          logger.info(
+            {
+              ticket_id: input.action.ticketId,
+              conversation_id: conversation.id,
+              reopen_reason: input.action.reopenReason,
+            },
+            '[integration-service][solution][SOLUTION_REOPEN_REASON_SELECTED]',
+          );
+          const auditContent = await this.buildSolutionActionFollowUpContent(
+            input.contact,
+            conversation.id,
+            'reopen',
+            csatRating,
+            input.action.reopenReason,
+          );
           await this.glpiClient.reopenTicketSolution(input.action.ticketId, auditContent);
           await this.conversationRepository.reopenConversation(conversation.id);
           await this.conversationRepository.touch(conversation.id, new Date());
@@ -1420,7 +2325,7 @@ export class InboundWebhookService {
             status: 'success',
             severity: 'info',
             source: 'InboundWebhookService',
-            payload: { action: 'solution_reopen' },
+            payload: successAuditPayload,
           });
           await this.sendSolutionActionConfirmation(input.toMeta, input.action);
           logger.info(
@@ -1428,8 +2333,9 @@ export class InboundWebhookService {
               ticket_id: input.action.ticketId,
               conversation_id: conversation.id,
               action_id: reserved.action.id,
+              reopen_reason: input.action.reopenReason,
             },
-            '[integration-service][solution][REOPENED]',
+            '[integration-service][solution][TICKET_REOPENED_WITH_REASON]',
           );
         }
       } catch (error: unknown) {
@@ -1461,10 +2367,12 @@ export class InboundWebhookService {
           severity: 'error',
           source: 'InboundWebhookService',
           errorMessage: error instanceof Error ? error.message : String(error),
-          payload: {
-            action: input.action.action === 'approve' ? 'solution_approve' : 'solution_reopen',
-            error_code: errorCode,
-          },
+          payload:
+            csatRating === null
+              ? input.action.reopenReason
+                ? { action: baseAuditAction, reopen_reason: input.action.reopenReason, error_code: errorCode }
+                : { action: baseAuditAction, error_code: errorCode }
+              : { action: baseAuditAction, csat_rating: csatRating, error_code: errorCode },
         });
 
         if (input.action.action === 'reopen') {
@@ -1502,23 +2410,41 @@ export class InboundWebhookService {
     );
   }
 
-  private buildSolutionActionFollowUpContent(
+  private async buildSolutionActionFollowUpContent(
     contact: Contact,
     conversationId: string,
     action: SolutionButtonAction,
-  ): string {
+    csatRating: CsatRating | null = null,
+    reopenReason: ReopenReasonKey | null = null,
+  ): Promise<string> {
+    const reopenReasonLabel = reopenReason ? await this.reopenReasonLabel(reopenReason) : null;
     const actionText = action === 'approve'
       ? 'Cliente aprovou a solução via WhatsApp.'
-      : 'Cliente solicitou reabertura via WhatsApp.';
+      : csatRating === 'dissatisfied'
+        ? 'Cliente indicou insatisfação na pesquisa via WhatsApp. O chamado deve seguir em atendimento e revisão.'
+        : reopenReasonLabel
+          ? `Cliente solicitou reabertura via WhatsApp. Motivo: ${reopenReasonLabel}.`
+          : 'Cliente solicitou reabertura via WhatsApp.';
 
-    return [
+    const lines = [
       actionText,
       '',
       `Telefone: ${contact.phoneE164}`,
       `Conversation ID: ${conversationId}`,
       `Ação: ${action}`,
-      'Origem: WhatsApp',
-    ].join('\n');
+    ];
+
+    if (csatRating !== null) {
+      lines.push(`CSAT: ${csatRating}`);
+      lines.push(`Revisão de supervisor: ${csatRating === 'dissatisfied' ? 'sim' : 'não'}`);
+    }
+    if (reopenReasonLabel) {
+      lines.push(`Motivo da reabertura: ${reopenReasonLabel}`);
+    }
+
+    lines.push('Origem: WhatsApp');
+
+    return lines.join('\n');
   }
 
   private classifySolutionActionError(
@@ -1540,9 +2466,22 @@ export class InboundWebhookService {
     action: ParsedSolutionButtonAction,
   ): Promise<void> {
     try {
+      const eventKey = action.csatRating === 'dissatisfied'
+        ? 'solution_reopen_message'
+        : 'solution_reopened_confirmation';
+      const message = await this.messageConfigurationService?.getMessage(eventKey);
+      const configuredText = selectSolutionMessageText(message)
+        .replace(/\{\{ticket_id\}\}/g, String(action.ticketId))
+        .replace(/\{ticket_id\}/g, String(action.ticketId))
+        .replace(/#\{ticket_id\}/g, `#${action.ticketId}`)
+        .trim();
       await this.metaClient.sendTextMessage({
         to: toMeta,
-        body: `Seu chamado #${action.ticketId} foi reaberto com sucesso.`,
+        body: configuredText !== ''
+          ? configuredText
+          : action.csatRating === 'dissatisfied'
+          ? `Registramos sua avaliação e o chamado #${action.ticketId} seguirá em atendimento para revisão.`
+          : `Seu chamado #${action.ticketId} foi reaberto com sucesso.`,
       });
     } catch (error: unknown) {
       logger.error(
@@ -1554,6 +2493,202 @@ export class InboundWebhookService {
           error_message: error instanceof Error ? error.message : String(error),
         },
         '[integration-service][solution][CONFIRMATION_ERROR]',
+      );
+    }
+  }
+
+  private async sendConfiguredReopenReasonPrompt(
+    toMeta: string,
+    action: ParsedSolutionButtonAction,
+    correlationId: string,
+  ): Promise<void> {
+    try {
+      const plan = await this.messageConfigurationService?.resolveSendPlan('reopen_reason_prompt', {
+        windowOpen: true,
+        allowTemplateSend: true,
+      });
+      if (plan && !plan.shouldSend) {
+        logger.warn(
+          {
+            ticket_id: action.ticketId,
+            conversation_id: action.conversationId,
+            correlation_id: correlationId,
+            event_key: 'reopen_reason_prompt',
+            reason: plan.reason,
+          },
+          '[integration-service][solution][REOPEN_REASON_NOT_SENT_BY_RULE]',
+        );
+        return;
+      }
+
+      const buttons = await this.buildReopenReasonButtons(action);
+      const sendReplyButtons = (this.metaClient as unknown as {
+        sendReplyButtons?: (
+          to: string,
+          bodyText: string,
+          buttons: Array<{ id: string; title: string }>,
+        ) => Promise<unknown>;
+      }).sendReplyButtons;
+      const sendListMessage = (this.metaClient as unknown as {
+        sendListMessage?: (
+          to: string,
+          bodyText: string,
+          options: Array<{ id: string; title: string; description?: string }>,
+          buttonText?: string,
+          sectionTitle?: string,
+        ) => Promise<unknown>;
+      }).sendListMessage;
+      const body = plan?.text.trim() || 'Qual o motivo da reabertura?';
+
+      try {
+        if (buttons.length <= 3 && typeof sendReplyButtons === 'function') {
+          await sendReplyButtons.call(
+            this.metaClient,
+            toMeta,
+            body,
+            buttons.map((button) => ({ ...button, title: truncateButtonTitle(button.title) })),
+          );
+        } else if (typeof sendListMessage === 'function') {
+          await sendListMessage.call(
+            this.metaClient,
+            toMeta,
+            body,
+            buttons.map((button) => ({
+              id: button.id,
+              title: truncateListTitle(button.title),
+            })),
+            'Motivos',
+            'Reabertura',
+          );
+        } else {
+          throw new Error('META_INTERACTIVE_LIST_UNAVAILABLE');
+        }
+      } catch (interactiveError: unknown) {
+        logger.warn(
+          {
+            ticket_id: action.ticketId,
+            conversation_id: action.conversationId,
+            correlation_id: correlationId,
+            event_key: 'reopen_reason_prompt',
+            error_message: interactiveError instanceof Error ? interactiveError.message : String(interactiveError),
+          },
+          '[integration-service][solution][REOPEN_REASON_INTERACTIVE_FALLBACK_TEXT]',
+        );
+        await this.metaClient.sendTextMessage({
+          to: toMeta,
+          body: buildTextOptionsFallback(body, buttons),
+        });
+      }
+
+      logger.info(
+        {
+          ticket_id: action.ticketId,
+          conversation_id: action.conversationId,
+          correlation_id: correlationId,
+          event_key: 'reopen_reason_prompt',
+        },
+        '[integration-service][solution][SOLUTION_REOPEN_REASON_PROMPT_SENT]',
+      );
+    } catch (error: unknown) {
+      logger.error(
+        {
+          ticket_id: action.ticketId,
+          conversation_id: action.conversationId,
+          correlation_id: correlationId,
+          event_key: 'reopen_reason_prompt',
+          error_code: 'REOPEN_REASON_PROMPT_SEND_FAILED',
+          error_message: error instanceof Error ? error.message : String(error),
+        },
+        '[integration-service][solution][REOPEN_REASON_PROMPT_ERROR]',
+      );
+    }
+  }
+
+  private async buildReopenReasonButtons(
+    action: ParsedSolutionButtonAction,
+  ): Promise<Array<{ id: string; title: string }>> {
+    const buttons: Array<{ id: string; title: string }> = [];
+    for (const option of REOPEN_REASON_OPTIONS) {
+      const message = await this.messageConfigurationService?.getMessage(option.eventKey);
+      const title = selectSolutionMessageText(message).trim() || option.fallback;
+      buttons.push({
+        id: `solution_reopen_reason:${option.key}:${action.ticketId}:${action.conversationId}`,
+        title,
+      });
+    }
+
+    return buttons;
+  }
+
+  private async reopenReasonLabel(reason: ReopenReasonKey): Promise<string> {
+    const option = REOPEN_REASON_OPTIONS.find((item) => item.key === reason);
+    if (!option) {
+      return reason;
+    }
+
+    const message = await this.messageConfigurationService?.getMessage(option.eventKey);
+    return selectSolutionMessageText(message).trim() || option.fallback;
+  }
+
+  private async sendConfiguredCsatPrompt(
+    toMeta: string,
+    action: ParsedSolutionButtonAction,
+    correlationId: string,
+  ): Promise<void> {
+    const defaultButtons = [
+      { id: `solution_csat:very_satisfied:${action.ticketId}:${action.conversationId}`, title: 'Ótimo' },
+      { id: `solution_csat:satisfied:${action.ticketId}:${action.conversationId}`, title: 'Bom' },
+      { id: `solution_csat:dissatisfied:${action.ticketId}:${action.conversationId}`, title: 'Ruim' },
+    ];
+
+    try {
+      const plan = await this.messageConfigurationService?.resolveSendPlan('csat_prompt', {
+        windowOpen: true,
+        allowTemplateSend: true,
+      });
+      if (plan && !plan.shouldSend) {
+        logger.warn(
+          {
+            ticket_id: action.ticketId,
+            conversation_id: action.conversationId,
+            correlation_id: correlationId,
+            event_key: 'csat_prompt',
+            reason: plan.reason,
+          },
+          '[integration-service][solution][CSAT_NOT_SENT_BY_RULE]',
+        );
+        return;
+      }
+
+      const configuredTitles = (plan?.buttons ?? [])
+        .map((button) => button.title.trim())
+        .filter((title) => title !== '')
+        .slice(0, 3);
+      const buttons = defaultButtons.map((button, index) => ({
+        ...button,
+        title: configuredTitles[index] ?? button.title,
+      }));
+      await this.metaClient.sendReplyButtons(toMeta, plan?.text.trim() || 'Como você avalia este atendimento?', buttons);
+      logger.info(
+        {
+          ticket_id: action.ticketId,
+          conversation_id: action.conversationId,
+          correlation_id: correlationId,
+          event_key: 'csat_prompt',
+        },
+        '[integration-service][solution][CSAT_PROMPT_SENT]',
+      );
+    } catch (error: unknown) {
+      logger.error(
+        {
+          ticket_id: action.ticketId,
+          conversation_id: action.conversationId,
+          correlation_id: correlationId,
+          event_key: 'csat_prompt',
+          error_code: 'CSAT_PROMPT_SEND_FAILED',
+          error_message: error instanceof Error ? error.message : String(error),
+        },
+        '[integration-service][solution][CSAT_PROMPT_ERROR]',
       );
     }
   }
@@ -1626,6 +2761,7 @@ export class InboundWebhookService {
           },
           '[integration-service][routing][INTERACTIVE_MENU_SENT]',
         );
+        this.recordRoutingMenuAudit(input, 'interactive');
         return;
       } catch (error: unknown) {
         logger.warn(
@@ -1641,6 +2777,315 @@ export class InboundWebhookService {
     }
 
     await this.metaClient.sendTextMessage({ to: input.toMeta, body: textBody });
+    this.recordRoutingMenuAudit(input, 'text');
+  }
+
+  private recordRoutingMenuAudit(input: RoutingMenuSendInput, deliveryMode: 'interactive' | 'text'): void {
+    this.recordAudit({
+      correlationId: input.correlationId ?? null,
+      conversationId: input.conversationId ?? null,
+      messageId: input.messageId ?? null,
+      direction: 'outbound',
+      eventType: 'ROUTING_MENU_SENT',
+      status: 'success',
+      severity: 'info',
+      source: 'InboundWebhookService',
+      payload: {
+        context: input.context,
+        options_count: input.routingOptions.length,
+        delivery_mode: deliveryMode,
+        option_keys: input.routingOptions.map((option) => option.optionKey),
+      },
+    });
+  }
+
+  private async sendContactProfilePrompt(input: {
+    toMeta: string;
+    body: string;
+    state?: ContactProfileCollectionState | null;
+    conversationId?: string | null;
+  }): Promise<void> {
+    const sendReplyButtons = (this.metaClient as unknown as {
+      sendReplyButtons?: (
+        to: string,
+        bodyText: string,
+        buttons: Array<{ id: string; title: string }>,
+      ) => Promise<unknown>;
+    }).sendReplyButtons;
+
+    if (input.state?.step === 'confirming_existing_profile' && typeof sendReplyButtons === 'function') {
+      try {
+        await sendReplyButtons.call(this.metaClient, input.toMeta, input.body, [
+          { id: 'profile_confirm_yes', title: 'Sim' },
+          { id: 'profile_confirm_no', title: 'Nao' },
+        ]);
+        logger.info(
+          { conversation_id: input.conversationId ?? null },
+          '[integration-service][contact_profile][PROFILE_CONFIRMATION_BUTTONS_SENT]',
+        );
+        return;
+      } catch (error: unknown) {
+        logger.warn(
+          {
+            conversation_id: input.conversationId ?? null,
+            error_message: error instanceof Error ? error.message : String(error),
+          },
+          '[integration-service][contact_profile][PROFILE_CONFIRMATION_BUTTONS_FALLBACK_TEXT]',
+        );
+      }
+    }
+
+    if (input.state?.step === 'asking_tag' && typeof sendReplyButtons === 'function') {
+      try {
+        await sendReplyButtons.call(this.metaClient, input.toMeta, input.body, [
+          { id: 'TAG_UNKNOWN', title: 'Não sei' },
+        ]);
+        logger.info(
+          { conversation_id: input.conversationId ?? null },
+          '[integration-service][contact_profile][TAG_UNKNOWN_BUTTON_SENT]',
+        );
+        return;
+      } catch (error: unknown) {
+        logger.warn(
+          {
+            conversation_id: input.conversationId ?? null,
+            error_message: error instanceof Error ? error.message : String(error),
+          },
+          '[integration-service][contact_profile][TAG_UNKNOWN_BUTTON_FALLBACK_TEXT]',
+        );
+      }
+    }
+
+    await this.metaClient.sendTextMessage({ to: input.toMeta, body: input.body });
+  }
+
+  private async advanceCompletedProfileConversation(input: CompletedProfileTransitionInput): Promise<void> {
+    const rememberedEntity = await this.findRememberedEntity(input.contact.phoneE164);
+    if (!rememberedEntity) {
+      await this.deferTicketCreationForEntitySelection({
+        contact: input.contact,
+        inboundMessage: input.inboundMessage,
+        toMeta: input.toMeta,
+        conversationId: input.conversation.id,
+        queueId: input.conversation.queueId,
+        message: ENTITY_SELECTION_PENDING_MESSAGE,
+      });
+      logger.info(
+        { conversation_id: input.conversation.id },
+        '[integration-service][contact_profile][COMPLETE_PROFILE_ENTITY_PENDING]',
+      );
+      return;
+    }
+
+    const profile = this.contactProfileService
+      ? await this.contactProfileService.findProfile(input.contact.phoneE164)
+      : null;
+    const assignment = input.conversation.queueId
+      ? await this.routingRepository.findAssignmentByQueueId(input.conversation.queueId)
+      : null;
+    const entityMode = this.contactEntityResolutionService
+      ? await this.contactEntityResolutionService.getMode()
+      : 'defer_until_known';
+    const state = input.conversation.profileCollectionState ?? {};
+    const queueLabel = typeof state.queue_label === 'string' && state.queue_label.trim() !== ''
+      ? state.queue_label.trim()
+      : assignment?.queueId
+        ? `Fila ${assignment.queueId}`
+        : null;
+    const ticketPayload = await this.buildProfileAwareTicketPayload({
+      basePayload: this.buildNewTicketPayload(input.contact, input.inboundMessage),
+      contact: input.contact,
+      conversationId: input.conversation.id,
+      queueLabel,
+      profile,
+      entityMode,
+    });
+    const requesterUserId = await this.resolveRequesterUserId(
+      input.contact.phoneE164,
+      profile,
+      rememberedEntity.glpiEntityId,
+      input.conversation.id,
+    );
+    const ticketId = await this.glpiClient.createTicket(
+      {
+        title: ticketPayload.title,
+        content: ticketPayload.content,
+        requesterPhone: input.contact.phoneE164,
+        requesterName: input.contact.name,
+        entitiesId: rememberedEntity.glpiEntityId,
+        assignedUserId: assignment?.glpiUserId ?? null,
+        assignedGroupId: assignment?.glpiGroupId ?? null,
+        requesterUserId,
+      },
+      { timeoutMs: ROUTING_GLPI_CREATE_TIMEOUT_MS },
+    );
+    this.logTicketCreatedWithFallback(input.contact, input.inboundMessage.messageId, ticketId);
+
+    const linked = await this.conversationRepository.linkGlpiTicket(
+      input.conversation.id,
+      ticketId,
+      input.conversation.queueId,
+      rememberedEntity.glpiEntityId,
+      rememberedEntity.glpiEntityName,
+    );
+    if (linked) {
+      await this.metaClient.sendTextMessage({
+        to: input.toMeta,
+        body: await this.buildTicketCreatedConfirmation(null, ticketId),
+      });
+    }
+    await this.messageRepository.updateState({
+      messageId: input.inboundMessage.messageId,
+      conversationId: input.conversation.id,
+      processingStatus: 'processed',
+      glpiSyncStatus: linked ? 'synced' : 'error',
+    });
+    logger.info(
+      {
+        conversation_id: input.conversation.id,
+        glpi_ticket_id: ticketId,
+        glpi_entity_id: rememberedEntity.glpiEntityId,
+        linked,
+      },
+      '[integration-service][contact_profile][COMPLETE_PROFILE_TICKET_CREATED_FROM_MEMORY]',
+    );
+  }
+
+  private async findRememberedEntity(phoneE164: string): Promise<ContactEntityMemory | null> {
+    const rememberedEntity = this.contactEntityMemoryRepository
+      ? await this.contactEntityMemoryRepository.findActiveByPhone(phoneE164)
+      : null;
+
+    if (!rememberedEntity || !Number.isInteger(rememberedEntity.glpiEntityId) || rememberedEntity.glpiEntityId <= 0) {
+      return null;
+    }
+
+    return rememberedEntity;
+  }
+
+  private async deferTicketCreationForEntitySelection(input: EntitySelectionDeferralInput): Promise<string> {
+    let conversationId = input.conversationId?.trim() ?? '';
+
+    if (conversationId === '') {
+      const conversation = await this.conversationRepository.create({
+        phoneE164: input.contact.phoneE164,
+        contactId: input.contact.id,
+        glpiTicketId: null,
+        status: 'awaiting_entity_selection',
+        lastMessageAt: new Date(),
+      });
+      conversationId = conversation.id;
+    }
+
+    await this.conversationRepository.updateQueueAndStatus(
+      conversationId,
+      input.queueId ?? null,
+      'awaiting_entity_selection',
+    );
+    await this.conversationRepository.touch(conversationId, new Date());
+    await this.metaClient.sendTextMessage({
+      to: input.toMeta,
+      body: input.message,
+    });
+    logger.info(
+      {
+        conversation_id: conversationId,
+        phone_e164: input.contact.phoneE164,
+      },
+      '[integration-service][entity][TICKET_CREATION_DEFERRED_ENTITY_PENDING]',
+    );
+    await this.messageRepository.updateState({
+      messageId: input.inboundMessage.messageId,
+      conversationId,
+      processingStatus: 'processed',
+      glpiSyncStatus: 'synced',
+    });
+
+    return conversationId;
+  }
+
+  private async sendOutsideBusinessHoursMessage(input: {
+    eventKey: string;
+    toMeta: string;
+    contactPhone: string;
+    conversationId: string | null;
+    correlationId: string;
+  }): Promise<void> {
+    const eventKey = input.eventKey || 'outside_business_hours_message';
+    const plan = this.messageConfigurationService
+      ? await this.messageConfigurationService.resolveSendPlan(eventKey, { windowOpen: true })
+      : {
+          shouldSend: true,
+          text: await this.settingsService.getMessage('after_hours_message'),
+          sendType: 'text',
+          reason: null,
+        };
+
+    await this.messageConfigurationService?.recordAutomationEvent({
+      conversationId: input.conversationId,
+      phoneE164: input.contactPhone,
+      eventKey,
+      status: 'planned',
+      reason: plan.reason,
+    });
+
+    if (!plan.shouldSend) {
+      await this.messageConfigurationService?.recordAutomationEvent({
+        conversationId: input.conversationId,
+        phoneE164: input.contactPhone,
+        eventKey,
+        status: 'not_sent_by_rule',
+        reason: plan.reason ?? 'not_sent_by_rule',
+      });
+      return;
+    }
+
+    try {
+      const metaResponse = await this.metaClient.sendTextMessage({ to: input.toMeta, body: plan.text });
+      const metaMessageId = extractMetaMessageId(metaResponse) ?? `outside-hours.${input.correlationId}`;
+      await this.messageRepository.insertOutbound({
+        messageId: metaMessageId,
+        conversationId: input.conversationId,
+        senderPhone: 'whatsapp:auto',
+        recipientPhone: input.contactPhone,
+        messageType: 'text',
+        messageText: plan.text,
+        rawPayload: {
+          automation_event_key: eventKey,
+          send_type: plan.sendType,
+          response: metaResponse,
+        },
+        processingStatus: 'sent',
+        glpiSyncStatus: 'synced',
+        idempotencyKey: `automation:${eventKey}:${input.conversationId ?? input.contactPhone}:${input.correlationId}`,
+      });
+      await this.messageConfigurationService?.recordAutomationEvent({
+        conversationId: input.conversationId,
+        phoneE164: input.contactPhone,
+        eventKey,
+        status: 'sent',
+        messageId: metaMessageId,
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.messageConfigurationService?.recordAutomationEvent({
+        conversationId: input.conversationId,
+        phoneE164: input.contactPhone,
+        eventKey,
+        status: 'failed',
+        errorCode: 'OUTSIDE_BUSINESS_HOURS_SEND_FAILED',
+        errorMessageSanitized: message.slice(0, 500),
+      });
+      logger.warn(
+        {
+          conversation_id: input.conversationId,
+          phone_masked: maskSensitiveId(input.contactPhone),
+          event_key: eventKey,
+          error_message: message.slice(0, 500),
+        },
+        '[business_hours][OUTSIDE_HOURS_MESSAGE_FAILED]',
+      );
+    }
   }
 
   private recordAudit(input: Parameters<AuditService['recordAuditEventFireAndForget']>[0]): void {
@@ -1668,10 +3113,10 @@ export class InboundWebhookService {
   }
 
   private async buildTicketCreatedConfirmation(
-    selectedOption: ActiveRoutingOption,
+    selectedOption: ActiveRoutingOption | null,
     ticketId: number,
   ): Promise<string> {
-    const optionTemplate = selectedOption.confirmationMessage?.trim();
+    const optionTemplate = selectedOption?.confirmationMessage?.trim();
     const template = optionTemplate
       || await this.settingsService.getMessage('ticket_created_message');
 
@@ -1694,4 +3139,105 @@ export class InboundWebhookService {
       '[PoC] Ticket GLPI criado em modo fallback (lookup de contato falhou).',
     );
   }
+}
+
+function selectSolutionMessageText(message: Awaited<ReturnType<MessageConfigurationService['getMessage']>> | undefined): string {
+  if (!message) {
+    return '';
+  }
+
+  const custom = message.customText?.trim() ?? '';
+  if (custom !== '') {
+    return custom;
+  }
+
+  const fallback = message.fallbackText?.trim() ?? '';
+  if (message.defaultText.trim() === '' && fallback !== '') {
+    return fallback;
+  }
+
+  return message.defaultText;
+}
+
+function truncateButtonTitle(value: string): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= 20) {
+    return normalized;
+  }
+
+  return normalized.slice(0, 19).trimEnd() + '…';
+}
+
+function truncateListTitle(value: string): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= 24) {
+    return normalized;
+  }
+
+  return normalized.slice(0, 23).trimEnd() + '…';
+}
+
+function buildTextOptionsFallback(body: string, buttons: Array<{ id: string; title: string }>): string {
+  return [
+    body,
+    '',
+    ...buttons.map((button, index) => `${index + 1}. ${button.title}`),
+    '',
+    'Responda tocando na opção correspondente quando ela aparecer novamente.',
+  ].join('\n');
+}
+
+function normalizeMetaDeliveryStatus(status: string): 'sent' | 'delivered' | 'read' | 'failed' | null {
+  const normalized = status.trim().toLowerCase();
+  if (normalized === 'sent' || normalized === 'delivered' || normalized === 'read' || normalized === 'failed') {
+    return normalized;
+  }
+
+  return null;
+}
+
+function sanitizeMetaStatusErrorCode(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+
+  const sanitized = value.replace(/[^a-zA-Z0-9_.:-]/g, '').slice(0, 64);
+  return sanitized === '' ? null : sanitized;
+}
+
+function sanitizeMetaStatusErrorMessage(value: string | null): string | null {
+  if (value === null) {
+    return null;
+  }
+
+  const sanitized = value
+    .replace(/Bearer\s+[a-zA-Z0-9._-]+/gi, 'Bearer [REDACTED]')
+    .replace(/https?:\/\/\S+/gi, '[URL_REMOVIDA]')
+    .replace(/[A-Za-z0-9+/=]{80,}/g, '[DADO_REMOVIDO]')
+    .replace(/\b\d{9,}\b/g, '[NUMERO_REMOVIDO]')
+    .trim()
+    .slice(0, 240);
+
+  return sanitized === '' ? null : sanitized;
+}
+
+function extractMetaMessageId(body: unknown): string | null {
+  if (body && typeof body === 'object' && 'messages' in body) {
+    const messages = (body as { messages?: Array<{ id?: string }> }).messages;
+    const id = messages?.[0]?.id;
+    if (typeof id === 'string' && id.trim() !== '') {
+      return id.trim();
+    }
+  }
+
+  return null;
+}
+
+function maskSensitiveId(value: string): string {
+  const normalized = value.trim();
+  if (normalized.length <= 4) {
+    return '****';
+  }
+
+  return `${'*'.repeat(Math.min(12, normalized.length - 4))}${normalized.slice(-4)}`;
 }

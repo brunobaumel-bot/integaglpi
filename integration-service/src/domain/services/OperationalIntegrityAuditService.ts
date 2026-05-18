@@ -13,6 +13,7 @@ export interface OperationalIntegrityAuditResult {
   orphanMessages: number;
   mediaWithoutInfo: number;
   invalidConversationStates: number;
+  staleAwaitingQueueSelection: number;
 }
 
 interface CountRow {
@@ -23,6 +24,13 @@ type InvalidConversationRow = {
   id: string;
   status: string;
   glpi_ticket_id: string | null;
+};
+
+type StaleAwaitingQueueSelectionRow = {
+  id: string;
+  updated_at: string | Date;
+  inbound_messages_count: string | number;
+  last_inbound_at: string | Date | null;
 };
 
 export class OperationalIntegrityAuditService {
@@ -41,11 +49,13 @@ export class OperationalIntegrityAuditService {
     const orphanMessages = await this.auditOrphanMessages(since, limit, correlationId);
     const mediaWithoutInfo = await this.auditMediaWithoutInfo(since, limit, correlationId);
     const invalidConversationStates = await this.auditInvalidConversationStates(limit, correlationId);
+    const staleAwaitingQueueSelection = await this.auditStaleAwaitingQueueSelection(since, limit, correlationId);
 
     return {
       orphanMessages,
       mediaWithoutInfo,
       invalidConversationStates,
+      staleAwaitingQueueSelection,
     };
   }
 
@@ -131,6 +141,46 @@ export class OperationalIntegrityAuditService {
         severity: 'warning',
         source: 'OperationalIntegrityAuditService',
         payload: { conversation_status: row.status },
+      });
+    }
+
+    return result.rowCount ?? result.rows.length;
+  }
+
+  private async auditStaleAwaitingQueueSelection(since: Date, limit: number, correlationId: string): Promise<number> {
+    const result = await this.executor.query<StaleAwaitingQueueSelectionRow>(
+      `
+        SELECT
+          c.id,
+          c.updated_at,
+          COUNT(m.id) FILTER (WHERE m.direction = 'inbound') AS inbound_messages_count,
+          MAX(m.created_at) FILTER (WHERE m.direction = 'inbound') AS last_inbound_at
+        FROM ${DATABASE_TABLES.conversations} c
+        LEFT JOIN ${DATABASE_TABLES.messages} m ON m.conversation_id = c.id
+        WHERE c.status = 'awaiting_queue_selection'
+          AND c.updated_at < $1
+        GROUP BY c.id, c.updated_at
+        ORDER BY c.updated_at ASC
+        LIMIT $2
+      `,
+      [since, limit],
+    );
+
+    for (const row of result.rows) {
+      this.auditService.recordAuditEventFireAndForget({
+        correlationId,
+        conversationId: row.id,
+        eventType: 'AWAITING_QUEUE_SELECTION_STALE',
+        status: 'pending',
+        severity: 'warning',
+        source: 'OperationalIntegrityAuditService',
+        payload: {
+          conversation_status: 'awaiting_queue_selection',
+          updated_at: row.updated_at,
+          inbound_messages_count: Number(row.inbound_messages_count ?? 0),
+          last_inbound_at: row.last_inbound_at,
+          remediation: 'manual_queue_selection_required',
+        },
       });
     }
 

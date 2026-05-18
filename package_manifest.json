@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "phase_id": "integaglpi_operational_hardening_and_production_readiness_001",
+  "build_id": "integaglpi-8x-operational-hardening-2026-05-18",
+  "package_id": "integaglpi-production-readiness-mvp-001",
+  "generated_at": "2026-05-18T00:00:00-03:00",
+  "environment_policy": {
+    "test_to_prod": "manual_only",
+    "production_changes": "blocked_until_human_gate",
+    "cloud_git": "not_required",
+    "secrets_included": false
+  },
+  "phase_ids": [
+    "integaglpi_ops_console_2_0_001",
+    "integaglpi_solution_reopen_contracts_runtime_fix_001",
+    "integaglpi_contracts_hours_external_db_config_fix_001",
+    "integaglpi_quality_dashboard_feedback_001",
+    "integaglpi_operational_hardening_and_production_readiness_001"
+  ],
+  "critical_files": [
+    {
+      "path": "integaglpi/front/operational.diagnostics.php",
+      "sha256": "643e158f5b57e420326a5580b3ce8036fe7456a29d0edb1d5ddad2abe6fdb86b"
+    },
+    {
+      "path": "integaglpi/src/Service/RuntimeGuardService.php",
+      "sha256": "4d4ee985f5c5488c93fcf6824a2cba78543681db8633793270e504deb9c6c8b3"
+    },
+    {
+      "path": "integaglpi/src/Service/OperationalDiagnosticsService.php",
+      "sha256": "7354298c8930797f498a0fbcff6e4a31f503c3b4567d9ef9765e6f5f75492e68"
+    },
+    {
+      "path": "integaglpi/src/Renderer/OperationalDiagnosticsRenderer.php",
+      "sha256": "b5bccbdcc4c85061ec5b969d5153e5237abc73d45234259260118ba7b5ff97ed"
+    },
+    {
+      "path": "integaglpi/templates/operational_diagnostics.php",
+      "sha256": "675e1f555ea88b799112aea9a2d599c779c02f0f0da7545da93f6a51b7139f5e"
+    },
+    {
+      "path": "integaglpi/src/OperationalDiagnosticsMenu.php",
+      "sha256": "cfee4822163eb139f35abc8fdc48d7cc8d55d1fcec0a5bb7fe0b41792eca9744"
+    },
+    {
+      "path": "integaglpi/src/Plugin.php",
+      "sha256": "c84e3ea0206930ac47c5da97e0842acd7b3d67d206341e3621b54b118dc9f21e"
+    },
+    {
+      "path": "integaglpi/setup.php",
+      "sha256": "afdf4ac22f3cec4361485391e4a7777f74dcce4b9f5e5c564fa83cfc15f1f998"
+    },
+    {
+      "path": "integration-service/src/controllers/healthController.ts",
+      "sha256": "6fce61212a8aac8738181f022d74a7712ad381089199e2e4c5c1671f8cbd7cdd"
+    },
+    {
+      "path": "integration-service/src/services/RuntimeManifestService.ts",
+      "sha256": "47833ad37f6edd0a0f5c578d8ea47fb4ef4b03c1d0f4f3f88dcbea5bd5e3fb6b"
+    },
+    {
+      "path": "docs/runtime_manifest_readiness.md",
+      "sha256": "674390ad3821f7df4d5ad47b685c26582493d89c5add543956f4615233f7bf97"
+    },
+    {
+      "path": "docs/producao_readiness_checklist.md",
+      "sha256": "e6dea8c410bdb8e745e1f8832542dd6c49c5b9ac501dc6286c7d3f733804fe03"
+    },
+    {
+      "path": "docs/producao_rollback_playbook.md",
+      "sha256": "c38a9b62b728f546338c29374658cf3aa452ffc6b44fe9e6c61efec34f0a98da"
+    },
+    {
+      "path": "docs/producao_smoke_checklist.md",
+      "sha256": "1d3ec7f0d02a0e665a6a6efc16496ef434f9950ed7734daa2bade4cc19e8a29f"
+    },
+    {
+      "path": "docs/cloud_sem_git_package_playbook.md",
+      "sha256": "28c1b4a3e8f1eae30d3ade29d5974a91add11e032188517d4f1ab6c8e429715d"
+    }
+  ],
+  "expected_migrations": [
+    "001_messages_idempotency.sql",
+    "002_routing_queues.sql",
+    "003_messages_media_info.sql",
+    "004_solution_actions.sql",
+    "005_audit_events.sql",
+    "006_entity_selection_attempts.sql",
+    "007_contact_entity_memory.sql",
+    "008_contact_profile.sql",
+    "009_conversation_profile_snapshot.sql",
+    "010_dead_letter.sql",
+    "011_runtime_configs.sql",
+    "012_profile_collection_state.sql",
+    "013_customer_experience_glpi_user_csat.sql",
+    "014_customer_experience_schema_alignment.sql",
+    "015_inactivity_tracking.sql",
+    "016_contract_hours.sql",
+    "017_ai_quality_analyses.sql",
+    "018_message_delivery_status.sql",
+    "019_conversation_entity_columns.sql",
+    "020_entity_selection_attempts_idempotency_key.sql",
+    "021_configurable_message_flows.sql",
+    "022_inactivity_job_diagnostics.sql",
+    "023_entity_selection_attempt_finished_at.sql"
+  ],
+  "forbidden_package_content": [
+    ".env",
+    ".ovpn",
+    "database dumps",
+    "tokens",
+    "passwords",
+    "raw webhook payloads",
+    "private certificates"
+  ]
+}

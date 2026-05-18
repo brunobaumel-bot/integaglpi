@@ -9,11 +9,15 @@ $filters = is_array($data['filters'] ?? null) ? $data['filters'] : [];
 $pagination = is_array($data['pagination'] ?? null) ? $data['pagination'] : [];
 $rows = is_array($data['rows'] ?? null) ? $data['rows'] : [];
 $queues = is_array($data['queues'] ?? null) ? $data['queues'] : [];
+$technicians = is_array($data['technicians'] ?? null) ? $data['technicians'] : [];
+$glpiEntities = is_array($data['glpi_entities'] ?? null) ? $data['glpi_entities'] : [];
+$diagnostics = is_array($data['diagnostics'] ?? null) ? $data['diagnostics'] : null;
+$centralErrorDiagnostic = is_array($data['central_error_diagnostic'] ?? null) ? $data['central_error_diagnostic'] : null;
 $allowedStatuses = is_array($data['allowed_statuses'] ?? null) ? $data['allowed_statuses'] : [];
-$limitOptions = is_array($data['limit_options'] ?? null) ? $data['limit_options'] : [20, 50];
+$limitOptions = is_array($data['limit_options'] ?? null) ? $data['limit_options'] : [25, 50];
 $error = isset($data['error']) ? (string) $data['error'] : '';
 $currentPage = (int) ($pagination['page'] ?? 1);
-$currentLimit = (int) ($pagination['limit'] ?? 20);
+$currentLimit = (int) ($pagination['limit'] ?? 25);
 $total = (int) ($pagination['total'] ?? 0);
 $totalPages = (int) ($pagination['total_pages'] ?? 1);
 $centralActionUrl = $this->getCentralActionUrl();
@@ -25,6 +29,40 @@ $csrfToken = $this->getCsrfToken();
 $currentUserId = $this->getCurrentUserId();
 $canUpdateActions = \Session::haveRight(\GlpiPlugin\Integaglpi\Plugin::RIGHT_NAME, UPDATE);
 $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsapp.css';
+$statusLabelMap = [
+    'collecting_contact_profile' => __('Coletando perfil', 'glpiintegaglpi'),
+    'awaiting_entity_selection' => __('Aguardando seleção de entidade', 'glpiintegaglpi'),
+    'awaiting_queue_selection' => __('Aguardando escolha de fila', 'glpiintegaglpi'),
+    'open' => __('Chamado aberto', 'glpiintegaglpi'),
+    'closed' => __('Fechado', 'glpiintegaglpi'),
+    'media_error' => __('Erro de mídia', 'glpiintegaglpi'),
+    'pending_glpi' => __('Aguardando GLPI', 'glpiintegaglpi'),
+];
+$windowFilterMap = [
+    'open' => __('Janela 24h aberta', 'glpiintegaglpi'),
+    'closed' => __('Janela 24h fechada', 'glpiintegaglpi'),
+];
+$inactivityFilterMap = [
+    'attention' => __('Inatividade em atenção', 'glpiintegaglpi'),
+    'sent' => __('Inatividade enviada', 'glpiintegaglpi'),
+    'skipped' => __('Inatividade ignorada', 'glpiintegaglpi'),
+];
+$deliveryFilterMap = [
+    'failed' => __('Falha Meta', 'glpiintegaglpi'),
+    'pending' => __('Pendente', 'glpiintegaglpi'),
+    'sent' => __('Enviada', 'glpiintegaglpi'),
+    'delivered' => __('Entregue', 'glpiintegaglpi'),
+    'read' => __('Lida', 'glpiintegaglpi'),
+];
+$operationalFilterMap = [
+    'pre_ticket' => __('Pré-ticket', 'glpiintegaglpi'),
+    'awaiting_entity' => __('Aguardando entidade', 'glpiintegaglpi'),
+    'processing' => __('Criação em processamento', 'glpiintegaglpi'),
+    'ambiguous_reconciliation' => __('Reconciliação ambígua', 'glpiintegaglpi'),
+    'delivery_failed' => __('Delivery falhou', 'glpiintegaglpi'),
+    'inactivity_attention' => __('Inatividade exige atenção', 'glpiintegaglpi'),
+    'risk' => __('Em risco operacional', 'glpiintegaglpi'),
+];
 ?>
 
 <link rel="stylesheet" type="text/css" href="<?= $this->escape($whatsappCssUrl); ?>">
@@ -166,7 +204,7 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
         <div class="itg-panel-header">
             <div class="d-flex justify-content-between align-items-start gap-2">
                 <div>
-                    <h2 class="h4 mb-1"><?= $this->escape(__('Central de Atendimento', 'glpiintegaglpi')); ?></h2>
+                    <h2 class="h4 mb-1"><?= $this->escape(__('Console Operacional 2.0', 'glpiintegaglpi')); ?></h2>
                     <small class="text-muted js-integaglpi-central-refreshed-at"></small>
                 </div>
                 <div class="d-flex gap-2 align-items-center">
@@ -174,7 +212,7 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
                         <?= $this->escape(__('Atualizar', 'glpiintegaglpi')); ?>
                     </button>
                     <span class="badge bg-secondary js-integaglpi-central-total">
-                        <?= $total; ?> <?= $this->escape(__('open conversations', 'glpiintegaglpi')); ?>
+                        <?= $total; ?> <?= $this->escape(__('conversas', 'glpiintegaglpi')); ?>
                     </span>
                 </div>
             </div>
@@ -186,6 +224,18 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
             <?php if ($error !== '') { ?>
                 <div class="alert alert-warning mb-3">
                     <?= $this->escape($error); ?>
+                    <?php if ($centralErrorDiagnostic !== null) { ?>
+                        <div class="small mt-2">
+                            <strong><?= $this->escape(__('Diagnóstico admin:', 'glpiintegaglpi')); ?></strong>
+                            <?= $this->escape((string) ($centralErrorDiagnostic['type'] ?? '-')); ?>
+                            <?php if (!empty($centralErrorDiagnostic['sqlstate'])) { ?>
+                                · SQLSTATE <?= $this->escape((string) $centralErrorDiagnostic['sqlstate']); ?>
+                            <?php } ?>
+                            <?php if (!empty($centralErrorDiagnostic['detail'])) { ?>
+                                · <?= $this->escape((string) $centralErrorDiagnostic['detail']); ?>
+                            <?php } ?>
+                        </div>
+                    <?php } ?>
                 </div>
             <?php } ?>
 
@@ -194,11 +244,11 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
                     <div class="col-6">
                         <label class="form-label"><?= $this->escape(__('Status', 'glpiintegaglpi')); ?></label>
                         <select name="status" class="form-select">
-                            <option value=""><?= $this->escape(__('All open statuses', 'glpiintegaglpi')); ?></option>
+                            <option value=""><?= $this->escape(__('Todos os status', 'glpiintegaglpi')); ?></option>
                             <?php foreach ($allowedStatuses as $status) { ?>
                                 <?php $statusValue = (string) $status; ?>
                                 <option value="<?= $this->escape($statusValue); ?>" <?= (string) ($filters['status'] ?? '') === $statusValue ? "selected='selected'" : ''; ?>>
-                                    <?= $this->escape($statusValue); ?>
+                                    <?= $this->escape((string) ($statusLabelMap[$statusValue] ?? $statusValue)); ?>
                                 </option>
                             <?php } ?>
                         </select>
@@ -211,6 +261,76 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
                                 <?php $queueId = (int) ($queue['id'] ?? 0); ?>
                                 <option value="<?= $queueId; ?>" <?= (int) ($filters['queue_id'] ?? 0) === $queueId ? "selected='selected'" : ''; ?>>
                                     <?= $this->escape((string) ($queue['name'] ?? ('#' . $queueId))); ?>
+                                </option>
+                            <?php } ?>
+                        </select>
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label"><?= $this->escape(__('Técnico', 'glpiintegaglpi')); ?></label>
+                        <select name="technician_id" class="form-select">
+                            <option value="0"><?= $this->escape(__('Todos os técnicos', 'glpiintegaglpi')); ?></option>
+                            <?php foreach ($technicians as $technician) { ?>
+                                <?php $technicianId = (int) ($technician['id'] ?? 0); ?>
+                                <?php if ($technicianId <= 0) { continue; } ?>
+                                <option value="<?= $technicianId; ?>" <?= (int) ($filters['technician_id'] ?? 0) === $technicianId ? "selected='selected'" : ''; ?>>
+                                    <?= $this->escape((string) ($technician['name'] ?? ('#' . $technicianId))); ?>
+                                </option>
+                            <?php } ?>
+                        </select>
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label"><?= $this->escape(__('Entidade', 'glpiintegaglpi')); ?></label>
+                        <select name="entity_id" class="form-select">
+                            <option value="0"><?= $this->escape(__('Todas permitidas', 'glpiintegaglpi')); ?></option>
+                            <?php foreach ($glpiEntities as $entity) { ?>
+                                <?php $entityId = (int) ($entity['id'] ?? 0); ?>
+                                <?php if ($entityId <= 0) { continue; } ?>
+                                <option value="<?= $entityId; ?>" <?= (int) ($filters['entity_id'] ?? 0) === $entityId ? "selected='selected'" : ''; ?>>
+                                    <?= $this->escape((string) ($entity['name'] ?? ('Entidade #' . $entityId))); ?>
+                                </option>
+                            <?php } ?>
+                        </select>
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label"><?= $this->escape(__('Janela 24h', 'glpiintegaglpi')); ?></label>
+                        <select name="window_status" class="form-select">
+                            <option value=""><?= $this->escape(__('Todas', 'glpiintegaglpi')); ?></option>
+                            <?php foreach ($windowFilterMap as $value => $label) { ?>
+                                <option value="<?= $this->escape($value); ?>" <?= (string) ($filters['window_status'] ?? '') === $value ? "selected='selected'" : ''; ?>>
+                                    <?= $this->escape((string) $label); ?>
+                                </option>
+                            <?php } ?>
+                        </select>
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label"><?= $this->escape(__('Inatividade', 'glpiintegaglpi')); ?></label>
+                        <select name="inactivity" class="form-select">
+                            <option value=""><?= $this->escape(__('Todas', 'glpiintegaglpi')); ?></option>
+                            <?php foreach ($inactivityFilterMap as $value => $label) { ?>
+                                <option value="<?= $this->escape($value); ?>" <?= (string) ($filters['inactivity'] ?? '') === $value ? "selected='selected'" : ''; ?>>
+                                    <?= $this->escape((string) $label); ?>
+                                </option>
+                            <?php } ?>
+                        </select>
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label"><?= $this->escape(__('Delivery', 'glpiintegaglpi')); ?></label>
+                        <select name="delivery" class="form-select">
+                            <option value=""><?= $this->escape(__('Todos', 'glpiintegaglpi')); ?></option>
+                            <?php foreach ($deliveryFilterMap as $value => $label) { ?>
+                                <option value="<?= $this->escape($value); ?>" <?= (string) ($filters['delivery'] ?? '') === $value ? "selected='selected'" : ''; ?>>
+                                    <?= $this->escape((string) $label); ?>
+                                </option>
+                            <?php } ?>
+                        </select>
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label"><?= $this->escape(__('Operacional', 'glpiintegaglpi')); ?></label>
+                        <select name="operational_state" class="form-select">
+                            <option value=""><?= $this->escape(__('Todos', 'glpiintegaglpi')); ?></option>
+                            <?php foreach ($operationalFilterMap as $value => $label) { ?>
+                                <option value="<?= $this->escape($value); ?>" <?= (string) ($filters['operational_state'] ?? '') === $value ? "selected='selected'" : ''; ?>>
+                                    <?= $this->escape((string) $label); ?>
                                 </option>
                             <?php } ?>
                         </select>
@@ -263,7 +383,7 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
                     <?php if ($rows === []) { ?>
                         <tr>
                             <td colspan="8" class="text-center text-muted p-3">
-                                <?= $this->escape(__('No open WhatsApp conversations found.', 'glpiintegaglpi')); ?>
+                                <?= $this->escape(__('Nenhuma conversa WhatsApp encontrada.', 'glpiintegaglpi')); ?>
                             </td>
                         </tr>
                     <?php } ?>
@@ -276,10 +396,48 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
                         $assignedUserId = (int) ($row['assigned_user_id'] ?? 0);
                         $assignedLabel = (string) ($row['assigned_user_label'] ?? '');
                         $phone = (string) ($row['phone_e164'] ?? '');
+                        $maskedPhone = (string) ($row['masked_phone'] ?? $phone);
                         $contactName = (string) ($row['contact_name'] ?? '');
                         $queueName = (string) ($row['queue_name'] ?? '');
                         $activityAt = (string) ($row['activity_at'] ?? '');
+                        $entityLabel = (string) ($row['entity_label'] ?? '');
+                        $stalledLabel = (string) ($row['stalled_label'] ?? '');
+                        $lastMessagePreview = trim((string) ($row['last_message_preview'] ?? ''));
                         $effectiveStatus = (string) ($row['effective_status'] ?? $row['conversation_status'] ?? '');
+                        $statusLabel = (string) ($row['status_label'] ?? ($statusLabelMap[$effectiveStatus] ?? $effectiveStatus));
+                        $operationalStateLabel = (string) ($row['operational_state_label'] ?? '');
+                        $nextAction = (string) ($row['next_action'] ?? '');
+                        $entityAttemptStatusLabel = (string) ($row['entity_attempt_status_label'] ?? '');
+                        $entityAttemptError = (string) ($row['entity_attempt_error_sanitized'] ?? '');
+                        $inactivityStatusLabel = (string) ($row['inactivity_status_label'] ?? '');
+                        $inactivityEventKey = (string) ($row['inactivity_event_key'] ?? '');
+                        $inactivityNextAction = (string) ($row['inactivity_next_action'] ?? '');
+                        $inactivitySkipReason = (string) ($row['inactivity_tracking_skip_reason'] ?? $row['inactivity_event_reason'] ?? '');
+                        $inactivityLastError = (string) ($row['inactivity_last_error_sanitized'] ?? '');
+                        $inactivityDeliveryStatus = (string) ($row['inactivity_delivery_status'] ?? '');
+                        $inactivityMetaErrorCode = (string) ($row['inactivity_meta_error_code'] ?? '');
+                        $inactivityLastCheckedAt = (string) ($row['inactivity_last_checked_at'] ?? '');
+                        $lastDeliveryStatusLabel = (string) ($row['last_delivery_status_label'] ?? '');
+                        $lastDeliveryError = (string) ($row['last_delivery_error_sanitized'] ?? '');
+                        $businessHoursLabel = (string) ($row['business_hours_label'] ?? '');
+                        $aiQualityLabel = trim((string) ($row['ai_quality_status'] ?? '') . ' ' . (string) ($row['ai_sentiment'] ?? ''));
+                        $contractLabel = trim((string) ($row['contract_alert_status'] ?? ''));
+                        $contractPercent = (string) ($row['contract_consumed_percent'] ?? '');
+                        $csatLabel = !empty($row['csat_dissatisfied'])
+                            ? __('CSAT insatisfeito', 'glpiintegaglpi')
+                            : (!empty($row['supervisor_review_required']) ? __('Revisão CSAT', 'glpiintegaglpi') : '');
+                        $riskBadges = is_array($row['risk_badges'] ?? null) ? $row['risk_badges'] : [];
+                        $ticketLabel = (string) ($row['ticket_label'] ?? ($ticketId > 0 ? '#' . $ticketId : __('Pré-Ticket', 'glpiintegaglpi')));
+                        $whatsappWindow = is_array($row['whatsapp_window'] ?? null) ? $row['whatsapp_window'] : [];
+                        $windowLabel = (string) ($whatsappWindow['label'] ?? '');
+                        $windowOpen = !empty($whatsappWindow['is_open']);
+                        $windowAlert = (string) ($whatsappWindow['alert'] ?? '');
+                        $memoryEntityId = (int) ($row['memory_entity_id'] ?? 0);
+                        $memoryEntityName = trim((string) ($row['memory_entity_name'] ?? ''));
+                        $profileSnapshot = is_array($row['contact_profile_snapshot'] ?? null)
+                            ? $row['contact_profile_snapshot']
+                            : null;
+                        $profileCollectionComplete = !empty($row['profile_collection_complete']);
                         $canClaim = $canUpdateActions
                             && $effectiveStatus === 'open'
                             && $assignedUserId <= 0
@@ -290,29 +448,59 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
                             && $assignedUserId === $currentUserId
                             && $ticketId > 0
                             && $conversationId !== '';
+                        $canConfirmEntity = (
+                            $effectiveStatus === 'awaiting_entity_selection'
+                            || ($effectiveStatus === 'collecting_contact_profile' && $profileCollectionComplete)
+                        )
+                            && $canUpdateActions
+                            && $ticketId <= 0
+                            && $conversationId !== '';
+                        $canEditEntity = $canUpdateActions
+                            && !$canConfirmEntity
+                            && $conversationId !== '';
                         ?>
                         <tr
                             data-conversation-id="<?= $this->escape($conversationId); ?>"
                             data-ticket-id="<?= $ticketId; ?>"
                             data-phone="<?= $this->escape($phone); ?>"
+                            data-masked-phone="<?= $this->escape($maskedPhone); ?>"
                             data-contact-name="<?= $this->escape($contactName); ?>"
                             data-status="<?= $this->escape($effectiveStatus); ?>"
+                            data-status-label="<?= $this->escape($statusLabel); ?>"
+                            data-operational-state="<?= $this->escape($operationalStateLabel); ?>"
+                            data-next-action="<?= $this->escape($nextAction); ?>"
+                            data-ticket-label="<?= $this->escape($ticketLabel); ?>"
                             data-queue="<?= $this->escape($queueName); ?>"
                             data-queue-id="<?= $queueId; ?>"
                             data-technician="<?= $this->escape($assignedLabel); ?>"
                             data-activity="<?= $this->escape($activityAt); ?>"
+                            data-entity="<?= $this->escape($entityLabel); ?>"
+                            data-window="<?= $this->escape($windowLabel); ?>"
+                            data-delivery="<?= $this->escape($lastDeliveryStatusLabel); ?>"
+                            data-delivery-error="<?= $this->escape($lastDeliveryError); ?>"
+                            data-inactivity="<?= $this->escape($inactivityStatusLabel); ?>"
+                            data-inactivity-next="<?= $this->escape($inactivityNextAction); ?>"
+                            data-stalled="<?= $this->escape($stalledLabel); ?>"
+                            data-business-hours="<?= $this->escape($businessHoursLabel); ?>"
+                            data-ai="<?= $this->escape($aiQualityLabel !== '' ? $aiQualityLabel : '-'); ?>"
+                            data-contract="<?= $this->escape($contractLabel !== '' ? trim($contractLabel . ' ' . $contractPercent) : '-'); ?>"
+                            data-csat="<?= $this->escape($csatLabel !== '' ? $csatLabel : '-'); ?>"
+                            data-attempt="<?= $this->escape($entityAttemptStatusLabel !== '' ? $entityAttemptStatusLabel : '-'); ?>"
                             data-can-reply="<?= $canReply ? '1' : '0'; ?>"
+                            data-can-edit-entity="<?= $canEditEntity ? '1' : '0'; ?>"
                         >
                             <td colspan="8">
                                 <div class="itg-card">
                                     <div class="d-flex justify-content-between gap-2">
                                         <div>
                                             <div class="itg-card-title">
-                                                <?= $this->escape($contactName !== '' ? $contactName : $phone); ?>
+                                                <?= $this->escape($contactName !== '' ? $contactName : $maskedPhone); ?>
                                             </div>
-                                            <div class="itg-card-meta"><?= $this->escape($phone); ?></div>
+                                            <div class="itg-card-meta"><?= $this->escape($maskedPhone); ?></div>
                                         </div>
-                                        <span class="badge bg-light text-dark">#<?= $ticketId; ?></span>
+                                        <span class="badge bg-light text-dark">
+                                            <?= $this->escape($ticketLabel); ?>
+                                        </span>
                                     </div>
                                     <div class="itg-card-badges my-2">
                                         <?php if ($assignedUserId === $currentUserId) { ?>
@@ -322,8 +510,87 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
                                         <?php } else { ?>
                                             <span class="badge bg-info text-dark"><?= $this->escape(__('Aguardando', 'glpiintegaglpi')); ?></span>
                                         <?php } ?>
-                                        <span class="badge bg-secondary"><?= $this->escape($effectiveStatus); ?></span>
+                                        <span class="badge bg-secondary"><?= $this->escape($statusLabel); ?></span>
+                                        <?php if ($operationalStateLabel !== '') { ?>
+                                            <span class="badge bg-dark"><?= $this->escape($operationalStateLabel); ?></span>
+                                        <?php } ?>
+                                        <?php if ($windowLabel !== '') { ?>
+                                            <span class="badge <?= $windowOpen ? 'bg-success' : 'bg-warning text-dark'; ?>">
+                                                <?= $this->escape($windowLabel); ?>
+                                            </span>
+                                        <?php } ?>
+                                        <?php if ($lastDeliveryStatusLabel !== '') { ?>
+                                            <span class="badge <?= (string) ($row['last_delivery_status'] ?? '') === 'failed' ? 'bg-danger' : 'bg-light text-dark'; ?>">
+                                                <?= $this->escape($lastDeliveryStatusLabel); ?>
+                                            </span>
+                                        <?php } ?>
+                                        <?php foreach ($riskBadges as $badge) { ?>
+                                            <span class="badge <?= $this->escape((string) ($badge['class'] ?? 'bg-light text-dark')); ?>">
+                                                <?= $this->escape((string) ($badge['label'] ?? '')); ?>
+                                            </span>
+                                        <?php } ?>
                                     </div>
+                                    <?php if (!$windowOpen && $windowAlert !== '') { ?>
+                                        <div class="alert alert-warning py-2 mb-2">
+                                            <?= $this->escape($windowAlert); ?>
+                                        </div>
+                                    <?php } ?>
+                                    <?php if ($nextAction !== '') { ?>
+                                        <div class="itg-card-meta">
+                                            <?= $this->escape(__('Próxima ação', 'glpiintegaglpi')); ?>:
+                                            <?= $this->escape($nextAction); ?>
+                                        </div>
+                                    <?php } ?>
+                                    <?php if ($entityAttemptStatusLabel !== '') { ?>
+                                        <div class="itg-card-meta">
+                                            <?= $this->escape(__('Última tentativa', 'glpiintegaglpi')); ?>:
+                                            <?= $this->escape($entityAttemptStatusLabel); ?>
+                                        </div>
+                                    <?php } ?>
+                                    <?php if ($entityAttemptError !== '') { ?>
+                                        <div class="alert alert-warning py-2 my-2">
+                                            <?= $this->escape($entityAttemptError); ?>
+                                        </div>
+                                    <?php } ?>
+                                    <?php if ($lastDeliveryError !== '') { ?>
+                                        <div class="alert alert-danger py-2 my-2">
+                                            <?= $this->escape(__('Falha Meta', 'glpiintegaglpi')); ?>:
+                                            <?= $this->escape($lastDeliveryError); ?>
+                                        </div>
+                                    <?php } ?>
+                                    <?php if ($inactivityStatusLabel !== '') { ?>
+                                        <div class="border rounded p-2 my-2 bg-light">
+                                            <strong><?= $this->escape(__('Inatividade', 'glpiintegaglpi')); ?>:</strong>
+                                            <?= $this->escape($inactivityStatusLabel); ?>
+                                            <?php if ($inactivityEventKey !== '') { ?>
+                                                <span class="text-muted">(<?= $this->escape($inactivityEventKey); ?>)</span>
+                                            <?php } ?>
+                                            <?php if ($inactivityLastCheckedAt !== '') { ?>
+                                                <br><span class="text-muted">
+                                                    <?= $this->escape(__('Última checagem', 'glpiintegaglpi')); ?>:
+                                                    <?= $this->escape($inactivityLastCheckedAt); ?>
+                                                </span>
+                                            <?php } ?>
+                                            <?php if ($inactivityNextAction !== '') { ?>
+                                                <br><?= $this->escape(__('Próxima ação', 'glpiintegaglpi')); ?>:
+                                                <?= $this->escape($inactivityNextAction); ?>
+                                            <?php } ?>
+                                            <?php if ($inactivitySkipReason !== '') { ?>
+                                                <br><?= $this->escape(__('Motivo', 'glpiintegaglpi')); ?>:
+                                                <?= $this->escape($inactivitySkipReason); ?>
+                                            <?php } ?>
+                                            <?php if ($inactivityDeliveryStatus !== '') { ?>
+                                                <br><?= $this->escape(__('Delivery', 'glpiintegaglpi')); ?>:
+                                                <?= $this->escape($inactivityDeliveryStatus); ?>
+                                            <?php } ?>
+                                            <?php if ($inactivityMetaErrorCode !== '' || $inactivityLastError !== '') { ?>
+                                                <br><span class="text-warning">
+                                                    <?= $this->escape(__('Erro Meta', 'glpiintegaglpi')); ?>:
+                                                    <?= $this->escape(trim($inactivityMetaErrorCode . ' ' . $inactivityLastError)); ?>
+                                                </span>
+                                            <?php } ?>
+                                        </div>
+                                    <?php } ?>
                                     <div class="itg-card-meta">
                                         <?= $this->escape(__('Fila', 'glpiintegaglpi')); ?>:
                                         <?= $this->escape($queueName !== '' ? $queueName : '-'); ?>
@@ -331,6 +598,57 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
                                             <span>#<?= $queueId; ?></span>
                                         <?php } ?>
                                     </div>
+                                    <div class="itg-card-meta">
+                                        <?= $this->escape(__('Entidade', 'glpiintegaglpi')); ?>:
+                                        <?= $this->escape($entityLabel !== '' ? $entityLabel : '-'); ?>
+                                    </div>
+                                    <?php if ($canEditEntity) { ?>
+                                        <details class="mt-2 mb-2 integaglpi-central-entity-edit" data-entity-box="1">
+                                            <summary class="small"><?= $this->escape(__('Alterar entidade da conversa/memória', 'glpiintegaglpi')); ?></summary>
+                                            <?php if ($ticketId > 0) { ?>
+                                                <div class="alert alert-info py-2 my-2">
+                                                    <?= $this->escape(__('Esta ação atualiza a conversa e a memória do contato. O ticket GLPI existente não será movido automaticamente.', 'glpiintegaglpi')); ?>
+                                                </div>
+                                            <?php } ?>
+                                            <div class="integaglpi-entity-selection d-flex flex-wrap gap-2 align-items-center mt-2">
+                                                <select
+                                                    class="form-select form-select-sm js-integaglpi-entity-id"
+                                                    name="glpi_entity_id"
+                                                    style="min-width: 280px; max-width: 420px"
+                                                    <?= count($glpiEntities) === 0 ? "disabled='disabled'" : ''; ?>
+                                                >
+                                                    <option value="" disabled selected>
+                                                        <?= $this->escape(count($glpiEntities) === 0
+                                                            ? __('Nenhuma entidade GLPI disponível', 'glpiintegaglpi')
+                                                            : __('Selecione uma entidade GLPI', 'glpiintegaglpi')); ?>
+                                                    </option>
+                                                    <?php foreach ($glpiEntities as $entity) { ?>
+                                                        <?php $entityId = (int) ($entity['id'] ?? 0); ?>
+                                                        <?php if ($entityId <= 0) { continue; } ?>
+                                                        <option value="<?= $entityId; ?>" <?= (int) ($row['glpi_entity_id'] ?? 0) === $entityId ? "selected='selected'" : ''; ?>>
+                                                            <?= $this->escape((string) ($entity['name'] ?? ('Entidade #' . $entityId))); ?>
+                                                        </option>
+                                                    <?php } ?>
+                                                </select>
+                                                <button
+                                                    type="button"
+                                                    class="btn btn-sm btn-outline-warning js-integaglpi-update-entity"
+                                                    data-conversation-id="<?= $this->escape($conversationId); ?>"
+                                                    data-ticket-id="<?= $ticketId; ?>"
+                                                    <?= count($glpiEntities) === 0 ? "disabled='disabled'" : ''; ?>
+                                                >
+                                                    <?= $this->escape(__('Atualizar entidade', 'glpiintegaglpi')); ?>
+                                                </button>
+                                                <small class="text-muted js-integaglpi-entity-feedback"></small>
+                                            </div>
+                                        </details>
+                                    <?php } ?>
+                                    <?php if ($memoryEntityId > 0) { ?>
+                                        <div class="itg-card-meta">
+                                            <?= $this->escape(__('Entidade memorizada', 'glpiintegaglpi')); ?>:
+                                            <?= $this->escape($memoryEntityName !== '' ? $memoryEntityName : (string) $memoryEntityId); ?>
+                                        </div>
+                                    <?php } ?>
                                     <div class="itg-card-meta js-integaglpi-central-technician">
                                         <?= $this->escape(__('Técnico', 'glpiintegaglpi')); ?>:
                                         <?php if ($assignedLabel !== '') { ?>
@@ -342,9 +660,87 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
                                     <div class="itg-card-meta">
                                         <?= $this->escape(__('Última atividade', 'glpiintegaglpi')); ?>:
                                         <?= $this->escape($activityAt); ?>
+                                        <?php if ($stalledLabel !== '') { ?>
+                                            · <?= $this->escape(__('parado há', 'glpiintegaglpi')); ?> <?= $this->escape($stalledLabel); ?>
+                                        <?php } ?>
                                     </div>
+                                    <?php if ($lastMessagePreview !== '') { ?>
+                                        <div class="itg-card-meta">
+                                            <?= $this->escape(__('Última mensagem', 'glpiintegaglpi')); ?>:
+                                            <?= $this->escape(function_exists('mb_substr') ? mb_substr($lastMessagePreview, 0, 140) : substr($lastMessagePreview, 0, 140)); ?>
+                                        </div>
+                                    <?php } ?>
+                                    <?php if ($profileSnapshot !== null) { ?>
+                                        <div class="border rounded p-3 mt-3 mb-0 bg-light">
+                                            <strong><?= $this->escape(__('Perfil do contato', 'glpiintegaglpi')); ?></strong><br>
+                                            <?= $this->escape(__('Nome', 'glpiintegaglpi')); ?>:
+                                            <?= $this->escape((string) ($profileSnapshot['requester_name'] ?? '-')); ?><br>
+                                            <?= $this->escape(__('Empresa informada', 'glpiintegaglpi')); ?>:
+                                            <?= $this->escape((string) ($profileSnapshot['company_name_raw'] ?? '-')); ?><br>
+                                            <?= $this->escape(__('Equipamento', 'glpiintegaglpi')); ?>:
+                                            <?= !empty($profileSnapshot['equipment_tag_unknown'])
+                                                ? $this->escape(__('Não informado', 'glpiintegaglpi'))
+                                                : $this->escape((string) ($profileSnapshot['last_equipment_tag'] ?? '-')); ?><br>
+                                            <?= $this->escape(__('Resumo', 'glpiintegaglpi')); ?>:
+                                            <?= $this->escape((string) ($profileSnapshot['last_problem_summary'] ?? '-')); ?><br>
+                                            <?= $this->escape(__('Status', 'glpiintegaglpi')); ?>:
+                                            <?= $this->escape((string) ($profileSnapshot['profile_status'] ?? 'incomplete')); ?>
+                                        </div>
+                                    <?php } ?>
                                     <div class="mt-2 js-integaglpi-central-actions">
-                                        <?php if ($canClaim) { ?>
+                                        <?php if ($canConfirmEntity) { ?>
+                                            <div class="alert alert-warning py-2 mb-2">
+                                                <?= $this->escape(__('Entidade do contato ainda não definida.', 'glpiintegaglpi')); ?>
+                                            </div>
+                                            <div class="integaglpi-central-entity" data-entity-box="1">
+                                                <label class="form-label small mb-1"><?= $this->escape(__('Filtrar entidades', 'glpiintegaglpi')); ?></label>
+                                                <input
+                                                    type="search"
+                                                    class="form-control form-control-sm mb-2 js-integaglpi-entity-filter"
+                                                    placeholder="<?= $this->escape(__('Digite para filtrar a lista', 'glpiintegaglpi')); ?>"
+                                                    autocomplete="off"
+                                                    aria-label="<?= $this->escape(__('Filtrar entidades', 'glpiintegaglpi')); ?>"
+                                                >
+                                                <div class="integaglpi-entity-selection d-flex flex-wrap gap-2 align-items-center">
+                                                <div class="integaglpi-entity-dropdown" style="min-width: 280px; max-width: 420px">
+                                                    <select
+                                                        class="form-select form-select-sm js-integaglpi-entity-id"
+                                                        name="glpi_entity_id"
+                                                        <?= count($glpiEntities) === 0 ? "disabled='disabled'" : ''; ?>
+                                                    >
+                                                        <option value="" disabled selected>
+                                                            <?= $this->escape(count($glpiEntities) === 0
+                                                                ? __('Nenhuma entidade GLPI disponível', 'glpiintegaglpi')
+                                                                : __('Selecione uma entidade GLPI', 'glpiintegaglpi')); ?>
+                                                        </option>
+                                                        <?php foreach ($glpiEntities as $entity) { ?>
+                                                            <?php $entityId = (int) ($entity['id'] ?? 0); ?>
+                                                            <?php if ($entityId <= 0) { continue; } ?>
+                                                            <option value="<?= $entityId; ?>">
+                                                                <?= $this->escape((string) ($entity['name'] ?? ('Entidade #' . $entityId))); ?>
+                                                            </option>
+                                                        <?php } ?>
+                                                    </select>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    class="btn btn-sm btn-warning js-integaglpi-confirm-entity"
+                                                    data-conversation-id="<?= $this->escape($conversationId); ?>"
+                                                    data-ticket-id="0"
+                                                    <?= count($glpiEntities) === 0 ? "disabled='disabled'" : ''; ?>
+                                                >
+                                                    <?= $this->escape(__('Salvar entidade e criar chamado', 'glpiintegaglpi')); ?>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    class="btn btn-sm btn-outline-secondary"
+                                                    title="<?= $this->escape(__('A entidade selecionada será usada para criar este chamado e atualizar a memória do contato.', 'glpiintegaglpi')); ?>"
+                                                    aria-label="<?= $this->escape(__('Informações sobre seleção de entidade', 'glpiintegaglpi')); ?>"
+                                                ><i class="ti ti-info-circle"></i></button>
+                                                <small class="text-muted js-integaglpi-entity-feedback"></small>
+                                                </div>
+                                            </div>
+                                        <?php } elseif ($canClaim) { ?>
                                             <button
                                                 type="button"
                                                 class="btn btn-sm btn-primary js-integaglpi-central-claim"
@@ -459,6 +855,55 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
                     <small class="text-muted d-block"><?= $this->escape(__('Status', 'glpiintegaglpi')); ?></small>
                     <span class="js-integaglpi-central-context-status">-</span>
                 </div>
+                <div class="itg-context-item">
+                    <small class="text-muted d-block"><?= $this->escape(__('Entidade', 'glpiintegaglpi')); ?></small>
+                    <span class="js-integaglpi-central-context-entity">-</span>
+                </div>
+                <div class="itg-context-item">
+                    <small class="text-muted d-block"><?= $this->escape(__('Janela WhatsApp 24h', 'glpiintegaglpi')); ?></small>
+                    <span class="js-integaglpi-central-context-window">-</span>
+                </div>
+                <div class="itg-context-item">
+                    <small class="text-muted d-block"><?= $this->escape(__('Delivery', 'glpiintegaglpi')); ?></small>
+                    <span class="js-integaglpi-central-context-delivery">-</span>
+                </div>
+                <div class="itg-context-item">
+                    <small class="text-muted d-block"><?= $this->escape(__('Inatividade', 'glpiintegaglpi')); ?></small>
+                    <span class="js-integaglpi-central-context-inactivity">-</span>
+                </div>
+                <div class="itg-context-item">
+                    <small class="text-muted d-block"><?= $this->escape(__('Tempo parado / horário', 'glpiintegaglpi')); ?></small>
+                    <span class="js-integaglpi-central-context-stalled">-</span>
+                </div>
+                <div class="itg-context-item">
+                    <small class="text-muted d-block"><?= $this->escape(__('Tentativa de entidade', 'glpiintegaglpi')); ?></small>
+                    <span class="js-integaglpi-central-context-attempt">-</span>
+                </div>
+                <div class="itg-context-item">
+                    <small class="text-muted d-block"><?= $this->escape(__('IA / CSAT / Contrato', 'glpiintegaglpi')); ?></small>
+                    <span class="js-integaglpi-central-context-ai">-</span><br>
+                    <span class="js-integaglpi-central-context-csat">-</span><br>
+                    <span class="js-integaglpi-central-context-contract">-</span>
+                </div>
+                <div class="itg-context-item">
+                    <small class="text-muted d-block"><?= $this->escape(__('Atalhos', 'glpiintegaglpi')); ?></small>
+                    <a class="js-integaglpi-central-context-whatsapp" href="#" target="_blank" rel="noopener noreferrer">
+                        <?= $this->escape(__('Contexto WhatsApp', 'glpiintegaglpi')); ?>
+                    </a>
+                </div>
+                <?php if ($diagnostics !== null) { ?>
+                    <div class="itg-context-item js-integaglpi-central-diagnostics-readonly">
+                        <small class="text-muted d-block"><?= $this->escape(__('Diagnóstico somente leitura', 'glpiintegaglpi')); ?></small>
+                        <?php $node = is_array($diagnostics['node'] ?? null) ? $diagnostics['node'] : []; ?>
+                        <?php $glpi = is_array($diagnostics['glpi'] ?? null) ? $diagnostics['glpi'] : []; ?>
+                        <?php $meta = is_array($diagnostics['meta'] ?? null) ? $diagnostics['meta'] : []; ?>
+                        <?php $ai = is_array($diagnostics['ai'] ?? null) ? $diagnostics['ai'] : []; ?>
+                        <span>Node: <?= $this->escape((string) ($node['status'] ?? $diagnostics['status'] ?? '-')); ?></span><br>
+                        <span>GLPI: <?= $this->escape((string) ($glpi['status'] ?? '-')); ?></span><br>
+                        <span>Meta: <?= $this->escape((string) ($meta['status'] ?? $meta['webhook_guard'] ?? '-')); ?></span><br>
+                        <span>IA: <?= $this->escape((string) ($ai['status'] ?? $ai['enabled'] ?? '-')); ?></span>
+                    </div>
+                <?php } ?>
                 <button
                     type="button"
                     class="btn btn-outline-secondary js-integaglpi-central-context-transfer js-integaglpi-central-transfer"
@@ -514,6 +959,7 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
     let csrfToken = <?= json_encode($csrfToken, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
     const ticketUrlBase = <?= json_encode($ticketUrlBase, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
     const canUpdateActions = <?= json_encode($canUpdateActions); ?>;
+    const glpiEntities = <?= json_encode(array_values($glpiEntities), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
     const refreshMinIntervalMs = 15000;
     const pollingIntervalMs = 15000;
     let refreshInProgress = false;
@@ -531,6 +977,11 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
         return 'central-reply-' + Date.now() + '-' + Math.random().toString(16).slice(2);
     }
 
+    function buildEntitySelectionIdempotencyKey(conversationId, entityId) {
+        const safeConversationId = String(conversationId || 'conversation').replace(/[^a-zA-Z0-9._-]/g, '_');
+        return 'entity_selection:' + safeConversationId + ':' + String(entityId);
+    }
+
     function escapeHtml(value) {
         return String(value === null || value === undefined ? '' : value)
             .replace(/&/g, '&amp;')
@@ -538,6 +989,52 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
+    }
+
+    const statusLabels = {
+        collecting_contact_profile: 'Coletando perfil',
+        awaiting_entity_selection: 'Aguardando seleção de entidade',
+        awaiting_queue_selection: 'Aguardando escolha de fila',
+        open: 'Chamado aberto',
+        closed: 'Fechado',
+        media_error: 'Erro de mídia',
+        pending_glpi: 'Aguardando GLPI'
+    };
+
+    function friendlyStatus(row) {
+        const status = String(row.effective_status || row.conversation_status || '').trim();
+        return String(row.status_label || statusLabels[status] || status || 'Sem status');
+    }
+
+    function nextActionLabel(row, hasTicket) {
+        const explicit = String(row.next_action || '').trim();
+        if (explicit !== '') {
+            return explicit;
+        }
+
+        const status = String(row.effective_status || row.conversation_status || '').trim();
+        if (status === 'awaiting_entity_selection') {
+            return 'Selecione a entidade para criar o chamado';
+        }
+        if (status === 'awaiting_queue_selection') {
+            return 'Selecione a fila';
+        }
+        if (status === 'collecting_contact_profile') {
+            return 'Aguarde o usuário responder';
+        }
+        if (status === 'media_error') {
+            return 'Verifique erro de mídia';
+        }
+        if (status === 'open') {
+            return 'Responda o cliente';
+        }
+
+        return hasTicket ? 'Acompanhe o chamado' : 'Aguarde o usuário responder';
+    }
+
+    function ticketDisplayLabel(row, ticketId) {
+        const explicit = String(row.ticket_label || '').trim();
+        return explicit !== '' ? explicit : (ticketId > 0 ? '#' + ticketId : 'Pré-Ticket');
     }
 
     function showRefreshMessage(message, type) {
@@ -588,15 +1085,83 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
         return 'Sessão expirada ou token de segurança inválido. Recarregue a página.';
     }
 
+    function renderEntityOptions(selectedEntityId) {
+        const selectedId = Number(selectedEntityId || 0);
+        if (!Array.isArray(glpiEntities) || glpiEntities.length === 0) {
+            return '<option value="">Nenhuma entidade GLPI disponível</option>';
+        }
+
+        return '<option value="" disabled' + (selectedId > 0 ? '' : ' selected') + '>Selecione uma entidade GLPI</option>' + glpiEntities.map(function (entity) {
+            const id = Number(entity.id || 0);
+            const name = String(entity.name || '').trim();
+            if (!Number.isInteger(id) || id <= 0 || name === '' || /^-+$/.test(name)) {
+                return '';
+            }
+
+            return '<option value="' + id + '"' + (selectedId === id ? ' selected' : '') + '>' + escapeHtml(name) + '</option>';
+        }).join('');
+    }
+
+    function renderEntityEditControls(row) {
+        if (!canUpdateActions || !row.can_edit_entity) {
+            return '';
+        }
+
+        const conversationId = escapeHtml(row.conversation_id || '');
+        const ticketId = Number(row.glpi_ticket_id || 0);
+        const hasEntities = Array.isArray(glpiEntities) && glpiEntities.length > 0;
+        const warning = ticketId > 0
+            ? '<div class="alert alert-info py-2 my-2">Esta ação atualiza a conversa e a memória do contato. O ticket GLPI existente não será movido automaticamente.</div>'
+            : '';
+
+        return '<details class="mt-2 mb-2 integaglpi-central-entity-edit" data-entity-box="1">'
+            + '<summary class="small">Alterar entidade da conversa/memória</summary>'
+            + warning
+            + '<div class="integaglpi-entity-selection d-flex flex-wrap gap-2 align-items-center mt-2">'
+            + '<select class="form-select form-select-sm js-integaglpi-entity-id" name="glpi_entity_id"'
+            + ' style="min-width: 280px; max-width: 420px"' + (hasEntities ? '' : ' disabled') + '>'
+            + renderEntityOptions(row.glpi_entity_id)
+            + '</select>'
+            + '<button type="button" class="btn btn-sm btn-outline-warning js-integaglpi-update-entity"'
+            + ' data-conversation-id="' + conversationId + '" data-ticket-id="' + ticketId + '"' + (hasEntities ? '' : ' disabled')
+            + '>Atualizar entidade</button>'
+            + '<small class="text-muted js-integaglpi-entity-feedback"></small>'
+            + '</div></details>';
+    }
+
     function isProtectedRow(row) {
         const textarea = row.querySelector('.js-integaglpi-central-reply-text');
         const hasDraft = textarea && textarea.value.trim() !== '';
-        return row.getAttribute('data-reply-in-progress') === '1' || hasDraft;
+        const hasEntityFlow = row.querySelector('.integaglpi-central-entity') !== null
+            || row.querySelector('[data-request-in-progress="1"]') !== null;
+        return row.getAttribute('data-reply-in-progress') === '1' || hasDraft || hasEntityFlow;
     }
 
     function renderActions(row) {
         const conversationId = escapeHtml(row.conversation_id || '');
         const ticketId = Number(row.glpi_ticket_id || 0);
+
+        if (canUpdateActions && row.can_confirm_entity) {
+            const hasEntities = Array.isArray(glpiEntities) && glpiEntities.length > 0;
+            return '<div class="alert alert-warning py-2 mb-2">Entidade do contato ainda não definida.</div>'
+                + '<div class="integaglpi-central-entity" data-entity-box="1">'
+                + '<label class="form-label small mb-1">Filtrar entidades</label>'
+                + '<input type="search" class="form-control form-control-sm mb-2 js-integaglpi-entity-filter" placeholder="Digite para filtrar a lista" autocomplete="off" aria-label="Filtrar entidades">'
+                + '<div class="integaglpi-entity-selection d-flex flex-wrap gap-2 align-items-center">'
+                + '<select class="form-select form-select-sm js-integaglpi-entity-id"'
+                + ' name="glpi_entity_id"'
+                + ' style="min-width: 280px; max-width: 420px"' + (hasEntities ? '' : ' disabled') + '>'
+                + renderEntityOptions(0)
+                + '</select>'
+                + '<button type="button" class="btn btn-sm btn-warning js-integaglpi-confirm-entity"'
+                + ' data-conversation-id="' + conversationId + '" data-ticket-id="0"' + (hasEntities ? '' : ' disabled')
+                + '>Salvar entidade e criar chamado</button>'
+                + '<button type="button" class="btn btn-sm btn-outline-secondary"'
+                + ' title="A entidade selecionada será usada para criar este chamado e atualizar a memória do contato."'
+                + ' aria-label="Informações sobre seleção de entidade"><i class="ti ti-info-circle"></i></button>'
+                + '<small class="text-muted js-integaglpi-entity-feedback"></small>'
+                + '</div></div>';
+        }
 
         if (canUpdateActions && row.can_claim) {
             return '<button type="button" class="btn btn-sm btn-primary js-integaglpi-central-claim"'
@@ -630,11 +1195,35 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
         const queueId = Number(row.queue_id || 0);
         const conversationId = String(row.conversation_id || '');
         const phone = String(row.phone_e164 || '');
+        const maskedPhone = String(row.masked_phone || phone);
         const contactName = String(row.contact_name || '');
-        const title = contactName || phone || conversationId;
+        const title = contactName || maskedPhone || conversationId;
         const status = String(row.effective_status || row.conversation_status || '');
+        const statusLabel = friendlyStatus(row);
+        const operationalStateLabel = String(row.operational_state_label || '').trim();
+        const ticketLabel = ticketDisplayLabel(row, ticketId);
+        const nextAction = nextActionLabel(row, ticketId > 0);
+        const lastMessagePreview = String(row.last_message_preview || '').trim();
         const queueName = String(row.queue_name || '');
         const activityAt = String(row.activity_at || '');
+        const entityLabel = String(row.entity_label || '').trim();
+        const stalledLabel = String(row.stalled_label || '').trim();
+        const deliveryLabel = String(row.last_delivery_status_label || '').trim();
+        const deliveryStatus = String(row.last_delivery_status || '').trim();
+        const deliveryError = String(row.last_delivery_error_sanitized || '').trim();
+        const businessHoursLabel = String(row.business_hours_label || '').trim();
+        const aiLabel = (String(row.ai_quality_status || '').trim() + ' ' + String(row.ai_sentiment || '').trim()).trim();
+        const contractLabel = (String(row.contract_alert_status || '').trim() + ' ' + String(row.contract_consumed_percent || '').trim()).trim();
+        const csatLabel = row.csat_dissatisfied
+            ? 'CSAT insatisfeito'
+            : (row.supervisor_review_required ? 'Revisão CSAT' : '-');
+        const riskBadges = Array.isArray(row.risk_badges)
+            ? row.risk_badges.map(function (badge) {
+                return '<span class="badge ' + escapeHtml(String(badge.class || 'bg-light text-dark')) + '">'
+                    + escapeHtml(String(badge.label || ''))
+                    + '</span>';
+            }).join('')
+            : '';
         const technicianHtml = row.assigned_user_label
             ? escapeHtml(row.assigned_user_label)
             : '<span class="text-muted">-</span>';
@@ -644,18 +1233,95 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
             : assignedUserId <= 0
             ? '<span class="badge bg-warning text-dark">Sem técnico</span>'
             : '<span class="badge bg-info text-dark">Aguardando</span>';
+        const profile = row.contact_profile_snapshot && typeof row.contact_profile_snapshot === 'object'
+            ? row.contact_profile_snapshot
+            : null;
+        const memoryEntityId = Number(row.memory_entity_id || 0);
+        const memoryEntityName = String(row.memory_entity_name || '').trim();
+        const memoryEntityHtml = memoryEntityId > 0
+            ? '<div class="itg-card-meta">Entidade memorizada: '
+                + escapeHtml(memoryEntityName || String(memoryEntityId))
+                + '</div>'
+            : '';
+        const inactivityStatus = String(row.inactivity_status_label || '').trim();
+        const inactivityEventKey = String(row.inactivity_event_key || '').trim();
+        const inactivityNextAction = String(row.inactivity_next_action || '').trim();
+        const inactivityReason = String(row.inactivity_tracking_skip_reason || row.inactivity_event_reason || '').trim();
+        const inactivityDelivery = String(row.inactivity_delivery_status || '').trim();
+        const inactivityMetaError = (String(row.inactivity_meta_error_code || '').trim() + ' ' + String(row.inactivity_last_error_sanitized || '').trim()).trim();
+        const inactivityCheckedAt = String(row.inactivity_last_checked_at || '').trim();
+        const inactivityHtml = inactivityStatus !== ''
+            ? '<div class="border rounded p-2 my-2 bg-light">'
+                + '<strong>Inatividade:</strong> ' + escapeHtml(inactivityStatus)
+                + (inactivityEventKey !== '' ? ' <span class="text-muted">(' + escapeHtml(inactivityEventKey) + ')</span>' : '')
+                + (inactivityCheckedAt !== '' ? '<br><span class="text-muted">Última checagem: ' + escapeHtml(inactivityCheckedAt) + '</span>' : '')
+                + (inactivityNextAction !== '' ? '<br>Próxima ação: ' + escapeHtml(inactivityNextAction) : '')
+                + (inactivityReason !== '' ? '<br>Motivo: ' + escapeHtml(inactivityReason) : '')
+                + (inactivityDelivery !== '' ? '<br>Delivery: ' + escapeHtml(inactivityDelivery) : '')
+                + (inactivityMetaError !== '' ? '<br><span class="text-warning">Erro Meta: ' + escapeHtml(inactivityMetaError) + '</span>' : '')
+                + '</div>'
+            : '';
+        const windowInfo = row.whatsapp_window && typeof row.whatsapp_window === 'object'
+            ? row.whatsapp_window
+            : {};
+        const windowLabel = String(windowInfo.label || '').trim();
+        const windowOpen = Boolean(windowInfo.is_open);
+        const windowBadge = windowLabel !== ''
+            ? '<span class="badge ' + (windowOpen ? 'bg-success' : 'bg-warning text-dark') + '">'
+                + escapeHtml(windowLabel)
+                + '</span>'
+            : '';
+        const deliveryBadge = deliveryLabel !== ''
+            ? '<span class="badge ' + (deliveryStatus === 'failed' ? 'bg-danger' : 'bg-light text-dark') + '">'
+                + escapeHtml(deliveryLabel)
+                + '</span>'
+            : '';
+        const windowAlert = !windowOpen && String(windowInfo.alert || '').trim() !== ''
+            ? '<div class="alert alert-warning py-2 mb-2">' + escapeHtml(String(windowInfo.alert)) + '</div>'
+            : '';
+        const deliveryAlert = deliveryError !== ''
+            ? '<div class="alert alert-danger py-2 my-2">Falha Meta: ' + escapeHtml(deliveryError) + '</div>'
+            : '';
+        const profileHtml = profile
+            ? '<div class="border rounded p-3 mt-3 mb-0 bg-light">'
+                + '<strong>Perfil do contato</strong><br>'
+                + 'Nome: ' + escapeHtml(String(profile.requester_name || '-')) + '<br>'
+                + 'Empresa informada: ' + escapeHtml(String(profile.company_name_raw || '-')) + '<br>'
+                + 'Equipamento: ' + escapeHtml(profile.equipment_tag_unknown ? 'Não informado' : String(profile.last_equipment_tag || '-')) + '<br>'
+                + 'Resumo: ' + escapeHtml(String(profile.last_problem_summary || '-')) + '<br>'
+                + 'Status: ' + escapeHtml(String(profile.profile_status || 'incomplete'))
+                + '</div>'
+            : '';
 
         const element = document.createElement('tr');
         element.setAttribute('data-conversation-id', conversationId);
         element.setAttribute('data-ticket-id', String(ticketId));
         element.setAttribute('data-phone', phone);
+        element.setAttribute('data-masked-phone', maskedPhone);
         element.setAttribute('data-contact-name', contactName);
         element.setAttribute('data-status', status);
+        element.setAttribute('data-status-label', statusLabel);
+        element.setAttribute('data-operational-state', operationalStateLabel);
+        element.setAttribute('data-next-action', nextAction);
+        element.setAttribute('data-ticket-label', ticketLabel);
         element.setAttribute('data-queue', queueName);
         element.setAttribute('data-queue-id', String(queueId));
         element.setAttribute('data-technician', String(row.assigned_user_label || ''));
         element.setAttribute('data-activity', activityAt);
+        element.setAttribute('data-entity', entityLabel);
+        element.setAttribute('data-window', windowLabel);
+        element.setAttribute('data-delivery', deliveryLabel);
+        element.setAttribute('data-delivery-error', deliveryError);
+        element.setAttribute('data-inactivity', inactivityStatus);
+        element.setAttribute('data-inactivity-next', inactivityNextAction);
+        element.setAttribute('data-stalled', stalledLabel);
+        element.setAttribute('data-business-hours', businessHoursLabel);
+        element.setAttribute('data-ai', aiLabel || '-');
+        element.setAttribute('data-contract', contractLabel || '-');
+        element.setAttribute('data-csat', csatLabel);
+        element.setAttribute('data-attempt', String(row.entity_attempt_status_label || '-'));
         element.setAttribute('data-can-reply', canUpdateActions && row.can_reply ? '1' : '0');
+        element.setAttribute('data-can-edit-entity', canUpdateActions && row.can_edit_entity ? '1' : '0');
         if (selectedConversation && selectedConversation.conversationId === String(row.conversation_id || '')) {
             element.classList.add('table-active');
         }
@@ -663,16 +1329,31 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
             '<td colspan="8"><div class="itg-card">'
             + '<div class="d-flex justify-content-between gap-2"><div>'
             + '<div class="itg-card-title">' + escapeHtml(title) + '</div>'
-            + '<div class="itg-card-meta">' + escapeHtml(phone) + '</div>'
-            + '</div><span class="badge bg-light text-dark">#' + ticketId + '</span></div>'
+            + '<div class="itg-card-meta">' + escapeHtml(maskedPhone) + '</div>'
+            + '</div><span class="badge bg-light text-dark">' + escapeHtml(ticketLabel) + '</span></div>'
             + '<div class="itg-card-badges my-2">'
             + ownershipBadge
-            + '<span class="badge bg-secondary">' + escapeHtml(status) + '</span>'
+            + '<span class="badge bg-secondary">' + escapeHtml(statusLabel) + '</span>'
+            + (operationalStateLabel !== '' ? '<span class="badge bg-dark">' + escapeHtml(operationalStateLabel) + '</span>' : '')
+            + windowBadge
+            + deliveryBadge
+            + riskBadges
             + '</div>'
+            + windowAlert
+            + deliveryAlert
+            + '<div class="itg-card-meta">Próxima ação: ' + escapeHtml(nextAction) + '</div>'
+            + inactivityHtml
             + '<div class="itg-card-meta">Fila: ' + escapeHtml(queueName || '-')
             + (queueId > 0 ? ' <span>#' + queueId + '</span>' : '') + '</div>'
+            + '<div class="itg-card-meta">Entidade: ' + escapeHtml(entityLabel || '-') + '</div>'
+            + renderEntityEditControls(row)
+            + memoryEntityHtml
             + '<div class="itg-card-meta js-integaglpi-central-technician">Técnico: ' + technicianHtml + '</div>'
-            + '<div class="itg-card-meta">Última atividade: ' + escapeHtml(activityAt) + '</div>'
+            + '<div class="itg-card-meta">Última atividade: ' + escapeHtml(activityAt)
+            + (stalledLabel !== '' ? ' · parado há ' + escapeHtml(stalledLabel) : '') + '</div>'
+            + (lastMessagePreview !== '' ? '<div class="itg-card-meta">Última mensagem: '
+                + escapeHtml(lastMessagePreview.slice(0, 140)) + '</div>' : '')
+            + profileHtml
             + '<div class="mt-2 js-integaglpi-central-actions">' + renderActions(row) + '</div>'
             + '</div></td>';
 
@@ -708,7 +1389,7 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
         const pageLabel = document.querySelector('.js-integaglpi-central-page-label');
 
         if (totalBadge) {
-            totalBadge.textContent = total + ' open conversations';
+            totalBadge.textContent = total + ' conversas';
         }
 
         if (pageLabel) {
@@ -763,6 +1444,15 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
 
         bubble.appendChild(meta);
         bubble.appendChild(text);
+        if (isOutbound && message.delivery_status_label) {
+            const delivery = document.createElement('div');
+            delivery.className = message.delivery_status === 'failed' ? 'small text-warning mt-1' : 'small text-white-50 mt-1';
+            delivery.textContent = 'Status: ' + message.delivery_status_label;
+            if (message.delivery_status === 'failed' && message.meta_error_message_sanitized) {
+                delivery.textContent += ' - ' + message.meta_error_message_sanitized;
+            }
+            bubble.appendChild(delivery);
+        }
         wrapper.appendChild(bubble);
 
         return wrapper;
@@ -858,7 +1548,7 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
     function selectConversation(row) {
         const conversationId = row.getAttribute('data-conversation-id') || '';
         const ticketId = row.getAttribute('data-ticket-id') || '';
-        if (!conversationId || !ticketId) {
+        if (!conversationId) {
             return;
         }
 
@@ -874,7 +1564,9 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
             panel.classList.remove('d-none');
         }
         if (label) {
-            label.textContent = '#' + ticketId + ' / ' + conversationId;
+            const tid = Number(ticketId);
+            const ticketLabel = row.getAttribute('data-ticket-label') || (tid > 0 ? '#' + tid : 'Pré-Ticket');
+            label.textContent = ticketLabel + ' / ' + conversationId;
         }
 
         updateContextPanel(row);
@@ -887,6 +1579,16 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
         const queue = document.querySelector('.js-integaglpi-central-context-queue');
         const technician = document.querySelector('.js-integaglpi-central-context-technician');
         const status = document.querySelector('.js-integaglpi-central-context-status');
+        const entity = document.querySelector('.js-integaglpi-central-context-entity');
+        const windowInfo = document.querySelector('.js-integaglpi-central-context-window');
+        const delivery = document.querySelector('.js-integaglpi-central-context-delivery');
+        const inactivity = document.querySelector('.js-integaglpi-central-context-inactivity');
+        const stalled = document.querySelector('.js-integaglpi-central-context-stalled');
+        const attempt = document.querySelector('.js-integaglpi-central-context-attempt');
+        const ai = document.querySelector('.js-integaglpi-central-context-ai');
+        const csat = document.querySelector('.js-integaglpi-central-context-csat');
+        const contract = document.querySelector('.js-integaglpi-central-context-contract');
+        const whatsappLink = document.querySelector('.js-integaglpi-central-context-whatsapp');
         const transferButton = document.querySelector('.js-integaglpi-central-context-transfer');
         const solveButton = document.querySelector('.js-integaglpi-central-context-solve');
         const conversationId = row.getAttribute('data-conversation-id') || '';
@@ -896,8 +1598,9 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
             && Number(ticketId) > 0;
 
         if (ticketLink) {
-            ticketLink.textContent = ticketId ? '#' + ticketId : '-';
-            ticketLink.href = ticketId ? ticketUrlBase + ticketId : '#';
+            const tid = Number(ticketId);
+            ticketLink.textContent = row.getAttribute('data-ticket-label') || (tid > 0 ? '#' + tid : 'Pré-Ticket');
+            ticketLink.href = tid > 0 ? ticketUrlBase + tid : '#';
         }
 
         if (queue) {
@@ -911,7 +1614,57 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
         }
 
         if (status) {
-            status.textContent = rowStatus || '-';
+            const operational = row.getAttribute('data-operational-state') || '';
+            status.textContent = (row.getAttribute('data-status-label') || rowStatus || '-')
+                + (operational ? ' / ' + operational : '');
+        }
+
+        if (entity) {
+            entity.textContent = row.getAttribute('data-entity') || '-';
+        }
+
+        if (windowInfo) {
+            windowInfo.textContent = row.getAttribute('data-window') || '-';
+        }
+
+        if (delivery) {
+            const deliveryText = row.getAttribute('data-delivery') || '-';
+            const deliveryError = row.getAttribute('data-delivery-error') || '';
+            delivery.textContent = deliveryText + (deliveryError ? ' - ' + deliveryError : '');
+        }
+
+        if (inactivity) {
+            const inactivityText = row.getAttribute('data-inactivity') || '-';
+            const inactivityNext = row.getAttribute('data-inactivity-next') || '';
+            inactivity.textContent = inactivityText + (inactivityNext ? ' - ' + inactivityNext : '');
+        }
+
+        if (stalled) {
+            const stalledText = row.getAttribute('data-stalled') || '-';
+            const businessHours = row.getAttribute('data-business-hours') || '-';
+            stalled.textContent = stalledText + ' / ' + businessHours;
+        }
+
+        if (attempt) {
+            attempt.textContent = row.getAttribute('data-attempt') || '-';
+        }
+
+        if (ai) {
+            ai.textContent = 'IA: ' + (row.getAttribute('data-ai') || '-');
+        }
+
+        if (csat) {
+            csat.textContent = 'CSAT: ' + (row.getAttribute('data-csat') || '-');
+        }
+
+        if (contract) {
+            contract.textContent = 'Contrato: ' + (row.getAttribute('data-contract') || '-');
+        }
+
+        if (whatsappLink) {
+            const tid = Number(ticketId);
+            whatsappLink.href = tid > 0 ? ticketUrlBase + tid + '&forcetab=PluginIntegaglpiTicket$1' : '#';
+            whatsappLink.classList.toggle('text-muted', tid <= 0);
         }
 
         [transferButton, solveButton].forEach(function (button) {
@@ -960,7 +1713,7 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
 
         if (!rows.length && nextBody.childNodes.length === 0) {
             const emptyRow = document.createElement('tr');
-            emptyRow.innerHTML = '<td colspan="8" class="text-center text-muted p-3">No open WhatsApp conversations found.</td>';
+            emptyRow.innerHTML = '<td colspan="8" class="text-center text-muted p-3">Nenhuma conversa WhatsApp encontrada.</td>';
             nextBody.appendChild(emptyRow);
         }
 
@@ -1368,7 +2121,7 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
                     return;
                 }
 
-                showRefreshMessage('Chamado solucionado', 'success');
+                showRefreshMessage(result.body.message || 'Chamado solucionado', result.body.status && result.body.status.indexOf('failed') >= 0 ? 'warning' : 'success');
                 lastRefreshAtMs = 0;
                 refreshCentral(true);
             })
@@ -1379,6 +2132,88 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
             });
     }
 
+    function pollEntitySelectionStatus(conversationId, feedback, button, originalText, attempts) {
+        const payload = new URLSearchParams();
+        payload.set('_glpi_csrf_token', csrfToken);
+        payload.set('action', 'entity_status');
+        payload.set('conversation_id', conversationId);
+        payload.set('ticket_id', '0');
+
+        fetch(actionUrl, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'Accept': 'application/json'
+            },
+            body: payload.toString()
+        })
+            .then(parseJsonResponse)
+            .then(function (result) {
+                updateCsrfToken(result.body);
+                const body = result.body || {};
+                const status = String(body.status || '');
+                const message = body.message || 'Criando chamado no GLPI...';
+
+                if (feedback) {
+                    feedback.textContent = message;
+                }
+
+                if (status === 'processing' || status === 'not_started') {
+                    if (attempts >= 40) {
+                        if (feedback) {
+                            feedback.textContent = 'A criação segue em processamento. Atualize a Central em alguns segundos.';
+                        }
+                        return;
+                    }
+                    window.setTimeout(function () {
+                        pollEntitySelectionStatus(conversationId, feedback, button, originalText, attempts + 1);
+                    }, 3000);
+                    return;
+                }
+
+                if (status === 'succeeded' && Number(body.glpi_ticket_id || 0) > 0) {
+                    showRefreshMessage('Chamado criado ou reconciliado.', 'success');
+                    lastRefreshAtMs = 0;
+                    refreshCentral(true);
+                    return;
+                }
+
+                if (status === 'ambiguous_reconciliation') {
+                    if (feedback) {
+                        feedback.textContent = body.error_message || message;
+                    }
+                    showRefreshMessage('Reconciliação ambígua. Exige decisão humana antes de nova tentativa.', 'warning');
+                    return;
+                }
+
+                if (button) {
+                    button.disabled = false;
+                    button.dataset.requestInProgress = '0';
+                    button.textContent = originalText;
+                }
+                showRefreshMessage(message, 'warning');
+                lastRefreshAtMs = 0;
+                refreshCentral(true);
+            })
+            .catch(function () {
+                if (attempts >= 3) {
+                    if (button) {
+                        button.disabled = false;
+                        button.dataset.requestInProgress = '0';
+                        button.textContent = originalText;
+                    }
+                    if (feedback) {
+                        feedback.textContent = 'Não foi possível consultar o status da tentativa agora.';
+                    }
+                    return;
+                }
+                window.setTimeout(function () {
+                    pollEntitySelectionStatus(conversationId, feedback, button, originalText, attempts + 1);
+                }, 3000);
+            });
+    }
+
     document.addEventListener('click', function (event) {
         const row = event.target.closest('tr[data-conversation-id]');
         if (
@@ -1386,6 +2221,8 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
             && !event.target.closest('button')
             && !event.target.closest('a')
             && !event.target.closest('textarea')
+            && !event.target.closest('select')
+            && !event.target.closest('details')
         ) {
             selectConversation(row);
             return;
@@ -1415,6 +2252,113 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
     }, pollingIntervalMs);
 
     document.addEventListener('click', function (event) {
+            const entityButton = event.target.closest('.js-integaglpi-confirm-entity, .js-integaglpi-update-entity');
+            if (entityButton) {
+                event.preventDefault();
+                if (entityButton.dataset.requestInProgress === '1') {
+                    return;
+                }
+                const isEntityUpdate = entityButton.classList.contains('js-integaglpi-update-entity');
+                const box = entityButton.closest('.integaglpi-entity-selection');
+            const entitySelect = box
+                ? (box.querySelector('.js-integaglpi-entity-id') || box.querySelector('[name="glpi_entity_id"]'))
+                : null;
+            const feedback = box ? box.querySelector('.js-integaglpi-entity-feedback') : null;
+            const entityId = entitySelect ? Number(entitySelect.value || 0) : 0;
+            const entityName = entitySelect && entitySelect.selectedOptions && entitySelect.selectedOptions.length > 0
+                ? entitySelect.selectedOptions[0].textContent.trim()
+                : '';
+
+            if (!Number.isInteger(entityId) || entityId <= 0) {
+                alert('Selecione uma entidade GLPI válida.');
+                return;
+            }
+
+            const payload = new URLSearchParams();
+            payload.set('_glpi_csrf_token', csrfToken);
+            payload.set('action', isEntityUpdate ? 'update_entity' : 'confirm_entity');
+            payload.set('conversation_id', entityButton.dataset.conversationId || '');
+            payload.set('ticket_id', isEntityUpdate ? (entityButton.dataset.ticketId || '0') : '0');
+            payload.set('glpi_entity_id', String(entityId));
+            payload.set('glpi_entity_name', entityName);
+            if (isEntityUpdate) {
+                payload.set('apply_to_ticket', '0');
+            } else {
+                payload.set('create_ticket', '1');
+                payload.set('idempotency_key', buildEntitySelectionIdempotencyKey(
+                    entityButton.dataset.conversationId || '',
+                    entityId
+                ));
+            }
+
+            const originalText = entityButton.textContent;
+            entityButton.disabled = true;
+            entityButton.dataset.requestInProgress = '1';
+            entityButton.textContent = isEntityUpdate ? 'Atualizando entidade...' : 'Criando chamado...';
+            if (feedback) {
+                feedback.textContent = '';
+            }
+
+            let keepDisabledForPolling = false;
+            fetch(actionUrl, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                },
+                body: payload.toString()
+            })
+                .then(parseJsonResponse)
+                .then(function (result) {
+                    updateCsrfToken(result.body);
+                    const body = result.body || {};
+                    const message = body.message || 'Não foi possível confirmar a entidade.';
+                    if (!body.ok) {
+                        if (feedback) {
+                            feedback.textContent = message;
+                        } else {
+                            alert(message);
+                        }
+                        refreshCentral(true);
+                        return;
+                    }
+
+                    if (feedback) {
+                        feedback.textContent = message;
+                    }
+                    if (!isEntityUpdate && body.status === 'processing') {
+                        keepDisabledForPolling = true;
+                        entityButton.textContent = 'Criando chamado...';
+                        pollEntitySelectionStatus(
+                            entityButton.dataset.conversationId || '',
+                            feedback,
+                            entityButton,
+                            originalText,
+                            0
+                        );
+                        return;
+                    }
+                    if (isEntityUpdate && body.warning && feedback) {
+                        feedback.textContent = message + ' ' + body.warning;
+                    }
+                    refreshCentral(true);
+                })
+                .catch(function () {
+                    if (feedback) {
+                        feedback.textContent = 'Erro ao confirmar entidade. Atualize a Central em alguns segundos.';
+                    }
+                    refreshCentral(true);
+                })
+                .finally(function () {
+                    if (!keepDisabledForPolling) {
+                        entityButton.disabled = false;
+                        entityButton.dataset.requestInProgress = '0';
+                        entityButton.textContent = originalText;
+                    }
+                });
+            return;
+        }
+
         const button = event.target.closest('.js-integaglpi-central-claim');
         if (!button) {
             return;
@@ -1664,6 +2608,32 @@ $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsa
         }
 
         solveConversation(button);
+    });
+
+    document.addEventListener('input', function (event) {
+        var input = event.target.closest('.js-integaglpi-entity-filter');
+        if (!input) {
+            return;
+        }
+        var root = input.closest('[data-entity-box="1"]');
+        if (!root) {
+            return;
+        }
+        var select = root.querySelector('select[name="glpi_entity_id"]');
+        if (!select) {
+            return;
+        }
+        var q = String(input.value || '').toLowerCase().trim();
+        var options = select.querySelectorAll('option');
+        options.forEach(function (opt) {
+            var val = String(opt.value || '');
+            var label = String(opt.textContent || '').toLowerCase();
+            if (val === '' || val === '0') {
+                opt.hidden = false;
+                return;
+            }
+            opt.hidden = q !== '' && label.indexOf(q) === -1 && val.indexOf(q) === -1;
+        });
     });
 }());
 </script>

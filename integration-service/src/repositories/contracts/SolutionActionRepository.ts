@@ -1,4 +1,5 @@
 export type SolutionActionType = 'approve' | 'reopen';
+export type CsatRating = 'very_satisfied' | 'satisfied' | 'dissatisfied';
 export type SolutionActionStatus = 'processing' | 'success' | 'error' | 'ignored';
 
 export interface SolutionAction {
@@ -14,6 +15,8 @@ export interface SolutionAction {
   finalTicketStatus: number | null;
   errorCode: string | null;
   errorMessage: string | null;
+  csatRating: CsatRating | null;
+  supervisorReviewRequired: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -26,6 +29,8 @@ export interface ReserveSolutionActionInput {
   phoneE164: string;
   action: SolutionActionType;
   previousTicketStatus: number | null;
+  csatRating?: CsatRating | null;
+  supervisorReviewRequired?: boolean;
 }
 
 export interface ReserveSolutionActionResult {

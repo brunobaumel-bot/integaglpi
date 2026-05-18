@@ -51,7 +51,7 @@ try {
     }
 
     $action = trim((string) ($_POST['action'] ?? ''));
-    if (!in_array($action, ['claim', 'reply', 'transfer', 'solve'], true)) {
+    if (!in_array($action, ['claim', 'reply', 'transfer', 'solve', 'confirm_entity', 'update_entity', 'entity_status'], true)) {
         plugin_integaglpi_central_json([
             'ok' => false,
             'error' => 'invalid_action',
@@ -83,6 +83,50 @@ try {
             $userId,
             (int) ($_POST['new_technician_id'] ?? 0)
         );
+    } elseif ($action === 'confirm_entity') {
+        $rawEntityId = $_POST['glpi_entity_id'] ?? $_POST['entity_id'] ?? null;
+        $glpiEntityId = 0;
+        if (is_string($rawEntityId) || is_int($rawEntityId)) {
+            $trimmed = trim((string) $rawEntityId);
+            if ($trimmed !== '' && ctype_digit($trimmed)) {
+                $parsed = (int) $trimmed;
+                if ($parsed > 0) {
+                    $glpiEntityId = $parsed;
+                }
+            }
+        }
+
+        $result = $service->confirmConversationEntity(
+            $conversationId,
+            $glpiEntityId,
+            isset($_POST['glpi_entity_name']) ? (string) $_POST['glpi_entity_name'] : null,
+            $userId,
+            (string) ($_POST['create_ticket'] ?? '1') !== '0',
+            $ticketId,
+            isset($_POST['idempotency_key']) ? (string) $_POST['idempotency_key'] : null
+        );
+    } elseif ($action === 'update_entity') {
+        $rawEntityId = $_POST['glpi_entity_id'] ?? $_POST['entity_id'] ?? null;
+        $glpiEntityId = 0;
+        if (is_string($rawEntityId) || is_int($rawEntityId)) {
+            $trimmed = trim((string) $rawEntityId);
+            if ($trimmed !== '' && ctype_digit($trimmed)) {
+                $parsed = (int) $trimmed;
+                if ($parsed > 0) {
+                    $glpiEntityId = $parsed;
+                }
+            }
+        }
+
+        $result = $service->updateConversationEntity(
+            $conversationId,
+            $glpiEntityId,
+            isset($_POST['glpi_entity_name']) ? (string) $_POST['glpi_entity_name'] : null,
+            $userId,
+            (string) ($_POST['apply_to_ticket'] ?? '0') === '1'
+        );
+    } elseif ($action === 'entity_status') {
+        $result = $service->getConversationEntityStatus($conversationId);
     } else {
         $result = $service->solveConversation($conversationId, $ticketId, $userId);
     }

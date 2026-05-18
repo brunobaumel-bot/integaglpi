@@ -4,15 +4,38 @@ import { z } from 'zod';
 import type { OutboundMessageService } from '../domain/services/OutboundMessageService.js';
 import { getOrCreateCorrelationId } from '../domain/services/correlationId.js';
 
-const outboundBodySchema = z.object({
+const outboundBaseSchema = z.object({
   ticket_id: z.number().int().positive(),
   conversation_id: z.string().min(1).max(128),
   text: z.string().min(1).max(4096),
-  message_type: z.literal('text'),
   glpi_user_id: z.number().int().positive(),
   idempotency_key: z
     .preprocess((value) => (value === '' || value === null || value === undefined ? undefined : value), z.string().min(8).max(256).optional()),
 });
+
+const outboundBodySchema = z.discriminatedUnion('message_type', [
+  outboundBaseSchema.extend({
+    message_type: z.literal('text'),
+  }),
+  outboundBaseSchema.extend({
+    message_type: z.literal('document'),
+    media: z.object({
+      filename: z.string().min(1).max(180),
+      mime_type: z.string().min(3).max(120),
+      content_base64: z.string().min(1).max(25_000_000),
+      document_id: z.number().int().positive().optional(),
+    }),
+  }),
+  outboundBaseSchema.extend({
+    message_type: z.literal('image'),
+    media: z.object({
+      filename: z.string().min(1).max(180),
+      mime_type: z.string().min(3).max(120),
+      content_base64: z.string().min(1).max(25_000_000),
+      document_id: z.number().int().positive().optional(),
+    }),
+  }),
+]);
 
 export function createGlpiOutboundMessageController(outboundMessageService: OutboundMessageService): RequestHandler {
   return async (req, res) => {

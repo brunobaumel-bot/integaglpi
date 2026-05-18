@@ -390,8 +390,47 @@ final class TicketRuntimeService
         $runtime['queue_label'] = !empty($runtime['queue_name'])
             ? (string) $runtime['queue_name']
             : __('No queue', 'glpiintegaglpi');
+        $runtime['contact_profile_snapshot'] = $this->decodeProfileSnapshot($runtime['profile_snapshot_json'] ?? null);
 
         return $runtime;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function decodeProfileSnapshot(mixed $value): ?array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (!is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        $decoded = json_decode($value, true);
+        if (!is_array($decoded)) {
+            return null;
+        }
+
+        if (isset($decoded['snapshot_json'])) {
+            $snapshot = $decoded['snapshot_json'];
+            if (is_string($snapshot)) {
+                $snapshot = json_decode($snapshot, true);
+            }
+            if (is_array($snapshot)) {
+                $decoded = $snapshot;
+            }
+        }
+
+        if (!array_key_exists('last_equipment_tag', $decoded) && array_key_exists('equipment_tag', $decoded)) {
+            $decoded['last_equipment_tag'] = $decoded['equipment_tag'];
+        }
+        if (!array_key_exists('last_problem_summary', $decoded) && array_key_exists('problem_summary', $decoded)) {
+            $decoded['last_problem_summary'] = $decoded['problem_summary'];
+        }
+
+        return $decoded;
     }
 
     private function ensureTicketUserAssignment(int $ticketId, int $userId): void

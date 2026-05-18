@@ -23,6 +23,13 @@ const metaInteractiveObjectSchema = z.object({
       title: z.string().optional(),
     })
     .optional(),
+  list_reply: z
+    .object({
+      id: z.string().optional(),
+      title: z.string().optional(),
+      description: z.string().optional(),
+    })
+    .optional(),
 });
 
 const metaMessageSchema = z.object({
@@ -99,4 +106,15 @@ export interface ParsedMetaInboundMessage {
   contactName: string | null;
   timestamp: string | null;
   rawPayload: MetaWebhookPayload;
+}
+
+export interface ParsedMetaStatusUpdate {
+  eventId: string;
+  eventType: 'status';
+  metaMessageId: string;
+  status: string;
+  timestamp: string | null;
+  recipientId: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
 }

@@ -8,9 +8,40 @@ interface MetaSendTextMessageInput {
   to: string;
 }
 
+export interface MetaSendTemplateMessageInput {
+  to: string;
+  templateName: string;
+  language: string;
+}
+
+export interface MetaUploadMediaInput {
+  buffer: Buffer;
+  mimeType: string;
+  filename: string;
+}
+
+export interface MetaSendDocumentMessageInput {
+  to: string;
+  mediaId: string;
+  filename: string;
+  caption?: string;
+}
+
+export interface MetaSendImageMessageInput {
+  to: string;
+  mediaId: string;
+  caption?: string;
+}
+
 export interface MetaReplyButton {
   id: string;
   title: string;
+}
+
+export interface MetaListOption {
+  id: string;
+  title: string;
+  description?: string;
 }
 
 export interface MetaMediaUrlResponse {
@@ -166,6 +197,71 @@ export class MetaClient {
     return responseBody;
   }
 
+  public async uploadMedia(input: MetaUploadMediaInput): Promise<string> {
+    const form = new FormData();
+    form.set('messaging_product', 'whatsapp');
+    form.set('file', new Blob([input.buffer as BlobPart], { type: input.mimeType }), input.filename);
+
+    const response = await this.httpClient.request(
+      `${this.graphApiBaseUrl}/${env.META_PHONE_NUMBER_ID}/media`,
+      {
+        method: 'POST',
+        timeoutMs: env.GLPI_HTTP_TIMEOUT_MS,
+        retries: env.GLPI_HTTP_RETRY_COUNT,
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${env.META_ACCESS_TOKEN}`,
+        },
+        body: form,
+      },
+    );
+
+    const responseBody = await safeJson(response);
+
+    if (!response.ok) {
+      logger.error(
+        {
+          meta_http_status: response.status,
+          meta_response_body: responseBody,
+          meta_error: extractMetaError(responseBody),
+          mime_type: input.mimeType,
+        },
+        '[integration-service][meta][MEDIA_UPLOAD_ERROR]',
+      );
+      throw new GlpiRequestError('Meta media upload failed.', response.status, responseBody);
+    }
+
+    const mediaId = responseBody && typeof responseBody === 'object'
+      ? (responseBody as { id?: unknown }).id
+      : null;
+    if (typeof mediaId !== 'string' || mediaId.trim() === '') {
+      throw new Error('Meta media upload did not return id.');
+    }
+
+    return mediaId;
+  }
+
+  public async sendDocumentMessage(input: MetaSendDocumentMessageInput): Promise<unknown> {
+    return this.sendMediaMessage(input.to, {
+      type: 'document',
+      document: {
+        id: input.mediaId,
+        filename: input.filename,
+        ...(input.caption ? { caption: input.caption } : {}),
+      },
+    });
+  }
+
+  public async sendImageMessage(input: MetaSendImageMessageInput): Promise<unknown> {
+    return this.sendMediaMessage(input.to, {
+      type: 'image',
+      image: {
+        id: input.mediaId,
+        ...(input.caption ? { caption: input.caption } : {}),
+      },
+    });
+  }
+
   public async sendReplyButtons(
     to: string,
     bodyText: string,
@@ -236,6 +332,181 @@ export class MetaClient {
         '[integration-service][meta][SEND_BUTTONS_ERROR]',
       );
       throw new GlpiRequestError('Meta reply buttons send failed.', response.status, responseBody);
+    }
+
+    return responseBody;
+  }
+
+  public async sendListMessage(
+    to: string,
+    bodyText: string,
+    options: MetaListOption[],
+    buttonText = 'Opções',
+    sectionTitle = 'Opções',
+  ): Promise<unknown> {
+    if (options.length < 1 || options.length > 10) {
+      throw new Error('Meta list message requires between 1 and 10 options.');
+    }
+
+    const rows = options.map((option) => {
+      const id = option.id.trim();
+      const title = option.title.trim().slice(0, 24).trim();
+      const description = option.description?.trim().slice(0, 72).trim();
+      if (!id || !title) {
+        throw new Error('Meta list option id and title cannot be empty.');
+      }
+
+      return {
+        id,
+        title,
+        ...(description ? { description } : {}),
+      };
+    });
+
+    return this.sendInteractiveMessage(to, {
+      type: 'list',
+      body: {
+        text: bodyText,
+      },
+      action: {
+        button: buttonText.slice(0, 20).trim() || 'Opções',
+        sections: [
+          {
+            title: sectionTitle.slice(0, 24).trim() || 'Opções',
+            rows,
+          },
+        ],
+      },
+    }, '[integration-service][meta][SEND_LIST_ERROR]');
+  }
+
+  public async sendTemplateMessage(input: MetaSendTemplateMessageInput): Promise<unknown> {
+    const templateName = input.templateName.trim();
+    const language = input.language.trim() || 'pt_BR';
+    if (!templateName) {
+      throw new Error('Meta template name cannot be empty.');
+    }
+
+    const response = await this.httpClient.request(
+      `${this.graphApiBaseUrl}/${env.META_PHONE_NUMBER_ID}/messages`,
+      {
+        method: 'POST',
+        timeoutMs: env.GLPI_HTTP_TIMEOUT_MS,
+        retries: env.GLPI_HTTP_RETRY_COUNT,
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${env.META_ACCESS_TOKEN}`,
+        },
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: input.to,
+          type: 'template',
+          template: {
+            name: templateName,
+            language: {
+              code: language,
+            },
+          },
+        }),
+      },
+    );
+
+    const responseBody = await safeJson(response);
+
+    if (!response.ok) {
+      logger.error(
+        {
+          meta_http_status: response.status,
+          meta_error: extractMetaError(responseBody),
+          template_name: templateName,
+          language,
+        },
+        '[integration-service][meta][SEND_TEMPLATE_ERROR]',
+      );
+      throw new GlpiRequestError('Meta template message send failed.', response.status, responseBody);
+    }
+
+    return responseBody;
+  }
+
+  private async sendMediaMessage(to: string, payload: Record<string, unknown>): Promise<unknown> {
+    const response = await this.httpClient.request(
+      `${this.graphApiBaseUrl}/${env.META_PHONE_NUMBER_ID}/messages`,
+      {
+        method: 'POST',
+        timeoutMs: env.GLPI_HTTP_TIMEOUT_MS,
+        retries: env.GLPI_HTTP_RETRY_COUNT,
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${env.META_ACCESS_TOKEN}`,
+        },
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to,
+          ...payload,
+        }),
+      },
+    );
+
+    const responseBody = await safeJson(response);
+
+    if (!response.ok) {
+      logger.error(
+        {
+          meta_http_status: response.status,
+          meta_response_body: responseBody,
+          meta_error: extractMetaError(responseBody),
+          message_type: payload.type,
+        },
+        '[integration-service][meta][SEND_MEDIA_ERROR]',
+      );
+      throw new GlpiRequestError('Meta media message send failed.', response.status, responseBody);
+    }
+
+    return responseBody;
+  }
+
+  private async sendInteractiveMessage(
+    to: string,
+    interactive: Record<string, unknown>,
+    errorLogMessage: string,
+  ): Promise<unknown> {
+    const response = await this.httpClient.request(
+      `${this.graphApiBaseUrl}/${env.META_PHONE_NUMBER_ID}/messages`,
+      {
+        method: 'POST',
+        timeoutMs: env.GLPI_HTTP_TIMEOUT_MS,
+        retries: env.GLPI_HTTP_RETRY_COUNT,
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${env.META_ACCESS_TOKEN}`,
+        },
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to,
+          type: 'interactive',
+          interactive,
+        }),
+      },
+    );
+
+    const responseBody = await safeJson(response);
+
+    if (!response.ok) {
+      logger.error(
+        {
+          meta_http_status: response.status,
+          meta_error: extractMetaError(responseBody),
+        },
+        errorLogMessage,
+      );
+      throw new GlpiRequestError('Meta interactive message send failed.', response.status, responseBody);
     }
 
     return responseBody;

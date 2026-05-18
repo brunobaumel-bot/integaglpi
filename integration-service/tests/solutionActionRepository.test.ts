@@ -34,6 +34,8 @@ function solutionActionRow(overrides: Partial<Record<string, unknown>> = {}): Re
     final_ticket_status: null,
     error_code: null,
     error_message: null,
+    csat_rating: null,
+    supervisor_review_required: false,
     created_at: new Date('2026-01-01T00:00:00Z'),
     updated_at: new Date('2026-01-01T00:00:00Z'),
     ...overrides,

@@ -5,10 +5,14 @@ import { clearScheduleCacheForTests, ScheduleService } from '../src/domain/servi
 
 class FakeSettingsRepository implements SettingsRepository {
   public findBusinessHoursSettings = vi.fn<() => Promise<Map<string, unknown>>>();
+  public findContactProfileSettings = vi.fn<() => Promise<Map<string, unknown>>>();
+  public findEntityResolutionSettings = vi.fn<() => Promise<Map<string, unknown>>>();
   public findMessageSettings = vi.fn<() => Promise<Map<string, string>>>();
 
   public constructor(settings: Map<string, unknown>) {
     this.findBusinessHoursSettings.mockResolvedValue(settings);
+    this.findContactProfileSettings.mockResolvedValue(new Map());
+    this.findEntityResolutionSettings.mockResolvedValue(new Map());
     this.findMessageSettings.mockResolvedValue(new Map());
   }
 }

@@ -35,6 +35,11 @@ final class MessageRepository
                     message_text,
                     processing_status,
                     glpi_sync_status,
+                    meta_message_id,
+                    delivery_status,
+                    delivery_status_updated_at,
+                    meta_error_code,
+                    meta_error_message_sanitized,
                     created_at,
                     updated_at
                 FROM glpi_plugin_integaglpi_messages
@@ -90,6 +95,11 @@ final class MessageRepository
                     message_text,
                     processing_status,
                     glpi_sync_status,
+                    meta_message_id,
+                    delivery_status,
+                    delivery_status_updated_at,
+                    meta_error_code,
+                    meta_error_message_sanitized,
                     created_at,
                     updated_at
                 FROM glpi_plugin_integaglpi_messages

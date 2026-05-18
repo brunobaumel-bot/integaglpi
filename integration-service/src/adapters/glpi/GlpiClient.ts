@@ -1,8 +1,11 @@
 import type {
   AddGlpiFollowUpInput,
+  CreateRestrictedGlpiUserInput,
   CreateGlpiTicketInput,
+  FindGlpiTicketForEntitySelectionInput,
   GlpiContactLookupResult,
   GlpiTicket,
+  GlpiUserLookupResult,
   UploadGlpiDocumentInput,
 } from './glpiTypes.js';
 
@@ -120,6 +123,32 @@ function parseRequestBodyForLog(body: BodyInit | null | undefined): unknown {
   }
 }
 
+function isAbortLikeError(error: unknown): boolean {
+  const err = error as Partial<NodeJS.ErrnoException> & { name?: string; message?: string };
+  const message = typeof err.message === 'string' ? err.message.toLowerCase() : '';
+
+  return err.name === 'AbortError'
+    || err.code === 'ABORT_ERR'
+    || err.code === '20'
+    || (err.code as unknown) === 20
+    || message.includes('aborted')
+    || message.includes('abort');
+}
+
+function buildTransportErrorBody(error: unknown, timeoutMs: number): JsonObject {
+  const err = error instanceof Error ? error : new Error(String(error));
+  const errno = error as NodeJS.ErrnoException;
+  const timeoutLike = isAbortLikeError(error);
+
+  return {
+    error_type: timeoutLike ? 'timeout' : 'network',
+    error_name: err.name,
+    error_message: err.message,
+    error_code: errno.code ?? null,
+    timeout_ms: timeoutMs,
+  };
+}
+
 /** GLPI REST exige payload `{ input: [...] }` com campos do CommonITIL/Ticket (`name`, não `title`). */
 function buildTicketCreatePayload(input: CreateGlpiTicketInput): JsonObject {
   const safeName = input.requesterName ?? '';
@@ -130,10 +159,16 @@ function buildTicketCreatePayload(input: CreateGlpiTicketInput): JsonObject {
 
   const content = `${input.content}${extraContact}`;
 
+  if (!Number.isFinite(input.entitiesId) || input.entitiesId <= 0) {
+    throw new Error('GLPI_TICKET_ENTITY_REQUIRED');
+  }
+
+  const entitiesId = Math.trunc(input.entitiesId);
+
   const ticketInput: JsonObject = {
     name: input.title,
     content,
-    entities_id: 0,
+    entities_id: entitiesId,
     type: 1,
     status: 1,
     urgency: 3,
@@ -145,6 +180,10 @@ function buildTicketCreatePayload(input: CreateGlpiTicketInput): JsonObject {
     ticketInput._users_id_assign = input.assignedUserId;
   } else if (input.assignedGroupId != null && input.assignedGroupId > 0) {
     ticketInput._groups_id_assign = input.assignedGroupId;
+  }
+
+  if (input.requesterUserId != null && input.requesterUserId > 0) {
+    ticketInput._users_id_requester = input.requesterUserId;
   }
 
   return {
@@ -183,6 +222,32 @@ function readTicketStatusFromResponse(body: unknown): number | null {
 
   if (isJsonObject(body) && typeof body.status === 'string' && /^\d+$/.test(body.status)) {
     return Number.parseInt(body.status, 10);
+  }
+
+  return null;
+}
+
+function readTicketEntityIdFromResponse(body: unknown): number | null {
+  if (isJsonObject(body) && typeof body.entities_id === 'number' && Number.isFinite(body.entities_id)) {
+    return body.entities_id;
+  }
+
+  if (isJsonObject(body) && typeof body.entities_id === 'string' && /^\d+$/.test(body.entities_id)) {
+    return Number.parseInt(body.entities_id, 10);
+  }
+
+  return null;
+}
+
+function readTicketEntityIdFromSearchRow(row: JsonObject): number | null {
+  const raw = row[80] ?? row['80'] ?? row.entities_id ?? row.entity_id;
+
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return raw;
+  }
+
+  if (typeof raw === 'string' && /^\d+$/.test(raw)) {
+    return Number.parseInt(raw, 10);
   }
 
   return null;
@@ -249,6 +314,69 @@ export class GlpiClient {
     };
   }
 
+  public async findUsersByEmail(email: string): Promise<GlpiUserLookupResult[]> {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      return [];
+    }
+
+    const rows = await this.searchItemType('User', normalizedEmail, '5');
+    return rows.map((row) => ({
+      id: readNumericId(row) ?? 0,
+      name: readName(row),
+      email: normalizedEmail,
+      isActive: readBooleanLike(row.is_active ?? row['8'], true),
+    })).filter((user) => user.id > 0);
+  }
+
+  public async createRestrictedRequesterUser(input: CreateRestrictedGlpiUserInput): Promise<number> {
+    if (!Number.isFinite(input.entitiesId) || input.entitiesId <= 0) {
+      throw new Error('GLPI_USER_ENTITY_REQUIRED');
+    }
+
+    const normalizedEmail = input.email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      throw new Error('GLPI_USER_VALID_EMAIL_REQUIRED');
+    }
+
+    const userBody = {
+      input: [
+        {
+          name: normalizedEmail,
+          realname: input.requesterName ?? normalizedEmail,
+          firstname: '',
+          useremails: [{ email: normalizedEmail, is_default: 1 }],
+          phone: input.phoneE164,
+          comment: [
+            'Origem: WhatsApp/IntegraGLPI',
+            input.companyName ? `Empresa informada: ${input.companyName}` : null,
+            'Usuário criado de forma restrita: sem senha, sem perfil administrativo e sem login liberado automaticamente.',
+          ].filter(Boolean).join('\n'),
+          entities_id: Math.trunc(input.entitiesId),
+          is_active: 0,
+        },
+      ],
+    };
+
+    const payload = await this.requestJson<JsonObject>(
+      '/User',
+      { method: 'POST', body: JSON.stringify(userBody) },
+      'glpi_user_create',
+    );
+    const userId = readIdFromTicketAddResponse(payload);
+    if (userId === null) {
+      throw new GlpiRequestError(
+        'GLPI restricted user creation did not return an ID.',
+        undefined,
+        payload,
+        'glpi_user_create',
+        sanitizeUrlForLog(joinApirestUrl(this.baseUrl, '/User')),
+      );
+    }
+
+    return userId;
+  }
+
   public async createTicket(input: CreateGlpiTicketInput, options?: GlpiRequestRuntimeOptions): Promise<number> {
     const ticketBody = buildTicketCreatePayload(input);
 
@@ -293,6 +421,100 @@ export class GlpiClient {
     return ticketId;
   }
 
+  public async findTicketForEntitySelection(
+    input: FindGlpiTicketForEntitySelectionInput,
+  ): Promise<GlpiTicket | null> {
+    const tickets = await this.findTicketsForEntitySelection(input);
+
+    return tickets[0] ?? null;
+  }
+
+  public async findTicketsForEntitySelection(
+    input: FindGlpiTicketForEntitySelectionInput,
+  ): Promise<GlpiTicket[]> {
+    if (!Number.isFinite(input.entitiesId) || input.entitiesId <= 0) {
+      return [];
+    }
+
+    const marker = typeof input.correlationMarker === 'string' && input.correlationMarker.trim() !== ''
+      ? input.correlationMarker.trim()
+      : null;
+    const searchValues = [
+      marker,
+      input.requesterPhone.trim(),
+      input.requesterPhone.replace(/[^\d]/g, ''),
+    ].filter((value): value is string => typeof value === 'string' && value !== '');
+
+    const seenTicketIds = new Set<number>();
+    const matches: GlpiTicket[] = [];
+    for (const searchValue of searchValues) {
+      const rows = await this.searchTicketsByDescription(searchValue);
+      for (const row of rows) {
+        const ticketId = readIdFromGlpiSearchRow(row);
+        if (ticketId === null || seenTicketIds.has(ticketId)) {
+          continue;
+        }
+        seenTicketIds.add(ticketId);
+
+        const rowEntityId = readTicketEntityIdFromSearchRow(row);
+        if (rowEntityId !== null && rowEntityId !== Math.trunc(input.entitiesId)) {
+          continue;
+        }
+
+        let ticket: GlpiTicket;
+        if (rowEntityId !== null) {
+          ticket = {
+            id: ticketId,
+            status: readNumberField(row, '12'),
+            entitiesId: rowEntityId,
+          };
+        } else {
+          try {
+            ticket = await this.getTicket(ticketId);
+          } catch (error: unknown) {
+            logger.warn(
+              {
+                stage: 'glpi_ticket_read',
+                ticketId,
+                errorMessage: error instanceof Error ? error.message : String(error),
+              },
+              '[GLPI PoC] Ticket lookup during entity-selection reconciliation failed.',
+            );
+            continue;
+          }
+        }
+
+        if (ticket.entitiesId === Math.trunc(input.entitiesId)) {
+          matches.push(ticket);
+        }
+      }
+      if (marker !== null && searchValue === marker && matches.length > 0) {
+        break;
+      }
+    }
+
+    return matches;
+  }
+
+  public async checkApiHealth(): Promise<{ ok: boolean; latencyMs: number | null; errorStage: string | null }> {
+    const startedAt = Date.now();
+    try {
+      await this.ensureSession();
+
+      return {
+        ok: true,
+        latencyMs: Date.now() - startedAt,
+        errorStage: null,
+      };
+    } catch (error: unknown) {
+      return {
+        ok: false,
+        latencyMs: Date.now() - startedAt,
+        errorStage: error instanceof GlpiRequestError ? error.stage ?? null : null,
+      };
+    }
+  }
+
   /** GLPI status 5 = Solved, 6 = Closed → ambos tratados como 'closed'. */
   public async getTicketStatus(ticketId: number): Promise<'open' | 'closed' | 'unknown'> {
     try {
@@ -315,6 +537,7 @@ export class GlpiClient {
     return {
       id: ticketId,
       status: readTicketStatusFromResponse(payload),
+      entitiesId: readTicketEntityIdFromResponse(payload),
     };
   }
 
@@ -360,6 +583,77 @@ export class GlpiClient {
 
   public async closeTicket(ticketId: number): Promise<void> {
     await this.updateTicketStatus(ticketId, 6, { _accepted: 1 });
+  }
+
+  public async solveTicketByInactivity(ticketId: number, solutionContent: string): Promise<void> {
+    const initialTicket = await this.getTicket(ticketId);
+    if (initialTicket.status === 6) {
+      return;
+    }
+    if (initialTicket.status === 5) {
+      await this.closeTicket(ticketId);
+      const closedTicket = await this.getTicket(ticketId);
+      if (closedTicket.status === 6) {
+        return;
+      }
+      throw new GlpiRequestError(
+        'GLPI inactivity autoclose did not close the already solved ticket.',
+        undefined,
+        { ticketId, finalTicketStatus: closedTicket.status },
+        'glpi_solution_approve',
+        sanitizeUrlForLog(joinApirestUrl(this.baseUrl, `/Ticket/${ticketId}`)),
+      );
+    }
+
+    const path = `/Ticket/${ticketId}/ITILSolution`;
+    const solutionBody = {
+      input: [
+        {
+          items_id: ticketId,
+          itemtype: 'Ticket',
+          content: solutionContent,
+        },
+      ],
+    };
+
+    logger.info(
+      {
+        stage: 'glpi_inactivity_solution_create',
+        ticketId,
+        glpiInactivitySolutionBody: solutionBody,
+      },
+      '[GLPI PoC] POST /ITILSolution inactivity solution request body',
+    );
+
+    await this.requestJson<JsonObject>(
+      path,
+      {
+        method: 'POST',
+        body: JSON.stringify(solutionBody),
+      },
+      'glpi_solution_approve',
+    );
+
+    let ticket = await this.getTicket(ticketId);
+    if (ticket.status !== 5 && ticket.status !== 6) {
+      await this.updateTicketStatus(ticketId, 5, { content: solutionContent });
+      ticket = await this.getTicket(ticketId);
+    }
+
+    if (ticket.status !== 6) {
+      await this.closeTicket(ticketId);
+      ticket = await this.getTicket(ticketId);
+    }
+
+    if (ticket.status !== 6) {
+      throw new GlpiRequestError(
+        'GLPI inactivity autoclose did not close the ticket.',
+        undefined,
+        { ticketId, finalTicketStatus: ticket.status },
+        'glpi_solution_approve',
+        sanitizeUrlForLog(joinApirestUrl(this.baseUrl, path)),
+      );
+    }
   }
 
   public async getLatestTicketSolution(ticketId: number): Promise<GlpiTicketSolution | null> {
@@ -583,12 +877,17 @@ export class GlpiClient {
     }
 
     const url = joinApirestUrl(this.baseUrl, '/Document');
-    const uploadManifest = JSON.stringify({
-      input: {
-        name: input.filename,
-        _filename: [input.filename],
-      },
-    });
+    const uploadInput: JsonObject = {
+      name: input.filename,
+      _filename: [input.filename],
+    };
+
+    if (Number.isFinite(input.entitiesId) && Number(input.entitiesId) > 0) {
+      uploadInput.entities_id = Math.trunc(Number(input.entitiesId));
+      uploadInput.is_recursive = 0;
+    }
+
+    const uploadManifest = JSON.stringify({ input: uploadInput });
 
     const formData = new FormData();
     formData.append('uploadManifest', uploadManifest);
@@ -659,18 +958,47 @@ export class GlpiClient {
     };
 
     logger.info(
-      { stage: 'glpi_document_upload', documentId, ticketId, body },
+      { stage: 'glpi_document_item_link', documentId, ticketId, body },
       '[GLPI PoC] POST /Document_Item request body',
     );
 
-    const payload = await this.requestJson<JsonObject>(
-      path,
-      { method: 'POST', body: JSON.stringify(body) },
-      'glpi_document_upload',
-    );
+    let payload: JsonObject;
+    try {
+      payload = await this.requestJson<JsonObject>(
+        path,
+        { method: 'POST', body: JSON.stringify(body) },
+        'glpi_document_item_link',
+      );
+    } catch (error: unknown) {
+      if (!(error instanceof GlpiRequestError) || (error.statusCode !== 400 && error.statusCode !== 403)) {
+        throw error;
+      }
+
+      const nestedPath = `/Ticket/${ticketId}/Document_Item`;
+      const nestedBody = {
+        input: [{ documents_id: documentId }],
+      };
+
+      logger.warn(
+        {
+          stage: 'glpi_document_item_link',
+          documentId,
+          ticketId,
+          httpStatus: error.statusCode,
+          fallbackPath: nestedPath,
+        },
+        '[GLPI PoC] POST /Document_Item failed; retrying through ticket sub-item endpoint.',
+      );
+
+      payload = await this.requestJson<JsonObject>(
+        nestedPath,
+        { method: 'POST', body: JSON.stringify(nestedBody) },
+        'glpi_document_item_link',
+      );
+    }
 
     logger.info(
-      { stage: 'glpi_document_upload', documentId, ticketId, glpiDocumentLinkResponse: payload },
+      { stage: 'glpi_document_item_link', documentId, ticketId, glpiDocumentLinkResponse: payload },
       '[GLPI PoC] POST /Document_Item response body',
     );
   }
@@ -679,13 +1007,15 @@ export class GlpiClient {
    * Pesquisa oficial GLPI: `GET apirest.php/search/:itemtype` com critérios (não usar `/User?searchText=` —
    * `searchText` exige chaves = id de campo).
    */
-  private async searchItemType(itemType: 'User' | 'Contact', searchValue: string): Promise<JsonObject[]> {
+  private async searchItemType(itemType: 'User' | 'Contact', searchValue: string, field = '1'): Promise<JsonObject[]> {
     const query = new URLSearchParams();
-    query.set('criteria[0][field]', '1');
+    query.set('criteria[0][field]', field);
     query.set('criteria[0][searchtype]', 'contains');
     query.set('criteria[0][value]', searchValue);
     query.append('forcedisplay[0]', '2');
     query.append('forcedisplay[1]', '1');
+    query.append('forcedisplay[2]', '5');
+    query.append('forcedisplay[3]', '8');
     query.set('range', '0-9');
 
     const path = `/search/${itemType}?${query.toString()}`;
@@ -718,11 +1048,47 @@ export class GlpiClient {
         return {
           id,
           name,
+          is_active: row.is_active ?? row['8'] ?? null,
+          email: row.email ?? row['5'] ?? null,
         };
       })
-      .filter(
-        (row): row is JsonObject & { id: number; name: string | null } => typeof row.id === 'number',
+      .filter((row) => typeof row.id === 'number') as JsonObject[];
+  }
+
+  private async searchTicketsByDescription(searchValue: string): Promise<JsonObject[]> {
+    const query = new URLSearchParams();
+    query.set('criteria[0][field]', '21');
+    query.set('criteria[0][searchtype]', 'contains');
+    query.set('criteria[0][value]', searchValue);
+    query.append('forcedisplay[0]', '2');
+    query.append('forcedisplay[1]', '1');
+    query.append('forcedisplay[2]', '12');
+    query.append('forcedisplay[3]', '15');
+    query.append('forcedisplay[4]', '80');
+    query.set('sort', '2');
+    query.set('order', 'DESC');
+    query.set('range', '0-9');
+
+    const path = `/search/Ticket?${query.toString()}`;
+    const response = await this.send(path, { method: 'GET' }, { logStage: 'glpi_ticket_read' });
+    const responseBody = await safeJson(response);
+    const requestUrl = sanitizeUrlForLog(joinApirestUrl(this.baseUrl, path));
+
+    if (response.status === 404) {
+      return [];
+    }
+
+    if (!response.ok) {
+      throw new GlpiRequestError(
+        'GLPI ticket search request failed.',
+        response.status,
+        responseBody,
+        'glpi_ticket_read',
+        requestUrl,
       );
+    }
+
+    return normalizeEntityCollection(responseBody);
   }
 
   private async requestJson<T>(
@@ -731,7 +1097,42 @@ export class GlpiClient {
     stage: GlpiFailureStage,
     runtimeOptions?: GlpiRequestRuntimeOptions,
   ): Promise<T> {
-    const response = await this.send(path, init, { logStage: stage, timeoutMs: runtimeOptions?.timeoutMs });
+    let response: Response;
+    const timeoutMs = runtimeOptions?.timeoutMs ?? env.GLPI_HTTP_TIMEOUT_MS;
+    try {
+      response = await this.send(path, init, { logStage: stage, timeoutMs });
+    } catch (error: unknown) {
+      if (error instanceof GlpiRequestError) {
+        throw error;
+      }
+
+      const responseBody = buildTransportErrorBody(error, timeoutMs);
+      const requestUrl = sanitizeUrlForLog(joinApirestUrl(this.baseUrl, path));
+
+      logger.error(
+        {
+          stage,
+          path,
+          url: requestUrl,
+          timeout_ms: timeoutMs,
+          error_type: responseBody.error_type,
+          error_name: responseBody.error_name,
+          error_message: responseBody.error_message,
+          error_code: responseBody.error_code,
+        },
+        '[GLPI PoC] GLPI transport failed.',
+      );
+
+      throw new GlpiRequestError(
+        responseBody.error_type === 'timeout'
+          ? 'GLPI request timed out.'
+          : 'GLPI transport failed.',
+        undefined,
+        responseBody,
+        stage,
+        requestUrl,
+      );
+    }
     const responseBody = await safeJson(response);
     const requestUrl = sanitizeUrlForLog(joinApirestUrl(this.baseUrl, path));
 
@@ -791,12 +1192,41 @@ export class GlpiClient {
 
     logGlpiHttpPreflight(url, 'GET', headers, { stage: 'glpi_init_session' });
 
-    const response = await this.httpClient.request(url, {
-      method: 'GET',
-      timeoutMs: env.GLPI_HTTP_TIMEOUT_MS,
-      retries: env.GLPI_HTTP_RETRY_COUNT,
-      headers,
-    });
+    let response: Response;
+    try {
+      response = await this.httpClient.request(url, {
+        method: 'GET',
+        timeoutMs: env.GLPI_HTTP_TIMEOUT_MS,
+        retries: env.GLPI_HTTP_RETRY_COUNT,
+        headers,
+      });
+    } catch (error: unknown) {
+      const responseBody = buildTransportErrorBody(error, env.GLPI_HTTP_TIMEOUT_MS);
+      const sanitizedUrl = sanitizeUrlForLog(url);
+
+      logger.error(
+        {
+          stage: 'glpi_init_session',
+          url: sanitizedUrl,
+          timeout_ms: env.GLPI_HTTP_TIMEOUT_MS,
+          error_type: responseBody.error_type,
+          error_name: responseBody.error_name,
+          error_message: responseBody.error_message,
+          error_code: responseBody.error_code,
+        },
+        '[GLPI PoC] initSession transport failed.',
+      );
+
+      throw new GlpiRequestError(
+        responseBody.error_type === 'timeout'
+          ? 'GLPI initSession timed out.'
+          : 'GLPI initSession transport failed.',
+        undefined,
+        responseBody,
+        'glpi_init_session',
+        sanitizedUrl,
+      );
+    }
 
     const responseBody = await safeJson(response);
 
@@ -901,6 +1331,28 @@ function readName(payload: JsonObject | null): string | null {
   const name = payload?.name;
 
   return typeof name === 'string' && name.length > 0 ? name : null;
+}
+
+function readBooleanLike(value: unknown, defaultValue: boolean): boolean {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'sim', 'active', 'ativo'].includes(normalized)) {
+      return true;
+    }
+    if (['0', 'false', 'no', 'nao', 'não', 'inactive', 'inativo'].includes(normalized)) {
+      return false;
+    }
+  }
+
+  return defaultValue;
 }
 
 async function safeJson(response: Response): Promise<unknown> {

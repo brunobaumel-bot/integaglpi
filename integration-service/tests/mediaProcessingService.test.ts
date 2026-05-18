@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { GlpiRequestError } from '../src/errors/GlpiRequestError.js';
 import { MediaProcessingService } from '../src/domain/services/MediaProcessingService.js';
 
 function makeService(overrides?: {
@@ -7,6 +8,7 @@ function makeService(overrides?: {
   downloadMedia?: ReturnType<typeof vi.fn>;
   uploadDocument?: ReturnType<typeof vi.fn>;
   linkDocumentToTicket?: ReturnType<typeof vi.fn>;
+  getTicket?: ReturnType<typeof vi.fn>;
   maxBytes?: number;
 }) {
   const metaClient = {
@@ -16,6 +18,7 @@ function makeService(overrides?: {
   const glpiClient = {
     uploadDocument: overrides?.uploadDocument ?? vi.fn(),
     linkDocumentToTicket: overrides?.linkDocumentToTicket ?? vi.fn(),
+    getTicket: overrides?.getTicket,
   };
   return new MediaProcessingService(metaClient, glpiClient, overrides?.maxBytes ?? 15_728_640);
 }
@@ -54,6 +57,25 @@ describe('MediaProcessingService', () => {
     expect(result.mediaInfo.file_size).toBe(fakeBuffer.byteLength);
     expect(result.followUpContent).toContain('image.jpg');
     expect(result.followUpContent).toContain('image/jpeg');
+  });
+
+  it('uploads the Document in the ticket entity before linking Document_Item when available', async () => {
+    const fakeBuffer = Buffer.from('fake-image-data');
+    const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/file', mimeType: 'image/jpeg', fileSize: null });
+    const downloadMedia = vi.fn().mockResolvedValue({ buffer: fakeBuffer, contentType: 'image/jpeg', size: fakeBuffer.byteLength });
+    const uploadDocument = vi.fn().mockResolvedValue(56);
+    const linkDocumentToTicket = vi.fn().mockResolvedValue(undefined);
+    const getTicket = vi.fn().mockResolvedValue({ id: 100, status: 2, entitiesId: 54 });
+
+    const service = makeService({ getMediaUrl, downloadMedia, uploadDocument, linkDocumentToTicket, getTicket });
+    const result = await service.processMedia(baseInput);
+
+    expect(getTicket).toHaveBeenCalledWith(100);
+    expect(uploadDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ filename: 'image.jpg', mimeType: 'image/jpeg', entitiesId: 54 }),
+    );
+    expect(linkDocumentToTicket).toHaveBeenCalledWith(56, 100);
+    expect(result.mediaInfo.status).toBe('synced');
   });
 
   it('skips processing when webhook MIME is not in allowlist and returns skipped media_info', async () => {
@@ -127,6 +149,46 @@ describe('MediaProcessingService', () => {
     expect(result.mediaInfo.error).toContain('GLPI upload timeout');
   });
 
+  it('preserves uploaded Document metadata when Document_Item linking is permission denied', async () => {
+    const fakeBuffer = Buffer.from('pdf-data');
+    const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/doc', mimeType: 'application/pdf', fileSize: null });
+    const downloadMedia = vi.fn().mockResolvedValue({ buffer: fakeBuffer, contentType: 'application/pdf', size: fakeBuffer.byteLength });
+    const uploadDocument = vi.fn().mockResolvedValue(3844);
+    const linkDocumentToTicket = vi.fn().mockRejectedValue(new GlpiRequestError(
+      'GLPI request failed for /Document_Item.',
+      400,
+      ['ERROR_GLPI_ADD', [{ id: false, message: 'Você não tem permissão para executar essa ação.' }]],
+      'glpi_document_item_link',
+      'https://glpi.example.local/apirest.php/Document_Item',
+    ));
+
+    const service = makeService({ getMediaUrl, downloadMedia, uploadDocument, linkDocumentToTicket });
+    const result = await service.processMedia({
+      messageType: 'document',
+      mediaMetadata: {
+        mediaId: 'meta-doc-link-denied',
+        mimeTypeFromWebhook: 'application/pdf',
+        fileName: 'contrato.pdf',
+        caption: null,
+      },
+      ticketId: 2112319214,
+      conversationId: 'conv-document-link-denied',
+      messageId: 'wamid.document-link-denied',
+      correlationId: 'WA-link-denied',
+    });
+
+    expect(result.mediaInfo).toMatchObject({
+      status: 'uploaded_unlinked',
+      glpi_document_id: 3844,
+      glpi_ticket_id: 2112319214,
+      error_code: 'GLPI_DOCUMENT_ITEM_PERMISSION_DENIED',
+      error_stage: 'glpi_document_item_link',
+    });
+    expect(result.followUpContent).toContain('documento enviado ao GLPI');
+    expect(result.followUpContent).toContain('não foi possível vincular automaticamente');
+    expect(result.followUpContent).not.toContain('falha no processamento');
+  });
+
   it('uses document filename when provided and sanitizes it', async () => {
     const fakeBuffer = Buffer.from('pdf-data');
     const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/doc', mimeType: null, fileSize: null });
@@ -150,6 +212,68 @@ describe('MediaProcessingService', () => {
     // Path traversal chars replaced
     expect(result.mediaInfo.file_name).not.toContain('../');
     expect(result.followUpContent).toContain('Relatório mensal');
+  });
+
+  it('generates a safe filename for PDF documents without filename', async () => {
+    const fakeBuffer = Buffer.from('pdf-data');
+    const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/doc', mimeType: null, fileSize: null });
+    const downloadMedia = vi.fn().mockResolvedValue({ buffer: fakeBuffer, contentType: 'application/pdf', size: 8 });
+    const uploadDocument = vi.fn().mockResolvedValue(78);
+    const linkDocumentToTicket = vi.fn().mockResolvedValue(undefined);
+
+    const service = makeService({ getMediaUrl, downloadMedia, uploadDocument, linkDocumentToTicket });
+    const result = await service.processMedia({
+      messageType: 'document',
+      mediaMetadata: {
+        mediaId: 'meta-doc-without-filename',
+        mimeTypeFromWebhook: 'application/pdf',
+        fileName: null,
+        caption: null,
+      },
+      ticketId: 201,
+    });
+
+    expect(uploadDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ filename: 'document.pdf', mimeType: 'application/pdf' }),
+    );
+    expect(result.mediaInfo.status).toBe('synced');
+    expect(result.mediaInfo.file_name).toBe('document.pdf');
+    expect(result.mediaInfo.mime_type).toBe('application/pdf');
+    expect(result.followUpContent).toContain('document.pdf');
+  });
+
+  it('uses webhook PDF MIME when Meta download returns generic octet-stream', async () => {
+    const fakeBuffer = Buffer.from('pdf-data');
+    const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/doc', mimeType: null, fileSize: null });
+    const downloadMedia = vi.fn().mockResolvedValue({
+      buffer: fakeBuffer,
+      contentType: 'application/octet-stream',
+      size: fakeBuffer.byteLength,
+    });
+    const uploadDocument = vi.fn().mockResolvedValue(79);
+    const linkDocumentToTicket = vi.fn().mockResolvedValue(undefined);
+
+    const service = makeService({ getMediaUrl, downloadMedia, uploadDocument, linkDocumentToTicket });
+    const result = await service.processMedia({
+      messageType: 'document',
+      mediaMetadata: {
+        mediaId: 'meta-doc-octet-stream',
+        mimeTypeFromWebhook: 'application/pdf',
+        fileName: 'relatorio.pdf',
+        caption: null,
+      },
+      ticketId: 202,
+      conversationId: 'conv-202',
+      messageId: 'wamid.doc-202',
+      correlationId: 'WA-test-doc-202',
+    });
+
+    expect(uploadDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ filename: 'relatorio.pdf', mimeType: 'application/pdf' }),
+    );
+    expect(linkDocumentToTicket).toHaveBeenCalledWith(79, 202);
+    expect(result.mediaInfo.status).toBe('synced');
+    expect(result.mediaInfo.mime_type).toBe('application/pdf');
   });
 
   it('rejects file exceeding maxBytes limit', async () => {

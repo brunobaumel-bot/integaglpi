@@ -21,7 +21,13 @@ describe('OperationalIntegrityAuditService', () => {
       query: vi.fn()
         .mockResolvedValueOnce(queryResult([{ id: 'msg-row-1', message_id: 'wamid.orphan' }]))
         .mockResolvedValueOnce(queryResult([{ id: 'msg-row-2', message_id: 'wamid.media', conversation_id: 'conv-1' }]))
-        .mockResolvedValueOnce(queryResult([{ id: 'conv-2', status: 'bad_state', glpi_ticket_id: null }])),
+        .mockResolvedValueOnce(queryResult([{ id: 'conv-2', status: 'bad_state', glpi_ticket_id: null }]))
+        .mockResolvedValueOnce(queryResult([{
+          id: 'conv-stale',
+          updated_at: new Date('2026-05-14T10:00:00.000Z'),
+          inbound_messages_count: '2',
+          last_inbound_at: new Date('2026-05-14T10:10:00.000Z'),
+        }])),
     };
     const auditService = {
       recordAuditEventFireAndForget: vi.fn(),
@@ -37,6 +43,7 @@ describe('OperationalIntegrityAuditService', () => {
       orphanMessages: 1,
       mediaWithoutInfo: 1,
       invalidConversationStates: 1,
+      staleAwaitingQueueSelection: 1,
     });
     expect(auditService.recordAuditEventFireAndForget).toHaveBeenCalledWith(
       expect.objectContaining({ eventType: 'ORPHAN_MESSAGE', messageId: 'wamid.orphan' }),
@@ -44,7 +51,19 @@ describe('OperationalIntegrityAuditService', () => {
     expect(auditService.recordAuditEventFireAndForget).toHaveBeenCalledWith(
       expect.objectContaining({ eventType: 'INVALID_STATE', conversationId: 'conv-2' }),
     );
-    expect(executor.query).toHaveBeenCalledTimes(3);
+    expect(auditService.recordAuditEventFireAndForget).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'AWAITING_QUEUE_SELECTION_STALE',
+        conversationId: 'conv-stale',
+        status: 'pending',
+        payload: expect.objectContaining({
+          conversation_status: 'awaiting_queue_selection',
+          inbound_messages_count: 2,
+          remediation: 'manual_queue_selection_required',
+        }),
+      }),
+    );
+    expect(executor.query).toHaveBeenCalledTimes(4);
     for (const call of vi.mocked(executor.query).mock.calls) {
       expect(call[0].trim().toUpperCase()).toMatch(/^SELECT\b/);
     }

@@ -1,26 +1,42 @@
 import { ContactCacheRepository } from './cache/ContactCacheRepository.js';
 import { RedisKeyLock } from './cache/RedisKeyLock.js';
 import { MetaClient } from './adapters/meta/MetaClient.js';
+import { OllamaClient } from './ai/OllamaClient.js';
 import { env } from './config/env.js';
 import { GlpiClient } from './adapters/glpi/GlpiClient.js';
 import { ContactResolutionService } from './domain/services/ContactResolutionService.js';
 import { InboundWebhookService } from './domain/services/InboundWebhookService.js';
 import { MediaProcessingService } from './domain/services/MediaProcessingService.js';
 import { OutboundMessageService } from './domain/services/OutboundMessageService.js';
+import { InactivityAutomationService, parseReminderMinutes } from './domain/services/InactivityAutomationService.js';
 import { AuditService } from './domain/services/AuditService.js';
 import { OperationalIntegrityAuditService } from './domain/services/OperationalIntegrityAuditService.js';
 import { ScheduleService } from './domain/services/ScheduleService.js';
 import { SettingsService } from './domain/services/SettingsService.js';
+import { MessageConfigurationService } from './domain/services/MessageConfigurationService.js';
+import { BusinessHoursService } from './domain/services/BusinessHoursService.js';
+import { ContactEntityResolutionService } from './domain/services/ContactEntityResolutionService.js';
+import { ContactProfileService } from './domain/services/ContactProfileService.js';
+import { CustomerExperienceService } from './domain/services/CustomerExperienceService.js';
+import { EntitySelectionService } from './domain/services/EntitySelectionService.js';
+import { AiSupervisorService } from './domain/services/AiSupervisorService.js';
 import { postgresPool } from './infra/db/postgres.js';
 import { ResilientHttpClient } from './infra/http/ResilientHttpClient.js';
+import { PostgresContactEntityMemoryRepository } from './repositories/postgres/PostgresContactEntityMemoryRepository.js';
+import { PostgresContactProfileRepository } from './repositories/postgres/PostgresContactProfileRepository.js';
 import { PostgresContactRepository } from './repositories/postgres/PostgresContactRepository.js';
 import { PostgresConversationRepository } from './repositories/postgres/PostgresConversationRepository.js';
 import { PostgresMessageRepository } from './repositories/postgres/PostgresMessageRepository.js';
+import { PostgresInactivityTrackingRepository } from './repositories/postgres/PostgresInactivityTrackingRepository.js';
 import { PostgresWebhookEventRepository } from './repositories/postgres/PostgresWebhookEventRepository.js';
 import { PostgresRoutingRepository } from './repositories/postgres/PostgresRoutingRepository.js';
 import { PostgresSettingsRepository } from './repositories/postgres/PostgresSettingsRepository.js';
 import { PostgresSolutionActionRepository } from './repositories/postgres/PostgresSolutionActionRepository.js';
 import { PostgresAuditEventRepository } from './repositories/postgres/PostgresAuditEventRepository.js';
+import { PostgresAiQualityAnalysisRepository } from './repositories/postgres/PostgresAiQualityAnalysisRepository.js';
+import { PostgresMessageFlowRepository } from './repositories/postgres/PostgresMessageFlowRepository.js';
+import { redisClient } from './cache/redisClient.js';
+import { QualityDashboardService } from './services/QualityDashboardService.js';
 
 export function buildDependencies() {
   const httpClient = new ResilientHttpClient();
@@ -31,14 +47,62 @@ export function buildDependencies() {
   const contactRepository = new PostgresContactRepository(postgresPool);
   const conversationRepository = new PostgresConversationRepository(postgresPool);
   const messageRepository = new PostgresMessageRepository(postgresPool);
+  const inactivityTrackingRepository = new PostgresInactivityTrackingRepository(postgresPool);
   const webhookEventRepository = new PostgresWebhookEventRepository(postgresPool);
   const routingRepository = new PostgresRoutingRepository(postgresPool);
   const settingsRepository = new PostgresSettingsRepository(postgresPool);
+  const contactEntityMemoryRepository = new PostgresContactEntityMemoryRepository(postgresPool);
+  const contactProfileRepository = new PostgresContactProfileRepository(postgresPool);
   const solutionActionRepository = new PostgresSolutionActionRepository(postgresPool);
   const auditEventRepository = new PostgresAuditEventRepository(postgresPool);
+  const aiQualityAnalysisRepository = new PostgresAiQualityAnalysisRepository(postgresPool);
+  const messageFlowRepository = new PostgresMessageFlowRepository(postgresPool);
+  const qualityDashboardService = new QualityDashboardService(postgresPool, redisClient);
   const auditService = new AuditService(auditEventRepository);
   const operationalIntegrityAuditService = new OperationalIntegrityAuditService(postgresPool, auditService);
   const settingsService = new SettingsService(settingsRepository);
+  const messageConfigurationService = new MessageConfigurationService(messageFlowRepository);
+  const businessHoursService = new BusinessHoursService(messageFlowRepository);
+  const contactEntityResolutionService = new ContactEntityResolutionService(settingsRepository);
+  const contactProfileService = new ContactProfileService(settingsRepository, contactProfileRepository);
+  const customerExperienceService = new CustomerExperienceService(glpiClient, contactProfileService);
+  const outboundMessageService = new OutboundMessageService(
+    conversationRepository,
+    messageRepository,
+    metaClient,
+    env.OUTBOUND_SEND_MODE,
+    env.META_PHONE_NUMBER_ID,
+    auditService,
+    inactivityTrackingRepository,
+    messageConfigurationService,
+  );
+  const inactivityAutomationService = new InactivityAutomationService(
+    inactivityTrackingRepository,
+    outboundMessageService,
+    glpiClient,
+    auditService,
+    {
+      enabled: env.INACTIVITY_AUTOCLOSE_ENABLED,
+      reminderMinutes: parseReminderMinutes(env.INACTIVITY_REMINDER_MINUTES),
+      autocloseMinutes: env.INACTIVITY_AUTOCLOSE_MINUTES,
+      jobIntervalSeconds: env.INACTIVITY_JOB_INTERVAL_SECONDS,
+    },
+    undefined,
+    messageConfigurationService,
+  );
+  const entitySelectionService = new EntitySelectionService(
+    conversationRepository,
+    messageRepository,
+    routingRepository,
+    glpiClient,
+    contactEntityMemoryRepository,
+    outboundMessageService,
+    customerExperienceService,
+    {
+      ticketCreateTimeoutMs: env.GLPI_TICKET_CREATE_TIMEOUT_MS,
+      messageConfigurationService,
+    },
+  );
   const scheduleService = new ScheduleService(settingsRepository);
   const contactResolutionService = new ContactResolutionService(
     contactCacheRepository,
@@ -49,6 +113,23 @@ export function buildDependencies() {
     metaClient,
     glpiClient,
     env.META_MEDIA_MAX_BYTES,
+  );
+  const ollamaClient = new OllamaClient(
+    env.AI_SUPERVISOR_BASE_URL,
+    env.AI_SUPERVISOR_MODEL,
+    env.AI_SUPERVISOR_TIMEOUT_SECONDS * 1000,
+  );
+  const aiSupervisorService = new AiSupervisorService(
+    aiQualityAnalysisRepository,
+    ollamaClient,
+    {
+      enabled: env.AI_SUPERVISOR_ENABLED,
+      provider: env.AI_SUPERVISOR_PROVIDER,
+      model: env.AI_SUPERVISOR_MODEL,
+      maxMessages: env.AI_SUPERVISOR_MAX_MESSAGES,
+      maxChars: env.AI_SUPERVISOR_MAX_CHARS,
+      dryRun: env.AI_SUPERVISOR_DRY_RUN,
+    },
   );
   const inboundWebhookService = new InboundWebhookService(
     webhookEventRepository,
@@ -64,21 +145,23 @@ export function buildDependencies() {
     mediaProcessingService,
     solutionActionRepository,
     auditService,
+    contactEntityResolutionService,
+    contactEntityMemoryRepository,
+    contactProfileService,
+    customerExperienceService,
+    messageConfigurationService,
+    businessHoursService,
   );
-  const outboundMessageService = new OutboundMessageService(
-    conversationRepository,
-    messageRepository,
-    metaClient,
-    env.OUTBOUND_SEND_MODE,
-    env.META_PHONE_NUMBER_ID,
-    auditService,
-  );
-
   return {
     inboundWebhookService,
     outboundMessageService,
+    entitySelectionService,
     operationalIntegrityAuditService,
+    inactivityAutomationService,
+    aiSupervisorService,
+    qualityDashboardService,
     integrationServiceApiKey: env.INTEGRATION_SERVICE_API_KEY,
+    glpiClient,
     metaClient,
     metaAppSecret: env.META_APP_SECRET,
     metaVerifyToken: env.META_VERIFY_TOKEN,

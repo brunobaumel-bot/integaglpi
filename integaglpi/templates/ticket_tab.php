@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 /** @var \GlpiPlugin\Integaglpi\Renderer\TicketTabRenderer $this */
 /** @var array<string, mixed>|null $runtime */
+/** @var array<string, mixed>|null $context */
 /** @var list<array<string, mixed>> $messages */
 /** @var list<array<string, mixed>> $queues */
 /** @var bool $isExternalConfigured */
 /** @var array<string, mixed> $connectionConfig */
+/** @var string|null $externalDbError */
 /** @var \Ticket $ticket */
+/** @var string $tabView */
 
 $timelineId = 'integaglpi-timeline-' . (int) $ticket->getID();
 $runtimeView = is_array($runtime) ? $runtime : [];
@@ -26,57 +29,311 @@ $canTransfer = array_key_exists('can_transfer', $runtimeView)
 $canClose = array_key_exists('can_close', $runtimeView)
     ? (bool) $runtimeView['can_close']
     : !$isClosed;
+$profileSnapshot = is_array($runtimeView['contact_profile_snapshot'] ?? null)
+    ? $runtimeView['contact_profile_snapshot']
+    : null;
+$contextView = is_array($context) ? $context : [];
+$contextConversation = is_array($contextView['conversation'] ?? null) ? $contextView['conversation'] : null;
+$contextRisk = is_array($contextView['risk'] ?? null) ? $contextView['risk'] : null;
+$contextWarnings = is_array($contextView['warnings'] ?? null) ? $contextView['warnings'] : [];
+$contextEvents = is_array($contextView['events'] ?? null) ? $contextView['events'] : [];
+$contextDeadLetter = is_array($contextView['dead_letter'] ?? null) ? $contextView['dead_letter'] : null;
+$contextCsat = is_array($contextView['csat'] ?? null) ? $contextView['csat'] : null;
+$contextAiQuality = is_array($contextView['ai_quality'] ?? null) ? $contextView['ai_quality'] : null;
+$aiSupervisorEnabled = (bool) ($contextView['ai_supervisor_enabled'] ?? \GlpiPlugin\Integaglpi\Plugin::isAiSupervisorEnabled());
+$contextCorrelationId = trim((string) ($contextView['correlation_id'] ?? ''));
+$canViewTechnical = (bool) ($contextView['can_view_technical'] ?? false);
+$localTemplates = [];
+try {
+    $localTemplates = (new \GlpiPlugin\Integaglpi\Service\PluginConfigService())->getActiveLocalTemplates();
+} catch (\Throwable) {
+    $localTemplates = [];
+}
+$statusBadge = static function (mixed $status): string {
+    return match (strtolower((string) $status)) {
+        'open', 'ok', 'success' => 'success',
+        'closed', 'critical', 'error', 'failed', 'danger' => 'danger',
+        'awaiting_queue_selection', 'awaiting_entity_selection', 'collecting_contact_profile', 'warning' => 'warning',
+        default => 'secondary',
+    };
+};
+$riskBadge = static function (mixed $level): string {
+    return match ((string) $level) {
+        'critical' => 'danger',
+        'warning' => 'warning',
+        default => 'success',
+    };
+};
+$short = static function (mixed $value, int $max = 44): string {
+    $text = trim((string) $value);
+    if ($text === '') {
+        return '-';
+    }
+
+    return strlen($text) > $max ? substr($text, 0, $max) . '...' : $text;
+};
 ?>
+<?php if ($tabView === 'context') { ?>
 <div class="card mb-3">
-    <div class="card-header"><?= $this->escape(__('WhatsApp', 'glpiintegaglpi')); ?></div>
+    <div class="card-header"><?= $this->escape(__('Contexto WhatsApp', 'glpiintegaglpi')); ?></div>
     <div class="card-body">
         <?php if (!$isExternalConfigured) { ?>
             <div class="alert alert-warning mb-0">
-                <?= $this->escape(__('Configure the external PostgreSQL connection on the plugin administration page before using the WhatsApp tab.', 'glpiintegaglpi')); ?>
+                <?= $this->escape(__('Configure o PostgreSQL externo para exibir o contexto WhatsApp.', 'glpiintegaglpi')); ?>
+            </div>
+        <?php } elseif (isset($externalDbError) && is_string($externalDbError) && $externalDbError !== '') { ?>
+            <div class="alert alert-warning mb-0">
+                <?= $this->escape($externalDbError); ?>
             </div>
         <?php } elseif ($runtime === null) { ?>
             <div class="alert alert-info mb-0">
-                <?= $this->escape(__('No WhatsApp conversation is linked to this ticket yet.', 'glpiintegaglpi')); ?>
+                <?= $this->escape(__('Nenhuma conversa WhatsApp vinculada a este chamado.', 'glpiintegaglpi')); ?>
             </div>
         <?php } else { ?>
             <div class="row g-3">
                 <div class="col-md-3">
-                    <strong><?= $this->escape(__('Phone', 'glpiintegaglpi')); ?></strong><br>
-                    <?= $this->escape((string) ($runtime['phone_e164'] ?? '-')); ?>
+                    <small class="text-muted d-block"><?= $this->escape(__('Ticket GLPI', 'glpiintegaglpi')); ?></small>
+                    <strong>#<?= (int) $ticket->getID(); ?></strong>
                 </div>
                 <div class="col-md-3">
-                    <strong><?= $this->escape(__('Contact name', 'glpiintegaglpi')); ?></strong><br>
-                    <?= $this->escape((string) ($runtime['contact_name'] ?? __('Unknown', 'glpiintegaglpi'))); ?>
+                    <small class="text-muted d-block"><?= $this->escape(__('Telefone', 'glpiintegaglpi')); ?></small>
+                    <strong><?= $this->escape((string) ($runtime['phone_e164'] ?? '-')); ?></strong>
                 </div>
                 <div class="col-md-3">
-                    <strong><?= $this->escape(__('Conversation status', 'glpiintegaglpi')); ?></strong><br>
+                    <small class="text-muted d-block"><?= $this->escape(__('Status conversa', 'glpiintegaglpi')); ?></small>
                     <span class="badge <?= $isClosed ? 'bg-danger' : 'bg-success'; ?>"><?= $this->escape((string) ($runtime['status'] ?? 'open')); ?></span>
                 </div>
                 <div class="col-md-3">
-                    <strong><?= $this->escape(__('Current queue', 'glpiintegaglpi')); ?></strong><br>
+                    <small class="text-muted d-block"><?= $this->escape(__('Fila', 'glpiintegaglpi')); ?></small>
                     <?= $this->escape((string) ($runtime['queue_label'] ?? __('No queue', 'glpiintegaglpi'))); ?>
                 </div>
                 <div class="col-md-3">
-                    <strong><?= $this->escape(__('Default group of queue', 'glpiintegaglpi')); ?></strong><br>
-                    <?= $this->escape((string) ($runtime['queue_default_group_label'] ?? __('No group', 'glpiintegaglpi'))); ?>
+                    <small class="text-muted d-block"><?= $this->escape(__('Contato', 'glpiintegaglpi')); ?></small>
+                    <?= $this->escape((string) ($runtime['contact_name'] ?? __('Desconhecido', 'glpiintegaglpi'))); ?>
                 </div>
                 <div class="col-md-3">
-                    <strong><?= $this->escape(__('Current technician', 'glpiintegaglpi')); ?></strong><br>
+                    <small class="text-muted d-block"><?= $this->escape(__('Técnico atual', 'glpiintegaglpi')); ?></small>
                     <?= $this->escape((string) ($runtime['assigned_user_label'] ?? __('Unassigned', 'glpiintegaglpi'))); ?>
                 </div>
                 <div class="col-md-3">
-                    <strong><?= $this->escape(__('Assigned group', 'glpiintegaglpi')); ?></strong><br>
-                    <?= $this->escape((string) ($runtime['assigned_group_label'] ?? __('No group', 'glpiintegaglpi'))); ?>
+                    <small class="text-muted d-block"><?= $this->escape(__('Grupo atribuído', 'glpiintegaglpi')); ?></small>
+                    <?= $this->escape((string) ($runtime['assigned_group_label'] ?? __('Sem grupo', 'glpiintegaglpi'))); ?>
                 </div>
                 <div class="col-md-3">
-                    <strong><?= $this->escape(__('Linked GLPI ticket', 'glpiintegaglpi')); ?></strong><br>
-                    #<?= (int) $ticket->getID(); ?>
-                </div>
-                <div class="col-md-3">
-                    <strong><?= $this->escape(__('Last message at', 'glpiintegaglpi')); ?></strong><br>
+                    <small class="text-muted d-block"><?= $this->escape(__('Última atividade', 'glpiintegaglpi')); ?></small>
                     <?= $this->escape((string) ($runtime['last_message_at'] ?? '-')); ?>
                 </div>
+                <?php $whatsappWindow = is_array($context['whatsapp_window'] ?? null) ? $context['whatsapp_window'] : []; ?>
+                <?php if (!empty($whatsappWindow)) { ?>
+                    <?php $windowOpen = !empty($whatsappWindow['is_open']); ?>
+                    <div class="col-md-3">
+                        <small class="text-muted d-block"><?= $this->escape(__('Janela WhatsApp 24h', 'glpiintegaglpi')); ?></small>
+                        <span class="badge <?= $windowOpen ? 'bg-success' : 'bg-warning text-dark'; ?>">
+                            <?= $this->escape((string) ($whatsappWindow['label'] ?? '')); ?>
+                        </span>
+                    </div>
+                <?php } ?>
+                <?php if ($contextConversation !== null && (int) ($contextConversation['memory_entity_id'] ?? 0) > 0) { ?>
+                    <div class="col-md-3">
+                        <small class="text-muted d-block"><?= $this->escape(__('Entidade memorizada', 'glpiintegaglpi')); ?></small>
+                        <?= $this->escape((string) ($contextConversation['memory_entity_name'] ?? $contextConversation['memory_entity_id'])); ?>
+                    </div>
+                <?php } ?>
             </div>
+
+            <?php if (!empty($whatsappWindow) && empty($whatsappWindow['is_open']) && trim((string) ($whatsappWindow['alert'] ?? '')) !== '') { ?>
+                <div class="alert alert-warning mt-3 mb-0">
+                    <?= $this->escape((string) $whatsappWindow['alert']); ?>
+                    <?php if ($localTemplates !== []) { ?>
+                        <div class="mt-2">
+                            <strong><?= $this->escape(__('Templates locais disponíveis', 'glpiintegaglpi')); ?>:</strong>
+                            <?php foreach (array_slice($localTemplates, 0, 5) as $template) { ?>
+                                <span class="badge bg-light text-dark border">
+                                    <?= $this->escape((string) $template['name']); ?>
+                                    <?= $this->escape((string) $template['language']); ?>
+                                </span>
+                            <?php } ?>
+                        </div>
+                    <?php } ?>
+                </div>
+            <?php } ?>
+
+            <?php if ($profileSnapshot !== null) { ?>
+                <div class="border rounded p-3 mt-3 mb-0 bg-light">
+                    <strong><?= $this->escape(__('Perfil do contato usado no chamado', 'glpiintegaglpi')); ?></strong><br>
+                    <?= $this->escape(__('Nome', 'glpiintegaglpi')); ?>:
+                    <?= $this->escape((string) ($profileSnapshot['requester_name'] ?? '-')); ?><br>
+                    <?= $this->escape(__('E-mail', 'glpiintegaglpi')); ?>:
+                    <?= $this->escape((string) ($profileSnapshot['email_address'] ?? $contextConversation['email_address'] ?? '-')); ?><br>
+                    <?= $this->escape(__('Empresa informada', 'glpiintegaglpi')); ?>:
+                    <?= $this->escape((string) ($profileSnapshot['company_name_raw'] ?? '-')); ?><br>
+                    <?= $this->escape(__('Equipamento', 'glpiintegaglpi')); ?>:
+                    <?= !empty($profileSnapshot['equipment_tag_unknown'])
+                        ? $this->escape(__('Não informado', 'glpiintegaglpi'))
+                        : $this->escape((string) ($profileSnapshot['last_equipment_tag'] ?? '-')); ?><br>
+                    <?= $this->escape(__('Resumo', 'glpiintegaglpi')); ?>:
+                    <?= $this->escape((string) ($profileSnapshot['last_problem_summary'] ?? '-')); ?><br>
+                    <?= $this->escape(__('Status', 'glpiintegaglpi')); ?>:
+                    <?= $this->escape((string) ($profileSnapshot['profile_status'] ?? 'incomplete')); ?>
+                </div>
+            <?php } ?>
+
+            <?php if ($contextConversation !== null) { ?>
+                <div class="border rounded p-3 mt-3 mb-0">
+                    <strong><?= $this->escape(__('Vínculo GLPI do contato', 'glpiintegaglpi')); ?></strong><br>
+                    <?= $this->escape(__('Usuário GLPI', 'glpiintegaglpi')); ?>:
+                    <?= (int) ($contextConversation['glpi_user_id'] ?? 0) > 0
+                        ? '#' . (int) $contextConversation['glpi_user_id']
+                        : $this->escape(__('Não vinculado automaticamente', 'glpiintegaglpi')); ?><br>
+                    <?= $this->escape(__('Status do vínculo', 'glpiintegaglpi')); ?>:
+                    <?= $this->escape((string) ($contextConversation['glpi_user_link_status'] ?? '-')); ?><br>
+                    <?= $this->escape(__('Origem', 'glpiintegaglpi')); ?>:
+                    <?= $this->escape((string) ($contextConversation['glpi_user_link_source'] ?? '-')); ?>
+                    <?php if (!empty($contextConversation['glpi_user_created_by_integaglpi'])) { ?>
+                        <br><span class="badge bg-warning text-dark"><?= $this->escape(__('Criado de forma restrita pela integração', 'glpiintegaglpi')); ?></span>
+                    <?php } ?>
+                </div>
+            <?php } ?>
+
+            <?php if ($contextCsat !== null) { ?>
+                <div class="border rounded p-3 mt-3 mb-0">
+                    <strong><?= $this->escape(__('Pesquisa de satisfação', 'glpiintegaglpi')); ?></strong><br>
+                    <?= $this->escape(__('Resposta', 'glpiintegaglpi')); ?>:
+                    <?= $this->escape((string) ($contextCsat['csat_rating'] ?? '-')); ?><br>
+                    <?= $this->escape(__('Status', 'glpiintegaglpi')); ?>:
+                    <?= $this->escape((string) ($contextCsat['status'] ?? '-')); ?>
+                    <?php if (!empty($contextCsat['supervisor_review_required'])) { ?>
+                        <div class="alert alert-warning mt-2 mb-0">
+                            <?= $this->escape(__('Cliente insatisfeito: revisar atendimento antes de fechar.', 'glpiintegaglpi')); ?>
+                        </div>
+                    <?php } ?>
+                </div>
+            <?php } ?>
+
+            <?php if ($canViewTechnical && ($contextAiQuality !== null || ($aiSupervisorEnabled && $contextConversation !== null))) { ?>
+                <?php
+                $aiFlags = is_array($contextAiQuality['flags'] ?? null) ? $contextAiQuality['flags'] : [];
+                $aiStatus = (string) ($contextAiQuality['status'] ?? '');
+                ?>
+                <div class="border rounded p-3 mt-3 mb-0">
+                    <div class="d-flex align-items-center justify-content-between gap-2">
+                        <div>
+                            <strong><?= $this->escape(__('Análise IA — revisão humana obrigatória', 'glpiintegaglpi')); ?></strong>
+                            <div class="small text-muted">
+                                <?= $this->escape(__('IA supervisora read-only. Não conversa com cliente e não altera chamado.', 'glpiintegaglpi')); ?>
+                            </div>
+                        </div>
+                        <?php if ($aiStatus !== '') { ?>
+                            <span class="badge bg-<?= $this->escape($statusBadge($aiStatus)); ?>"><?= $this->escape($aiStatus); ?></span>
+                        <?php } ?>
+                    </div>
+
+                    <?php if ($contextAiQuality !== null) { ?>
+                        <div class="row g-3 mt-1">
+                            <div class="col-md-6">
+                                <small class="text-muted d-block"><?= $this->escape(__('Resumo', 'glpiintegaglpi')); ?></small>
+                                <?= $this->escape((string) ($contextAiQuality['summary'] ?? '-')); ?>
+                            </div>
+                            <div class="col-md-3">
+                                <small class="text-muted d-block"><?= $this->escape(__('Resolução', 'glpiintegaglpi')); ?></small>
+                                <?= $this->escape((string) ($contextAiQuality['classification_resolution'] ?? '-')); ?>
+                            </div>
+                            <div class="col-md-3">
+                                <small class="text-muted d-block"><?= $this->escape(__('Sentimento', 'glpiintegaglpi')); ?></small>
+                                <?= $this->escape((string) ($contextAiQuality['sentiment'] ?? '-')); ?>
+                            </div>
+                            <div class="col-md-12">
+                                <small class="text-muted d-block"><?= $this->escape(__('Flags', 'glpiintegaglpi')); ?></small>
+                                <?php if ($aiFlags === []) { ?>
+                                    <span class="text-muted">-</span>
+                                <?php } ?>
+                                <?php foreach ($aiFlags as $flag) { ?>
+                                    <span class="badge bg-secondary me-1"><?= $this->escape((string) $flag); ?></span>
+                                <?php } ?>
+                            </div>
+                            <div class="col-md-12">
+                                <small class="text-muted d-block"><?= $this->escape(__('Recomendação ao supervisor', 'glpiintegaglpi')); ?></small>
+                                <?= $this->escape((string) ($contextAiQuality['recommendation'] ?? '-')); ?>
+                            </div>
+                        </div>
+
+                        <?php if ($aiSupervisorEnabled) { ?>
+                            <form method="post" action="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getAiQualityUrl()); ?>" class="row g-2 mt-2">
+                                <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken(); ?>
+                                <input type="hidden" name="action" value="feedback">
+                                <input type="hidden" name="ticket_id" value="<?= (int) $ticket->getID(); ?>">
+                                <input type="hidden" name="conversation_id" value="<?= $this->escape((string) ($contextConversation['conversation_id'] ?? '')); ?>">
+                                <input type="hidden" name="analysis_id" value="<?= (int) ($contextAiQuality['id'] ?? 0); ?>">
+                                <div class="col-md-3">
+                                    <select class="form-select form-select-sm" name="feedback">
+                                        <option value="useful"><?= $this->escape(__('Útil', 'glpiintegaglpi')); ?></option>
+                                        <option value="not_useful"><?= $this->escape(__('Pouco útil', 'glpiintegaglpi')); ?></option>
+                                        <option value="incorrect"><?= $this->escape(__('Incorreta', 'glpiintegaglpi')); ?></option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <input class="form-control form-control-sm" type="text" name="feedback_notes" maxlength="500" placeholder="<?= $this->escape(__('Observação opcional do supervisor', 'glpiintegaglpi')); ?>">
+                                </div>
+                                <div class="col-md-3">
+                                    <button type="submit" class="btn btn-sm btn-outline-secondary">
+                                        <?= $this->escape(__('Salvar feedback', 'glpiintegaglpi')); ?>
+                                    </button>
+                                </div>
+                            </form>
+                        <?php } ?>
+                    <?php } else { ?>
+                        <div class="text-muted mt-2">
+                            <?= $this->escape(__('Nenhuma análise IA registrada para este chamado.', 'glpiintegaglpi')); ?>
+                        </div>
+                    <?php } ?>
+
+                    <?php if ($aiSupervisorEnabled && $contextConversation !== null) { ?>
+                        <form method="post" action="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getAiQualityUrl()); ?>" class="mt-3">
+                            <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken(); ?>
+                            <input type="hidden" name="action" value="analyze">
+                            <input type="hidden" name="ticket_id" value="<?= (int) $ticket->getID(); ?>">
+                            <input type="hidden" name="conversation_id" value="<?= $this->escape((string) ($contextConversation['conversation_id'] ?? '')); ?>">
+                            <button type="submit" class="btn btn-sm btn-outline-primary">
+                                <?= $this->escape($contextAiQuality === null ? __('Analisar conversa', 'glpiintegaglpi') : __('Analisar novamente', 'glpiintegaglpi')); ?>
+                            </button>
+                        </form>
+                    <?php } ?>
+                </div>
+            <?php } ?>
+
+            <?php if ($contextConversation !== null && $contextRisk !== null) { ?>
+                <?php $riskLevel = (string) ($contextRisk['risk_level'] ?? 'ok'); ?>
+                <div class="border rounded p-3 mt-3">
+                    <div class="d-flex align-items-center justify-content-between gap-2">
+                        <div>
+                            <div class="fw-bold">
+                                <?= $this->escape(__('Risco operacional WhatsApp', 'glpiintegaglpi')); ?>
+                            </div>
+                            <div class="small text-muted">
+                                <?= $this->escape((string) ($contextRisk['risk_reason'] ?? '')); ?>
+                            </div>
+                        </div>
+                        <span class="badge bg-<?= $this->escape($riskBadge($riskLevel)); ?>">
+                            <?= $this->escape((string) ($contextRisk['risk_label'] ?? 'Saudável')); ?>
+                        </span>
+                    </div>
+                    <div class="small mt-2">
+                        <?= $this->escape(__('Última interação WhatsApp', 'glpiintegaglpi')); ?>:
+                        <?= $this->escape((string) ($contextRisk['last_interaction_age'] ?? '-')); ?>
+                    </div>
+                </div>
+            <?php } ?>
+
+            <?php if ($contextWarnings !== []) { ?>
+                <div class="mt-3">
+                    <?php foreach ($contextWarnings as $warning) { ?>
+                        <?php $level = is_array($warning) ? (string) ($warning['level'] ?? 'info') : 'info'; ?>
+                        <div class="alert alert-<?= $this->escape($statusBadge($level)); ?> mb-2">
+                            <?= $this->escape(is_array($warning) ? (string) ($warning['text'] ?? '') : ''); ?>
+                        </div>
+                    <?php } ?>
+                </div>
+            <?php } ?>
 
             <?php if ($isClosed) { ?>
                 <div class="alert alert-danger mt-3 mb-0">
@@ -103,6 +360,109 @@ $canClose = array_key_exists('can_close', $runtimeView)
     </div>
 </div>
 
+<?php
+$auditPanelOk = $contextConversation !== null && $canViewTechnical;
+if ($auditPanelOk) {
+    ?>
+    <div class="card mb-3">
+        <div class="card-header"><?= $this->escape(__('Diagnostico tecnico', 'glpiintegaglpi')); ?></div>
+        <div class="card-body">
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <small class="text-muted d-block"><?= $this->escape(__('Conversation ID', 'glpiintegaglpi')); ?></small>
+                    <code><?= $this->escape($short((string) ($contextConversation['conversation_id'] ?? ''), 44)); ?></code>
+                </div>
+                <div class="col-md-4">
+                    <small class="text-muted d-block"><?= $this->escape(__('Correlation ID', 'glpiintegaglpi')); ?></small>
+                    <code><?= $this->escape($short($contextCorrelationId, 44)); ?></code>
+                    <?php if ($contextCorrelationId !== '') { ?>
+                        <button type="button" class="btn btn-link btn-sm p-0 ms-1 js-integaglpi-copy" data-copy="<?= $this->escape($contextCorrelationId); ?>">
+                            <?= $this->escape(__('copiar', 'glpiintegaglpi')); ?>
+                        </button>
+                    <?php } ?>
+                </div>
+                <div class="col-md-4">
+                    <small class="text-muted d-block"><?= $this->escape(__('Dead-letter', 'glpiintegaglpi')); ?></small>
+                    <?php if ($contextDeadLetter !== null) { ?>
+                        <span class="badge bg-danger"><?= $this->escape(__('Aberto', 'glpiintegaglpi')); ?></span>
+                        <span class="text-muted small"><?= $this->escape((string) ($contextDeadLetter['operation_type'] ?? '')); ?></span>
+                    <?php } else { ?>
+                        <span class="badge bg-success"><?= $this->escape(__('Sem aberto', 'glpiintegaglpi')); ?></span>
+                    <?php } ?>
+                </div>
+            </div>
+
+            <div class="d-flex flex-wrap gap-2 mt-3">
+                <a class="btn btn-sm btn-outline-secondary" href="<?= $this->escape($this->getAuditUrlForTicket((int) $ticket->getID())); ?>" target="_blank" rel="noopener noreferrer">
+                    <?= $this->escape(__('Ver Auditoria deste Ticket', 'glpiintegaglpi')); ?>
+                </a>
+                <?php if ($contextCorrelationId !== '') { ?>
+                    <a class="btn btn-sm btn-outline-secondary" href="<?= $this->escape($this->getAuditUrlForCorrelation($contextCorrelationId)); ?>" target="_blank" rel="noopener noreferrer">
+                        <?= $this->escape(__('Ver Auditoria deste correlation_id', 'glpiintegaglpi')); ?>
+                    </a>
+                <?php } ?>
+                <a class="btn btn-sm btn-outline-secondary" href="<?= $this->escape($this->getOperationalHealthUrl()); ?>" target="_blank" rel="noopener noreferrer">
+                    <?= $this->escape(__('Ver painel de Auditoria e Saude', 'glpiintegaglpi')); ?>
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header">
+            <?= $this->escape(__('Ultimos eventos operacionais da conversa mais recente', 'glpiintegaglpi')); ?>
+        </div>
+        <div class="card-body p-0">
+            <table class="table table-sm table-hover mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th><?= $this->escape(__('Criado em', 'glpiintegaglpi')); ?></th>
+                        <th><?= $this->escape(__('Evento', 'glpiintegaglpi')); ?></th>
+                        <th><?= $this->escape(__('Status', 'glpiintegaglpi')); ?></th>
+                        <th><?= $this->escape(__('Severity', 'glpiintegaglpi')); ?></th>
+                        <th><?= $this->escape(__('Erro', 'glpiintegaglpi')); ?></th>
+                    </tr>
+                </thead>
+                <tbody>
+                <?php if ($contextEvents === []) { ?>
+                    <tr>
+                        <td colspan="5" class="text-center text-muted p-3">
+                            <?= $this->escape(__('Sem dados', 'glpiintegaglpi')); ?>
+                        </td>
+                    </tr>
+                <?php } ?>
+                <?php foreach ($contextEvents as $event) { ?>
+                    <tr>
+                        <td><?= $this->escape((string) ($event['created_at'] ?? '')); ?></td>
+                        <td><?= $this->escape((string) ($event['event_type'] ?? '')); ?></td>
+                        <td><?= $this->escape((string) ($event['status'] ?? '')); ?></td>
+                        <td><?= $this->escape((string) ($event['severity'] ?? '')); ?></td>
+                        <td><?= $this->escape((string) ($event['error_summary'] ?? '')); ?></td>
+                    </tr>
+                <?php } ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+    (function () {
+        document.addEventListener('click', function (event) {
+            var button = event.target.closest('.js-integaglpi-copy');
+            if (!button || !navigator.clipboard) {
+                return;
+            }
+            event.preventDefault();
+            navigator.clipboard.writeText(button.getAttribute('data-copy') || '');
+        });
+    }());
+    </script>
+    <?php
+}
+?>
+<?php } ?>
+
+<?php if ($tabView === 'conversations') { ?>
 <?php if ($isExternalConfigured && $runtime !== null && \GlpiPlugin\Integaglpi\Plugin::canUpdate()) { ?>
     <div class="row g-3 mb-3">
         <?php
@@ -214,7 +574,7 @@ $canClose = array_key_exists('can_close', $runtimeView)
 <?php } ?>
 
 <div class="card">
-    <div class="card-header"><?= $this->escape(__('Conversation timeline', 'glpiintegaglpi')); ?></div>
+    <div class="card-header"><?= $this->escape(__('Conversas WhatsApp', 'glpiintegaglpi')); ?></div>
     <div class="card-body">
         <?php if (!$isExternalConfigured) { ?>
             <p class="mb-0 text-muted"><?= $this->escape(__('The timeline becomes available after configuring the external PostgreSQL connection.', 'glpiintegaglpi')); ?></p>
@@ -255,6 +615,20 @@ $canClose = array_key_exists('can_close', $runtimeView)
                                 <span style="font-size: .68rem; color: #9aa0a6; white-space: nowrap;"><?= $timestamp; ?></span>
                             </div>
                             <div style="font-size: .875rem; line-height: 1.45;"><?= nl2br($this->escape((string) ($message['message_text'] ?? ''))); ?></div>
+                            <?php if (!$isInbound && !empty($message['delivery_status'])) { ?>
+                                <?php
+                                $deliveryStatus = (string) $message['delivery_status'];
+                                $deliveryLabel = \GlpiPlugin\Integaglpi\Service\TicketContextService::deliveryStatusLabel($deliveryStatus);
+                                $deliveryColor = $deliveryStatus === 'failed' ? '#946200' : '#6c757d';
+                                ?>
+                                <div style="font-size: .65rem; color: <?= $deliveryColor; ?>; margin-top: 4px;">
+                                    <?= $this->escape(__('Status WhatsApp', 'glpiintegaglpi')); ?>:
+                                    <?= $this->escape($deliveryLabel !== '' ? $deliveryLabel : $deliveryStatus); ?>
+                                    <?php if ($deliveryStatus === 'failed' && !empty($message['meta_error_message_sanitized'])) { ?>
+                                        - <?= $this->escape((string) $message['meta_error_message_sanitized']); ?>
+                                    <?php } ?>
+                                </div>
+                            <?php } ?>
                             <?php if (!empty($message['glpi_sync_status'])) { ?>
                                 <div style="font-size: .65rem; color: #9aa0a6; margin-top: 4px;"><?= $this->escape((string) $message['glpi_sync_status']); ?></div>
                             <?php } ?>
@@ -333,6 +707,20 @@ $canClose = array_key_exists('can_close', $runtimeView)
                 maxlength="4096"
                 placeholder="<?= $this->escape(__('Digite a mensagem para enviar ao cliente via WhatsApp...', 'glpiintegaglpi')); ?>"
             ></textarea>
+            <div class="mb-2">
+                <label class="form-label small mb-1" for="<?= $this->escape($replyDomId); ?>-file">
+                    <?= $this->escape(__('Anexo opcional', 'glpiintegaglpi')); ?>
+                </label>
+                <input
+                    type="file"
+                    class="form-control form-control-sm js-integaglpi-tab-reply-file"
+                    id="<?= $this->escape($replyDomId); ?>-file"
+                    accept="application/pdf,image/jpeg,image/png,image/gif"
+                >
+                <small class="text-muted">
+                    <?= $this->escape(__('PDF e imagens suportadas serão enviados como arquivo real pelo WhatsApp.', 'glpiintegaglpi')); ?>
+                </small>
+            </div>
             <div class="d-flex gap-2 align-items-center">
                 <button
                     type="button"
@@ -354,7 +742,7 @@ $canClose = array_key_exists('can_close', $runtimeView)
 
         var endpoint  = <?= json_encode($replyPostUrl, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
         var csrfToken = <?= json_encode($replyCsrfToken, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
-        var emptyMsg  = <?= json_encode(__('A mensagem não pode ser vazia.', 'glpiintegaglpi'), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
+        var emptyMsg  = <?= json_encode(__('Informe uma mensagem ou anexe um arquivo.', 'glpiintegaglpi'), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
         var sendingMsg = <?= json_encode(__('Enviando...', 'glpiintegaglpi'), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
         var sentMsg   = <?= json_encode(__('Mensagem enviada.', 'glpiintegaglpi'), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
         var genericErr = <?= json_encode(__('Falha ao enviar a mensagem.', 'glpiintegaglpi'), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
@@ -362,6 +750,7 @@ $canClose = array_key_exists('can_close', $runtimeView)
 
         var button   = card.querySelector('.js-integaglpi-tab-reply-send');
         var textarea = card.querySelector('.js-integaglpi-tab-reply-text');
+        var fileInput = card.querySelector('.js-integaglpi-tab-reply-file');
         var feedback = card.querySelector('.js-integaglpi-tab-reply-feedback');
 
         if (!button || !textarea) {
@@ -390,16 +779,20 @@ $canClose = array_key_exists('can_close', $runtimeView)
 
         button.addEventListener('click', function () {
             var msg = (textarea.value || '').trim();
-            if (msg === '') {
+            var file = fileInput && fileInput.files && fileInput.files.length > 0 ? fileInput.files[0] : null;
+            if (msg === '' && !file) {
                 alert(emptyMsg);
                 return;
             }
 
-            var payload = new URLSearchParams();
+            var payload = new FormData();
             payload.set('_glpi_csrf_token', csrfToken);
             payload.set('ticket_id',       String(button.dataset.ticketId || ''));
             payload.set('conversation_id', String(button.dataset.conversationId || ''));
             payload.set('reply_text',      msg);
+            if (file) {
+                payload.set('reply_file', file);
+            }
 
             var originalLabel = button.textContent;
             button.disabled = true;
@@ -410,7 +803,6 @@ $canClose = array_key_exists('can_close', $runtimeView)
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
                     'Accept': 'application/json'
                 },
                 body: payload
@@ -428,6 +820,9 @@ $canClose = array_key_exists('can_close', $runtimeView)
                     }
 
                     textarea.value = '';
+                    if (fileInput) {
+                        fileInput.value = '';
+                    }
                     setFeedback(sentMsg, 'success');
                     button.disabled = false;
                     button.textContent = originalLabel;
@@ -443,4 +838,5 @@ $canClose = array_key_exists('can_close', $runtimeView)
         });
     })();
     </script>
+<?php } ?>
 <?php } ?>

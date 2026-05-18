@@ -26,10 +26,32 @@ final class ConfigPageRenderer
 
         $connectionConfig = $this->pluginConfigService->getConnectionConfig();
         $isConfigured = $this->pluginConfigService->isConfigured();
-        $queues = $this->queueService->getQueues();
+        $externalDbError = null;
+        $queues = [];
+        try {
+            $queues = $this->queueService->getQueues();
+        } catch (\Throwable $exception) {
+            error_log('[integaglpi][config][external_db] ' . $exception->getMessage());
+            $externalDbError = __(
+                'Não foi possível conectar ao PostgreSQL externo. Revise e salve a conexão abaixo.',
+                'glpiintegaglpi'
+            );
+        }
         error_log('[integaglpi][queue][list] config_page_total=' . count($queues));
-        $queueUsers = $selectedQueue !== null ? $this->queueService->getQueueUsers((int) $selectedQueue['id']) : [];
-        $queueGroups = $selectedQueue !== null ? $this->queueService->getQueueGroups((int) $selectedQueue['id']) : [];
+        $queueUsers = [];
+        $queueGroups = [];
+        if ($selectedQueue !== null && $externalDbError === null) {
+            try {
+                $queueUsers = $this->queueService->getQueueUsers((int) $selectedQueue['id']);
+                $queueGroups = $this->queueService->getQueueGroups((int) $selectedQueue['id']);
+            } catch (\Throwable $exception) {
+                error_log('[integaglpi][config][external_db_queue_details] ' . $exception->getMessage());
+                $externalDbError = __(
+                    'Não foi possível carregar os detalhes da fila. Revise a conexão PostgreSQL externa.',
+                    'glpiintegaglpi'
+                );
+            }
+        }
         $template = PLUGIN_INTEGAGLPI_ROOT . '/templates/config.php';
 
         require $template;

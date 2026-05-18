@@ -1,4 +1,5 @@
 import { logger } from '../logger/logger.js';
+import { sanitizeUrlForLog } from '../logger/sanitizeUrlForLog.js';
 
 export interface HttpRequestOptions extends Omit<RequestInit, 'signal'> {
   timeoutMs: number;
@@ -8,10 +9,11 @@ export interface HttpRequestOptions extends Omit<RequestInit, 'signal'> {
 function logFetchFailure(url: string, error: unknown): void {
   const err = error instanceof Error ? error : new Error(String(error));
   const errno = error as NodeJS.ErrnoException;
+  const sanitizedUrl = sanitizeUrlForLog(url);
 
   logger.error(
     {
-      url,
+      url: sanitizedUrl,
       errorMessage: err.message,
       errorName: err.name,
       errorCode: errno.code,

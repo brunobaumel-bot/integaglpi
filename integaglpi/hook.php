@@ -243,3 +243,63 @@ function plugin_integaglpi_item_solution(\ITILSolution $solution): void
         error_log('[integaglpi][notification][solution_hook_error] ticket_id=' . $ticketId . ' solution_id=' . $solutionId . ' ' . $e->getMessage());
     }
 }
+
+function plugin_integaglpi_item_add_document_item(\Document_Item $documentItem): void
+{
+    $itemtype = (string) ($documentItem->fields['itemtype'] ?? $documentItem->input['itemtype'] ?? '');
+    $itemsId = (int) ($documentItem->fields['items_id'] ?? $documentItem->input['items_id'] ?? 0);
+    $documentItemId = (int) ($documentItem->fields['id'] ?? $documentItem->input['id'] ?? 0);
+    $documentId = (int) ($documentItem->fields['documents_id'] ?? $documentItem->input['documents_id'] ?? 0);
+
+    if ($itemsId <= 0 || $documentItemId <= 0 || $documentId <= 0) {
+        return;
+    }
+
+    $ticketId = 0;
+    $sourceType = $itemtype;
+
+    if ($itemtype === \ITILFollowup::class || $itemtype === 'ITILFollowup') {
+        $followup = new \ITILFollowup();
+        if (!$followup->getFromDB($itemsId)) {
+            return;
+        }
+        if ((int) ($followup->fields['is_private'] ?? 0) !== 0) {
+            return;
+        }
+        $followupItemtype = (string) ($followup->fields['itemtype'] ?? '');
+        if ($followupItemtype !== \Ticket::class && $followupItemtype !== 'Ticket') {
+            return;
+        }
+        $ticketId = (int) ($followup->fields['items_id'] ?? 0);
+    } elseif ($itemtype === \ITILSolution::class || $itemtype === 'ITILSolution') {
+        $solution = new \ITILSolution();
+        if (!$solution->getFromDB($itemsId)) {
+            return;
+        }
+        $solutionItemtype = (string) ($solution->fields['itemtype'] ?? '');
+        if ($solutionItemtype !== \Ticket::class && $solutionItemtype !== 'Ticket') {
+            return;
+        }
+        $ticketId = (int) ($solution->fields['items_id'] ?? 0);
+    } elseif ($itemtype === \Ticket::class || $itemtype === 'Ticket') {
+        $requestUri = strtolower((string) ($_SERVER['REQUEST_URI'] ?? ''));
+        if (str_contains($requestUri, '/apirest.php')) {
+            // Inbound WhatsApp media is linked to the ticket through GLPI REST; do not echo it back.
+            return;
+        }
+        $ticketId = $itemsId;
+    } else {
+        return;
+    }
+
+    if ($ticketId <= 0) {
+        return;
+    }
+
+    try {
+        $service = new \GlpiPlugin\Integaglpi\Service\NotificationService();
+        $service->notifyTicketDocumentAdded($ticketId, $documentItemId, $documentId, $sourceType);
+    } catch (\Throwable $e) {
+        error_log('[integaglpi][notification][document_hook_error] ticket_id=' . $ticketId . ' document_item_id=' . $documentItemId . ' ' . $e->getMessage());
+    }
+}

@@ -5,9 +5,9 @@ declare(strict_types=1);
 use GlpiPlugin\Integaglpi\Plugin;
 use GlpiPlugin\Integaglpi\Queue;
 use GlpiPlugin\Integaglpi\Renderer\ConfigPageRenderer;
+use GlpiPlugin\Integaglpi\Service\ContactProfileConfigService;
 use GlpiPlugin\Integaglpi\Service\PluginConfigService;
 use GlpiPlugin\Integaglpi\Service\QueueService;
-use GlpiPlugin\Integaglpi\Service\RoutingSafetyService;
 use GlpiPlugin\Integaglpi\Service\RoutingOptionService;
 
 include '../../../inc/includes.php';
@@ -31,6 +31,15 @@ function integaglpi_config_json_response(array $payload, int $status = 200): nev
     http_response_code($status);
     echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
+}
+
+function integaglpi_config_warning_type(): int
+{
+    if (defined('WARNING')) {
+        return (int) constant('WARNING');
+    }
+
+    return defined('ERROR') ? (int) constant('ERROR') : 0;
 }
 
 Session::checkLoginUser();
@@ -60,7 +69,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $pluginConfigService = new PluginConfigService();
 $queueService = new QueueService($pluginConfigService);
 $routingOptionService = new RoutingOptionService($pluginConfigService);
-$routingSafetyService = new RoutingSafetyService($pluginConfigService);
+$contactProfileConfigService = new ContactProfileConfigService();
 
 if (
     ($_SERVER['REQUEST_METHOD'] ?? '') === 'GET'
@@ -102,10 +111,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $queueService->saveQueue($_POST);
             Session::addMessageAfterRedirect(__('Queue saved successfully.', 'glpiintegaglpi'));
             $redirectUrl .= '?tab=queues';
-        } elseif (isset($_POST['save_routing_fallback'])) {
-            $routingSafetyService->saveRoutingConfig($_POST);
-            Session::addMessageAfterRedirect(__('Routing fallback saved successfully.', 'glpiintegaglpi'));
-            $redirectUrl .= '?tab=queues';
         } elseif (isset($_POST['save_routing_option'])) {
             $routingOptionService->save($_POST);
             Session::addMessageAfterRedirect(__('Routing option saved successfully.', 'glpiintegaglpi'));
@@ -115,9 +120,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             Session::addMessageAfterRedirect(__('Routing option disabled.', 'glpiintegaglpi'));
             $redirectUrl .= '?tab=queues';
         } elseif (isset($_POST['save_messages'])) {
-            $pluginConfigService->saveMessageConfig($_POST);
+            $syncWarning = $pluginConfigService->saveMessageConfig($_POST);
             Session::addMessageAfterRedirect(__('Attendance messages saved successfully.', 'glpiintegaglpi'));
+            if ($syncWarning !== null) {
+                Session::addMessageAfterRedirect($syncWarning, false, integaglpi_config_warning_type());
+            }
             $redirectUrl .= '?tab=messages';
+        } elseif (isset($_POST['save_message_catalog'])) {
+            $pluginConfigService->saveMessageCatalogEntry($_POST, (int) ($_SESSION['glpiID'] ?? 0));
+            Session::addMessageAfterRedirect(__('Mensagem automática salva.', 'glpiintegaglpi'));
+            $redirectUrl .= '?tab=messages';
+        } elseif (isset($_POST['save_business_hours'])) {
+            $pluginConfigService->saveBusinessHoursConfig($_POST, (int) ($_SESSION['glpiID'] ?? 0));
+            Session::addMessageAfterRedirect(__('Horário comercial salvo.', 'glpiintegaglpi'));
+            $redirectUrl .= '?tab=messages';
+        } elseif (isset($_POST['save_contact_profile'])) {
+            $syncWarning = $contactProfileConfigService->saveConfig($_POST);
+            Session::addMessageAfterRedirect(__('Recepção Inteligente configuration saved successfully.', 'glpiintegaglpi'));
+            if ($syncWarning !== null) {
+                Session::addMessageAfterRedirect($syncWarning, false, integaglpi_config_warning_type());
+            }
+            $redirectUrl .= '?tab=contact_profile';
+        } elseif (isset($_POST['save_local_template'])) {
+            $pluginConfigService->saveLocalTemplate($_POST);
+            Session::addMessageAfterRedirect(__('Template local salvo.', 'glpiintegaglpi'));
+            $redirectUrl .= '?tab=templates';
+        } elseif (isset($_POST['disable_local_template']) && !empty($_POST['template_id'])) {
+            $pluginConfigService->setLocalTemplateActive((string) $_POST['template_id'], false);
+            Session::addMessageAfterRedirect(__('Template local desativado.', 'glpiintegaglpi'));
+            $redirectUrl .= '?tab=templates';
+        } elseif (isset($_POST['enable_local_template']) && !empty($_POST['template_id'])) {
+            $pluginConfigService->setLocalTemplateActive((string) $_POST['template_id'], true);
+            Session::addMessageAfterRedirect(__('Template local ativado.', 'glpiintegaglpi'));
+            $redirectUrl .= '?tab=templates';
         } else {
             throw new RuntimeException(__('Configuration form submission was not recognized.', 'glpiintegaglpi'));
         }
@@ -143,8 +178,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if (isset($_POST['save_routing_option']) || isset($_POST['disable_routing_option'])) {
             $redirectUrl = Plugin::getQueueAdminUrl() . '?tab=queues';
-        } elseif (isset($_POST['save_messages'])) {
+        } elseif (isset($_POST['save_messages']) || isset($_POST['save_message_catalog']) || isset($_POST['save_business_hours'])) {
             $redirectUrl = Plugin::getQueueAdminUrl() . '?tab=messages';
+        } elseif (isset($_POST['save_contact_profile'])) {
+            $redirectUrl = Plugin::getQueueAdminUrl() . '?tab=contact_profile';
+        } elseif (isset($_POST['save_local_template']) || isset($_POST['disable_local_template']) || isset($_POST['enable_local_template'])) {
+            $redirectUrl = Plugin::getQueueAdminUrl() . '?tab=templates';
         }
     }
 

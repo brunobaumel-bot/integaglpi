@@ -20,7 +20,10 @@ interface ConversationRow {
   phone_e164: string;
   contact_id: string;
   glpi_ticket_id: number | null;
+  glpi_entity_id?: number | string | null;
+  glpi_entity_name?: string | null;
   queue_id?: number | null;
+  profile_collection_state?: Record<string, unknown> | null;
   status: string;
   last_message_at: Date;
   created_at: Date;
@@ -40,6 +43,11 @@ interface InboundMessageRow {
   media_info: Record<string, unknown> | null | undefined;
   processing_status: InboundMessage['processingStatus'];
   glpi_sync_status: InboundMessage['glpiSyncStatus'];
+  meta_message_id?: string | null;
+  delivery_status?: string | null;
+  delivery_status_updated_at?: Date | null;
+  meta_error_code?: string | null;
+  meta_error_message_sanitized?: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -74,7 +82,13 @@ export function mapConversationRow(row: ConversationRow): Conversation {
     phoneE164: row.phone_e164,
     contactId: row.contact_id,
     glpiTicketId: row.glpi_ticket_id,
+    glpiEntityId:
+      row.glpi_entity_id == null || row.glpi_entity_id === ''
+        ? null
+        : Number(row.glpi_entity_id),
+    glpiEntityName: row.glpi_entity_name ?? null,
     queueId: row.queue_id ?? null,
+    profileCollectionState: row.profile_collection_state ?? null,
     status: row.status,
     lastMessageAt: row.last_message_at,
     createdAt: row.created_at,
@@ -96,6 +110,11 @@ export function mapInboundMessageRow(row: InboundMessageRow): InboundMessage {
     mediaInfo: row.media_info ?? null,
     processingStatus: row.processing_status,
     glpiSyncStatus: row.glpi_sync_status,
+    metaMessageId: row.meta_message_id ?? null,
+    deliveryStatus: row.delivery_status ?? null,
+    deliveryStatusUpdatedAt: row.delivery_status_updated_at ?? null,
+    metaErrorCode: row.meta_error_code ?? null,
+    metaErrorMessageSanitized: row.meta_error_message_sanitized ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterAll } from 'vitest';
 import type { Request, Response } from 'express';
 
-import { createHealthController } from '../src/controllers/healthController.js';
+import { createHealthController, createOpsDiagnosticsController } from '../src/controllers/healthController.js';
 
 function mockRes() {
   const res = {
@@ -57,5 +57,52 @@ describe('GET /health handler', () => {
     };
     expect(call.ok).toBe(false);
     expect(call.postgres.ok).toBe(false);
+  });
+});
+
+describe('GET /internal/glpi/diagnostics handler', () => {
+  it('returns read-only operational diagnostics without secrets or shell commands', async () => {
+    const rowsByQuery = vi.fn().mockImplementation(async (text: string) => {
+      if (text.includes('information_schema.columns')) {
+        return {
+          rows: [
+            { table_name: 'glpi_plugin_integaglpi_conversations', column_name: 'glpi_entity_id' },
+            { table_name: 'glpi_plugin_integaglpi_conversations', column_name: 'glpi_entity_name' },
+            { table_name: 'glpi_plugin_integaglpi_entity_selection_attempts', column_name: 'idempotency_key' },
+            { table_name: 'glpi_plugin_integaglpi_messages', column_name: 'delivery_status' },
+          ],
+        };
+      }
+      if (text.includes('glpi_plugin_integaglpi_entity_selection_attempts')) {
+        return {
+          rows: [{
+            conversation_id: 'conv-1',
+            status: 'failed_before_ticket',
+            glpi_entity_id: 56,
+            glpi_ticket_id: null,
+            display_status: 'ambiguous_reconciliation',
+            error_message_sanitized: 'ambiguous_reconciliation: 2112319241,2112319242',
+            updated_at: new Date('2026-05-12T00:00:00.000Z'),
+          }],
+        };
+      }
+      if (text.includes('delivery_status')) {
+        return { rows: [{ status: 'read', total: 3 }] };
+      }
+      return { rows: [{ '?column?': 1 }] };
+    });
+    const handler = createOpsDiagnosticsController(
+      { query: rowsByQuery },
+      { checkApiHealth: vi.fn().mockResolvedValue({ ok: true, latencyMs: 12, errorStage: null }) },
+    );
+    const res = mockRes();
+
+    await handler(mockReq, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    const body = (res as unknown as { json: ReturnType<typeof vi.fn> }).json.mock.calls[0]?.[0] as Record<string, unknown>;
+    const serialized = JSON.stringify(body);
+    expect(serialized).toContain('ambiguous_reconciliation');
+    expect(serialized).not.toMatch(/META_ACCESS_TOKEN|GLPI_APP_TOKEN|Bearer|shell_exec|docker|psql|pg_dump|certbot/);
   });
 });

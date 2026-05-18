@@ -44,13 +44,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // ── GET ───────────────────────────────────────────────────────────────────────
-$options      = $routingOptionService->getAll();
-$queues       = $queueService->getQueues();
 $isConfigured = $pluginConfigService->isConfigured();
+$options      = [];
+$queues       = [];
+$externalDbError = null;
+
+if ($isConfigured) {
+    try {
+        $options = $routingOptionService->getAll();
+        $queues = $queueService->getQueues();
+    } catch (Throwable $exception) {
+        error_log('[integaglpi][routing_option][external_db] ' . $exception->getMessage());
+        $externalDbError = __(
+            'Não foi possível carregar opções de roteamento. Revise a conexão PostgreSQL externa.',
+            'glpiintegaglpi'
+        );
+    }
+}
 
 $editing = null;
-if (!empty($_GET['id'])) {
-    $editing = $routingOptionService->getById((int) $_GET['id']);
+if (!empty($_GET['id']) && $externalDbError === null) {
+    try {
+        $editing = $routingOptionService->getById((int) $_GET['id']);
+    } catch (Throwable $exception) {
+        error_log('[integaglpi][routing_option][external_db_edit] ' . $exception->getMessage());
+        $externalDbError = __(
+            'Não foi possível carregar a opção selecionada. Revise a conexão PostgreSQL externa.',
+            'glpiintegaglpi'
+        );
+    }
 }
 
 Html::header(__('WhatsApp — Routing options', 'glpiintegaglpi'), $_SERVER['PHP_SELF'], 'plugins', Queue::class);

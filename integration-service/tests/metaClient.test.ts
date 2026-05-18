@@ -62,6 +62,48 @@ describe('MetaClient', () => {
     ]);
   });
 
+  it('uploads and sends a PDF document through Meta media endpoints', async () => {
+    const httpClient = {
+      request: vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ id: 'meta-uploaded-media' }), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ messages: [{ id: 'wamid.document' }] }), { status: 200 })),
+    };
+
+    const client = new MetaClient(httpClient as never);
+
+    const mediaId = await client.uploadMedia({
+      buffer: Buffer.from('%PDF-1.4'),
+      mimeType: 'application/pdf',
+      filename: 'relatorio.pdf',
+    });
+    await client.sendDocumentMessage({
+      to: '5511999999999',
+      mediaId,
+      filename: 'relatorio.pdf',
+      caption: 'Anexo do chamado #1.',
+    });
+
+    expect(mediaId).toBe('meta-uploaded-media');
+    expect(httpClient.request).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining('/media'),
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.not.objectContaining({
+          'Content-Type': expect.any(String),
+        }),
+      }),
+    );
+    expect(JSON.parse(httpClient.request.mock.calls[1]?.[1].body as string)).toMatchObject({
+      type: 'document',
+      document: {
+        id: 'meta-uploaded-media',
+        filename: 'relatorio.pdf',
+        caption: 'Anexo do chamado #1.',
+      },
+    });
+  });
+
   it('rejects media download before reading when Content-Length exceeds maxBytes', async () => {
     const httpClient = {
       request: vi.fn().mockResolvedValue(

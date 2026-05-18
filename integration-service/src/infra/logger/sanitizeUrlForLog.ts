@@ -1,18 +1,26 @@
-/** Remove valores sensíveis de query string para log (tokens em URL são redatados). */
+const META_MEDIA_HOST_PATTERN = /(^|\.)((fbsbx|fbcdn)\.com|facebook\.com|whatsapp\.net)$/i;
+const SENSITIVE_QUERY_KEY_PATTERN =
+  /^(access_token|token|signature|sig|expires|ext|hash|access_key|key|auth|authorization|secret|password|session|session_token|api_key|apikey|x-api-key|x_api_key|xapikey|api-key)$/i;
+
+/** Remove valores sensíveis de URLs antes de registrar logs. */
 export function sanitizeUrlForLog(fullUrl: string): string {
   try {
-    const u = new URL(fullUrl);
-    const sensitiveKey = (key: string) =>
-      /token|secret|password|session|authorization/i.test(key);
+    const url = new URL(fullUrl);
 
-    for (const key of [...u.searchParams.keys()]) {
-      if (sensitiveKey(key)) {
-        u.searchParams.set(key, '[REDACTED]');
+    if (META_MEDIA_HOST_PATTERN.test(url.hostname)) {
+      return `${url.origin}${url.pathname}`;
+    }
+
+    url.hash = '';
+
+    for (const key of [...url.searchParams.keys()]) {
+      if (SENSITIVE_QUERY_KEY_PATTERN.test(key)) {
+        url.searchParams.set(key, '[REDACTED]');
       }
     }
 
-    return u.toString();
+    return url.toString();
   } catch {
-    return '[invalid_url]';
+    return '[INVALID_URL]';
   }
 }

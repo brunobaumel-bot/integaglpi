@@ -7,6 +7,7 @@ declare(strict_types=1);
  * @var list<array<string, mixed>>      $queues        Active queues for dropdown
  * @var array<string, mixed>|null       $editing       Option being edited (null = new)
  * @var bool                            $isConfigured  External DB is configured
+ * @var string|null                     $externalDbError External DB load warning
  */
 
 $adminUrl  = \GlpiPlugin\Integaglpi\Plugin::getRoutingOptionsAdminUrl();
@@ -19,12 +20,16 @@ $esc = static fn (string $v): string => Html::cleanInputText($v);
     <a href="<?= $esc($configUrl); ?>" class="btn btn-sm btn-outline-secondary">
         &larr; <?= __('Back to configuration', 'glpiintegaglpi'); ?>
     </a>
-    <h2 class="mb-0"><?= __('Routing options', 'glpiintegaglpi'); ?></h2>
+    <h2 class="mb-0"><?= __('Filas e opções de roteamento', 'glpiintegaglpi'); ?></h2>
 </div>
 
 <?php if (!$isConfigured): ?>
 <div class="alert alert-warning">
     <?= __('External PostgreSQL connection not configured. Configure it first.', 'glpiintegaglpi'); ?>
+</div>
+<?php elseif (isset($externalDbError) && is_string($externalDbError) && $externalDbError !== ''): ?>
+<div class="alert alert-warning">
+    <?= $esc($externalDbError); ?>
 </div>
 <?php else: ?>
 

@@ -2,6 +2,8 @@
 export type GlpiFailureStage =
   | 'glpi_init_session'
   | 'glpi_contact_lookup'
+  | 'glpi_user_lookup'
+  | 'glpi_user_create'
   | 'glpi_ticket_create'
   | 'glpi_ticket_read'
   | 'glpi_ticket_update'
@@ -10,6 +12,7 @@ export type GlpiFailureStage =
   | 'glpi_solution_reopen'
   | 'glpi_followup_create'
   | 'glpi_document_upload'
+  | 'glpi_document_item_link'
   | 'ai_analysis';
 
 export class GlpiRequestError extends Error {

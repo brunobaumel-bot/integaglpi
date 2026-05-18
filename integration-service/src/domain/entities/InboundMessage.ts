@@ -14,6 +14,11 @@ export interface InboundMessage {
   mediaInfo: Record<string, unknown> | null;
   processingStatus: MessageProcessingStatus;
   glpiSyncStatus: GlpiSyncStatus;
+  metaMessageId: string | null;
+  deliveryStatus: string | null;
+  deliveryStatusUpdatedAt: Date | null;
+  metaErrorCode: string | null;
+  metaErrorMessageSanitized: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

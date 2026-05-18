@@ -80,6 +80,12 @@ final class CentralRenderer
         $query = [
             'status' => (string) ($filters['status'] ?? ''),
             'queue_id' => (int) ($filters['queue_id'] ?? 0),
+            'technician_id' => (int) ($filters['technician_id'] ?? 0),
+            'entity_id' => (int) ($filters['entity_id'] ?? 0),
+            'window_status' => (string) ($filters['window_status'] ?? ''),
+            'inactivity' => (string) ($filters['inactivity'] ?? ''),
+            'delivery' => (string) ($filters['delivery'] ?? ''),
+            'operational_state' => (string) ($filters['operational_state'] ?? ''),
             'search' => (string) ($filters['search'] ?? ''),
             'page' => $page,
             'limit' => $limit,

@@ -1,4 +1,9 @@
-import type { InboundMediaMetadata, MetaWebhookPayload, ParsedMetaInboundMessage } from './metaWebhookTypes.js';
+import type {
+  InboundMediaMetadata,
+  MetaWebhookPayload,
+  ParsedMetaInboundMessage,
+  ParsedMetaStatusUpdate,
+} from './metaWebhookTypes.js';
 
 function extractMediaMetadata(message: {
   type: string;
@@ -39,10 +44,14 @@ function extractMessageText(message: {
   interactive?: {
     type?: string;
     button_reply?: { id?: string; title?: string } | undefined;
+    list_reply?: { id?: string; title?: string; description?: string } | undefined;
   } | undefined;
 }): string | null {
   if (message.type === 'interactive' && message.interactive?.button_reply?.id) {
     return message.interactive.button_reply.id;
+  }
+  if (message.type === 'interactive' && message.interactive?.list_reply?.id) {
+    return message.interactive.list_reply.id;
   }
 
   return message.text?.body ?? null;
@@ -76,5 +85,78 @@ export function parseMetaInboundMessages(payload: MetaWebhookPayload): ParsedMet
   }
 
   return parsedMessages;
+}
+
+export function parseMetaStatusUpdates(payload: MetaWebhookPayload): ParsedMetaStatusUpdate[] {
+  const parsedStatuses: ParsedMetaStatusUpdate[] = [];
+
+  for (const entry of payload.entry) {
+    for (const change of entry.changes) {
+      const statuses = change.value.statuses ?? [];
+
+      for (const status of statuses) {
+        const metaMessageId = readString(status, 'id');
+        const statusValue = readString(status, 'status');
+        if (metaMessageId === '' || statusValue === '') {
+          continue;
+        }
+
+        const error = readFirstError(status);
+        parsedStatuses.push({
+          eventId: `${entry.id}:${change.field}:status:${metaMessageId}:${statusValue}`,
+          eventType: 'status',
+          metaMessageId,
+          status: statusValue,
+          timestamp: readString(status, 'timestamp') || null,
+          recipientId: readString(status, 'recipient_id') || null,
+          errorCode: error.code,
+          errorMessage: error.message,
+        });
+      }
+    }
+  }
+
+  return parsedStatuses;
+}
+
+function readString(record: Record<string, unknown>, key: string): string {
+  const value = record[key];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function readFirstError(status: Record<string, unknown>): { code: string | null; message: string | null } {
+  const errors = status.errors;
+  if (!Array.isArray(errors) || errors.length === 0) {
+    return { code: null, message: null };
+  }
+
+  const first = errors[0];
+  if (!first || typeof first !== 'object' || Array.isArray(first)) {
+    return { code: null, message: null };
+  }
+
+  const errorRecord = first as Record<string, unknown>;
+  const codeValue = errorRecord.code;
+  const code = typeof codeValue === 'number' || typeof codeValue === 'string'
+    ? String(codeValue)
+    : null;
+  const title = typeof errorRecord.title === 'string' ? errorRecord.title : '';
+  const message = typeof errorRecord.message === 'string' ? errorRecord.message : '';
+  const details = readErrorDetails(errorRecord.error_data);
+  const combined = [title, message, details].map((part) => part.trim()).filter(Boolean).join(' - ');
+
+  return {
+    code,
+    message: combined === '' ? null : combined,
+  };
+}
+
+function readErrorDetails(value: unknown): string {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return '';
+  }
+
+  const details = (value as Record<string, unknown>).details;
+  return typeof details === 'string' ? details : '';
 }
 

@@ -18,6 +18,40 @@ const FALLBACKS = {
 
 export type MessageSettingKey = keyof typeof FALLBACKS;
 
+export interface ContactProfileConfig {
+  collectionEnabled: boolean;
+  promptMode: 'hybrid' | 'single_message' | 'step_by_step';
+  requireCompany: boolean;
+  requireName: boolean;
+  requireEquipment: boolean;
+  requireSummary: boolean;
+  confirmationEnabled: boolean;
+  useButtons: boolean;
+  titleEnrichmentEnabled: boolean;
+  promptName: string;
+  promptCompany: string;
+  promptEquipment: string;
+  promptSummary: string;
+  confirmMessage: string;
+}
+
+const CONTACT_PROFILE_DEFAULTS: ContactProfileConfig = {
+  collectionEnabled: false,
+  promptMode: 'hybrid',
+  requireCompany: true,
+  requireName: true,
+  requireEquipment: false,
+  requireSummary: true,
+  confirmationEnabled: true,
+  useButtons: true,
+  titleEnrichmentEnabled: true,
+  promptName: 'Por favor, informe seu nome.',
+  promptCompany: 'Por favor, informe a empresa.',
+  promptEquipment: 'Informe o equipamento (opcional).',
+  promptSummary: 'Descreva resumidamente o problema.',
+  confirmMessage: 'Confirma as informações para abrir o chamado?',
+};
+
 interface SettingsCacheState {
   expiresAt: number;
   values: Map<string, string>;
@@ -29,6 +63,37 @@ let globalReload: Promise<Map<string, string>> | null = null;
 export function clearSettingsCacheForTests(): void {
   globalCache = null;
   globalReload = null;
+}
+
+export function normalizeBooleanSetting(value: unknown, defaultValue: boolean): boolean {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  if (typeof value === 'number') {
+    if (value === 1) {
+      return true;
+    }
+    if (value === 0) {
+      return false;
+    }
+    return defaultValue;
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === '') {
+      return defaultValue;
+    }
+    if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
+      return true;
+    }
+    if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
+      return false;
+    }
+  }
+
+  return defaultValue;
 }
 
 export class SettingsService {
@@ -67,6 +132,113 @@ export class SettingsService {
     return message.replace(/\{ticket_id\}/g, String(ticketId));
   }
 
+  public async getContactProfileConfig(): Promise<ContactProfileConfig> {
+    try {
+      const rawValues = await this.repository.findContactProfileSettings();
+
+      return {
+        collectionEnabled: this.toBooleanOrDefault(
+          rawValues.get('contact_profile_collection_enabled'),
+          CONTACT_PROFILE_DEFAULTS.collectionEnabled,
+        ),
+        promptMode: this.toPromptModeOrDefault(
+          rawValues.get('contact_profile_prompt_mode'),
+          CONTACT_PROFILE_DEFAULTS.promptMode,
+        ),
+        requireCompany: this.toBooleanOrDefault(
+          rawValues.get('contact_profile_require_company'),
+          CONTACT_PROFILE_DEFAULTS.requireCompany,
+        ),
+        requireName: this.toBooleanOrDefault(
+          rawValues.get('contact_profile_require_name'),
+          CONTACT_PROFILE_DEFAULTS.requireName,
+        ),
+        requireEquipment: this.toBooleanOrDefault(
+          rawValues.get('contact_profile_require_equipment'),
+          CONTACT_PROFILE_DEFAULTS.requireEquipment,
+        ),
+        requireSummary: this.toBooleanOrDefault(
+          rawValues.get('contact_profile_require_summary'),
+          CONTACT_PROFILE_DEFAULTS.requireSummary,
+        ),
+        confirmationEnabled: this.toBooleanOrDefault(
+          rawValues.get('contact_profile_confirmation_enabled'),
+          CONTACT_PROFILE_DEFAULTS.confirmationEnabled,
+        ),
+        useButtons: this.toBooleanOrDefault(
+          rawValues.get('contact_profile_use_buttons'),
+          CONTACT_PROFILE_DEFAULTS.useButtons,
+        ),
+        titleEnrichmentEnabled: this.toBooleanOrDefault(
+          rawValues.get('ticket_title_enrichment_enabled'),
+          CONTACT_PROFILE_DEFAULTS.titleEnrichmentEnabled,
+        ),
+        promptName: this.toStringOrDefault(
+          rawValues.get('profile_ask_name') ?? rawValues.get('contact_profile_prompt_name'),
+          CONTACT_PROFILE_DEFAULTS.promptName,
+        ),
+        promptCompany: this.toStringOrDefault(
+          rawValues.get('profile_ask_company') ?? rawValues.get('contact_profile_prompt_company'),
+          CONTACT_PROFILE_DEFAULTS.promptCompany,
+        ),
+        promptEquipment: this.toStringOrDefault(
+          rawValues.get('profile_ask_equipment') ?? rawValues.get('contact_profile_prompt_equipment'),
+          CONTACT_PROFILE_DEFAULTS.promptEquipment,
+        ),
+        promptSummary: this.toStringOrDefault(
+          rawValues.get('profile_ask_summary') ?? rawValues.get('contact_profile_prompt_summary'),
+          CONTACT_PROFILE_DEFAULTS.promptSummary,
+        ),
+        confirmMessage: this.toStringOrDefault(
+          rawValues.get('profile_confirmation_message') ?? rawValues.get('contact_profile_confirm_message'),
+          CONTACT_PROFILE_DEFAULTS.confirmMessage,
+        ),
+      };
+    } catch (error: unknown) {
+      logger.error(
+        {
+          error: error instanceof Error ? { message: error.message, name: error.name } : String(error),
+        },
+        '[config][CONTACT_PROFILE_ERROR]',
+      );
+      return { ...CONTACT_PROFILE_DEFAULTS };
+    }
+  }
+
+  private toBooleanOrDefault(value: unknown, defaultValue: boolean): boolean {
+    return normalizeBooleanSetting(value, defaultValue);
+  }
+
+  private toPromptModeOrDefault(value: unknown, defaultValue: ContactProfileConfig['promptMode']) {
+    if (typeof value !== 'string') {
+      return defaultValue;
+    }
+
+    const normalized = value.trim().toLowerCase();
+    if (normalized === '') {
+      return defaultValue;
+    }
+
+    if (normalized === 'hybrid' || normalized === 'single_message' || normalized === 'step_by_step') {
+      return normalized;
+    }
+
+    return defaultValue;
+  }
+
+  private toStringOrDefault(value: unknown, defaultValue: string): string {
+    if (typeof value !== 'string') {
+      return defaultValue;
+    }
+
+    const normalized = value.trim();
+    if (normalized === '') {
+      return defaultValue;
+    }
+
+    return normalized;
+  }
+
   private async getCachedSettings(): Promise<Map<string, string>> {
     const now = Date.now();
     if (globalCache && globalCache.expiresAt > now) {
@@ -93,7 +265,7 @@ export class SettingsService {
         values,
         expiresAt: Date.now() + SETTINGS_CACHE_TTL_MS,
       };
-      logger.info({ keys_count: values.size, ttl_ms: SETTINGS_CACHE_TTL_MS }, '[config][LOAD]');
+      logger.info({ keys_count: values.size, ttl_ms: SETTINGS_CACHE_TTL_MS }, '[config][SETTINGS_LOADED]');
 
       return values;
     } catch (error: unknown) {

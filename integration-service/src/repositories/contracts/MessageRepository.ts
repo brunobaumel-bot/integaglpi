@@ -4,12 +4,13 @@ import type { MessageProcessingStatus } from '../../domain/types/MessageProcessi
 
 export interface InsertOutboundMessageInput {
   messageId: string;
-  conversationId: string;
+  conversationId: string | null;
   senderPhone: string;
   recipientPhone: string;
   messageType: string;
   messageText: string;
   rawPayload: unknown;
+  mediaInfo?: Record<string, unknown> | null;
   processingStatus: MessageProcessingStatus;
   glpiSyncStatus: GlpiSyncStatus;
   idempotencyKey: string | null;
@@ -39,11 +40,30 @@ export interface UpdateMessageStateInput {
   glpiSyncStatus: GlpiSyncStatus;
 }
 
+export type MessageDeliveryStatus = 'pending' | 'sent' | 'delivered' | 'read' | 'failed';
+
+export interface RecordDeliveryStatusInput {
+  metaMessageId: string;
+  status: MessageDeliveryStatus;
+  errorCode?: string | null;
+  errorMessageSanitized?: string | null;
+  correlationId?: string | null;
+  receivedAt: Date;
+}
+
+export interface RecordDeliveryStatusResult {
+  matched: boolean;
+  insertedEvent: boolean;
+  currentStatus: MessageDeliveryStatus | null;
+}
+
 export interface MessageRepository {
   reserveInbound(input: ReserveInboundMessageInput): Promise<InboundMessage | null>;
   findByMessageId(messageId: string): Promise<InboundMessage | null>;
   findByIdempotencyKey(idempotencyKey: string): Promise<InboundMessage | null>;
+  findByConversationId(conversationId: string, limit?: number): Promise<InboundMessage[]>;
   insertOutbound(input: InsertOutboundMessageInput): Promise<InsertedOutboundMessage>;
+  recordDeliveryStatus(input: RecordDeliveryStatusInput): Promise<RecordDeliveryStatusResult>;
   updateState(input: UpdateMessageStateInput): Promise<void>;
   updateMediaInfo(messageId: string, mediaInfo: Record<string, unknown>): Promise<void>;
 }

@@ -1,6 +1,10 @@
 import type { SqlExecutor } from '../../infra/db/postgres.js';
 import { DATABASE_TABLES } from '../../infra/db/databaseConstants.js';
-import type { ActiveRoutingOption, RoutingRepository } from '../contracts/RoutingRepository.js';
+import type {
+  ActiveRoutingOption,
+  RoutingQueueAssignment,
+  RoutingRepository,
+} from '../contracts/RoutingRepository.js';
 
 interface RoutingOptionRow {
   id: string | number;
@@ -44,6 +48,41 @@ function mapRow(row: RoutingOptionRow): ActiveRoutingOption {
 
 export class PostgresRoutingRepository implements RoutingRepository {
   public constructor(private readonly executor: SqlExecutor) {}
+
+  public async findAssignmentByQueueId(queueId: number): Promise<RoutingQueueAssignment | null> {
+    const result = await this.executor.query<RoutingOptionRow>(
+      `
+        SELECT
+          id,
+          queue_id,
+          glpi_group_id,
+          glpi_user_id
+        FROM ${DATABASE_TABLES.routingOptions}
+        WHERE is_active = TRUE
+          AND queue_id = $1
+        ORDER BY sort_order ASC, label ASC
+        LIMIT 1
+      `,
+      [queueId],
+    );
+
+    if (!result.rowCount) {
+      return null;
+    }
+
+    const row = result.rows[0];
+    const qid = asInt(row.queue_id);
+    if (qid === null) {
+      return null;
+    }
+
+    return {
+      routingOptionId: Number(row.id),
+      queueId: qid,
+      glpiGroupId: asInt(row.glpi_group_id),
+      glpiUserId: asInt(row.glpi_user_id),
+    };
+  }
 
   public async getActiveOptions(): Promise<ActiveRoutingOption[]> {
     const result = await this.executor.query<RoutingOptionRow>(

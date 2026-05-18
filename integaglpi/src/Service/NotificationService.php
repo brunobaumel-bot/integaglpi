@@ -21,6 +21,7 @@ final class NotificationService
     private const EVENT_TICKET_PENDING = 'ticket_pending';
     private const EVENT_TECHNICIAN_ASSIGNED = 'technician_assigned';
     private const EVENT_TICKET_TRANSFERRED = 'ticket_transferred';
+    private const EVENT_TICKET_DOCUMENT_ADDED = 'ticket_document_added';
 
     private PluginConfigService $pluginConfigService;
 
@@ -213,6 +214,58 @@ final class NotificationService
                 sprintf('Seu chamado #%d foi fechado com sucesso.', $ticketId)
             );
         }, 'ticket_closed', $ticketId);
+    }
+
+    public function notifyTicketDocumentAdded(
+        int $ticketId,
+        int $documentItemId,
+        int $documentId,
+        string $sourceType
+    ): void {
+        $this->safeNotify(function () use ($ticketId, $documentItemId, $documentId, $sourceType): void {
+            if ($ticketId <= 0 || $documentItemId <= 0 || $documentId <= 0) {
+                return;
+            }
+
+            $conversation = $this->findOpenConversation($ticketId);
+            if ($conversation === null) {
+                $this->log('document][skip_no_conversation', [
+                    'ticket_id' => $ticketId,
+                    'document_item_id' => $documentItemId,
+                    'document_id' => $documentId,
+                ]);
+                return;
+            }
+
+            $documentName = $this->getDocumentDisplayName($documentId);
+            $fallbackText = null;
+            $mediaPayload = $this->buildDocumentOutboundPayload($documentId, $fallbackText);
+            $text = $mediaPayload !== null
+                ? sprintf(
+                    'Anexo do chamado #%d%s.',
+                    $ticketId,
+                    $documentName !== '' ? ': ' . $documentName : ''
+                )
+                : ($fallbackText ?? sprintf(
+                    'Não consegui enviar o anexo pelo WhatsApp. Acesse o GLPI para visualizar o arquivo.%s',
+                    $documentName !== '' ? ' Arquivo: ' . $documentName . '.' : ''
+                ));
+
+            $this->sendOnce(
+                $ticketId,
+                $conversation,
+                self::EVENT_TICKET_DOCUMENT_ADDED,
+                (string) $documentItemId,
+                'notify_document_' . $ticketId . '_' . $documentItemId,
+                $text,
+                false,
+                [
+                    'document_id' => $documentId,
+                    'document_source_type' => $sourceType,
+                    ...($mediaPayload ?? []),
+                ]
+            );
+        }, 'ticket_document_added', $ticketId);
     }
 
     public function sendTicketPending(int $ticketId, string $conversationId, string $dateMod): void
@@ -461,7 +514,9 @@ final class NotificationService
 
         if (!$preferSolutionButtons) {
             $payload['text'] = $text;
-            $payload['message_type'] = 'text';
+            if (!isset($payload['message_type'])) {
+                $payload['message_type'] = 'text';
+            }
         }
 
         try {
@@ -578,6 +633,154 @@ final class NotificationService
         }
 
         return null;
+    }
+
+    private function getDocumentDisplayName(int $documentId): string
+    {
+        try {
+            if (!class_exists('\Document')) {
+                return '';
+            }
+
+            $document = new \Document();
+            if (!$document->getFromDB($documentId)) {
+                return '';
+            }
+
+            foreach (['name', 'filename', 'filepath'] as $field) {
+                $value = trim((string) ($document->fields[$field] ?? ''));
+                if ($value !== '') {
+                    return $this->plainText($value, 160);
+                }
+            }
+        } catch (Throwable $exception) {
+            $this->log('document][name_lookup_failed', [
+                'document_id' => $documentId,
+                'message' => $exception->getMessage(),
+            ]);
+        }
+
+        return '';
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function buildDocumentOutboundPayload(int $documentId, ?string &$fallbackText = null): ?array
+    {
+        try {
+            if (!class_exists('\Document')) {
+                return null;
+            }
+
+            $document = new \Document();
+            if (!$document->getFromDB($documentId)) {
+                return null;
+            }
+
+            $path = $this->resolveDocumentPath($document);
+            if ($path === null || !is_readable($path)) {
+                $this->log('document][skip_unreadable_file', ['document_id' => $documentId]);
+                $fallbackText = 'Não consegui enviar o anexo pelo WhatsApp. Acesse o GLPI para visualizar o arquivo.';
+                return null;
+            }
+
+            $size = filesize($path);
+            if ($size === false || $size <= 0 || $size > 15_728_640) {
+                $this->log('document][skip_invalid_size', ['document_id' => $documentId, 'size' => $size ?: 0]);
+                $fallbackText = 'Não consegui enviar o anexo pelo WhatsApp porque o arquivo excede o limite permitido. Acesse o GLPI para visualizar.';
+                return null;
+            }
+
+            $mime = $this->resolveDocumentMime($document, $path);
+            $messageType = str_starts_with($mime, 'image/') ? 'image' : 'document';
+            if (!in_array($mime, ['application/pdf', 'image/jpeg', 'image/png', 'image/gif'], true)) {
+                $this->log('document][skip_unsupported_mime', ['document_id' => $documentId, 'mime' => $mime]);
+                $fallbackText = 'Não consegui enviar o anexo pelo WhatsApp porque o tipo de arquivo não é suportado. Acesse o GLPI para visualizar.';
+                return null;
+            }
+
+            $content = file_get_contents($path);
+            if ($content === false || $content === '') {
+                return null;
+            }
+
+            return [
+                'message_type' => $messageType,
+                'media' => [
+                    'document_id' => $documentId,
+                    'filename' => $this->resolveDocumentFilename($document, $path),
+                    'mime_type' => $mime,
+                    'content_base64' => base64_encode($content),
+                ],
+            ];
+        } catch (Throwable $exception) {
+            $this->log('document][payload_failed', [
+                'document_id' => $documentId,
+                'message' => $exception->getMessage(),
+            ]);
+            return null;
+        }
+    }
+
+    private function resolveDocumentPath(\Document $document): ?string
+    {
+        $filepath = trim((string) ($document->fields['filepath'] ?? ''));
+        $candidates = [];
+        $docRoot = defined('GLPI_DOC_DIR') ? realpath((string) GLPI_DOC_DIR) : false;
+
+        if ($filepath !== '') {
+            if (preg_match('/^(?:[A-Za-z]:[\\\\\\/]|\\\\\\\\|\\/)/', $filepath) === 1) {
+                $candidates[] = $filepath;
+            } elseif (defined('GLPI_DOC_DIR')) {
+                $base = rtrim((string) GLPI_DOC_DIR, '/\\');
+                $relative = ltrim($filepath, '/\\');
+                $candidates[] = $base . DIRECTORY_SEPARATOR . $relative;
+                $candidates[] = $base . DIRECTORY_SEPARATOR . '_uploads' . DIRECTORY_SEPARATOR . $relative;
+                $candidates[] = $base . DIRECTORY_SEPARATOR . '_uploads' . DIRECTORY_SEPARATOR . basename($relative);
+            }
+        }
+
+        foreach ($candidates as $candidate) {
+            $realCandidate = realpath($candidate);
+            if ($realCandidate === false || !is_readable($realCandidate)) {
+                continue;
+            }
+
+            if ($docRoot !== false && !str_starts_with($realCandidate, rtrim($docRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR)) {
+                $this->log('document][skip_path_outside_glpi_doc_dir', [
+                    'document_id' => (int) ($document->fields['id'] ?? 0),
+                ]);
+                continue;
+            }
+
+            return $realCandidate;
+        }
+
+        return null;
+    }
+
+    private function resolveDocumentMime(\Document $document, string $path): string
+    {
+        $mime = strtolower(trim((string) ($document->fields['mime'] ?? $document->fields['mime_type'] ?? '')));
+        if ($mime !== '') {
+            return explode(';', $mime, 2)[0];
+        }
+
+        $detected = function_exists('mime_content_type') ? @mime_content_type($path) : false;
+        return is_string($detected) && $detected !== '' ? strtolower(explode(';', $detected, 2)[0]) : 'application/octet-stream';
+    }
+
+    private function resolveDocumentFilename(\Document $document, string $path): string
+    {
+        foreach (['filename', 'name'] as $field) {
+            $value = trim((string) ($document->fields[$field] ?? ''));
+            if ($value !== '') {
+                return basename(str_replace(['\\', '/'], DIRECTORY_SEPARATOR, $value));
+            }
+        }
+
+        return basename($path) ?: 'document.pdf';
     }
 
     private function matchesPendingSolutionContent(int $ticketId, string $followupText): bool
