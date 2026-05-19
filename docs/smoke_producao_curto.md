@@ -25,6 +25,7 @@ Objetivo: validar produção após promoção manual, sem alterar regras funcion
 - [ ] Reabertura com motivo funciona.
 - [ ] CSAT funciona após aprovação.
 - [ ] Console/Central carrega e respeita perfil.
+- [ ] Encerramento administrativo aparece apenas para conversa presa elegível sem ticket e exige motivo.
 - [ ] Dashboard carrega para perfil autorizado.
 - [ ] Inatividade/autoclose base aparece em diagnóstico quando aplicável.
 - [ ] IA Supervisora permanece read-only e OFF para produção.
@@ -47,6 +48,7 @@ Objetivo: validar produção após promoção manual, sem alterar regras funcion
 - Delivery não registra status.
 - IA aparece ativa.
 - Console/Central indisponível.
+- Encerramento administrativo permite conversa com ticket, sem motivo ou atividade recente.
 - Reabertura/CSAT quebra fluxo já estável.
 
 ## Segurança Documental

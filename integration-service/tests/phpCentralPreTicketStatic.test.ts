@@ -203,6 +203,28 @@ describe('PHP Attendance Center pre-ticket conversations', () => {
     expect(template).toContain('Alterar entidade da conversa/memória');
   });
 
+  it('offers administrative soft-close only for stale pre-ticket conversations', async () => {
+    const service = await readAttendanceCenterService();
+    const action = await readCentralAction();
+    const template = await readCentralTemplate();
+    const client = await readIntegrationServiceClient();
+    const repository = await readConversationRepository();
+
+    expect(service).toContain('SOFT_CLOSE_MINIMUM_STALLED_SECONDS');
+    expect(service).toContain('SOFT_CLOSE_ELIGIBLE_STATUSES');
+    expect(service).toContain('public function softCloseConversation');
+    expect(service).toContain('conversation_has_ticket');
+    expect(action).toContain("'soft_close'");
+    expect(action).toContain('$service->softCloseConversation');
+    expect(client).toContain('PATH_CONVERSATION_SOFT_CLOSE');
+    expect(client).toContain('softCloseConversation');
+    expect(template).toContain('js-integaglpi-central-soft-close');
+    expect(template).toContain('itg-iw-soft-close-modal');
+    expect(template).toContain("payload.set('action', 'soft_close')");
+    expect(template).toContain('Nenhum WhatsApp será enviado e nenhum ticket GLPI será alterado');
+    expect(repository).toContain("c.status NOT IN ('closed', 'cancelled')");
+  });
+
   it('exposes findable plugin profile rights labels for operations areas', async () => {
     const right = await readPluginRight();
 

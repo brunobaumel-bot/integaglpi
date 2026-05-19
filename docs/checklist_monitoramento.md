@@ -22,6 +22,7 @@ Objetivo: checklist diário 24/7 para N1/N2 validar operação sem alterar produ
 - [ ] Confirmar inatividade/autoclose base sem loops.
 - [ ] Confirmar Contratos/Horas carregando para perfil autorizado.
 - [ ] Confirmar Dashboard de qualidade carregando para perfil autorizado.
+- [ ] Confirmar que conversas encerradas administrativamente aparecem auditadas e não retornam para lista ativa.
 - [ ] Confirmar IA Supervisora OFF em produção.
 
 ## Alertas Comuns
@@ -32,6 +33,7 @@ Objetivo: checklist diário 24/7 para N1/N2 validar operação sem alterar produ
 - Delivery `failed` recorrente: registrar código Meta sanitizado e amostra sem payload bruto.
 - Erro GLPI 403: validar permissão do usuário técnico ou token de serviço com responsável.
 - Timeout GLPI/Meta: registrar horário, operação e correlation_id.
+- Encerramento administrativo bloqueado: conferir se há ticket, atividade recente, status terminal ou lock antes de escalar.
 
 ## Evidência Segura
 

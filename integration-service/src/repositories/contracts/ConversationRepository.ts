@@ -49,6 +49,11 @@ export interface ConversationRepository {
     glpiEntityName?: string | null,
   ): Promise<boolean>;
   updateStatus(conversationId: string, status: string): Promise<void>;
+  softCloseAdministrative?(
+    conversationId: string,
+    expectedStatus: string,
+    newStatus: string,
+  ): Promise<boolean>;
   updateQueueAndStatus(conversationId: string, queueId: number | null, status: string): Promise<void>;
   updateProfileCollectionState(conversationId: string, state: Record<string, unknown>): Promise<void>;
   reopenConversation(conversationId: string): Promise<void>;

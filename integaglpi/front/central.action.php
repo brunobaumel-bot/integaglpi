@@ -51,7 +51,7 @@ try {
     }
 
     $action = trim((string) ($_POST['action'] ?? ''));
-    if (!in_array($action, ['claim', 'reply', 'transfer', 'solve', 'confirm_entity', 'update_entity', 'entity_status'], true)) {
+    if (!in_array($action, ['claim', 'reply', 'transfer', 'solve', 'confirm_entity', 'update_entity', 'entity_status', 'soft_close'], true)) {
         plugin_integaglpi_central_json([
             'ok' => false,
             'error' => 'invalid_action',
@@ -127,6 +127,12 @@ try {
         );
     } elseif ($action === 'entity_status') {
         $result = $service->getConversationEntityStatus($conversationId);
+    } elseif ($action === 'soft_close') {
+        $result = $service->softCloseConversation(
+            $conversationId,
+            $userId,
+            (string) ($_POST['reason'] ?? '')
+        );
     } else {
         $result = $service->solveConversation($conversationId, $ticketId, $userId);
     }

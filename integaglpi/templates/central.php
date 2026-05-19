@@ -458,6 +458,9 @@ $operationalFilterMap = [
                         $canEditEntity = $canUpdateActions
                             && !$canConfirmEntity
                             && $conversationId !== '';
+                        $canSoftClose = $canUpdateActions
+                            && !empty($row['can_soft_close'])
+                            && $conversationId !== '';
                         ?>
                         <tr
                             data-conversation-id="<?= $this->escape($conversationId); ?>"
@@ -488,6 +491,7 @@ $operationalFilterMap = [
                             data-attempt="<?= $this->escape($entityAttemptStatusLabel !== '' ? $entityAttemptStatusLabel : '-'); ?>"
                             data-can-reply="<?= $canReply ? '1' : '0'; ?>"
                             data-can-edit-entity="<?= $canEditEntity ? '1' : '0'; ?>"
+                            data-can-soft-close="<?= $canSoftClose ? '1' : '0'; ?>"
                         >
                             <td colspan="8">
                                 <div class="itg-card">
@@ -653,6 +657,15 @@ $operationalFilterMap = [
                                         <?= $this->escape(__('Técnico', 'glpiintegaglpi')); ?>:
                                         <?php if ($assignedLabel !== '') { ?>
                                             <?= $this->escape($assignedLabel); ?>
+                                        <?php } elseif ($canSoftClose) { ?>
+                                            <button
+                                                type="button"
+                                                class="btn btn-sm btn-outline-danger js-integaglpi-central-soft-close"
+                                                data-conversation-id="<?= $this->escape($conversationId); ?>"
+                                                data-ticket-id="0"
+                                            >
+                                                <?= $this->escape(__('Encerrar administrativamente', 'glpiintegaglpi')); ?>
+                                            </button>
                                         <?php } else { ?>
                                             <span class="text-muted">-</span>
                                         <?php } ?>
@@ -927,6 +940,24 @@ $operationalFilterMap = [
     </aside>
 </div>
 
+<div id="itg-iw-soft-close-modal" class="itg-iw-modal-backdrop d-none" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="itg-iw-soft-close-title">
+    <div class="itg-iw-modal">
+        <div class="itg-iw-modal__header" id="itg-iw-soft-close-title"><?= $this->escape(__('Encerrar administrativamente', 'glpiintegaglpi')); ?></div>
+        <div class="itg-iw-modal__body">
+            <p class="mb-2">
+                <?= $this->escape(__('Esta ação encerra somente a conversa presa na integração. Nenhum WhatsApp será enviado e nenhum ticket GLPI será alterado.', 'glpiintegaglpi')); ?>
+            </p>
+            <label class="form-label small mb-1" for="itg-iw-soft-close-reason"><?= $this->escape(__('Motivo obrigatório', 'glpiintegaglpi')); ?></label>
+            <textarea id="itg-iw-soft-close-reason" class="form-control form-control-sm js-itg-iw-soft-close-reason" rows="4" maxlength="500"></textarea>
+            <p class="itg-iw-modal__error d-none js-itg-iw-soft-close-error mb-0 mt-2" role="alert"></p>
+        </div>
+        <div class="itg-iw-modal__actions">
+            <button type="button" class="btn btn-sm btn-secondary js-itg-iw-soft-close-cancel"><?= $this->escape(__('Cancelar', 'glpiintegaglpi')); ?></button>
+            <button type="button" class="btn btn-sm btn-danger js-itg-iw-soft-close-confirm" disabled><?= $this->escape(__('Encerrar', 'glpiintegaglpi')); ?></button>
+        </div>
+    </div>
+</div>
+
 <div id="itg-iw-int-transfer-modal" class="itg-iw-modal-backdrop d-none" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="itg-iw-transfer-title">
     <div class="itg-iw-modal">
         <div class="itg-iw-modal__header" id="itg-iw-transfer-title"><?= $this->escape(__('Transferir atendimento', 'glpiintegaglpi')); ?></div>
@@ -1187,6 +1218,12 @@ $operationalFilterMap = [
                 + '</div></div>';
         }
 
+        if (canUpdateActions && row.can_soft_close) {
+            return '<button type="button" class="btn btn-sm btn-outline-danger js-integaglpi-central-soft-close"'
+                + ' data-conversation-id="' + conversationId + '"'
+                + ' data-ticket-id="0">Encerrar administrativamente</button>';
+        }
+
         return '<span class="text-muted">-</span>';
     }
 
@@ -1322,6 +1359,7 @@ $operationalFilterMap = [
         element.setAttribute('data-attempt', String(row.entity_attempt_status_label || '-'));
         element.setAttribute('data-can-reply', canUpdateActions && row.can_reply ? '1' : '0');
         element.setAttribute('data-can-edit-entity', canUpdateActions && row.can_edit_entity ? '1' : '0');
+        element.setAttribute('data-can-soft-close', canUpdateActions && row.can_soft_close ? '1' : '0');
         if (selectedConversation && selectedConversation.conversationId === String(row.conversation_id || '')) {
             element.classList.add('table-active');
         }
@@ -1828,6 +1866,9 @@ $operationalFilterMap = [
         allUsers: [],
         filterInputBound: false
     };
+    const softCloseModal = {
+        button: null
+    };
 
     function getTransferModalEls() {
         const backdrop = document.getElementById('itg-iw-int-transfer-modal');
@@ -1900,6 +1941,58 @@ $operationalFilterMap = [
             els.confirm.textContent = itgI18nTransferConfirm;
         }
         hideModalError(els);
+    }
+
+    function getSoftCloseModalEls() {
+        const backdrop = document.getElementById('itg-iw-soft-close-modal');
+        if (!backdrop) {
+            return {};
+        }
+        return {
+            backdrop: backdrop,
+            reason: backdrop.querySelector('.js-itg-iw-soft-close-reason'),
+            err: backdrop.querySelector('.js-itg-iw-soft-close-error'),
+            confirm: backdrop.querySelector('.js-itg-iw-soft-close-confirm')
+        };
+    }
+
+    function closeSoftCloseModal() {
+        const els = getSoftCloseModalEls();
+        if (els.backdrop) {
+            els.backdrop.classList.add('d-none');
+            els.backdrop.setAttribute('aria-hidden', 'true');
+        }
+        if (softCloseModal.button) {
+            softCloseModal.button.disabled = false;
+            softCloseModal.button = null;
+        }
+        if (els.reason) {
+            els.reason.value = '';
+        }
+        if (els.confirm) {
+            els.confirm.disabled = true;
+            els.confirm.textContent = 'Encerrar';
+        }
+        hideModalError(els);
+    }
+
+    function openSoftCloseModal(button) {
+        const els = getSoftCloseModalEls();
+        if (!els.backdrop || !els.reason) {
+            alert('Modal de encerramento indisponível. Recarregue a página.');
+            return;
+        }
+        softCloseModal.button = button;
+        button.disabled = true;
+        els.backdrop.classList.remove('d-none');
+        els.backdrop.setAttribute('aria-hidden', 'false');
+        els.reason.value = '';
+        if (els.confirm) {
+            els.confirm.disabled = true;
+            els.confirm.textContent = 'Encerrar';
+        }
+        hideModalError(els);
+        els.reason.focus();
     }
 
     function openTransferModal(button) {
@@ -2129,6 +2222,65 @@ $operationalFilterMap = [
                 button.disabled = false;
                 button.textContent = originalText;
                 alert('Erro ao solucionar chamado.');
+            });
+    }
+
+    function softCloseConversation(button, reason) {
+        const row = button.closest('tr');
+        const payload = new URLSearchParams();
+        payload.set('_glpi_csrf_token', csrfToken);
+        payload.set('action', 'soft_close');
+        payload.set('conversation_id', button.dataset.conversationId || '');
+        payload.set('ticket_id', '0');
+        payload.set('reason', reason);
+
+        const els = getSoftCloseModalEls();
+        if (els.confirm) {
+            els.confirm.disabled = true;
+            els.confirm.textContent = 'Encerrando...';
+        }
+
+        fetch(actionUrl, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Accept': 'application/json'
+            },
+            body: payload
+        })
+            .then(parseJsonResponse)
+            .then(function (result) {
+                updateCsrfToken(result.body);
+
+                if (!result.body || result.body.ok !== true) {
+                    const msg = result.status === 403 && (!result.body || !result.body.csrf_token)
+                        ? csrfErrorMessage()
+                        : (result.body && result.body.message
+                            ? result.body.message
+                            : 'Erro ao encerrar administrativamente a conversa.');
+                    showModalError(els, msg);
+                    if (els.confirm) {
+                        els.confirm.disabled = false;
+                        els.confirm.textContent = 'Encerrar';
+                    }
+                    return;
+                }
+
+                closeSoftCloseModal();
+                if (row) {
+                    row.classList.add('table-warning');
+                }
+                showRefreshMessage(result.body.message || 'Conversa encerrada administrativamente.', 'success');
+                lastRefreshAtMs = 0;
+                refreshCentral(true);
+            })
+            .catch(function () {
+                showModalError(els, 'Erro ao encerrar administrativamente a conversa.');
+                if (els.confirm) {
+                    els.confirm.disabled = false;
+                    els.confirm.textContent = 'Encerrar';
+                }
             });
     }
 
@@ -2567,10 +2719,24 @@ $operationalFilterMap = [
             return;
         }
 
+        const sbtn = event.target.closest('.js-integaglpi-central-soft-close');
+        if (sbtn) {
+            event.preventDefault();
+            openSoftCloseModal(sbtn);
+            return;
+        }
+
         const cancelBtn = event.target.closest('.js-itg-iw-modal-cancel');
         if (cancelBtn) {
             event.preventDefault();
             closeTransferModal();
+            return;
+        }
+
+        const softCancelBtn = event.target.closest('.js-itg-iw-soft-close-cancel');
+        if (softCancelBtn) {
+            event.preventDefault();
+            closeSoftCloseModal();
         }
     });
 
@@ -2594,6 +2760,43 @@ $operationalFilterMap = [
             return;
         }
         transferConversation(transferModal.button, selectedId, true);
+    });
+
+    document.addEventListener('input', function (event) {
+        const reason = event.target.closest('.js-itg-iw-soft-close-reason');
+        if (!reason) {
+            return;
+        }
+        const els = getSoftCloseModalEls();
+        if (els.confirm) {
+            els.confirm.disabled = String(reason.value || '').trim() === '';
+        }
+        hideModalError(els);
+    });
+
+    document.addEventListener('click', function (event) {
+        const cbtn = event.target.closest('.js-itg-iw-soft-close-confirm');
+        if (!cbtn) {
+            return;
+        }
+        event.preventDefault();
+        const els = getSoftCloseModalEls();
+        const reason = els.reason ? String(els.reason.value || '').trim() : '';
+        if (!softCloseModal.button) {
+            showModalError(els, 'A conversa não está selecionada. Recarregue a página.');
+            return;
+        }
+        if (reason === '') {
+            showModalError(els, 'Informe o motivo do encerramento administrativo.');
+            if (els.confirm) {
+                els.confirm.disabled = true;
+            }
+            return;
+        }
+        if (!window.confirm('Confirmar encerramento administrativo sem envio de WhatsApp e sem alterar ticket GLPI?')) {
+            return;
+        }
+        softCloseConversation(softCloseModal.button, reason);
     });
 
     document.addEventListener('click', function (event) {

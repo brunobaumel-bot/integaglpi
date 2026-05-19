@@ -912,8 +912,8 @@ final class ConversationRepository
     private function buildAttendanceCenterWhere(array $filters): array
     {
         $where = [
-            "c.status != 'closed'",
-            "(rt.status IS NULL OR rt.status != 'closed')",
+            "c.status NOT IN ('closed', 'cancelled')",
+            "(rt.status IS NULL OR rt.status NOT IN ('closed', 'cancelled'))",
         ];
         $params = [];
 

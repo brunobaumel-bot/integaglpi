@@ -12,6 +12,7 @@ final class IntegrationServiceClient
     private const PATH_OUTBOUND = '/internal/glpi/messages/outbound';
     private const PATH_TICKET_SOLVED = '/internal/glpi/notifications/ticket-solved';
     private const PATH_CONVERSATION_ENTITY = '/internal/glpi/conversations/%s/entity';
+    private const PATH_CONVERSATION_SOFT_CLOSE = '/internal/glpi/conversations/%s/soft-close';
     private const PATH_DIAGNOSTICS = '/internal/glpi/diagnostics';
     private const PATH_QUALITY_DASHBOARD = '/internal/glpi/quality-dashboard';
     private const PATH_AI_QUALITY_ANALYZE = '/internal/glpi/ai-quality/analyze';
@@ -71,6 +72,17 @@ final class IntegrationServiceClient
         $path = sprintf(self::PATH_CONVERSATION_ENTITY, rawurlencode($conversationId));
 
         return $this->getJson($this->endpoint($path), 'entity_selection][status', self::TIMEOUT_SECONDS);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function softCloseConversation(string $conversationId, array $payload): array
+    {
+        $path = sprintf(self::PATH_CONVERSATION_SOFT_CLOSE, rawurlencode($conversationId));
+
+        return $this->postJson($this->endpoint($path), $payload, 'conversation][soft_close');
     }
 
     /**

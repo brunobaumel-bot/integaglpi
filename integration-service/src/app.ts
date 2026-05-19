@@ -4,6 +4,7 @@ import { pinoHttp } from 'pino-http';
 import type { InboundWebhookService } from './domain/services/InboundWebhookService.js';
 import type { OutboundMessageService } from './domain/services/OutboundMessageService.js';
 import type { EntitySelectionService } from './domain/services/EntitySelectionService.js';
+import type { ConversationSoftCloseService } from './domain/services/ConversationSoftCloseService.js';
 import type { AuditService } from './domain/services/AuditService.js';
 import type { AiSupervisorService } from './domain/services/AiSupervisorService.js';
 import type { GlpiClient } from './adapters/glpi/GlpiClient.js';
@@ -18,6 +19,7 @@ import {
   createConversationEntityController,
   createConversationEntityStatusController,
 } from './controllers/createConversationEntityController.js';
+import { createConversationSoftCloseController } from './controllers/createConversationSoftCloseController.js';
 import { createMetaWebhookGetController } from './controllers/createMetaWebhookGetController.js';
 import { createMetaWebhookPostController } from './controllers/createMetaWebhookPostController.js';
 import { logger } from './infra/logger/logger.js';
@@ -33,6 +35,7 @@ export interface AppDependencies {
   metaVerifyToken: string;
   outboundMessageService: OutboundMessageService;
   entitySelectionService?: EntitySelectionService;
+  conversationSoftCloseService?: ConversationSoftCloseService;
   integrationServiceApiKey: string;
   glpiClient?: GlpiClient;
   auditService?: AuditService;
@@ -85,6 +88,13 @@ export function createApp(dependencies: AppDependencies) {
       '/internal/glpi/conversations/:conversation_id/entity',
       createInternalBearerMiddleware(dependencies.integrationServiceApiKey),
       createConversationEntityStatusController(dependencies.entitySelectionService),
+    );
+  }
+  if (dependencies.conversationSoftCloseService) {
+    app.post(
+      '/internal/glpi/conversations/:conversation_id/soft-close',
+      createInternalBearerMiddleware(dependencies.integrationServiceApiKey),
+      createConversationSoftCloseController(dependencies.conversationSoftCloseService),
     );
   }
   app.get(

@@ -19,6 +19,7 @@ import { ContactEntityResolutionService } from './domain/services/ContactEntityR
 import { ContactProfileService } from './domain/services/ContactProfileService.js';
 import { CustomerExperienceService } from './domain/services/CustomerExperienceService.js';
 import { EntitySelectionService } from './domain/services/EntitySelectionService.js';
+import { ConversationSoftCloseService } from './domain/services/ConversationSoftCloseService.js';
 import { AiSupervisorService } from './domain/services/AiSupervisorService.js';
 import { postgresPool } from './infra/db/postgres.js';
 import { ResilientHttpClient } from './infra/http/ResilientHttpClient.js';
@@ -103,6 +104,11 @@ export function buildDependencies() {
       messageConfigurationService,
     },
   );
+  const conversationSoftCloseService = new ConversationSoftCloseService(
+    conversationRepository,
+    keyLock,
+    auditService,
+  );
   const scheduleService = new ScheduleService(settingsRepository);
   const contactResolutionService = new ContactResolutionService(
     contactCacheRepository,
@@ -156,6 +162,7 @@ export function buildDependencies() {
     inboundWebhookService,
     outboundMessageService,
     entitySelectionService,
+    conversationSoftCloseService,
     operationalIntegrityAuditService,
     inactivityAutomationService,
     aiSupervisorService,

@@ -217,6 +217,25 @@ export class PostgresConversationRepository implements ConversationRepository {
     );
   }
 
+  public async softCloseAdministrative(
+    conversationId: string,
+    expectedStatus: string,
+    newStatus: string,
+  ): Promise<boolean> {
+    const result = await this.executor.query(
+      `
+        UPDATE ${DATABASE_TABLES.conversations}
+        SET status = $3, updated_at = NOW()
+        WHERE id = $1
+          AND status = $2
+          AND (glpi_ticket_id IS NULL OR glpi_ticket_id = 0)
+      `,
+      [conversationId, expectedStatus, newStatus],
+    );
+
+    return result.rowCount === 1;
+  }
+
   public async updateQueueAndStatus(conversationId: string, queueId: number | null, status: string): Promise<void> {
     await this.executor.query(
       `

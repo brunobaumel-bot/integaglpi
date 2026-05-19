@@ -22,6 +22,7 @@ final class AttendanceCenterService
         'closed',
         'media_error',
         'pending_glpi',
+        'cancelled',
         'awaiting_queue_selection',
         'collecting_contact_profile',
         'awaiting_entity_selection',
@@ -33,6 +34,7 @@ final class AttendanceCenterService
         'awaiting_queue_selection' => 'Aguardando escolha de fila',
         'open' => 'Chamado aberto',
         'closed' => 'Fechado',
+        'cancelled' => 'Encerrada administrativamente',
         'media_error' => 'Erro de mídia',
         'pending_glpi' => 'Aguardando GLPI',
     ];
@@ -41,6 +43,24 @@ final class AttendanceCenterService
         'awaiting_queue_selection',
         'collecting_contact_profile',
         'awaiting_entity_selection',
+    ];
+
+    private const SOFT_CLOSE_MINIMUM_STALLED_SECONDS = 1800;
+    private const SOFT_CLOSE_ELIGIBLE_STATUSES = [
+        'awaiting_queue_selection',
+        'collecting_contact_profile',
+        'awaiting_entity_selection',
+        'pending_glpi',
+        'media_error',
+        'open',
+        'failed',
+        'failed_before_ticket',
+    ];
+    private const TERMINAL_STATUSES = [
+        'closed',
+        'cancelled',
+        'resolved',
+        'soft_closed',
     ];
 
     private PluginConfigService $pluginConfigService;
@@ -187,6 +207,7 @@ final class AttendanceCenterService
                     && $ticketId <= 0
                     && $conversationId !== '';
                 $row['can_edit_entity'] = !$row['can_confirm_entity'] && $conversationId !== '';
+                $row['can_soft_close'] = self::isPotentialSoftCloseEligible($row);
 
                 return $row;
             },
@@ -540,6 +561,115 @@ final class AttendanceCenterService
             'started_at' => (string) ($body['started_at'] ?? ''),
             'finished_at' => (string) ($body['finished_at'] ?? ''),
             'duration_seconds' => $body['duration_seconds'] ?? null,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function softCloseConversation(string $conversationId, int $userId, string $reason): array
+    {
+        $conversationId = trim($conversationId);
+        $reason = trim(preg_replace('/\s+/', ' ', $reason) ?? $reason);
+        if ($conversationId === '' || $userId <= 0) {
+            return [
+                'ok' => false,
+                'http_status' => 400,
+                'error' => 'invalid_request',
+                'message' => __('Conversa ou usuário inválido.', 'glpiintegaglpi'),
+            ];
+        }
+
+        if ($reason === '') {
+            return [
+                'ok' => false,
+                'http_status' => 400,
+                'error' => 'reason_required',
+                'message' => __('Informe o motivo do encerramento administrativo.', 'glpiintegaglpi'),
+            ];
+        }
+
+        if (!$this->pluginConfigService->isConfigured()) {
+            return [
+                'ok' => false,
+                'http_status' => 503,
+                'error' => 'not_configured',
+                'message' => __('Integração não configurada.', 'glpiintegaglpi'),
+            ];
+        }
+
+        try {
+            $conversation = $this->getConversationRepository()->findByConversationId($conversationId);
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][soft_close][lookup_error] ' . $exception->getMessage());
+
+            return [
+                'ok' => false,
+                'http_status' => 500,
+                'error' => 'lookup_failed',
+                'message' => __('Não foi possível validar a conversa agora. Atualize a Central.', 'glpiintegaglpi'),
+            ];
+        }
+
+        if ($conversation === null) {
+            return [
+                'ok' => false,
+                'http_status' => 404,
+                'error' => 'conversation_not_found',
+                'message' => __('Conversa não encontrada.', 'glpiintegaglpi'),
+            ];
+        }
+
+        if ($this->hasValidTicketId($conversation['glpi_ticket_id'] ?? null)) {
+            return [
+                'ok' => false,
+                'http_status' => 409,
+                'error' => 'conversation_has_ticket',
+                'message' => __('Conversa vinculada a ticket GLPI não pode ser encerrada por esta ação.', 'glpiintegaglpi'),
+            ];
+        }
+
+        try {
+            $response = (new IntegrationServiceClient($this->pluginConfigService))
+                ->softCloseConversation($conversationId, [
+                    'reason' => $reason,
+                    'glpi_user_id' => $userId,
+                    'operator_name' => getUserName($userId),
+                    'permission_validated' => true,
+                ]);
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][soft_close][error] ' . $exception->getMessage());
+
+            return [
+                'ok' => false,
+                'http_status' => 502,
+                'error' => 'integration_error',
+                'message' => __('Não foi possível encerrar administrativamente a conversa agora.', 'glpiintegaglpi'),
+            ];
+        }
+
+        $body = $response['body'];
+        $status = (int) $response['status'];
+        if (!$response['success']) {
+            return [
+                'ok' => false,
+                'http_status' => $status > 0 ? $status : 502,
+                'error' => (string) ($body['error_code'] ?? 'soft_close_failed'),
+                'message' => (string) ($body['message'] ?? __('Falha ao encerrar administrativamente a conversa.', 'glpiintegaglpi')),
+                'body' => $body,
+            ];
+        }
+
+        return [
+            'ok' => true,
+            'http_status' => 200,
+            'status' => (string) ($body['status'] ?? 'cancelled'),
+            'message' => (string) ($body['message'] ?? __('Conversa encerrada administrativamente.', 'glpiintegaglpi')),
+            'conversation_id' => (string) ($body['conversation_id'] ?? $conversationId),
+            'previous_status' => (string) ($body['previous_status'] ?? ''),
+            'new_status' => (string) ($body['new_status'] ?? 'cancelled'),
+            'idempotent' => !empty($body['idempotent']),
+            'body' => $body,
         ];
     }
 
@@ -1406,6 +1536,7 @@ final class AttendanceCenterService
             $row['next_action'] = $this->nextAction($row['effective_status'], $hasTicket, $profileComplete);
             $row['stalled_seconds'] = $this->calculateStalledSeconds((string) ($row['activity_at'] ?? ''));
             $row['stalled_label'] = $this->formatDuration((int) ($row['stalled_seconds'] ?? 0));
+            $row['can_soft_close'] = self::isPotentialSoftCloseEligible($row);
             $row['entity_attempt_status_label'] = $this->entityAttemptStatusLabel(
                 (string) ($row['entity_attempt_status'] ?? ''),
                 (string) ($row['entity_attempt_error_message'] ?? '')
@@ -1460,6 +1591,23 @@ final class AttendanceCenterService
         }
 
         return $options;
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     */
+    private static function isPotentialSoftCloseEligible(array $row): bool
+    {
+        $conversationId = trim((string) ($row['conversation_id'] ?? ''));
+        $ticketId = (int) ($row['glpi_ticket_id'] ?? 0);
+        $status = strtolower(trim((string) ($row['effective_status'] ?? $row['conversation_status'] ?? '')));
+        $stalledSeconds = (int) ($row['stalled_seconds'] ?? 0);
+
+        return $conversationId !== ''
+            && $ticketId <= 0
+            && !in_array($status, self::TERMINAL_STATUSES, true)
+            && in_array($status, self::SOFT_CLOSE_ELIGIBLE_STATUSES, true)
+            && $stalledSeconds >= self::SOFT_CLOSE_MINIMUM_STALLED_SECONDS;
     }
 
     /**

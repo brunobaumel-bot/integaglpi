@@ -40,8 +40,16 @@ Objetivo: orientar validação e resposta operacional sem alterar código, banco
 - Falha de outbound: verificar erro Meta sanitizado, janela 24h e template quando aplicável.
 - Falha GLPI: verificar initSession, permissão e status da API.
 - Falha de delivery: verificar WAMID local, evento Meta e linha de delivery.
-- Conversa presa: registrar e deixar para a próxima fase funcional.
+- Conversa presa sem ticket: em TESTE, usar `Encerrar administrativamente` na Central apenas com operador autorizado, motivo claro e evidência. Em PRODUÇÃO, executar somente após aprovação humana do turno e confirmar que não há ticket GLPI vinculado.
 - Runtime divergente: bloquear promoção e validar pacote/build_id.
+
+## Encerramento Administrativo de Conversa Presa
+
+- Usar somente para conversa sem `glpi_ticket_id`, sem atividade recente e fora do fluxo normal de ticket.
+- Preencher motivo obrigatório com descrição objetiva, sem dados pessoais desnecessários.
+- Confirmar que a ação não envia WhatsApp, não cria ticket e não altera ticket GLPI.
+- Após executar, validar que a conversa saiu da lista ativa e que a auditoria registrou operador, motivo, status anterior e novo status.
+- Se a ação for bloqueada por ticket, atividade recente, status terminal ou lock, não usar SQL manual; coletar evidência sanitizada e escalar.
 
 ## Coleta de Evidências
 
