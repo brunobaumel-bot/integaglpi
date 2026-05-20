@@ -148,7 +148,7 @@ final class TicketRuntimeService
     public function assignTicketToTechnicianFromTransfer(int $ticketId, int $userId, int $actorUserId): bool
     {
         try {
-            $this->ensureTicketUserAssignment($ticketId, $userId);
+            $this->replaceTicketUserAssignment($ticketId, $userId);
             $this->recordTicketHistory(
                 $ticketId,
                 sprintf(
@@ -196,22 +196,28 @@ final class TicketRuntimeService
             throw new RuntimeException(__('This WhatsApp conversation is not closed.', 'glpiintegaglpi'));
         }
 
+        $ticketStatus = $this->reopenSolvedGlpiTicketIfNeeded($ticketId);
         $this->getConversationRepository()->reopen($ticketId, $conversationId);
 
         error_log('[integaglpi][action][REOPEN] ' . json_encode([
             'conversation_id' => $conversationId,
             'ticket_id'       => $ticketId,
             'actor_user_id'   => $actorUserId,
+            'previous_glpi_status' => $ticketStatus['previous_status'],
+            'new_glpi_status'      => $ticketStatus['new_status'],
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 
         $this->recordTicketHistory(
             $ticketId,
             sprintf(
-                'WhatsApp: conversa reaberta por %s.',
-                (string) getUserName($actorUserId)
+                'WhatsApp: conversa reaberta por %s. Status GLPI anterior: %d; novo status: %d.',
+                (string) getUserName($actorUserId),
+                (int) $ticketStatus['previous_status'],
+                (int) $ticketStatus['new_status']
             ),
             $actorUserId
         );
+        $this->recordReopenAuditEvent($ticketId, $conversationId, $actorUserId, $ticketStatus);
     }
 
     public function transfer(int $ticketId, string $conversationId, int $queueId, int $actorUserId): void
@@ -460,6 +466,45 @@ final class TicketRuntimeService
         }
     }
 
+    private function replaceTicketUserAssignment(int $ticketId, int $userId): void
+    {
+        if (!class_exists('\Ticket_User')) {
+            throw new RuntimeException(__('GLPI Ticket_User class is not available.', 'glpiintegaglpi'));
+        }
+
+        global $DB;
+
+        $type = $this->getAssignedActorType();
+        $ticketUser = new \Ticket_User();
+        $existingAssignmentIds = [];
+
+        foreach ($DB->request([
+            'SELECT' => ['id', 'users_id'],
+            'FROM' => 'glpi_tickets_users',
+            'WHERE' => [
+                'tickets_id' => $ticketId,
+                'type' => $type,
+            ],
+        ]) as $row) {
+            $assignmentId = (int) ($row['id'] ?? 0);
+            $assignedUserId = (int) ($row['users_id'] ?? 0);
+            if ($assignmentId <= 0 || $assignedUserId === $userId) {
+                continue;
+            }
+
+            $existingAssignmentIds[] = $assignmentId;
+        }
+
+        foreach ($existingAssignmentIds as $assignmentId) {
+            $removed = $ticketUser->delete(['id' => $assignmentId]);
+            if ($removed === false) {
+                throw new RuntimeException(__('Failed to remove the previous GLPI ticket technician.', 'glpiintegaglpi'));
+            }
+        }
+
+        $this->ensureTicketUserAssignment($ticketId, $userId);
+    }
+
     private function ensureTicketGroupAssignment(int $ticketId, int $groupId): void
     {
         if ($groupId <= 0) {
@@ -522,6 +567,129 @@ final class TicketRuntimeService
         }
 
         return 2;
+    }
+
+    /**
+     * @return array{previous_status: int, new_status: int, changed: bool}
+     */
+    private function reopenSolvedGlpiTicketIfNeeded(int $ticketId): array
+    {
+        $ticket = new \Ticket();
+        if (!$ticket->getFromDB($ticketId)) {
+            throw new RuntimeException(__('Ticket not found for WhatsApp action.', 'glpiintegaglpi'));
+        }
+
+        $previousStatus = (int) ($ticket->fields['status'] ?? 0);
+        if ($previousStatus === $this->glpiClosedStatus()) {
+            throw new RuntimeException(__('Ticket GLPI fechado não pode ser reaberto por esta ação.', 'glpiintegaglpi'));
+        }
+
+        if ($previousStatus !== $this->glpiSolvedStatus()) {
+            return [
+                'previous_status' => $previousStatus,
+                'new_status'      => $previousStatus,
+                'changed'         => false,
+            ];
+        }
+
+        $newStatus = $this->glpiReopenStatus();
+        $updated = $ticket->update([
+            'id'     => $ticketId,
+            'status' => $newStatus,
+        ]);
+
+        if ($updated === false) {
+            throw new RuntimeException(__('GLPI rejeitou a reabertura do ticket solucionado.', 'glpiintegaglpi'));
+        }
+
+        $refreshed = new \Ticket();
+        if (!$refreshed->getFromDB($ticketId)) {
+            throw new RuntimeException(__('Não foi possível validar o status do ticket após a reabertura.', 'glpiintegaglpi'));
+        }
+
+        $finalStatus = (int) ($refreshed->fields['status'] ?? 0);
+        if ($finalStatus !== $newStatus) {
+            throw new RuntimeException(__('GLPI não retornou o ticket para atendimento após a reabertura.', 'glpiintegaglpi'));
+        }
+
+        return [
+            'previous_status' => $previousStatus,
+            'new_status'      => $finalStatus,
+            'changed'         => true,
+        ];
+    }
+
+    private function glpiSolvedStatus(): int
+    {
+        return defined('CommonITILObject::SOLVED') ? (int) constant('CommonITILObject::SOLVED') : 5;
+    }
+
+    private function glpiClosedStatus(): int
+    {
+        return defined('CommonITILObject::CLOSED') ? (int) constant('CommonITILObject::CLOSED') : 6;
+    }
+
+    private function glpiReopenStatus(): int
+    {
+        return defined('CommonITILObject::ASSIGNED') ? (int) constant('CommonITILObject::ASSIGNED') : 2;
+    }
+
+    /**
+     * @param array{previous_status: int, new_status: int, changed: bool} $ticketStatus
+     */
+    private function recordReopenAuditEvent(
+        int $ticketId,
+        string $conversationId,
+        int $actorUserId,
+        array $ticketStatus
+    ): void {
+        try {
+            $payload = [
+                'conversation_id' => $conversationId,
+                'glpi_ticket_id' => $ticketId,
+                'previous_glpi_status' => (int) $ticketStatus['previous_status'],
+                'new_glpi_status' => (int) $ticketStatus['new_status'],
+                'actor_user_id' => $actorUserId,
+                'source' => 'plugin_ticket_whatsapp_action',
+                'status_changed' => (bool) $ticketStatus['changed'],
+                'timestamp' => date(DATE_ATOM),
+            ];
+
+            $statement = $this->getPdo()->prepare(
+                <<<SQL
+                INSERT INTO glpi_plugin_integaglpi_audit_events (
+                    ticket_id,
+                    conversation_id,
+                    event_type,
+                    status,
+                    severity,
+                    source,
+                    payload_json,
+                    created_at
+                )
+                VALUES (
+                    :ticket_id,
+                    :conversation_id,
+                    'TICKET_REOPENED_FROM_PLUGIN',
+                    'success',
+                    'info',
+                    'plugin',
+                    :payload_json::jsonb,
+                    NOW()
+                )
+                SQL
+            );
+            $statement->bindValue(':ticket_id', $ticketId, PDO::PARAM_INT);
+            $statement->bindValue(':conversation_id', $conversationId, PDO::PARAM_STR);
+            $statement->bindValue(
+                ':payload_json',
+                json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}',
+                PDO::PARAM_STR
+            );
+            $statement->execute();
+        } catch (Throwable $e) {
+            error_log('[integaglpi][action][REOPEN][audit_error] ' . $e->getMessage());
+        }
     }
 
     private function recordTicketHistory(int $ticketId, string $message, ?int $actorUserId = null): void

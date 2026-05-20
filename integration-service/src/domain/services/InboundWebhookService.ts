@@ -303,6 +303,7 @@ export class InboundWebhookService {
       inboundMessage.messageType === 'image'
       || inboundMessage.messageType === 'document'
       || inboundMessage.messageType === 'audio'
+      || inboundMessage.messageType === 'video'
     ) {
       logger.info(
         {
@@ -524,7 +525,8 @@ export class InboundWebhookService {
         const isDetectableMedia =
           inboundMessage.messageType === 'image'
           || inboundMessage.messageType === 'document'
-          || inboundMessage.messageType === 'audio';
+          || inboundMessage.messageType === 'audio'
+          || inboundMessage.messageType === 'video';
 
         if (isDetectableMedia && activeConversation?.status === 'awaiting_queue_selection') {
           const invalidMediaText = await this.settingsService.getMessage('invalid_media_message');
@@ -1586,7 +1588,7 @@ export class InboundWebhookService {
               });
               throw new Error('MEDIA_METADATA_MISSING');
             } else {
-              followUpContent = this.buildFollowUpContent(contact, inboundMessage);
+              followUpContent = await this.buildFollowUpContent(contact, inboundMessage);
             }
 
             try {
@@ -1638,7 +1640,7 @@ export class InboundWebhookService {
             inboundGlpiStage = 'glpi_followup_create';
             await this.glpiClient.addFollowUp({
               ticketId: existingConversationTicketId,
-              content: this.buildFollowUpContent(contact, inboundMessage),
+              content: await this.buildFollowUpContent(contact, inboundMessage),
             });
             inboundGlpiStage = undefined;
             await this.conversationRepository.touch(existingConversation.id, new Date());
@@ -2013,7 +2015,7 @@ export class InboundWebhookService {
     return result.glpiUserId;
   }
 
-  private buildFollowUpContent(contact: Contact, inboundMessage: ParsedMetaInboundMessage): string {
+  private async buildFollowUpContent(contact: Contact, inboundMessage: ParsedMetaInboundMessage): Promise<string> {
     const contentLines = [
       'Mensagem recebida via WhatsApp',
       '',
@@ -2024,11 +2026,38 @@ export class InboundWebhookService {
       inboundMessage.messageText ?? `[${inboundMessage.messageType}]`,
     ];
 
+    const replyContext = await this.buildReplyContextLines(inboundMessage);
+    if (replyContext.length > 0) {
+      contentLines.splice(5, 0, ...replyContext, '');
+    }
+
     if (this.isGlpiContactLookupFallback(contact)) {
       contentLines.unshift('Contato nao resolvido automaticamente no GLPI.', '');
     }
 
     return contentLines.join('\n');
+  }
+
+  private async buildReplyContextLines(inboundMessage: ParsedMetaInboundMessage): Promise<string[]> {
+    const context = inboundMessage.replyContext;
+    if (!context) {
+      return [];
+    }
+
+    const original = await this.messageRepository.findByMessageId(context.messageId);
+    const preview = original?.messageText ? this.truncateReplyPreview(original.messageText) : null;
+    const reference = preview ?? `mensagem WhatsApp ${context.messageId}`;
+
+    return [`Em resposta a: ${reference}`];
+  }
+
+  private truncateReplyPreview(value: string): string {
+    const normalized = value.replace(/\s+/g, ' ').trim();
+    if (normalized.length <= 180) {
+      return normalized;
+    }
+
+    return `${normalized.slice(0, 177).trimEnd()}...`;
   }
 
   private buildMediaFollowUpFailedInfo(
@@ -2100,7 +2129,7 @@ export class InboundWebhookService {
 
       const csatRating = csatMatch[1] as CsatRating;
       return {
-        action: csatRating === 'dissatisfied' ? 'reopen' : 'approve',
+        action: 'approve',
         ticketId,
         conversationId,
         csatRating,
@@ -2213,7 +2242,9 @@ export class InboundWebhookService {
       return;
     }
 
-    const actionKey = input.action.reopenReason
+    const actionKey = input.action.csatRating
+      ? `solution:${input.action.action}:${input.action.ticketId}:${conversation.id}:csat:${input.action.csatRating}`
+      : input.action.reopenReason
       ? `solution:${input.action.action}:${input.action.ticketId}:${conversation.id}:${input.action.reopenReason}`
       : `solution:${input.action.action}:${input.action.ticketId}:${conversation.id}`;
     const csatRating = input.action.csatRating;
@@ -2224,7 +2255,9 @@ export class InboundWebhookService {
           ? { action: baseAuditAction, reopen_reason: input.action.reopenReason }
           : { action: baseAuditAction }
         : input.action.action === 'approve'
-          ? { action: baseAuditAction, csat_rating: csatRating }
+          ? csatRating === 'dissatisfied'
+            ? { action: baseAuditAction, csat_rating: csatRating, supervisor_review_required: true }
+            : { action: baseAuditAction, csat_rating: csatRating }
           : { action: baseAuditAction, csat_rating: csatRating, supervisor_review_required: true };
 
     await this.keyLock.withLock(`solution_action:${input.action.ticketId}`, async () => {
@@ -2276,11 +2309,14 @@ export class InboundWebhookService {
         return;
       }
 
-      if (ticket.status !== GLPI_STATUS_SOLVED) {
+      const expectedTicketStatus = csatRating !== null
+        ? [GLPI_STATUS_SOLVED, GLPI_STATUS_CLOSED]
+        : [GLPI_STATUS_SOLVED];
+      if (typeof ticket.status !== 'number' || !expectedTicketStatus.includes(ticket.status)) {
         await this.solutionActionRepository?.markIgnored(
           reserved.action.id,
           'GLPI_TICKET_STATUS_INVALID',
-          `Ticket status ${ticket.status ?? 'unknown'} is not SOLVED.`,
+          `Ticket status ${ticket.status ?? 'unknown'} is not valid for this action.`,
         );
         await this.sendExpiredSolutionActionMessage(input.toMeta, input.action);
         logger.info(
@@ -2305,7 +2341,12 @@ export class InboundWebhookService {
             'approve',
             csatRating,
           );
-          await this.glpiClient.approveTicketSolution(input.action.ticketId, auditContent);
+          if (ticket.status === GLPI_STATUS_CLOSED && csatRating !== null) {
+            solutionStage = 'glpi_followup_create';
+            await this.glpiClient.addFollowUp({ ticketId: input.action.ticketId, content: auditContent });
+          } else {
+            await this.glpiClient.approveTicketSolution(input.action.ticketId, auditContent);
+          }
           await this.conversationRepository.updateStatus(conversation.id, 'closed');
           await this.conversationRepository.touch(conversation.id, new Date());
           await this.solutionActionRepository?.markSuccess(reserved.action.id, GLPI_STATUS_CLOSED);
@@ -2329,7 +2370,9 @@ export class InboundWebhookService {
             },
             '[integration-service][solution][APPROVED]',
           );
-          await this.sendConfiguredCsatPrompt(input.toMeta, input.action, input.correlationId);
+          if (csatRating === null) {
+            await this.sendConfiguredCsatPrompt(input.toMeta, input.action, input.correlationId);
+          }
         } else {
           solutionStage = 'glpi_solution_reopen';
           logger.info(
@@ -2408,7 +2451,9 @@ export class InboundWebhookService {
               ? input.action.reopenReason
                 ? { action: baseAuditAction, reopen_reason: input.action.reopenReason, error_code: errorCode }
                 : { action: baseAuditAction, error_code: errorCode }
-              : { action: baseAuditAction, csat_rating: csatRating, error_code: errorCode },
+              : csatRating === 'dissatisfied'
+                ? { action: baseAuditAction, csat_rating: csatRating, supervisor_review_required: true, error_code: errorCode }
+                : { action: baseAuditAction, csat_rating: csatRating, error_code: errorCode },
         });
 
         if (input.action.action === 'reopen') {
@@ -2454,13 +2499,14 @@ export class InboundWebhookService {
     reopenReason: ReopenReasonKey | null = null,
   ): Promise<string> {
     const reopenReasonLabel = reopenReason ? await this.reopenReasonLabel(reopenReason) : null;
-    const actionText = action === 'approve'
-      ? 'Cliente aprovou a solução via WhatsApp.'
-      : csatRating === 'dissatisfied'
-        ? 'Cliente indicou insatisfação na pesquisa via WhatsApp. O chamado deve seguir em atendimento e revisão.'
-        : reopenReasonLabel
-          ? `Cliente solicitou reabertura via WhatsApp. Motivo: ${reopenReasonLabel}.`
-          : 'Cliente solicitou reabertura via WhatsApp.';
+    let actionText = 'Cliente solicitou reabertura via WhatsApp.';
+    if (csatRating === 'dissatisfied') {
+      actionText = 'Cliente indicou insatisfação na pesquisa via WhatsApp. O chamado deve seguir em atendimento e revisão.';
+    } else if (action === 'approve') {
+      actionText = 'Cliente aprovou a solução via WhatsApp.';
+    } else if (reopenReasonLabel) {
+      actionText = `Cliente solicitou reabertura via WhatsApp. Motivo: ${reopenReasonLabel}.`;
+    }
 
     const lines = [
       actionText,

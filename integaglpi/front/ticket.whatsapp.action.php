@@ -89,4 +89,4 @@ try {
     Session::addMessageAfterRedirect($exception->getMessage(), false, ERROR);
 }
 
-Html::redirect($CFG_GLPI['root_doc'] . '/front/ticket.form.php?id=' . $ticketId);
+Html::redirect(Plugin::getTicketUrl($ticketId));

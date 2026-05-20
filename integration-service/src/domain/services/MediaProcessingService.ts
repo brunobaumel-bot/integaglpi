@@ -49,6 +49,10 @@ const ALLOWED_MIME_TYPES = new Set([
   'audio/ogg',
   'audio/mpeg',
   'audio/mp4',
+  'audio/aac',
+  'audio/webm',
+  'video/mp4',
+  'video/3gpp',
 ]);
 
 const MIME_TO_EXTENSION: Record<string, string> = {
@@ -59,6 +63,10 @@ const MIME_TO_EXTENSION: Record<string, string> = {
   'audio/ogg': '.ogg',
   'audio/mpeg': '.mp3',
   'audio/mp4': '.m4a',
+  'audio/aac': '.aac',
+  'audio/webm': '.webm',
+  'video/mp4': '.mp4',
+  'video/3gpp': '.3gp',
 };
 
 function baseMimeType(value: string | null | undefined): string | null {
@@ -141,6 +149,16 @@ export class MediaProcessingService {
         },
         '[integration-service][media][DOWNLOAD_START]',
       );
+      logger.info(
+        {
+          media_id: maskMediaId(mediaMetadata.mediaId),
+          message_type: messageType,
+          conversation_id: input.conversationId ?? null,
+          message_id: input.messageId ?? null,
+          correlation_id: input.correlationId ?? null,
+        },
+        '[integration-service][media][MEDIA_DOWNLOAD_START]',
+      );
 
       const mediaUrlResponse = await this.metaClient.getMediaUrl(mediaMetadata.mediaId);
 
@@ -199,6 +217,18 @@ export class MediaProcessingService {
         },
         '[integration-service][media][DOWNLOAD_OK]',
       );
+      logger.info(
+        {
+          media_id: maskMediaId(mediaMetadata.mediaId),
+          filename: safeFilename,
+          mime_type: effectiveMimeBase,
+          size: downloadResult.size,
+          conversation_id: input.conversationId ?? null,
+          message_id: input.messageId ?? null,
+          correlation_id: input.correlationId ?? null,
+        },
+        '[integration-service][media][MEDIA_DOWNLOAD_OK]',
+      );
 
       stage = 'glpi_document_upload';
       const ticketEntityId = await this.resolveTicketEntityId(ticketId, input);
@@ -208,11 +238,36 @@ export class MediaProcessingService {
         mimeType: effectiveMimeBase,
         entitiesId: ticketEntityId,
       });
+      logger.info(
+        {
+          media_id: maskMediaId(mediaMetadata.mediaId),
+          document_id: documentId,
+          ticket_id: ticketId,
+          filename: safeFilename,
+          mime_type: effectiveMimeBase,
+          conversation_id: input.conversationId ?? null,
+          message_id: input.messageId ?? null,
+          correlation_id: input.correlationId ?? null,
+        },
+        '[integration-service][media][GLPI_DOCUMENT_UPLOAD_OK]',
+      );
 
       stage = 'glpi_document_item_link';
       try {
         await this.glpiClient.linkDocumentToTicket(documentId, ticketId);
       } catch (error: unknown) {
+        logger.error(
+          {
+            media_id: maskMediaId(mediaMetadata.mediaId),
+            document_id: documentId,
+            ticket_id: ticketId,
+            conversation_id: input.conversationId ?? null,
+            message_id: input.messageId ?? null,
+            correlation_id: input.correlationId ?? null,
+            error_message: error instanceof Error ? error.message : String(error),
+          },
+          '[integration-service][media][GLPI_DOCUMENT_ITEM_LINK_FAILED]',
+        );
         return this.uploadedUnlinkedResult({
           mediaMetadata,
           messageType,
@@ -238,6 +293,17 @@ export class MediaProcessingService {
           correlation_id: input.correlationId ?? null,
         },
         '[integration-service][media][UPLOAD_OK]',
+      );
+      logger.info(
+        {
+          media_id: maskMediaId(mediaMetadata.mediaId),
+          document_id: documentId,
+          ticket_id: ticketId,
+          conversation_id: input.conversationId ?? null,
+          message_id: input.messageId ?? null,
+          correlation_id: input.correlationId ?? null,
+        },
+        '[integration-service][media][GLPI_DOCUMENT_ITEM_LINK_OK]',
       );
 
       const info: MediaInfo = {

@@ -42,6 +42,18 @@ async function readTicketTabTemplate(): Promise<string> {
   return readFile(new URL('../../integaglpi/templates/ticket_tab.php', import.meta.url), 'utf8');
 }
 
+async function readTicketRuntimeService(): Promise<string> {
+  return readFile(new URL('../../integaglpi/src/Service/TicketRuntimeService.php', import.meta.url), 'utf8');
+}
+
+async function readTicketWhatsappAction(): Promise<string> {
+  return readFile(new URL('../../integaglpi/front/ticket.whatsapp.action.php', import.meta.url), 'utf8');
+}
+
+async function readHook(): Promise<string> {
+  return readFile(new URL('../../integaglpi/hook.php', import.meta.url), 'utf8');
+}
+
 async function readPluginConfigService(): Promise<string> {
   return readFile(new URL('../../integaglpi/src/Service/PluginConfigService.php', import.meta.url), 'utf8');
 }
@@ -72,6 +84,10 @@ async function readQualityDashboardRenderer(): Promise<string> {
 
 async function readConversationRepository(): Promise<string> {
   return readFile(new URL('../../integaglpi/src/External/Repository/ConversationRepository.php', import.meta.url), 'utf8');
+}
+
+async function readMessageRepository(): Promise<string> {
+  return readFile(new URL('../../integaglpi/src/External/Repository/MessageRepository.php', import.meta.url), 'utf8');
 }
 
 async function readCentralAction(): Promise<string> {
@@ -184,6 +200,21 @@ describe('PHP Attendance Center pre-ticket conversations', () => {
     expect(repository).not.toContain('s.glpi_ticket_id');
   });
 
+  it('decorates WhatsApp reply context for operator-facing timelines without schema changes', async () => {
+    const repository = await readMessageRepository();
+    const central = await readCentralTemplate();
+    const ticketTab = await readTicketTabTemplate();
+
+    expect(repository).toContain('raw_payload');
+    expect(repository).toContain('decorateReplyContext');
+    expect(repository).toContain('extractReplyContextMessageId');
+    expect(repository).toContain('Em resposta a: %s');
+    expect(repository).toContain('mensagem WhatsApp %s');
+    expect(repository).toContain('findMessagePreviewByMessageId');
+    expect(central).toContain('message.message_text');
+    expect(ticketTab).toContain("$message['message_text']");
+  });
+
   it('allows scoped local entity edits with memory and audit without moving existing GLPI tickets', async () => {
     const service = await readAttendanceCenterService();
     const action = await readCentralAction();
@@ -285,6 +316,37 @@ describe('PHP Attendance Center pre-ticket conversations', () => {
     expect(template).toContain('Próxima ação');
   });
 
+  it('keeps Central filters compact and shows profile progress for pre-ticket work', async () => {
+    const service = await readAttendanceCenterService();
+    const template = await readCentralTemplate();
+
+    expect(template).toContain('Mais filtros');
+    expect(template).toContain('itg-central-layout');
+    expect(template).toContain('itg-central-toolbar');
+    expect(template).toContain('itg-central-toolbar-header');
+    expect(template).toContain('itg-central-filter-panel');
+    expect(template).toContain('Central WhatsApp');
+    expect(template).toContain('itg-conversation-panel');
+    expect(template).toContain('itg-conversation-pagination');
+    expect(template).toContain('height: calc(100vh - 110px)');
+    expect(template).toContain('height: 100%');
+    expect(template).toContain('grid-auto-rows: minmax(0, 1fr)');
+    expect(template).toContain('overflow: hidden');
+    expect(template).toContain('itg-context-panel');
+    expect(template).toContain('flex: 1 1 auto');
+    expect(template).toContain('overflow-y: auto');
+    expect(template).toContain('form-select form-select-sm');
+    expect(template).toContain('data-profile-company');
+    expect(template).toContain('data-profile-pending');
+    expect(template).toContain('js-integaglpi-central-context-answered');
+    expect(template).toContain('js-integaglpi-central-context-pending');
+    expect(template).toContain('js-integaglpi-central-context-next-action');
+    expect(template).toContain('Pendente');
+    expect(service).toContain('buildProfileContext');
+    expect(service).toContain('Aguardando retorno do cliente para completar o pré-ticket');
+    expect(service).toContain("'awaiting_return'");
+  });
+
   it('classifies Central PostgreSQL failures without exposing secrets and has a schema fallback', async () => {
     const service = await readAttendanceCenterService();
     const template = await readCentralTemplate();
@@ -339,6 +401,54 @@ describe('PHP Attendance Center pre-ticket conversations', () => {
     expect(source).toContain('js-integaglpi-tab-reply-file');
   });
 
+  it('reopens solved GLPI tickets when the plugin reopens a WhatsApp attendance', async () => {
+    const service = await readTicketRuntimeService();
+    const action = await readTicketWhatsappAction();
+
+    expect(service).toContain('reopenSolvedGlpiTicketIfNeeded');
+    expect(service).toContain('glpiSolvedStatus');
+    expect(service).toContain('glpiClosedStatus');
+    expect(service).toContain('glpiReopenStatus');
+    expect(service).toContain('CommonITILObject::SOLVED');
+    expect(service).toContain('CommonITILObject::CLOSED');
+    expect(service).toContain('CommonITILObject::ASSIGNED');
+    expect(service).toContain('GLPI rejeitou a reabertura do ticket solucionado.');
+    expect(service).toContain('Ticket GLPI fechado não pode ser reaberto por esta ação.');
+    expect(service).toContain('TICKET_REOPENED_FROM_PLUGIN');
+    expect(service).toContain('previous_glpi_status');
+    expect(service).toContain('new_glpi_status');
+    expect(service).toContain('$this->reopenSolvedGlpiTicketIfNeeded($ticketId)');
+    expect(service).toContain('$this->getConversationRepository()->reopen($ticketId, $conversationId)');
+    expect(action).toContain('Plugin::getTicketUrl($ticketId)');
+    expect(action).not.toContain("$CFG_GLPI['root_doc'] . '/front/ticket.form.php?id='");
+  });
+
+  it('replaces the previous assigned technician when a WhatsApp attendance is transferred', async () => {
+    const service = await readTicketRuntimeService();
+
+    expect(service).toContain('assignTicketToTechnicianFromTransfer');
+    expect(service).toContain('replaceTicketUserAssignment($ticketId, $userId)');
+    expect(service).toContain('FROM\' => \'glpi_tickets_users\'');
+    expect(service).toContain('users_id');
+    expect(service).toContain('$ticketUser->delete([\'id\' => $assignmentId])');
+    expect(service).toContain('$this->ensureTicketUserAssignment($ticketId, $userId)');
+    expect(service).toContain('Failed to remove the previous GLPI ticket technician.');
+  });
+
+  it('keeps the native GLPI ticket update/category save path unobstructed by the plugin', async () => {
+    const hook = await readHook();
+    const ticketTab = await readTicketTabTemplate();
+
+    expect(hook).toContain('function plugin_integaglpi_ticket_update(\\Ticket $ticket): void');
+    expect(hook).toContain('if ($newStatus !== \\CommonITILObject::SOLVED && $newStatus !== \\CommonITILObject::CLOSED) {');
+    expect(hook).toContain('return;');
+    expect(hook).not.toContain('itilcategories_id');
+    expect(hook).not.toContain('$ticket->input =');
+    expect(hook).not.toContain('return false');
+    expect(ticketTab).toContain('js-integaglpi-ticket-transfer-get');
+    expect(ticketTab).not.toContain('<form method="get" action="<?= $this->escape($actionBaseUrl); ?>">');
+  });
+
   it('renders WhatsApp 24h window guidance and delivery status without Meta token storage', async () => {
     const service = await readAttendanceCenterService();
     const central = await readCentralTemplate();
@@ -372,7 +482,8 @@ describe('PHP Attendance Center pre-ticket conversations', () => {
     expect(repository).toContain('delivery_filter');
     expect(repository).toContain('operational_state');
     expect(repository).toContain('appendOperationalStateWhere');
-    expect(central).toContain('Console Operacional 2.0');
+    expect(central).toContain('Central WhatsApp');
+    expect(central).toContain('itg-central-filter-panel');
     expect(central).toContain('name="technician_id"');
     expect(central).toContain('name="entity_id"');
     expect(central).toContain('name="window_status"');

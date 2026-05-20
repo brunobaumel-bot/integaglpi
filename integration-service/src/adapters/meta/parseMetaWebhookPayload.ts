@@ -10,6 +10,7 @@ function extractMediaMetadata(message: {
   image?: { id: string; mime_type?: string; caption?: string } | undefined;
   document?: { id: string; mime_type?: string; filename?: string; caption?: string } | undefined;
   audio?: { id: string; mime_type?: string } | undefined;
+  video?: { id: string; mime_type?: string; caption?: string } | undefined;
 }): InboundMediaMetadata | null {
   if (message.type === 'image' && message.image) {
     return {
@@ -35,6 +36,14 @@ function extractMediaMetadata(message: {
       caption: null,
     };
   }
+  if (message.type === 'video' && message.video) {
+    return {
+      mediaId: message.video.id,
+      mimeTypeFromWebhook: message.video.mime_type ?? null,
+      fileName: null,
+      caption: message.video.caption ?? null,
+    };
+  }
   return null;
 }
 
@@ -57,6 +66,21 @@ function extractMessageText(message: {
   return message.text?.body ?? null;
 }
 
+function extractReplyContext(message: {
+  context?: { id?: string; from?: string } | undefined;
+}): { messageId: string; from: string | null } | null {
+  const messageId = message.context?.id?.trim() ?? '';
+  if (messageId === '') {
+    return null;
+  }
+
+  const from = message.context?.from?.trim() ?? '';
+  return {
+    messageId,
+    from: from === '' ? null : from,
+  };
+}
+
 export function parseMetaInboundMessages(payload: MetaWebhookPayload): ParsedMetaInboundMessage[] {
   const parsedMessages: ParsedMetaInboundMessage[] = [];
 
@@ -76,6 +100,7 @@ export function parseMetaInboundMessages(payload: MetaWebhookPayload): ParsedMet
           messageType: message.type,
           messageText: extractMessageText(message),
           mediaMetadata: extractMediaMetadata(message),
+          replyContext: extractReplyContext(message),
           contactName,
           timestamp: message.timestamp ?? null,
           rawPayload: payload,

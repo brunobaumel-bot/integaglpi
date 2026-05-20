@@ -78,21 +78,93 @@ describe('MediaProcessingService', () => {
     expect(result.mediaInfo.status).toBe('synced');
   });
 
-  it('skips processing when webhook MIME is not in allowlist and returns skipped media_info', async () => {
-    const getMediaUrl = vi.fn();
-    const downloadMedia = vi.fn();
-    const uploadDocument = vi.fn();
+  it('processes video successfully using the existing media pipeline', async () => {
+    const fakeBuffer = Buffer.from('fake-video-data');
+    const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/video', mimeType: 'video/mp4', fileSize: null });
+    const downloadMedia = vi.fn().mockResolvedValue({ buffer: fakeBuffer, contentType: 'video/mp4', size: fakeBuffer.byteLength });
+    const uploadDocument = vi.fn().mockResolvedValue(57);
+    const linkDocumentToTicket = vi.fn().mockResolvedValue(undefined);
 
-    const service = makeService({ getMediaUrl, downloadMedia, uploadDocument });
+    const service = makeService({ getMediaUrl, downloadMedia, uploadDocument, linkDocumentToTicket });
     const result = await service.processMedia({
       ...baseInput,
       messageType: 'video',
       mediaMetadata: { ...baseInput.mediaMetadata, mimeTypeFromWebhook: 'video/mp4' },
     });
 
+    expect(getMediaUrl).toHaveBeenCalledWith('meta-media-id-111');
+    expect(downloadMedia).toHaveBeenCalledWith('https://meta.cdn/video', 15_728_640);
+    expect(uploadDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ filename: 'video.mp4', mimeType: 'video/mp4' }),
+    );
+    expect(linkDocumentToTicket).toHaveBeenCalledWith(57, 100);
+    expect(result.mediaInfo.status).toBe('synced');
+    expect(result.mediaInfo.glpi_document_id).toBe(57);
+    expect(result.followUpContent).toContain('video.mp4');
+  });
+
+  it('processes audio/webm with a safe generated filename and links it to GLPI', async () => {
+    const fakeBuffer = Buffer.from('fake-audio-data');
+    const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/audio', mimeType: 'audio/webm', fileSize: null });
+    const downloadMedia = vi.fn().mockResolvedValue({ buffer: fakeBuffer, contentType: 'audio/webm', size: fakeBuffer.byteLength });
+    const uploadDocument = vi.fn().mockResolvedValue(58);
+    const linkDocumentToTicket = vi.fn().mockResolvedValue(undefined);
+
+    const service = makeService({ getMediaUrl, downloadMedia, uploadDocument, linkDocumentToTicket });
+    const result = await service.processMedia({
+      ...baseInput,
+      messageType: 'audio',
+      mediaMetadata: { ...baseInput.mediaMetadata, mimeTypeFromWebhook: 'audio/webm', fileName: null },
+    });
+
+    expect(uploadDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ filename: 'audio.webm', mimeType: 'audio/webm' }),
+    );
+    expect(linkDocumentToTicket).toHaveBeenCalledWith(58, 100);
+    expect(result.mediaInfo.status).toBe('synced');
+    expect(result.mediaInfo.glpi_document_id).toBe(58);
+    expect(result.followUpContent).toContain('audio.webm');
+  });
+
+  it('processes video/3gpp with a safe generated filename and links it to GLPI', async () => {
+    const fakeBuffer = Buffer.from('fake-3gp-data');
+    const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/video-3gpp', mimeType: 'video/3gpp', fileSize: null });
+    const downloadMedia = vi.fn().mockResolvedValue({ buffer: fakeBuffer, contentType: 'video/3gpp', size: fakeBuffer.byteLength });
+    const uploadDocument = vi.fn().mockResolvedValue(59);
+    const linkDocumentToTicket = vi.fn().mockResolvedValue(undefined);
+
+    const service = makeService({ getMediaUrl, downloadMedia, uploadDocument, linkDocumentToTicket });
+    const result = await service.processMedia({
+      ...baseInput,
+      messageType: 'video',
+      mediaMetadata: { ...baseInput.mediaMetadata, mimeTypeFromWebhook: 'video/3gpp', fileName: null },
+    });
+
+    expect(uploadDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ filename: 'video.3gp', mimeType: 'video/3gpp' }),
+    );
+    expect(linkDocumentToTicket).toHaveBeenCalledWith(59, 100);
+    expect(result.mediaInfo.status).toBe('synced');
+    expect(result.mediaInfo.glpi_document_id).toBe(59);
+    expect(result.followUpContent).toContain('video.3gp');
+  });
+
+  it('skips processing when webhook MIME is not allowed and does not call media download or GLPI', async () => {
+    const getMediaUrl = vi.fn();
+    const downloadMedia = vi.fn();
+    const uploadDocument = vi.fn();
+    const linkDocumentToTicket = vi.fn();
+
+    const service = makeService({ getMediaUrl, downloadMedia, uploadDocument, linkDocumentToTicket });
+    const result = await service.processMedia({
+      ...baseInput,
+      mediaMetadata: { ...baseInput.mediaMetadata, mimeTypeFromWebhook: 'application/x-msdownload' },
+    });
+
     expect(getMediaUrl).not.toHaveBeenCalled();
     expect(downloadMedia).not.toHaveBeenCalled();
     expect(uploadDocument).not.toHaveBeenCalled();
+    expect(linkDocumentToTicket).not.toHaveBeenCalled();
     expect(result.mediaInfo.status).toBe('skipped');
     expect(result.mediaInfo.glpi_document_id).toBeNull();
     expect(result.followUpContent).toContain('não suportado');

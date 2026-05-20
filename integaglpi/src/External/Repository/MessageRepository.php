@@ -33,6 +33,7 @@ final class MessageRepository
                     recipient_phone,
                     message_type,
                     message_text,
+                    raw_payload,
                     processing_status,
                     glpi_sync_status,
                     meta_message_id,
@@ -56,7 +57,7 @@ final class MessageRepository
 
         $rows = $statement->fetchAll();
 
-        return is_array($rows) ? $rows : [];
+        return is_array($rows) ? $this->decorateReplyContext($rows) : [];
     }
 
     /**
@@ -93,6 +94,7 @@ final class MessageRepository
                     recipient_phone,
                     message_type,
                     message_text,
+                    raw_payload,
                     processing_status,
                     glpi_sync_status,
                     meta_message_id,
@@ -119,7 +121,125 @@ final class MessageRepository
 
         $rows = $statement->fetchAll();
 
-        return is_array($rows) ? $rows : [];
+        return is_array($rows) ? $this->decorateReplyContext($rows) : [];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $rows
+     * @return list<array<string, mixed>>
+     */
+    private function decorateReplyContext(array $rows): array
+    {
+        foreach ($rows as &$row) {
+            $contextMessageId = $this->extractReplyContextMessageId($row);
+            unset($row['raw_payload']);
+
+            if ($contextMessageId === null) {
+                continue;
+            }
+
+            $currentText = trim((string) ($row['message_text'] ?? ''));
+            if (strncmp($currentText, 'Em resposta a:', strlen('Em resposta a:')) === 0) {
+                continue;
+            }
+
+            $preview = $this->findMessagePreviewByMessageId($contextMessageId);
+            $reference = $preview !== null
+                ? $this->truncateReplyPreview($preview)
+                : sprintf('mensagem WhatsApp %s', $contextMessageId);
+            $body = $currentText !== ''
+                ? $currentText
+                : sprintf('[%s]', (string) ($row['message_type'] ?? 'message'));
+
+            $row['message_text'] = sprintf("Em resposta a: %s\n\n%s", $reference, $body);
+        }
+        unset($row);
+
+        return $rows;
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     */
+    private function extractReplyContextMessageId(array $row): ?string
+    {
+        $rawPayload = $row['raw_payload'] ?? null;
+        if (is_string($rawPayload)) {
+            $decoded = json_decode($rawPayload, true);
+            $rawPayload = is_array($decoded) ? $decoded : null;
+        }
+
+        if (!is_array($rawPayload)) {
+            return null;
+        }
+
+        $currentMessageId = trim((string) ($row['message_id'] ?? ''));
+        foreach (($rawPayload['entry'] ?? []) as $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
+            foreach (($entry['changes'] ?? []) as $change) {
+                if (!is_array($change)) {
+                    continue;
+                }
+                $value = $change['value'] ?? null;
+                if (!is_array($value)) {
+                    continue;
+                }
+                $messages = $value['messages'] ?? null;
+                if (!is_array($messages)) {
+                    continue;
+                }
+                foreach ($messages as $message) {
+                    if (!is_array($message)) {
+                        continue;
+                    }
+                    $messageId = trim((string) ($message['id'] ?? ''));
+                    if ($currentMessageId !== '' && $messageId !== $currentMessageId) {
+                        continue;
+                    }
+                    $context = $message['context'] ?? null;
+                    if (!is_array($context)) {
+                        continue;
+                    }
+                    $contextId = trim((string) ($context['id'] ?? ''));
+                    return $contextId !== '' ? $contextId : null;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function findMessagePreviewByMessageId(string $messageId): ?string
+    {
+        $statement = $this->pdo->prepare(
+            <<<SQL
+            SELECT message_text
+            FROM glpi_plugin_integaglpi_messages
+            WHERE message_id = :message_id
+            LIMIT 1
+            SQL
+        );
+        $statement->execute([':message_id' => $messageId]);
+        $value = $statement->fetchColumn();
+        $text = is_string($value) ? trim($value) : '';
+
+        return $text !== '' ? $text : null;
+    }
+
+    private function truncateReplyPreview(string $value): string
+    {
+        $normalized = trim((string) preg_replace('/\s+/', ' ', $value));
+        if (function_exists('mb_strlen') && function_exists('mb_substr')) {
+            return mb_strlen($normalized) <= 180
+                ? $normalized
+                : rtrim(mb_substr($normalized, 0, 177)) . '...';
+        }
+
+        return strlen($normalized) <= 180
+            ? $normalized
+            : rtrim(substr($normalized, 0, 177)) . '...';
     }
 
     private function normalizeLimit(int $limit): int

@@ -37,6 +37,12 @@ const metaMessageSchema = z.object({
   from: z.string().min(1),
   timestamp: z.string().optional(),
   type: z.string().min(1),
+  context: z
+    .object({
+      id: z.string().optional(),
+      from: z.string().optional(),
+    })
+    .optional(),
   text: z
     .object({
       body: z.string().optional(),
@@ -45,6 +51,7 @@ const metaMessageSchema = z.object({
   image: metaMediaObjectSchema.optional(),
   document: metaDocumentObjectSchema.optional(),
   audio: metaAudioObjectSchema.optional(),
+  video: metaMediaObjectSchema.optional(),
   interactive: metaInteractiveObjectSchema.optional(),
 });
 
@@ -94,6 +101,11 @@ export interface InboundMediaMetadata {
   caption: string | null;
 }
 
+export interface InboundReplyContext {
+  messageId: string;
+  from: string | null;
+}
+
 export interface ParsedMetaInboundMessage {
   eventId: string;
   eventType: 'message';
@@ -103,6 +115,7 @@ export interface ParsedMetaInboundMessage {
   messageType: string;
   messageText: string | null;
   mediaMetadata: InboundMediaMetadata | null;
+  replyContext: InboundReplyContext | null;
   contactName: string | null;
   timestamp: string | null;
   rawPayload: MetaWebhookPayload;

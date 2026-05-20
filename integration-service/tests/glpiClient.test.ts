@@ -469,7 +469,7 @@ describe('GlpiClient', () => {
     );
   });
 
-  it('retries document linking through the ticket sub-item endpoint when Document_Item is denied', async () => {
+  it('retries document linking through the ticket sub-item endpoint with complete payload when Document_Item is denied', async () => {
     const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
     const responses = [
       new Response(JSON.stringify({ session_token: 'session-123' }), { status: 200 }),
@@ -497,10 +497,111 @@ describe('GlpiClient', () => {
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({
-          input: [{ documents_id: 3844 }],
+          input: [{ documents_id: 3844, items_id: 2112319214, itemtype: 'Ticket' }],
         }),
       }),
     );
+  });
+
+  it('retries ticket sub-item document linking with minimal payload when complete nested payload is denied', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const responses = [
+      new Response(JSON.stringify({ session_token: 'session-123' }), { status: 200 }),
+      new Response(JSON.stringify(['ERROR_GLPI_ADD', [{ id: false, message: 'flat denied' }]]), { status: 400 }),
+      new Response(JSON.stringify(['ERROR_GLPI_ADD', [{ id: false, message: 'nested complete denied' }]]), { status: 400 }),
+      new Response(JSON.stringify({ id: 9005 }), { status: 200 }),
+    ];
+
+    const httpClient = {
+      request: vi.fn().mockImplementation(async () => responses.shift()),
+    };
+
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    await client.linkDocumentToTicket(3848, 2112319218);
+
+    expect(httpClient.request).toHaveBeenCalledTimes(4);
+    expect(httpClient.request).toHaveBeenNthCalledWith(
+      3,
+      'https://glpi.example.local/apirest.php/Ticket/2112319218/Document_Item',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          input: [{ documents_id: 3848, items_id: 2112319218, itemtype: 'Ticket' }],
+        }),
+      }),
+    );
+    expect(httpClient.request).toHaveBeenNthCalledWith(
+      4,
+      'https://glpi.example.local/apirest.php/Ticket/2112319218/Document_Item',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          input: [{ documents_id: 3848 }],
+        }),
+      }),
+    );
+  });
+
+  it('retries document linking when Document_Item returns HTTP OK without a valid link id', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const responses = [
+      new Response(JSON.stringify({ session_token: 'session-123' }), { status: 200 }),
+      new Response(JSON.stringify([{ id: false, message: 'link not created' }]), { status: 200 }),
+      new Response(JSON.stringify({ id: 9003 }), { status: 200 }),
+    ];
+
+    const httpClient = {
+      request: vi.fn().mockImplementation(async () => responses.shift()),
+    };
+
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    await client.linkDocumentToTicket(3845, 2112319215);
+
+    expect(httpClient.request).toHaveBeenCalledTimes(3);
+    expect(httpClient.request).toHaveBeenNthCalledWith(
+      2,
+      'https://glpi.example.local/apirest.php/Document_Item',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          input: [{ documents_id: 3845, items_id: 2112319215, itemtype: 'Ticket' }],
+        }),
+      }),
+    );
+    expect(httpClient.request).toHaveBeenNthCalledWith(
+      3,
+      'https://glpi.example.local/apirest.php/Ticket/2112319215/Document_Item',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          input: [{ documents_id: 3845, items_id: 2112319215, itemtype: 'Ticket' }],
+        }),
+      }),
+    );
+  });
+
+  it('fails document linking when both Document_Item endpoints return no valid link id', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const responses = [
+      new Response(JSON.stringify({ session_token: 'session-123' }), { status: 200 }),
+      new Response(JSON.stringify([{ id: false, message: 'link not created' }]), { status: 200 }),
+      new Response(JSON.stringify([{ id: false, message: 'nested link not created' }]), { status: 200 }),
+      new Response(JSON.stringify([{ id: false, message: 'minimal nested link not created' }]), { status: 200 }),
+    ];
+
+    const httpClient = {
+      request: vi.fn().mockImplementation(async () => responses.shift()),
+    };
+
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    await expect(client.linkDocumentToTicket(3846, 2112319216)).rejects.toMatchObject({
+      message: 'GLPI nested document link did not return a valid ID.',
+      stage: 'glpi_document_item_link',
+    });
+    expect(httpClient.request).toHaveBeenCalledTimes(4);
   });
 
   it('accepts GLPI follow-up response as an array with first item id', async () => {

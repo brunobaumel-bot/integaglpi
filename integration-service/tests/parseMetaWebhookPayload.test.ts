@@ -114,6 +114,35 @@ describe('parseMetaInboundMessages', () => {
       caption: null,
     });
   });
+
+  it('extracts WhatsApp reply context and video media metadata', () => {
+    const [message] = parseMetaInboundMessages(payloadWithMessage({
+      id: 'wamid.video-reply',
+      from: '5511999999999',
+      type: 'video',
+      context: {
+        id: 'wamid.original',
+        from: '5511300000000',
+      },
+      video: {
+        id: 'media-video',
+        mime_type: 'video/mp4',
+        caption: 'Veja o erro',
+      },
+    }));
+
+    expect(message?.messageType).toBe('video');
+    expect(message?.replyContext).toEqual({
+      messageId: 'wamid.original',
+      from: '5511300000000',
+    });
+    expect(message?.mediaMetadata).toEqual({
+      mediaId: 'media-video',
+      mimeTypeFromWebhook: 'video/mp4',
+      fileName: null,
+      caption: 'Veja o erro',
+    });
+  });
 });
 
 describe('parseMetaStatusUpdates', () => {

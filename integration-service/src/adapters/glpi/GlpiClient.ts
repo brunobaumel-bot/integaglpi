@@ -969,15 +969,26 @@ export class GlpiClient {
         { method: 'POST', body: JSON.stringify(body) },
         'glpi_document_item_link',
       );
+      if (!this.hasCreatedId(payload)) {
+        throw new GlpiRequestError(
+          'GLPI document link did not return a valid ID.',
+          undefined,
+          payload,
+          'glpi_document_item_link',
+          sanitizeUrlForLog(joinApirestUrl(this.baseUrl, path)),
+        );
+      }
     } catch (error: unknown) {
-      if (!(error instanceof GlpiRequestError) || (error.statusCode !== 400 && error.statusCode !== 403)) {
+      if (
+        !(error instanceof GlpiRequestError)
+        || (
+          error.statusCode !== undefined
+          && error.statusCode !== 400
+          && error.statusCode !== 403
+        )
+      ) {
         throw error;
       }
-
-      const nestedPath = `/Ticket/${ticketId}/Document_Item`;
-      const nestedBody = {
-        input: [{ documents_id: documentId }],
-      };
 
       logger.warn(
         {
@@ -985,22 +996,99 @@ export class GlpiClient {
           documentId,
           ticketId,
           httpStatus: error.statusCode,
-          fallbackPath: nestedPath,
+          fallbackPath: `/Ticket/${ticketId}/Document_Item`,
         },
         '[GLPI PoC] POST /Document_Item failed; retrying through ticket sub-item endpoint.',
       );
 
-      payload = await this.requestJson<JsonObject>(
-        nestedPath,
-        { method: 'POST', body: JSON.stringify(nestedBody) },
-        'glpi_document_item_link',
-      );
+      await this.linkDocumentToTicketSubItem(documentId, ticketId, 'fallback');
+      return;
     }
 
     logger.info(
       { stage: 'glpi_document_item_link', documentId, ticketId, glpiDocumentLinkResponse: payload },
       '[GLPI PoC] POST /Document_Item response body',
     );
+  }
+
+  private async linkDocumentToTicketSubItem(
+    documentId: number,
+    ticketId: number,
+    mode: 'primary' | 'fallback',
+  ): Promise<void> {
+    const nestedPath = `/Ticket/${ticketId}/Document_Item`;
+    const completeBody = {
+      input: [{ documents_id: documentId, items_id: ticketId, itemtype: 'Ticket' }],
+    };
+    const minimalBody = {
+      input: [{ documents_id: documentId }],
+    };
+
+    let payload: JsonObject;
+    try {
+      payload = await this.requestJson<JsonObject>(
+        nestedPath,
+        { method: 'POST', body: JSON.stringify(completeBody) },
+        'glpi_document_item_link',
+      );
+      if (!this.hasCreatedId(payload)) {
+        throw new GlpiRequestError(
+          'GLPI nested document link did not return a valid ID.',
+          undefined,
+          payload,
+          'glpi_document_item_link',
+          sanitizeUrlForLog(joinApirestUrl(this.baseUrl, nestedPath)),
+        );
+      }
+    } catch (error: unknown) {
+      if (
+        !(error instanceof GlpiRequestError)
+        || (
+          error.statusCode !== undefined
+          && error.statusCode !== 400
+          && error.statusCode !== 403
+        )
+      ) {
+        throw error;
+      }
+
+      logger.warn(
+        {
+          stage: 'glpi_document_item_link',
+          mode,
+          documentId,
+          ticketId,
+          httpStatus: error.statusCode,
+          fallbackPayload: 'minimal',
+        },
+        '[GLPI PoC] POST /Ticket/{id}/Document_Item complete payload failed; retrying minimal payload.',
+      );
+
+      payload = await this.requestJson<JsonObject>(
+        nestedPath,
+        { method: 'POST', body: JSON.stringify(minimalBody) },
+        'glpi_document_item_link',
+      );
+
+      if (!this.hasCreatedId(payload)) {
+        throw new GlpiRequestError(
+          'GLPI nested document link did not return a valid ID.',
+          undefined,
+          payload,
+          'glpi_document_item_link',
+          sanitizeUrlForLog(joinApirestUrl(this.baseUrl, nestedPath)),
+        );
+      }
+    }
+
+    logger.info(
+      { stage: 'glpi_document_item_link', mode, documentId, ticketId, glpiDocumentLinkResponse: payload },
+      '[GLPI PoC] POST /Ticket/{id}/Document_Item response body',
+    );
+  }
+
+  private hasCreatedId(payload: unknown): boolean {
+    return readIdFromTicketAddResponse(payload) !== null;
   }
 
   /**

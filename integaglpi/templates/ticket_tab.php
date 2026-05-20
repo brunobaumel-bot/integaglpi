@@ -499,11 +499,12 @@ if ($auditPanelOk) {
                 <div class="card h-100">
                     <div class="card-header"><?= $this->escape(__('Transfer queue', 'glpiintegaglpi')); ?></div>
                     <div class="card-body">
-                        <form method="get" action="<?= $this->escape($actionBaseUrl); ?>">
-                            <input type="hidden" name="debug_get" value="1">
-                            <input type="hidden" name="ticket_id" value="<?= (int) $ticketIdForDebug; ?>">
-                            <input type="hidden" name="conversation_id" value="<?= $this->escape((string) $conversationIdForDebug); ?>">
-                            <input type="hidden" name="whatsapp_action" value="transfer">
+                        <div
+                            class="js-integaglpi-ticket-transfer-get"
+                            data-action-url="<?= $this->escape($actionBaseUrl); ?>"
+                            data-ticket-id="<?= (int) $ticketIdForDebug; ?>"
+                            data-conversation-id="<?= $this->escape((string) $conversationIdForDebug); ?>"
+                        >
                             <select name="queue_id" class="form-select mb-2 js-integaglpi-wa-queue">
                                 <option value=""><?= $this->escape(__('Select a queue', 'glpiintegaglpi')); ?></option>
                                 <?php foreach ($queues as $queue) { ?>
@@ -515,8 +516,34 @@ if ($auditPanelOk) {
                                     </option>
                                 <?php } ?>
                             </select>
-                            <button type="submit" class="btn btn-outline-primary"><?= $this->escape(__('Transferir', 'glpiintegaglpi')); ?></button>
-                        </form>
+                            <button type="button" class="btn btn-outline-primary js-integaglpi-ticket-transfer-get-submit"><?= $this->escape(__('Transferir', 'glpiintegaglpi')); ?></button>
+                        </div>
+                        <script>
+                            (function () {
+                                var box = document.currentScript ? document.currentScript.previousElementSibling : null;
+                                if (!box || !box.classList || !box.classList.contains('js-integaglpi-ticket-transfer-get')) {
+                                    return;
+                                }
+                                var button = box.querySelector('.js-integaglpi-ticket-transfer-get-submit');
+                                var select = box.querySelector('.js-integaglpi-wa-queue');
+                                if (!button || !select) {
+                                    return;
+                                }
+                                button.addEventListener('click', function () {
+                                    var queueId = select.value || '';
+                                    if (queueId === '') {
+                                        return;
+                                    }
+                                    var params = new URLSearchParams();
+                                    params.set('debug_get', '1');
+                                    params.set('ticket_id', box.dataset.ticketId || '');
+                                    params.set('conversation_id', box.dataset.conversationId || '');
+                                    params.set('whatsapp_action', 'transfer');
+                                    params.set('queue_id', queueId);
+                                    window.location.href = (box.dataset.actionUrl || '') + '?' + params.toString();
+                                });
+                            })();
+                        </script>
 
                         <details class="mt-3">
                             <summary class="small text-muted"><?= $this->escape(__('Outras opções de transferência', 'glpiintegaglpi')); ?></summary>

@@ -85,6 +85,7 @@ class FakeMessageRepository implements MessageRepository {
   public reservedInputs: ReserveInboundMessageInput[] = [];
   public deliveryStatusInputs: RecordDeliveryStatusInput[] = [];
   public deliveryStatusResult: RecordDeliveryStatusResult | null = null;
+  public messagesById = new Map<string, InboundMessage>();
 
   public async reserveInbound(input: ReserveInboundMessageInput): Promise<InboundMessage | null> {
     this.reservedInputs.push(input);
@@ -103,8 +104,8 @@ class FakeMessageRepository implements MessageRepository {
     };
   }
 
-  public async findByMessageId(): Promise<InboundMessage | null> {
-    return this.reservedMessage;
+  public async findByMessageId(messageId: string): Promise<InboundMessage | null> {
+    return this.messagesById.get(messageId) ?? null;
   }
 
   public async findByIdempotencyKey(): Promise<InboundMessage | null> {
@@ -1493,6 +1494,126 @@ describe('InboundWebhookService', () => {
       glpiSyncStatus: 'synced',
     });
     expect(webhookEventRepository.updates[0]?.processingStatus).toBe('processed');
+  });
+
+  it('adds WhatsApp reply context to the GLPI follow-up when Meta context.id is present', async () => {
+    const webhookEventRepository = new FakeWebhookEventRepository();
+    const messageRepository = new FakeMessageRepository();
+    messageRepository.messagesById.set('wamid.original', {
+      ...(messageRepository.reservedMessage as NonNullable<typeof messageRepository.reservedMessage>),
+      messageId: 'wamid.original',
+      messageText: 'Mensagem original que o cliente respondeu',
+    });
+    const conversationRepository = new FakeConversationRepository();
+    conversationRepository.reusableConversation = {
+      id: 'conversation-existing',
+      phoneE164: '+5511999999999',
+      contactId: 'contact-1',
+      glpiTicketId: 654,
+      queueId: null,
+      status: 'open',
+      lastMessageAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const contactResolutionService = {
+      resolve: vi.fn().mockResolvedValue(resolvedContact),
+    };
+    const glpiClient = {
+      createTicket: vi.fn(),
+      addFollowUp: vi.fn().mockResolvedValue(998),
+      getTicketStatus: vi.fn().mockResolvedValue('open'),
+    };
+    const replyPayload = structuredClone(basePayload) as typeof basePayload;
+    replyPayload.entry[0].changes[0].value.messages[0] = {
+      id: 'wamid.reply',
+      from: '5511999999999',
+      type: 'text',
+      context: { id: 'wamid.original', from: '5511300000000' },
+      text: { body: 'Respondendo a original' },
+    } as never;
+
+    const service = makeInboundService(
+      webhookEventRepository,
+      messageRepository,
+      conversationRepository,
+      contactResolutionService,
+      glpiClient,
+    );
+
+    await service.process(replyPayload);
+
+    expect(messageRepository.reservedInputs[0]?.rawPayload).toMatchObject({
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                messages: [
+                  {
+                    context: { id: 'wamid.original', from: '5511300000000' },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    expect(glpiClient.addFollowUp).toHaveBeenCalledWith({
+      ticketId: 654,
+      content: expect.stringContaining('Em resposta a: Mensagem original que o cliente respondeu'),
+    });
+    expect(glpiClient.addFollowUp.mock.calls[0]?.[0].content).toContain('Respondendo a original');
+  });
+
+  it('adds WhatsApp reply context fallback to the GLPI follow-up when the original message is not local', async () => {
+    const webhookEventRepository = new FakeWebhookEventRepository();
+    const messageRepository = new FakeMessageRepository();
+    const conversationRepository = new FakeConversationRepository();
+    conversationRepository.reusableConversation = {
+      id: 'conversation-existing',
+      phoneE164: '+5511999999999',
+      contactId: 'contact-1',
+      glpiTicketId: 654,
+      queueId: null,
+      status: 'open',
+      lastMessageAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const contactResolutionService = {
+      resolve: vi.fn().mockResolvedValue(resolvedContact),
+    };
+    const glpiClient = {
+      createTicket: vi.fn(),
+      addFollowUp: vi.fn().mockResolvedValue(998),
+      getTicketStatus: vi.fn().mockResolvedValue('open'),
+    };
+    const replyPayload = structuredClone(basePayload) as typeof basePayload;
+    replyPayload.entry[0].changes[0].value.messages[0] = {
+      id: 'wamid.reply-missing-original',
+      from: '5511999999999',
+      type: 'text',
+      context: { id: 'wamid.original-not-local', from: '5511300000000' },
+      text: { body: 'Resposta sem original local' },
+    } as never;
+
+    const service = makeInboundService(
+      webhookEventRepository,
+      messageRepository,
+      conversationRepository,
+      contactResolutionService,
+      glpiClient,
+    );
+
+    await service.process(replyPayload);
+
+    expect(glpiClient.addFollowUp).toHaveBeenCalledWith({
+      ticketId: 654,
+      content: expect.stringContaining('Em resposta a: mensagem WhatsApp wamid.original-not-local'),
+    });
+    expect(glpiClient.addFollowUp.mock.calls[0]?.[0].content).toContain('Resposta sem original local');
   });
 
   it('keeps append flow for an open conversation with ticket even when routing is active', async () => {
@@ -3690,7 +3811,7 @@ describe('InboundWebhookService', () => {
     expect(meta.sendTextMessage).not.toHaveBeenCalled();
   });
 
-  it('keeps the ticket open and flags supervisor review from dissatisfied CSAT', async () => {
+  it('records dissatisfied CSAT on an already closed ticket without reopening or expiring the action', async () => {
     const webhookEventRepository = new FakeWebhookEventRepository();
     const messageRepository = new FakeMessageRepository();
     const conversationRepository = new FakeConversationRepository();
@@ -3709,10 +3830,10 @@ describe('InboundWebhookService', () => {
     const meta = { sendTextMessage: vi.fn().mockResolvedValue({}) };
     const glpiClient = {
       createTicket: vi.fn(),
-      addFollowUp: vi.fn(),
-      getTicket: vi.fn().mockResolvedValue({ id: 1234, status: 5 }),
+      addFollowUp: vi.fn().mockResolvedValue(991),
+      getTicket: vi.fn().mockResolvedValue({ id: 1234, status: 6 }),
       approveTicketSolution: vi.fn(),
-      reopenTicketSolution: vi.fn().mockResolvedValue(undefined),
+      reopenTicketSolution: vi.fn(),
     };
     const solutionActions = new FakeSolutionActionRepository();
     const audit = {
@@ -3745,43 +3866,135 @@ describe('InboundWebhookService', () => {
     const result = await service.process(payload, { correlationId: 'WA-20260510153022-csat2' });
 
     expect(result.results[0]?.outcome).toBe('processed');
-    expect(glpiClient.reopenTicketSolution).toHaveBeenCalledWith(
+    expect(glpiClient.addFollowUp).toHaveBeenCalledWith({
+      ticketId: 1234,
+      content: [
+        'Cliente indicou insatisfação na pesquisa via WhatsApp. O chamado deve seguir em atendimento e revisão.',
+        '',
+        'Telefone: +5511999999999',
+        'Conversation ID: conv-solved',
+        'Ação: approve',
+        'CSAT: dissatisfied',
+        'Revisão de supervisor: sim',
+        'Origem: WhatsApp',
+      ].join('\n'),
+    });
+    expect(glpiClient.approveTicketSolution).not.toHaveBeenCalled();
+    expect(glpiClient.reopenTicketSolution).not.toHaveBeenCalled();
+    expect(conversationRepository.updatedStatuses).toContainEqual({ conversationId: 'conv-solved', status: 'closed' });
+    expect(conversationRepository.reopenedConversationIds).toEqual([]);
+    expect(solutionActions.reserveCalls[0]).toMatchObject({
+      actionKey: 'solution:approve:1234:conv-solved:csat:dissatisfied',
+      action: 'approve',
+      csatRating: 'dissatisfied',
+      supervisorReviewRequired: true,
+    });
+    expect(solutionActions.markSuccessCalls).toEqual([
+      { id: 'solution-action-1', finalTicketStatus: 6 },
+    ]);
+    expect(meta.sendTextMessage).not.toHaveBeenCalled();
+    expect(audit.recordAuditEventFireAndForget).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'TICKET_CLOSED',
+        payload: {
+          action: 'solution_approve',
+          csat_rating: 'dissatisfied',
+          supervisor_review_required: true,
+        },
+      }),
+    );
+  });
+
+  it('accepts dissatisfied CSAT on a solved ticket using the same approval path as good ratings', async () => {
+    const webhookEventRepository = new FakeWebhookEventRepository();
+    const messageRepository = new FakeMessageRepository();
+    const conversationRepository = new FakeConversationRepository();
+    const contactResolutionService = { resolve: vi.fn().mockResolvedValue(resolvedContact) };
+    conversationRepository.latestClosedConversation = {
+      id: 'conv-solved',
+      phoneE164: '+5511999999999',
+      contactId: 'contact-1',
+      glpiTicketId: 1234,
+      queueId: 5,
+      status: 'closed',
+      lastMessageAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const meta = { sendTextMessage: vi.fn().mockResolvedValue({}) };
+    const glpiClient = {
+      createTicket: vi.fn(),
+      addFollowUp: vi.fn(),
+      getTicket: vi.fn().mockResolvedValue({ id: 1234, status: 5 }),
+      approveTicketSolution: vi.fn().mockResolvedValue(undefined),
+      reopenTicketSolution: vi.fn(),
+    };
+    const solutionActions = new FakeSolutionActionRepository();
+    const audit = {
+      recordAuditEventFireAndForget: vi.fn(),
+    } as unknown as AuditService;
+
+    const payload = structuredClone(basePayload) as typeof basePayload;
+    payload.entry[0].changes[0].value.messages[0] = {
+      id: 'wamid.solution-csat-dissatisfied-solved',
+      from: '5511999999999',
+      type: 'interactive',
+      interactive: {
+        type: 'button_reply',
+        button_reply: {
+          id: 'solution_csat:dissatisfied:1234:conv-solved',
+          title: 'Insatisfeito',
+        },
+      },
+    } as never;
+
+    const service = makeInboundService(
+      webhookEventRepository,
+      messageRepository,
+      conversationRepository,
+      contactResolutionService,
+      glpiClient,
+      { meta, solutionActions, audit },
+    );
+
+    const result = await service.process(payload, { correlationId: 'WA-20260510153022-csat3' });
+
+    expect(result.results[0]?.outcome).toBe('processed');
+    expect(glpiClient.approveTicketSolution).toHaveBeenCalledWith(
       1234,
       [
         'Cliente indicou insatisfação na pesquisa via WhatsApp. O chamado deve seguir em atendimento e revisão.',
         '',
         'Telefone: +5511999999999',
         'Conversation ID: conv-solved',
-        'Ação: reopen',
+        'Ação: approve',
         'CSAT: dissatisfied',
         'Revisão de supervisor: sim',
         'Origem: WhatsApp',
       ].join('\n'),
     );
-    expect(conversationRepository.reopenedConversationIds).toEqual(['conv-solved']);
+    expect(glpiClient.reopenTicketSolution).not.toHaveBeenCalled();
+    expect(conversationRepository.updatedStatuses).toContainEqual({ conversationId: 'conv-solved', status: 'closed' });
     expect(solutionActions.reserveCalls[0]).toMatchObject({
-      action: 'reopen',
+      actionKey: 'solution:approve:1234:conv-solved:csat:dissatisfied',
+      action: 'approve',
       csatRating: 'dissatisfied',
       supervisorReviewRequired: true,
     });
     expect(solutionActions.markSuccessCalls).toEqual([
-      { id: 'solution-action-1', finalTicketStatus: 2 },
+      { id: 'solution-action-1', finalTicketStatus: 6 },
     ]);
-    expect(meta.sendTextMessage).toHaveBeenCalledWith({
-      to: '5511999999999',
-      body: 'Registramos sua avaliação e o chamado #1234 seguirá em atendimento para revisão.',
-    });
+    expect(meta.sendTextMessage).not.toHaveBeenCalled();
     expect(audit.recordAuditEventFireAndForget).toHaveBeenCalledWith(
       expect.objectContaining({
-        eventType: 'TICKET_UPDATED',
+        eventType: 'TICKET_CLOSED',
         payload: {
-          action: 'solution_reopen',
+          action: 'solution_approve',
           csat_rating: 'dissatisfied',
           supervisor_review_required: true,
         },
       }),
     );
-    expect(glpiClient.approveTicketSolution).not.toHaveBeenCalled();
   });
 
   it('rejects stale solution button when ticket is already closed', async () => {
@@ -4605,6 +4818,106 @@ describe('InboundWebhookService', () => {
     expect(messageRepository.updates[0]).toEqual({
       messageId: 'wamid.audio-open',
       conversationId: 'conv-open-audio',
+      processingStatus: 'processed',
+      glpiSyncStatus: 'synced',
+    });
+  });
+
+  it('media (video) in an open conversation is processed as media and attached to the GLPI ticket', async () => {
+    const webhookEventRepository = new FakeWebhookEventRepository();
+    const messageRepository = new FakeMessageRepository();
+    const conversationRepository = new FakeConversationRepository();
+    conversationRepository.reusableConversation = {
+      id: 'conv-open-video',
+      phoneE164: '+5511999999999',
+      contactId: 'contact-1',
+      glpiTicketId: 655,
+      queueId: 5,
+      status: 'open',
+      lastMessageAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const contactResolutionService = { resolve: vi.fn().mockResolvedValue(resolvedContact) };
+    const routing = new FakeRoutingRepository();
+    routing.options = sampleRoutingOptions;
+    const meta = { sendTextMessage: vi.fn().mockResolvedValue({}) };
+    const glpiClient = {
+      createTicket: vi.fn(),
+      addFollowUp: vi.fn().mockResolvedValue(999),
+      getTicketStatus: vi.fn().mockResolvedValue('open'),
+    };
+
+    const videoPayload = structuredClone(basePayload) as typeof basePayload;
+    videoPayload.entry[0].changes[0].value.messages[0] = {
+      id: 'wamid.video-open',
+      from: '5511999999999',
+      type: 'video',
+      video: { id: 'meta-video-open', mime_type: 'video/mp4', caption: 'erro em tela' },
+    } as never;
+
+    const fakeMediaResult = {
+      mediaInfo: {
+        status: 'synced',
+        provider: 'meta_whatsapp',
+        media_id: 'meta-video-open',
+        message_type: 'video',
+        mime_type: 'video/mp4',
+        download_content_type: 'video/mp4',
+        file_name: 'video.mp4',
+        file_size: 8192,
+        caption: 'erro em tela',
+        glpi_document_id: 65,
+        glpi_ticket_id: 655,
+        error: null,
+        processed_at: '2026-04-26T00:00:00.000Z',
+      },
+      followUpContent: '[WhatsApp] Cliente enviou uma midia: video.mp4 (video/mp4, 8.0 KB).',
+    };
+    const fakeMediaProcessingService = {
+      processMedia: vi.fn().mockResolvedValue(fakeMediaResult),
+    };
+
+    const service = new InboundWebhookService(
+      webhookEventRepository,
+      messageRepository,
+      conversationRepository,
+      contactResolutionService as never,
+      glpiClient as never,
+      new FakeKeyLock(),
+      routing,
+      new FakeSettingsService(),
+      new FakeScheduleService(),
+      meta as never,
+      fakeMediaProcessingService,
+    );
+
+    await service.process(videoPayload);
+
+    expect(fakeMediaProcessingService.processMedia).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageType: 'video',
+        mediaMetadata: {
+          mediaId: 'meta-video-open',
+          mimeTypeFromWebhook: 'video/mp4',
+          fileName: null,
+          caption: 'erro em tela',
+        },
+        ticketId: 655,
+      }),
+    );
+    expect(glpiClient.addFollowUp).toHaveBeenCalledWith({
+      ticketId: 655,
+      content: fakeMediaResult.followUpContent,
+    });
+    expect(messageRepository.mediaInfoUpdates[0]?.mediaInfo).toMatchObject({
+      status: 'synced',
+      media_id: 'meta-video-open',
+      glpi_document_id: 65,
+    });
+    expect(messageRepository.updates[0]).toEqual({
+      messageId: 'wamid.video-open',
+      conversationId: 'conv-open-video',
       processingStatus: 'processed',
       glpiSyncStatus: 'synced',
     });
