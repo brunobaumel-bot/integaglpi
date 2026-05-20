@@ -22,6 +22,11 @@ Executar antes de qualquer promocao TESTE -> PRODUCAO.
 - [ ] URL GLPI API de producao validada por operador autorizado.
 - [ ] TLS valido.
 - [ ] Cloud sem Git: pacote sera copiado manualmente.
+- [ ] Reconciliacao manual pre-producao concluida conforme `docs/pre_prod_manual_state_reconciliation.md`.
+- [ ] Limites PHP web do GLPI conferidos e registrados.
+- [ ] Backup local de PRODUCAO para `glpi_documenttypes` criado antes de qualquer ajuste.
+- [ ] Tipos de documento audio/video conferidos por consulta read-only.
+- [ ] Tabelas PostgreSQL criticas da integracao validadas por consulta read-only.
 
 ## Node
 

@@ -10,6 +10,8 @@ Este documento contém exemplos manuais com placeholders. Nenhum comando deve se
 - [ ] Backup do banco GLPI pronto.
 - [ ] Backup do PostgreSQL do integration-service pronto.
 - [ ] Backup do `.env` real fora do repositório pronto.
+- [ ] Reconciliacao manual pre-producao revisada conforme `docs/pre_prod_manual_state_reconciliation.md`.
+- [ ] Backup local de PRODUCAO para `glpi_documenttypes` pronto, se tipos audio/video forem ajustados.
 - [ ] Rollback preparado e testado em TESTE.
 - [ ] Smoke em TESTE aprovado.
 - [ ] Diff real revisado.
@@ -55,10 +57,21 @@ Este exemplo não deve usar `--delete`. Cleanup, quando necessário, é manual, 
 - Registrar horário, operador, build/pacote e motivo.
 - Restaurar plugin do backup aprovado.
 - Restaurar pacote Node do backup aprovado.
+- Restaurar vhost/PHP do backup aprovado se limites PHP precisarem voltar.
+- Restaurar `glpi_documenttypes` a partir do backup local de PRODUCAO se o ajuste de tipos precisar voltar.
 - Preservar `.env` real de produção.
 - Reiniciar serviços somente conforme procedimento operacional autorizado.
 - Rodar smoke curto.
 - Registrar resultado.
+
+Exemplo manual para rollback de `glpi_documenttypes`, usando apenas backup criado na propria PRODUCAO:
+
+```sql
+RENAME TABLE glpi_documenttypes TO glpi_documenttypes_after_reconciliation_<YYYYMMDDHHMMSS>;
+RENAME TABLE glpi_documenttypes_backup_<YYYYMMDDHHMMSS> TO glpi_documenttypes;
+```
+
+Nao apagar documentos ja criados e nao alterar `glpi_documents_items` manualmente.
 
 ## Cleanup Manual
 

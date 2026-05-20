@@ -21,10 +21,16 @@ Objetivo: validar produção após promoção manual, sem alterar regras funcion
 - [ ] Criação de ticket GLPI funciona quando aplicável.
 - [ ] Follow-up GLPI é criado em conversa existente.
 - [ ] Mídia/anexo seguro é recebido e vinculado.
+- [ ] Áudio WhatsApp é recebido, cria `Document` e aparece vinculado ao chamado.
+- [ ] Vídeo WhatsApp é recebido, cria `Document` e aparece vinculado ao chamado.
+- [ ] Logs sanitizados mostram `GLPI_DOCUMENT_UPLOAD_OK` e `GLPI_DOCUMENT_ITEM_LINK_OK` para áudio/vídeo.
+- [ ] Não aparece `DOCUMENT_UPLOADED_UNLINKED` para áudio/vídeo.
 - [ ] Delivery mostra `sent`, `delivered`, `read` ou `failed` sanitizado.
 - [ ] Reabertura com motivo funciona.
 - [ ] CSAT funciona após aprovação.
 - [ ] Console/Central carrega e respeita perfil.
+- [ ] Central exibe filtros compactos, campos respondidos, campos pendentes e telefone mascarado.
+- [ ] Pré-ticket parcial parado por 5 minutos recebe no máximo um lembrete configurável e não cria ticket automaticamente.
 - [ ] Encerramento administrativo aparece apenas para conversa presa elegível sem ticket e exige motivo.
 - [ ] Dashboard carrega para perfil autorizado.
 - [ ] Inatividade/autoclose base aparece em diagnóstico quando aplicável.
@@ -45,9 +51,12 @@ Objetivo: validar produção após promoção manual, sem alterar regras funcion
 - Webhook Guard falha.
 - Inbound ou outbound falha.
 - Ticket/follow-up GLPI falha.
+- Áudio/vídeo cria `Document`, mas não cria vínculo no chamado.
+- `DOCUMENT_UPLOADED_UNLINKED` aparece para mídia válida.
 - Delivery não registra status.
 - IA aparece ativa.
 - Console/Central indisponível.
+- Pré-ticket incompleto cria ticket automaticamente ou envia lembrete em loop.
 - Encerramento administrativo permite conversa com ticket, sem motivo ou atividade recente.
 - Reabertura/CSAT quebra fluxo já estável.
 
