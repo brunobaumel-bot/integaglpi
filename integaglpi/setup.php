@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Glpi\Plugin\Hooks;
 use GlpiPlugin\Integaglpi\AttendanceCenterMenu;
+use GlpiPlugin\Integaglpi\ContactAgendaImportMenu;
 use GlpiPlugin\Integaglpi\ContractsHoursMenu;
 use GlpiPlugin\Integaglpi\Install\Installer;
 use GlpiPlugin\Integaglpi\OperationLogMenu;
@@ -162,6 +163,7 @@ function plugin_init_integaglpi(): void
             Queue::class,
             OperationLogMenu::class,
             RoutingSafetyMenu::class,
+            ContactAgendaImportMenu::class,
             AttendanceCenterMenu::class,
             SupervisorBackofficeMenu::class,
             QualityDashboardMenu::class,
@@ -203,6 +205,7 @@ function plugin_init_integaglpi(): void
     \Plugin::registerClass(OperationLogMenu::class);
     \Plugin::registerClass(RoutingSafetyMenu::class);
     \Plugin::registerClass(RoutingOptionsMenu::class);
+    \Plugin::registerClass(ContactAgendaImportMenu::class);
     \Plugin::registerClass(AttendanceCenterMenu::class);
     \Plugin::registerClass(SupervisorBackofficeMenu::class);
     \Plugin::registerClass(QualityDashboardMenu::class);

@@ -15,6 +15,10 @@ final class IntegrationServiceClient
     private const PATH_CONVERSATION_SOFT_CLOSE = '/internal/glpi/conversations/%s/soft-close';
     private const PATH_DIAGNOSTICS = '/internal/glpi/diagnostics';
     private const PATH_QUALITY_DASHBOARD = '/internal/glpi/quality-dashboard';
+    private const PATH_CONTACT_AGENDA_IMPORT_PREVIEW = '/internal/glpi/contact-agenda/import/preview';
+    private const PATH_CONTACT_AGENDA_IMPORT_STATUS = '/internal/glpi/contact-agenda/import/%s';
+    private const PATH_CONTACT_AGENDA_IMPORT_CONFIRM = '/internal/glpi/contact-agenda/import/%s/confirm';
+    private const PATH_CONTACT_AGENDA_IMPORT_ROLLBACK = '/internal/glpi/contact-agenda/import/%s/rollback';
     private const PATH_AI_QUALITY_ANALYZE = '/internal/glpi/ai-quality/analyze';
     private const PATH_AI_QUALITY_FEEDBACK = '/internal/glpi/ai-quality/feedback';
     private const TIMEOUT_SECONDS   = 5;
@@ -124,6 +128,47 @@ final class IntegrationServiceClient
         $path = self::PATH_QUALITY_DASHBOARD . ($query !== '' ? '?' . $query : '');
 
         return $this->getJson($this->endpoint($path), 'quality_dashboard', 8);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function previewContactAgendaImport(array $payload): array
+    {
+        return $this->postJson($this->endpoint(self::PATH_CONTACT_AGENDA_IMPORT_PREVIEW), $payload, 'contact_import][preview', 20);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function confirmContactAgendaImport(string $batchId, array $payload): array
+    {
+        $path = sprintf(self::PATH_CONTACT_AGENDA_IMPORT_CONFIRM, rawurlencode($batchId));
+
+        return $this->postJson($this->endpoint($path), $payload, 'contact_import][confirm', 60);
+    }
+
+    /**
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function getContactAgendaImportStatus(string $batchId): array
+    {
+        $path = sprintf(self::PATH_CONTACT_AGENDA_IMPORT_STATUS, rawurlencode($batchId));
+
+        return $this->getJson($this->endpoint($path), 'contact_import][status', 10);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function rollbackContactAgendaImport(string $batchId, array $payload): array
+    {
+        $path = sprintf(self::PATH_CONTACT_AGENDA_IMPORT_ROLLBACK, rawurlencode($batchId));
+
+        return $this->postJson($this->endpoint($path), $payload, 'contact_import][rollback', 60);
     }
 
     /**

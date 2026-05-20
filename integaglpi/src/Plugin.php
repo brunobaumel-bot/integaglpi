@@ -159,6 +159,11 @@ final class Plugin
         return self::getWebBasePath() . '/front/quality.dashboard.php';
     }
 
+    public static function getContactAgendaImportUrl(): string
+    {
+        return self::getWebBasePath() . '/front/contact.agenda.import.php';
+    }
+
     public static function getOperationalDiagnosticsUrl(): string
     {
         return self::getWebBasePath() . '/front/operational.diagnostics.php';

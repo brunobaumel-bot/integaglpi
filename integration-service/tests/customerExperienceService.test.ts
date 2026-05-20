@@ -117,7 +117,7 @@ describe('CustomerExperienceService', () => {
     expect(glpiClient.createRestrictedRequesterUser).not.toHaveBeenCalled();
   });
 
-  it('creates a restricted GLPI requester only after a real entity is defined', async () => {
+  it('does not create a GLPI requester when no active user is found by email', async () => {
     const glpiClient = {
       findUsersByEmail: vi.fn().mockResolvedValue([]),
       createRestrictedRequesterUser: vi.fn().mockResolvedValue(77),
@@ -132,14 +132,18 @@ describe('CustomerExperienceService', () => {
       conversationId: 'conv-1',
     });
 
-    expect(result).toEqual({ status: 'created_restricted', glpiUserId: 77, created: true });
-    expect(glpiClient.createRestrictedRequesterUser).toHaveBeenCalledWith({
-      email: 'maria@example.com',
-      requesterName: 'Maria Silva',
-      companyName: 'Etica',
-      phoneE164: '+5541999999999',
-      entitiesId: 54,
-    });
+    expect(result).toEqual({ status: 'not_found', glpiUserId: null, created: false });
+    expect(glpiClient.createRestrictedRequesterUser).not.toHaveBeenCalled();
+    expect(contactProfileService.saveProfileData).toHaveBeenCalledWith(
+      '+5541999999999',
+      expect.objectContaining({
+        glpi_user_id: null,
+        glpi_user_link_status: 'not_found',
+        glpi_user_link_source: 'manual_required',
+        glpi_user_created_by_integaglpi: false,
+      }),
+      'conv-1',
+    );
   });
 
   it('does not create a GLPI user before a real entity exists', async () => {

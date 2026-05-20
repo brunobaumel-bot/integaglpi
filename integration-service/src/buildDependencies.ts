@@ -18,6 +18,7 @@ import { BusinessHoursService } from './domain/services/BusinessHoursService.js'
 import { ContactEntityResolutionService } from './domain/services/ContactEntityResolutionService.js';
 import { ContactProfileService } from './domain/services/ContactProfileService.js';
 import { CustomerExperienceService } from './domain/services/CustomerExperienceService.js';
+import { ContactAgendaImportService } from './domain/services/ContactAgendaImportService.js';
 import { EntitySelectionService } from './domain/services/EntitySelectionService.js';
 import { ConversationSoftCloseService } from './domain/services/ConversationSoftCloseService.js';
 import { AiSupervisorService } from './domain/services/AiSupervisorService.js';
@@ -25,6 +26,7 @@ import { postgresPool } from './infra/db/postgres.js';
 import { ResilientHttpClient } from './infra/http/ResilientHttpClient.js';
 import { PostgresContactEntityMemoryRepository } from './repositories/postgres/PostgresContactEntityMemoryRepository.js';
 import { PostgresContactProfileRepository } from './repositories/postgres/PostgresContactProfileRepository.js';
+import { PostgresContactAgendaImportRepository } from './repositories/postgres/PostgresContactAgendaImportRepository.js';
 import { PostgresContactRepository } from './repositories/postgres/PostgresContactRepository.js';
 import { PostgresConversationRepository } from './repositories/postgres/PostgresConversationRepository.js';
 import { PostgresMessageRepository } from './repositories/postgres/PostgresMessageRepository.js';
@@ -54,12 +56,18 @@ export function buildDependencies() {
   const settingsRepository = new PostgresSettingsRepository(postgresPool);
   const contactEntityMemoryRepository = new PostgresContactEntityMemoryRepository(postgresPool);
   const contactProfileRepository = new PostgresContactProfileRepository(postgresPool);
+  const contactAgendaImportRepository = new PostgresContactAgendaImportRepository(postgresPool);
   const solutionActionRepository = new PostgresSolutionActionRepository(postgresPool);
   const auditEventRepository = new PostgresAuditEventRepository(postgresPool);
   const aiQualityAnalysisRepository = new PostgresAiQualityAnalysisRepository(postgresPool);
   const messageFlowRepository = new PostgresMessageFlowRepository(postgresPool);
   const qualityDashboardService = new QualityDashboardService(postgresPool, redisClient);
   const auditService = new AuditService(auditEventRepository);
+  const contactAgendaImportService = new ContactAgendaImportService(
+    contactAgendaImportRepository,
+    auditService,
+    keyLock,
+  );
   const operationalIntegrityAuditService = new OperationalIntegrityAuditService(postgresPool, auditService);
   const settingsService = new SettingsService(settingsRepository);
   const messageConfigurationService = new MessageConfigurationService(messageFlowRepository);
@@ -167,6 +175,7 @@ export function buildDependencies() {
     inactivityAutomationService,
     aiSupervisorService,
     qualityDashboardService,
+    contactAgendaImportService,
     integrationServiceApiKey: env.INTEGRATION_SERVICE_API_KEY,
     glpiClient,
     metaClient,

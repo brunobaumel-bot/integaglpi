@@ -7,6 +7,7 @@ import type { EntitySelectionService } from './domain/services/EntitySelectionSe
 import type { ConversationSoftCloseService } from './domain/services/ConversationSoftCloseService.js';
 import type { AuditService } from './domain/services/AuditService.js';
 import type { AiSupervisorService } from './domain/services/AiSupervisorService.js';
+import type { ContactAgendaImportService } from './domain/services/ContactAgendaImportService.js';
 import type { GlpiClient } from './adapters/glpi/GlpiClient.js';
 import type { QualityDashboardService } from './services/QualityDashboardService.js';
 import { createOpsDiagnosticsController, healthController } from './controllers/healthController.js';
@@ -15,6 +16,12 @@ import { createAiQualityFeedbackController } from './controllers/createAiQuality
 import { createQualityDashboardController } from './controllers/createQualityDashboardController.js';
 import { createGlpiOutboundMessageController } from './controllers/createGlpiOutboundMessageController.js';
 import { createGlpiTicketSolvedNotificationController } from './controllers/createGlpiTicketSolvedNotificationController.js';
+import {
+  createContactAgendaImportConfirmController,
+  createContactAgendaImportPreviewController,
+  createContactAgendaImportRollbackController,
+  createContactAgendaImportStatusController,
+} from './controllers/createContactAgendaImportController.js';
 import {
   createConversationEntityController,
   createConversationEntityStatusController,
@@ -28,6 +35,7 @@ import { createMetaWebhookSignatureMiddleware } from './middleware/createMetaWeb
 import { postgresPool } from './infra/db/postgres.js';
 
 const OUTBOUND_MEDIA_JSON_LIMIT = '30mb';
+const CONTACT_AGENDA_IMPORT_JSON_LIMIT = '5mb';
 
 export interface AppDependencies {
   inboundWebhookService: InboundWebhookService;
@@ -41,6 +49,7 @@ export interface AppDependencies {
   auditService?: AuditService;
   aiSupervisorService?: AiSupervisorService;
   qualityDashboardService?: QualityDashboardService;
+  contactAgendaImportService?: ContactAgendaImportService;
 }
 
 function createJsonParser(options: { limit?: string } = {}) {
@@ -57,7 +66,13 @@ export function createApp(dependencies: AppDependencies) {
   const defaultJsonParser = createJsonParser();
 
   app.use((req, res, next) => {
-    if (req.method === 'POST' && req.path === '/internal/glpi/messages/outbound') {
+    if (
+      req.method === 'POST'
+      && (
+        req.path === '/internal/glpi/messages/outbound'
+        || req.path.startsWith('/internal/glpi/contact-agenda/import')
+      )
+    ) {
       next();
       return;
     }
@@ -107,6 +122,32 @@ export function createApp(dependencies: AppDependencies) {
       '/internal/glpi/quality-dashboard',
       createInternalBearerMiddleware(dependencies.integrationServiceApiKey),
       createQualityDashboardController(dependencies.qualityDashboardService),
+    );
+  }
+  if (dependencies.contactAgendaImportService) {
+    const internalAuth = createInternalBearerMiddleware(dependencies.integrationServiceApiKey);
+    app.post(
+      '/internal/glpi/contact-agenda/import/preview',
+      internalAuth,
+      createJsonParser({ limit: CONTACT_AGENDA_IMPORT_JSON_LIMIT }),
+      createContactAgendaImportPreviewController(dependencies.contactAgendaImportService),
+    );
+    app.post(
+      '/internal/glpi/contact-agenda/import/:batch_id/confirm',
+      internalAuth,
+      createJsonParser({ limit: CONTACT_AGENDA_IMPORT_JSON_LIMIT }),
+      createContactAgendaImportConfirmController(dependencies.contactAgendaImportService),
+    );
+    app.get(
+      '/internal/glpi/contact-agenda/import/:batch_id',
+      internalAuth,
+      createContactAgendaImportStatusController(dependencies.contactAgendaImportService),
+    );
+    app.post(
+      '/internal/glpi/contact-agenda/import/:batch_id/rollback',
+      internalAuth,
+      createJsonParser({ limit: CONTACT_AGENDA_IMPORT_JSON_LIMIT }),
+      createContactAgendaImportRollbackController(dependencies.contactAgendaImportService),
     );
   }
   app.post(

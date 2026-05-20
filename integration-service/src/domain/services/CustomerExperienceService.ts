@@ -4,11 +4,11 @@ import { logger } from '../../infra/logger/logger.js';
 
 export type GlpiUserResolutionStatus =
   | 'linked_existing'
-  | 'created_restricted'
   | 'existing_link_preserved'
   | 'email_missing'
   | 'email_invalid'
   | 'entity_required'
+  | 'not_found'
   | 'ambiguous'
   | 'inactive'
   | 'failed';
@@ -50,7 +50,7 @@ function maskPhone(phoneE164: string): string {
 
 export class CustomerExperienceService {
   public constructor(
-    private readonly glpiClient: Pick<GlpiClient, 'findUsersByEmail' | 'createRestrictedRequesterUser'>,
+    private readonly glpiClient: Pick<GlpiClient, 'findUsersByEmail'>,
     private readonly contactProfileService: Pick<ContactProfileService, 'normalizeEmail' | 'saveProfileData'>,
   ) {}
 
@@ -101,16 +101,9 @@ export class CustomerExperienceService {
         return { status: 'inactive', glpiUserId: null, created: false };
       }
 
-      const glpiUserId = await this.glpiClient.createRestrictedRequesterUser({
-        email: normalizedEmail,
-        requesterName: profile.requester_name ?? null,
-        companyName: profile.company_name_raw ?? null,
-        phoneE164: input.phoneE164,
-        entitiesId,
-      });
-      await this.persistLinkState(input.phoneE164, profile, 'created_restricted', glpiUserId, true, input.conversationId);
-      this.logResolution('created_restricted', input, normalizedEmail, glpiUserId);
-      return { status: 'created_restricted', glpiUserId, created: true };
+      await this.persistLinkState(input.phoneE164, profile, 'not_found', null, false, input.conversationId);
+      this.logResolution('not_found', input, normalizedEmail, null);
+      return { status: 'not_found', glpiUserId: null, created: false };
     } catch (error: unknown) {
       await this.persistLinkState(input.phoneE164, profile, 'failed', null, false, input.conversationId);
       logger.warn(
