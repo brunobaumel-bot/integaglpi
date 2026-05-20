@@ -6,7 +6,11 @@ import {
   parseReminderMinutes,
   type InactivityConfig,
 } from '../src/domain/services/InactivityAutomationService.js';
-import type { InactivityTrackingRecord, InactivityTrackingRepository } from '../src/repositories/contracts/InactivityTrackingRepository.js';
+import type {
+  InactivityTrackingRecord,
+  InactivityTrackingRepository,
+  ProfileCollectionReminderCandidate,
+} from '../src/repositories/contracts/InactivityTrackingRepository.js';
 
 const baseNow = new Date('2026-05-15T15:00:00.000Z');
 
@@ -26,12 +30,12 @@ function makeRecord(overrides: Partial<InactivityTrackingRecord> = {}): Inactivi
     reminder3SentAt: null,
     autocloseAttemptedAt: null,
     autocloseCompletedAt: null,
-    lastClientActivityAt: minutesAgo(40),
-    lastOutboundActivityAt: minutesAgo(4),
+    lastClientActivityAt: minutesAgo(200),
+    lastOutboundActivityAt: minutesAgo(124),
     manualHoldUntil: null,
     manualHoldReason: null,
     skipReason: null,
-    updatedAt: minutesAgo(4),
+    updatedAt: minutesAgo(124),
     ...overrides,
   };
 }
@@ -50,11 +54,18 @@ class FakeRepository implements InactivityTrackingRepository {
   public failed: Array<{ conversationId: string; reason: string }> = [];
   public autocloseAttempted: string[] = [];
   public autocloseCompleted: string[] = [];
+  public profileReminderCandidates: ProfileCollectionReminderCandidate[] = [];
+  public profileRemindersMarked: Array<{ conversationId: string; step: string; sentAt: Date }> = [];
+  public profileReminderMarkResult = true;
 
   public async trackOutboundActivity(): Promise<void> {}
 
   public async findDueCandidates(): Promise<InactivityTrackingRecord[]> {
     return [...this.records.values()];
+  }
+
+  public async findProfileCollectionReminderCandidates(): Promise<ProfileCollectionReminderCandidate[]> {
+    return this.profileReminderCandidates;
   }
 
   public async findByConversationId(conversationId: string): Promise<InactivityTrackingRecord | null> {
@@ -71,6 +82,15 @@ class FakeRepository implements InactivityTrackingRepository {
         [`reminder${reminderNumber}SentAt`]: sentAt,
       });
     }
+  }
+
+  public async markProfileCollectionReminderSent(
+    conversationId: string,
+    step: string,
+    sentAt: Date,
+  ): Promise<boolean> {
+    this.profileRemindersMarked.push({ conversationId, step, sentAt });
+    return this.profileReminderMarkResult;
   }
 
   public async tryMarkAutocloseAttempted(conversationId: string): Promise<boolean> {
@@ -135,6 +155,7 @@ function createService(
         idempotent: false,
       },
     }),
+    sendProfileCollectionReminder: vi.fn(),
   };
   const glpiClient = {
     getTicketStatus: vi.fn().mockResolvedValue('open'),
@@ -165,26 +186,34 @@ describe('decideInactivityAction', () => {
   });
 
   it('schedules reminders and autoclose only when due and safe', () => {
-    expect(decideInactivityAction(makeRecord({ lastOutboundActivityAt: minutesAgo(4) }), config, baseNow).action)
+    expect(decideInactivityAction(makeRecord({ lastOutboundActivityAt: minutesAgo(124) }), config, baseNow).action)
       .toBe('SEND_REMINDER_1');
     expect(decideInactivityAction(makeRecord({
-      lastOutboundActivityAt: minutesAgo(6),
+      lastOutboundActivityAt: minutesAgo(126),
       reminder1SentAt: minutesAgo(3),
       status: 'reminder_1_sent',
     }), config, baseNow).action).toBe('SEND_REMINDER_2');
     expect(decideInactivityAction(makeRecord({
-      lastOutboundActivityAt: minutesAgo(11),
+      lastOutboundActivityAt: minutesAgo(131),
       reminder1SentAt: minutesAgo(8),
       reminder2SentAt: minutesAgo(5),
       status: 'reminder_2_sent',
     }), config, baseNow).action).toBe('SEND_REMINDER_3');
     expect(decideInactivityAction(makeRecord({
-      lastOutboundActivityAt: minutesAgo(31),
+      lastOutboundActivityAt: minutesAgo(151),
       reminder1SentAt: minutesAgo(28),
       reminder2SentAt: minutesAgo(25),
       reminder3SentAt: minutesAgo(20),
       status: 'reminder_3_sent',
     }), config, baseNow).action).toBe('AUTO_CLOSE');
+  });
+
+  it('does not send reminders while technician activity is recent', () => {
+    expect(decideInactivityAction(makeRecord({ lastOutboundActivityAt: minutesAgo(119) }), config, baseNow))
+      .toMatchObject({
+        action: 'NOOP',
+        reason: 'technician_activity_recent',
+      });
   });
 
   it('skips when client answered, ticket conversation is closed, or manual hold is active', () => {
@@ -212,7 +241,7 @@ describe('InactivityAutomationService', () => {
       recordInactivityJobEvent: vi.fn().mockResolvedValue(undefined),
     };
     const { service, outbound } = createService(
-      makeRecord({ lastOutboundActivityAt: minutesAgo(4) }),
+      makeRecord({ lastOutboundActivityAt: minutesAgo(124) }),
       { ...config, enabled: false },
       messageConfigurationService,
     );
@@ -258,7 +287,7 @@ describe('InactivityAutomationService', () => {
   });
 
   it('sends reminder once through outbound idempotency key', async () => {
-    const { service, repository, outbound } = createService(makeRecord({ lastOutboundActivityAt: minutesAgo(4) }));
+    const { service, repository, outbound } = createService(makeRecord({ lastOutboundActivityAt: minutesAgo(124) }));
 
     await service.runOnce();
 
@@ -267,6 +296,26 @@ describe('InactivityAutomationService', () => {
       idempotency_key: 'inactivity:reminder_1:conv-1:123',
     }), expect.any(Object));
     expect(repository.reminders).toEqual([{ conversationId: 'conv-1', reminderNumber: 1 }]);
+  });
+
+  it('does not send a reminder while technician activity is inside the guard window', async () => {
+    const messageConfigurationService = {
+      recordInactivityJobEvent: vi.fn().mockResolvedValue(undefined),
+    };
+    const { service, repository, outbound } = createService(
+      makeRecord({ lastOutboundActivityAt: minutesAgo(30) }),
+      config,
+      messageConfigurationService,
+    );
+
+    await service.runOnce();
+
+    expect(outbound.send).not.toHaveBeenCalled();
+    expect(repository.reminders).toEqual([]);
+    expect(messageConfigurationService.recordInactivityJobEvent).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'skipped',
+      reason: 'technician_activity_recent',
+    }));
   });
 
   it('does not send free text outside 24h without a template and records the skip reason', async () => {
@@ -289,7 +338,7 @@ describe('InactivityAutomationService', () => {
     const { service, repository, outbound } = createService(
       makeRecord({
         lastClientActivityAt: minutesAgo(25 * 60),
-        lastOutboundActivityAt: minutesAgo(4),
+        lastOutboundActivityAt: minutesAgo(124),
       }),
       config,
       messageConfigurationService,
@@ -329,7 +378,7 @@ describe('InactivityAutomationService', () => {
     const { service, outbound } = createService(
       makeRecord({
         lastClientActivityAt: minutesAgo(25 * 60),
-        lastOutboundActivityAt: minutesAgo(4),
+        lastOutboundActivityAt: minutesAgo(124),
       }),
       config,
       messageConfigurationService,
@@ -345,7 +394,10 @@ describe('InactivityAutomationService', () => {
   });
 
   it('does not send duplicate reminder on second execution after sent marker', async () => {
-    const { service, repository, outbound } = createService(makeRecord({ lastOutboundActivityAt: minutesAgo(4) }));
+    const { service, repository, outbound } = createService(
+      makeRecord({ lastOutboundActivityAt: minutesAgo(124) }),
+      { ...config, reminderMinutes: [3, 200, 300], autocloseMinutes: 400 },
+    );
 
     await service.runOnce();
     await service.runOnce();
@@ -356,7 +408,7 @@ describe('InactivityAutomationService', () => {
 
   it('cancels later actions when client replied', async () => {
     const { service, repository, outbound } = createService(makeRecord({
-      lastOutboundActivityAt: minutesAgo(31),
+      lastOutboundActivityAt: minutesAgo(151),
       lastClientActivityAt: minutesAgo(1),
       reminder1SentAt: minutesAgo(28),
       reminder2SentAt: minutesAgo(25),
@@ -372,7 +424,7 @@ describe('InactivityAutomationService', () => {
   it('does not act while manual hold is active', async () => {
     const { service, repository, outbound } = createService(makeRecord({
       manualHoldUntil: new Date(baseNow.getTime() + 60_000),
-      lastOutboundActivityAt: minutesAgo(31),
+      lastOutboundActivityAt: minutesAgo(151),
     }));
 
     await service.runOnce();
@@ -383,7 +435,7 @@ describe('InactivityAutomationService', () => {
 
   it('solves ticket once after all reminders and final timeout', async () => {
     const { service, repository, glpiClient, outbound } = createService(makeRecord({
-      lastOutboundActivityAt: minutesAgo(31),
+      lastOutboundActivityAt: minutesAgo(151),
       reminder1SentAt: minutesAgo(28),
       reminder2SentAt: minutesAgo(25),
       reminder3SentAt: minutesAgo(20),
@@ -409,7 +461,7 @@ describe('InactivityAutomationService', () => {
 
   it('does not retry autoclose after GLPI solve failure', async () => {
     const { service, repository, glpiClient, outbound } = createService(makeRecord({
-      lastOutboundActivityAt: minutesAgo(31),
+      lastOutboundActivityAt: minutesAgo(151),
       reminder1SentAt: minutesAgo(28),
       reminder2SentAt: minutesAgo(25),
       reminder3SentAt: minutesAgo(20),
@@ -430,7 +482,7 @@ describe('InactivityAutomationService', () => {
 
   it('does not send autoclose notice when an autoclose attempt already exists', async () => {
     const { service, repository, outbound, glpiClient } = createService(makeRecord({
-      lastOutboundActivityAt: minutesAgo(31),
+      lastOutboundActivityAt: minutesAgo(151),
       reminder1SentAt: minutesAgo(28),
       reminder2SentAt: minutesAgo(25),
       reminder3SentAt: minutesAgo(20),
@@ -446,7 +498,7 @@ describe('InactivityAutomationService', () => {
   });
 
   it('skips closed or solved tickets before reminder/autoclose', async () => {
-    const { service, repository, outbound, glpiClient } = createService(makeRecord({ lastOutboundActivityAt: minutesAgo(4) }));
+    const { service, repository, outbound, glpiClient } = createService(makeRecord({ lastOutboundActivityAt: minutesAgo(124) }));
     glpiClient.getTicketStatus.mockResolvedValue('closed');
 
     await service.runOnce();
@@ -457,5 +509,142 @@ describe('InactivityAutomationService', () => {
       status: 'skipped_by_closed_ticket',
       reason: 'ticket_closed_or_solved',
     }]);
+  });
+
+  it('sends one profile collection reminder after five minutes without creating a ticket', async () => {
+    const repository = new FakeRepository();
+    repository.profileReminderCandidates = [{
+      conversationId: 'profile-conv-1',
+      phoneE164: '+5511888887777',
+      profileCollectionState: { step: 'asking_email', requester_name: 'Cliente' },
+      lastMessageAt: minutesAgo(6),
+      updatedAt: minutesAgo(6),
+    }];
+    const outbound = {
+      send: vi.fn(),
+      sendProfileCollectionReminder: vi.fn().mockResolvedValue({
+        httpStatus: 201,
+        body: {
+          status: 'sent',
+          message_id: 'wamid.profile.reminder',
+          conversation_id: 'profile-conv-1',
+          postgres_message_row_id: 'row-profile-1',
+          idempotent: false,
+        },
+      }),
+    };
+    const glpiClient = {
+      getTicketStatus: vi.fn(),
+      solveTicketByInactivity: vi.fn(),
+    };
+    const messageConfigurationService = {
+      resolveSendPlan: vi.fn().mockResolvedValue({
+        eventKey: 'profile_collection_reminder',
+        sendType: 'text',
+        text: 'Ainda precisamos confirmar algumas informações para continuar seu atendimento.',
+        active: true,
+        shouldSend: true,
+        reason: null,
+        templateName: null,
+        language: 'pt_BR',
+        buttons: [],
+        listOptions: [],
+      }),
+      recordAutomationEvent: vi.fn().mockResolvedValue(undefined),
+      recordInactivityJobEvent: vi.fn().mockResolvedValue(undefined),
+    };
+    const auditService = { recordAuditEventFireAndForget: vi.fn() };
+    const service = new InactivityAutomationService(
+      repository,
+      outbound as never,
+      glpiClient as never,
+      auditService as never,
+      config,
+      () => baseNow,
+      messageConfigurationService as never,
+    );
+
+    await service.runOnce();
+
+    expect(outbound.send).not.toHaveBeenCalled();
+    expect(glpiClient.getTicketStatus).not.toHaveBeenCalled();
+    expect(glpiClient.solveTicketByInactivity).not.toHaveBeenCalled();
+    expect(repository.profileRemindersMarked).toHaveLength(1);
+    expect(repository.profileRemindersMarked[0]).toMatchObject({
+      conversationId: 'profile-conv-1',
+      step: 'asking_email',
+    });
+    expect(outbound.sendProfileCollectionReminder).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'profile-conv-1',
+      phoneE164: '+5511888887777',
+      messageType: 'text',
+      idempotencyKey: 'profile_collection_reminder:profile-conv-1:asking_email:2026-05-15T14:54:00.000Z',
+    }), expect.objectContaining({ correlationId: expect.any(String) }));
+    expect(messageConfigurationService.recordInactivityJobEvent).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'profile-conv-1',
+      eventKey: 'profile_collection_reminder',
+      status: 'sent',
+      deliveryStatus: 'sent',
+    }));
+    expect(auditService.recordAuditEventFireAndForget).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'PROFILE_COLLECTION_REMINDER_SENT',
+      ticketId: null,
+      conversationId: 'profile-conv-1',
+    }));
+  });
+
+  it('marks profile reminder cycle once and skips free text outside 24h without a template', async () => {
+    const repository = new FakeRepository();
+    repository.profileReminderCandidates = [{
+      conversationId: 'profile-conv-2',
+      phoneE164: '+5511777766666',
+      profileCollectionState: { step: 'asking_reason' },
+      lastMessageAt: minutesAgo(25 * 60),
+      updatedAt: minutesAgo(25 * 60),
+    }];
+    const outbound = {
+      send: vi.fn(),
+      sendProfileCollectionReminder: vi.fn(),
+    };
+    const messageConfigurationService = {
+      resolveSendPlan: vi.fn().mockResolvedValue({
+        eventKey: 'profile_collection_reminder',
+        sendType: 'text',
+        text: 'Nao enviar fora da janela',
+        active: true,
+        shouldSend: false,
+        reason: 'skipped_missing_template_outside_24h',
+        templateName: null,
+        language: 'pt_BR',
+        buttons: [],
+        listOptions: [],
+      }),
+      recordAutomationEvent: vi.fn().mockResolvedValue(undefined),
+      recordInactivityJobEvent: vi.fn().mockResolvedValue(undefined),
+    };
+    const service = new InactivityAutomationService(
+      repository,
+      outbound,
+      { getTicketStatus: vi.fn(), solveTicketByInactivity: vi.fn() } as never,
+      null,
+      config,
+      () => baseNow,
+      messageConfigurationService as never,
+    );
+
+    await service.runOnce();
+
+    expect(repository.profileRemindersMarked).toHaveLength(1);
+    expect(outbound.sendProfileCollectionReminder).not.toHaveBeenCalled();
+    expect(messageConfigurationService.resolveSendPlan).toHaveBeenCalledWith('profile_collection_reminder', {
+      windowOpen: false,
+      allowTemplateSend: true,
+    });
+    expect(messageConfigurationService.recordInactivityJobEvent).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'profile-conv-2',
+      eventKey: 'profile_collection_reminder',
+      status: 'skipped',
+      reason: 'skipped_missing_template_outside_24h',
+    }));
   });
 });

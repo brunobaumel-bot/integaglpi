@@ -13,27 +13,32 @@ const outboundBaseSchema = z.object({
     .preprocess((value) => (value === '' || value === null || value === undefined ? undefined : value), z.string().min(8).max(256).optional()),
 });
 
+const mediaSchema = (maxBase64Length: number) => z.object({
+  filename: z.string().min(1).max(180),
+  mime_type: z.string().min(3).max(120),
+  content_base64: z.string().min(1).max(maxBase64Length),
+  document_id: z.number().int().positive().optional(),
+});
+
 const outboundBodySchema = z.discriminatedUnion('message_type', [
   outboundBaseSchema.extend({
     message_type: z.literal('text'),
   }),
   outboundBaseSchema.extend({
     message_type: z.literal('document'),
-    media: z.object({
-      filename: z.string().min(1).max(180),
-      mime_type: z.string().min(3).max(120),
-      content_base64: z.string().min(1).max(25_000_000),
-      document_id: z.number().int().positive().optional(),
-    }),
+    media: mediaSchema(25_000_000),
   }),
   outboundBaseSchema.extend({
     message_type: z.literal('image'),
-    media: z.object({
-      filename: z.string().min(1).max(180),
-      mime_type: z.string().min(3).max(120),
-      content_base64: z.string().min(1).max(25_000_000),
-      document_id: z.number().int().positive().optional(),
-    }),
+    media: mediaSchema(25_000_000),
+  }),
+  outboundBaseSchema.extend({
+    message_type: z.literal('audio'),
+    media: mediaSchema(25_000_000),
+  }),
+  outboundBaseSchema.extend({
+    message_type: z.literal('video'),
+    media: mediaSchema(90_000_000),
   }),
 ]);
 

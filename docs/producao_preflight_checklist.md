@@ -23,10 +23,13 @@ Executar antes de qualquer promocao TESTE -> PRODUCAO.
 - [ ] TLS valido.
 - [ ] Cloud sem Git: pacote sera copiado manualmente.
 - [ ] Reconciliacao manual pre-producao concluida conforme `docs/pre_prod_manual_state_reconciliation.md`.
+- [ ] Arquivo MySQL defaults criado fora do repositorio com `scripts/ops/create_mysql_defaults_from_glpi_config.sh`, permissao `0600`, sem senha impressa.
+- [ ] Operador confirmou que nenhum comando de banco usa placeholder literal com `<` ou `>`.
 - [ ] Limites PHP web do GLPI conferidos e registrados.
 - [ ] `scripts/ops/check_php_limits.sh` executado contra sonda autorizada ou diagnostico equivalente.
 - [ ] Backup local de PRODUCAO para `glpi_documenttypes` criado antes de qualquer ajuste.
 - [ ] `scripts/ops/apply_glpi_documenttypes.sh` revisado em dry-run antes de qualquer `--execute`.
+- [ ] `--backup-suffix` unico definido para a janela de producao.
 - [ ] Tipos de documento audio/video conferidos por consulta read-only.
 - [ ] Tabelas PostgreSQL criticas da integracao validadas por consulta read-only.
 - [ ] `scripts/ops/check_integaglpi_postgres_tables.sh` executado em modo read-only ou dry-run revisado.

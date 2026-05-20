@@ -15,7 +15,7 @@ export interface OutboundMessageRequestBody {
   ticket_id: number;
   conversation_id: string;
   text: string;
-  message_type: 'text' | 'document' | 'image' | 'interactive_buttons' | 'interactive_list' | 'template';
+  message_type: 'text' | 'document' | 'image' | 'audio' | 'video' | 'interactive_buttons' | 'interactive_list' | 'template';
   glpi_user_id: number;
   idempotency_key?: string;
   template_name?: string;
@@ -71,6 +71,20 @@ export interface OutboundSendResult {
 
 export interface OutboundSendOptions {
   correlationId?: string;
+}
+
+export interface ProfileCollectionReminderSendInput {
+  conversationId: string;
+  phoneE164: string;
+  text: string;
+  messageType: 'text' | 'interactive_buttons' | 'interactive_list' | 'template';
+  templateName?: string | null;
+  language?: string | null;
+  buttons?: Array<{ id: string; title: string }>;
+  listOptions?: Array<{ id: string; title: string; description?: string }>;
+  idempotencyKey: string;
+  eventKey: string;
+  profileStep: string;
 }
 
 function extractMetaMessageId(body: unknown): string {
@@ -162,7 +176,20 @@ const OUTBOUND_MEDIA_MIME_ALLOWLIST = new Set([
   'image/jpeg',
   'image/png',
   'image/gif',
+  'audio/ogg',
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/aac',
+  'audio/webm',
+  'video/mp4',
+  'video/3gpp',
 ]);
+const OUTBOUND_MEDIA_LIMITS_BYTES: Record<'document' | 'image' | 'audio' | 'video', number> = {
+  document: 15_728_640,
+  image: 15_728_640,
+  audio: 16 * 1024 * 1024,
+  video: 64 * 1024 * 1024,
+};
 const INACTIVITY_AUTOCLOSE_REASON = 'Encerrado por falta de retorno do usuário';
 
 function normalizeMimeType(value: string | undefined): string {
@@ -389,9 +416,14 @@ export class OutboundMessageService {
     const senderPhone = `whatsapp:${this.metaPhoneNumberId}`;
     const toForMeta = digitsOnlyForMeta(recipientPhone);
 
-    if (body.message_type === 'document' || body.message_type === 'image') {
+    if (
+      body.message_type === 'document'
+      || body.message_type === 'image'
+      || body.message_type === 'audio'
+      || body.message_type === 'video'
+    ) {
       return this.sendOutboundMedia({
-        body: body as OutboundMessageRequestBody & { message_type: 'document' | 'image' },
+        body: body as OutboundMessageRequestBody & { message_type: 'document' | 'image' | 'audio' | 'video' },
         conversationId: conversation.id,
         senderPhone,
         recipientPhone,
@@ -556,6 +588,116 @@ export class OutboundMessageService {
         status: 'sent',
         message_id: inserted.messageId,
         conversation_id: conversation.id,
+        postgres_message_row_id: inserted.id,
+        idempotent: false,
+      },
+    };
+  }
+
+  public async sendProfileCollectionReminder(
+    input: ProfileCollectionReminderSendInput,
+    options: OutboundSendOptions = {},
+  ): Promise<OutboundSendResult> {
+    const correlationId = options.correlationId ?? createCorrelationId();
+    const normalizedIdempotency = input.idempotencyKey.trim();
+    const senderPhone = `whatsapp:${this.metaPhoneNumberId}`;
+    const recipientPhone = input.phoneE164;
+    const toForMeta = digitsOnlyForMeta(recipientPhone);
+    const body: OutboundMessageRequestBody = {
+      ticket_id: 0,
+      conversation_id: input.conversationId,
+      text: input.text,
+      message_type: input.messageType,
+      glpi_user_id: 0,
+      idempotency_key: normalizedIdempotency,
+      ...(input.templateName ? { template_name: input.templateName } : {}),
+      ...(input.language ? { language: input.language } : {}),
+      ...(input.buttons ? { buttons: input.buttons } : {}),
+      ...(input.listOptions ? { list_options: input.listOptions } : {}),
+    };
+
+    let messageId: string;
+    let metaResponse: unknown;
+
+    if (this.outboundSendMode === 'mock') {
+      messageId = `mock.wamid.${randomUUID()}`;
+      metaResponse = {
+        mode: 'mock',
+        skipped_meta_api: true,
+      };
+    } else {
+      try {
+        metaResponse = await this.sendConfiguredMetaMessage(body, toForMeta);
+        messageId = extractMetaMessageId(metaResponse);
+      } catch (error: unknown) {
+        const httpStatus = error instanceof GlpiRequestError ? error.statusCode : undefined;
+        const metaBody = error instanceof GlpiRequestError ? error.responseBody : undefined;
+        const metaError = extractMetaError(metaBody);
+        const message = error instanceof Error ? error.message : 'Meta send failed.';
+        logger.error(
+          {
+            conversation_id: input.conversationId,
+            correlation_id: correlationId,
+            event_type: 'PROFILE_COLLECTION_REMINDER_FAILED',
+            status: 'failed',
+            meta_http_status: httpStatus,
+            meta_error: metaError,
+            profile_step: input.profileStep,
+          },
+          '[integration-service][outbound][PROFILE_COLLECTION_REMINDER_FAILED]',
+        );
+
+        return {
+          httpStatus: httpStatus ?? 502,
+          body: {
+            status: 'failed',
+            error_code: 'PROFILE_COLLECTION_REMINDER_FAILED',
+            message,
+            ...(httpStatus ? { meta_http_status: httpStatus } : {}),
+            ...(metaError ? { meta_error: metaError } : {}),
+          },
+        };
+      }
+    }
+
+    const inserted = await this.messageRepository.insertOutbound({
+      messageId,
+      conversationId: input.conversationId,
+      senderPhone,
+      recipientPhone,
+      messageType: input.messageType,
+      messageText: input.text,
+      rawPayload: {
+        automation_event_key: input.eventKey,
+        profile_step: input.profileStep,
+        send_type: input.messageType,
+        template_name: input.templateName ?? null,
+        response: metaResponse,
+      },
+      processingStatus: 'sent',
+      glpiSyncStatus: 'synced',
+      idempotencyKey: normalizedIdempotency,
+    });
+
+    logger.info(
+      {
+        conversation_id: input.conversationId,
+        message_id: inserted.messageId,
+        correlation_id: correlationId,
+        event_type: 'PROFILE_COLLECTION_REMINDER_SENT',
+        status: 'success',
+        postgres_message_row_id: inserted.id,
+        idempotency_key: normalizedIdempotency,
+      },
+      '[integration-service][outbound][PROFILE_COLLECTION_REMINDER_SENT]',
+    );
+
+    return {
+      httpStatus: 201,
+      body: {
+        status: 'sent',
+        message_id: inserted.messageId,
+        conversation_id: input.conversationId,
         postgres_message_row_id: inserted.id,
         idempotent: false,
       },
@@ -958,7 +1100,7 @@ export class OutboundMessageService {
   }
 
   private async sendOutboundMedia(input: {
-    body: OutboundMessageRequestBody & { message_type: 'document' | 'image' };
+    body: OutboundMessageRequestBody & { message_type: 'document' | 'image' | 'audio' | 'video' };
     conversationId: string;
     senderPhone: string;
     recipientPhone: string;
@@ -1007,7 +1149,8 @@ export class OutboundMessageService {
       };
     }
 
-    if (buffer.byteLength === 0 || buffer.byteLength > 15_728_640) {
+    const maxBytes = OUTBOUND_MEDIA_LIMITS_BYTES[body.message_type];
+    if (buffer.byteLength === 0 || buffer.byteLength > maxBytes) {
       logger.warn(
         {
           ticket_id: body.ticket_id,
@@ -1019,6 +1162,7 @@ export class OutboundMessageService {
           mime_type: mimeType,
           filename: media.filename,
           size: buffer.byteLength,
+          max_size: maxBytes,
         },
         '[integration-service][outbound][OUTBOUND_MEDIA_TOO_LARGE]',
       );
@@ -1027,7 +1171,7 @@ export class OutboundMessageService {
         body: {
           status: 'failed',
           error_code: 'MEDIA_SIZE_INVALID',
-          message: 'Outbound media is empty or too large.',
+          message: 'Outbound media is empty or exceeds the WhatsApp size limit.',
         },
       };
     }
@@ -1083,18 +1227,31 @@ export class OutboundMessageService {
           mimeType,
           filename: safeFilename,
         });
-        metaResponse = body.message_type === 'image'
-          ? await this.metaClient.sendImageMessage({
+        if (body.message_type === 'image') {
+          metaResponse = await this.metaClient.sendImageMessage({
             to: toForMeta,
             mediaId: uploadedMediaId,
             caption: body.text,
-          })
-          : await this.metaClient.sendDocumentMessage({
+          });
+        } else if (body.message_type === 'audio') {
+          metaResponse = await this.metaClient.sendAudioMessage({
+            to: toForMeta,
+            mediaId: uploadedMediaId,
+          });
+        } else if (body.message_type === 'video') {
+          metaResponse = await this.metaClient.sendVideoMessage({
+            to: toForMeta,
+            mediaId: uploadedMediaId,
+            caption: body.text,
+          });
+        } else {
+          metaResponse = await this.metaClient.sendDocumentMessage({
             to: toForMeta,
             mediaId: uploadedMediaId,
             filename: safeFilename,
             caption: body.text,
           });
+        }
         messageId = extractMetaMessageId(metaResponse);
       } catch (error: unknown) {
         logger.error(

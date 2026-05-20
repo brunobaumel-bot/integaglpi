@@ -68,7 +68,7 @@ describe('PHP solved-ticket notification source', () => {
 
     expect(source).toContain('Não consegui enviar o anexo pelo WhatsApp. Acesse o GLPI para visualizar o arquivo.');
     expect(source).toContain('porque o arquivo excede o limite permitido');
-    expect(source).toContain('porque o tipo de arquivo não é suportado');
+    expect(source).toContain('Formato de arquivo não suportado para envio via WhatsApp.');
     expect(source).toContain('$mediaPayload !== null');
   });
 

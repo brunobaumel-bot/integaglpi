@@ -41,6 +41,7 @@ Objetivo: orientar validação e resposta operacional sem alterar código, banco
 - Falha GLPI: verificar initSession, permissão e status da API.
 - Falha de delivery: verificar WAMID local, evento Meta e linha de delivery.
 - Conversa presa sem ticket: em TESTE, usar `Encerrar administrativamente` na Central apenas com operador autorizado, motivo claro e evidência. Em PRODUÇÃO, executar somente após aprovação humana do turno e confirmar que não há ticket GLPI vinculado.
+- Pré-ticket incompleto: verificar na Central os campos respondidos, campos pendentes e próxima ação. Após 5 minutos sem resposta, o job de inatividade deve registrar o ciclo e enviar no máximo um lembrete configurável por parada.
 - Runtime divergente: bloquear promoção e validar pacote/build_id.
 
 ## Encerramento Administrativo de Conversa Presa
@@ -50,6 +51,13 @@ Objetivo: orientar validação e resposta operacional sem alterar código, banco
 - Confirmar que a ação não envia WhatsApp, não cria ticket e não altera ticket GLPI.
 - Após executar, validar que a conversa saiu da lista ativa e que a auditoria registrou operador, motivo, status anterior e novo status.
 - Se a ação for bloqueada por ticket, atividade recente, status terminal ou lock, não usar SQL manual; coletar evidência sanitizada e escalar.
+
+## Pré-ticket Incompleto
+
+- A Central deve mostrar dados já informados pelo cliente, campos pendentes e a próxima ação recomendada.
+- O lembrete `profile_collection_reminder` é enviado pelo job existente de inatividade, sem scheduler novo.
+- Fora da janela WhatsApp 24h, texto livre não deve ser enviado; se não houver template local configurado, registrar `skip_reason` e aguardar retorno do cliente.
+- Nunca criar ticket automaticamente enquanto houver campos obrigatórios pendentes.
 
 ## Coleta de Evidências
 

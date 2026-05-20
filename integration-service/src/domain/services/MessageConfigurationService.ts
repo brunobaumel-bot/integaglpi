@@ -50,6 +50,12 @@ export const MESSAGE_EVENT_DEFAULTS: Record<string, { group: string; description
   profile_reason_prompt: { group: 'Coleta de Perfil', description: 'Solicita motivo', text: 'Descreva resumidamente o problema.', expectsResponse: true },
   profile_confirmation_prompt: { group: 'Coleta de Perfil', description: 'Confirma dados coletados', text: 'Confirma as informações para abrir o chamado?', expectsResponse: true },
   profile_confirmed_message: { group: 'Coleta de Perfil', description: 'Perfil confirmado', text: 'Dados registrados. Vamos abrir seu chamado.' },
+  profile_collection_reminder: {
+    group: 'Coleta de Perfil',
+    description: 'Lembrete unico de pre-ticket incompleto',
+    text: 'Ainda precisamos confirmar algumas informações para continuar seu atendimento. Por favor, responda as perguntas pendentes para seguirmos.',
+    expectsResponse: true,
+  },
   awaiting_entity_message: { group: 'Ticket e Solução', description: 'Aguardando seleção de entidade', text: 'Recebemos as suas informações, em breve um técnico seguirá com o atendimento.' },
   ticket_created_message: { group: 'Ticket e Solução', description: 'Chamado criado', text: 'Seu chamado #{ticket_id} foi aberto.' },
   ticket_updated_message: { group: 'Ticket e Solução', description: 'Chamado atualizado', text: 'Atualizamos seu chamado com a nova mensagem.' },

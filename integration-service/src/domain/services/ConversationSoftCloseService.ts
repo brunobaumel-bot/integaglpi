@@ -64,22 +64,12 @@ function statusOf(conversation: Conversation): string {
   return String(conversation.status || '').trim();
 }
 
-function latestActivityAt(conversation: Conversation): Date {
+function lastCustomerActivityAt(conversation: Conversation): Date | null {
   const lastMessageAt = conversation.lastMessageAt instanceof Date
     ? conversation.lastMessageAt
     : new Date(conversation.lastMessageAt);
-  const updatedAt = conversation.updatedAt instanceof Date
-    ? conversation.updatedAt
-    : new Date(conversation.updatedAt);
 
-  if (Number.isNaN(updatedAt.getTime())) {
-    return lastMessageAt;
-  }
-  if (Number.isNaN(lastMessageAt.getTime())) {
-    return updatedAt;
-  }
-
-  return updatedAt.getTime() > lastMessageAt.getTime() ? updatedAt : lastMessageAt;
+  return Number.isNaN(lastMessageAt.getTime()) ? null : lastMessageAt;
 }
 
 export class ConversationSoftCloseService {
@@ -233,13 +223,19 @@ export class ConversationSoftCloseService {
       );
     }
 
-    const inactiveForMs = this.now().getTime() - latestActivityAt(conversation).getTime();
+    const lastCustomerActivity = lastCustomerActivityAt(conversation);
+    const inactiveForMs = lastCustomerActivity === null
+      ? Number.NaN
+      : this.now().getTime() - lastCustomerActivity.getTime();
     if (!Number.isFinite(inactiveForMs) || inactiveForMs < this.minimumInactiveMs) {
       throw new ConversationSoftCloseError(
         409,
         'CONVERSATION_RECENT_ACTIVITY',
         'Conversa com atividade recente não pode ser encerrada administrativamente.',
-        { minimum_inactive_seconds: Math.ceil(this.minimumInactiveMs / 1000) },
+        {
+          activity_source: 'last_message_at',
+          minimum_inactive_seconds: Math.ceil(this.minimumInactiveMs / 1000),
+        },
       );
     }
   }

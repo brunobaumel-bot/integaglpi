@@ -68,11 +68,64 @@ $operationalFilterMap = [
 <link rel="stylesheet" type="text/css" href="<?= $this->escape($whatsappCssUrl); ?>">
 
 <style>
+.itg-central-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    height: calc(100vh - 110px);
+    min-height: 660px;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.itg-central-toolbar {
+    flex: 0 0 auto;
+    background: #fff;
+    border: 1px solid rgba(98, 105, 118, 0.16);
+    border-radius: 14px;
+    box-shadow: 0 10px 28px rgba(24, 36, 51, 0.06);
+    padding: 0.5rem 0.75rem;
+}
+
+.itg-central-toolbar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0;
+}
+
+.itg-central-filter-panel {
+    margin-top: 0.4rem;
+}
+
+.itg-central-filter-panel > summary {
+    align-items: center;
+    cursor: pointer;
+    display: inline-flex;
+    gap: 0.35rem;
+    min-height: 1.75rem;
+}
+
+.itg-central-filter-panel > summary::marker {
+    font-size: 0.8rem;
+}
+
+.itg-central-filter-panel[open] .itg-conversation-filters {
+    margin-top: 0.5rem;
+}
+
 .itg-central-shell {
     display: grid;
     grid-template-columns: minmax(300px, 0.9fr) minmax(420px, 1.35fr) minmax(260px, 0.75fr);
+    grid-auto-rows: minmax(0, 1fr);
     gap: 1rem;
-    min-height: 72vh;
+    align-items: stretch;
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
 }
 
 .itg-panel {
@@ -80,7 +133,9 @@ $operationalFilterMap = [
     border: 1px solid rgba(98, 105, 118, 0.16);
     border-radius: 14px;
     box-shadow: 0 10px 28px rgba(24, 36, 51, 0.06);
+    height: 100%;
     min-height: 0;
+    min-width: 0;
     overflow: hidden;
 }
 
@@ -93,10 +148,35 @@ $operationalFilterMap = [
     padding: 1rem;
 }
 
+.itg-conversation-panel .itg-panel-header {
+    padding: 0.5rem 0.75rem;
+}
+
+.itg-conversation-panel,
+.itg-chat-panel,
+.itg-context-panel {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+}
+
+.itg-conversation-panel .itg-panel-header,
+.itg-conversation-filters,
+.itg-conversation-pagination {
+    flex: 0 0 auto;
+}
+
 .itg-conversation-list {
-    max-height: calc(72vh - 230px);
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
     overflow-y: auto;
-    padding: 0.75rem;
+    padding: 0.6rem 0.65rem;
+}
+
+.itg-conversation-pagination {
+    background: #fff;
 }
 
 .itg-conversation-table,
@@ -109,7 +189,7 @@ $operationalFilterMap = [
 
 .itg-conversation-table {
     border-collapse: separate;
-    border-spacing: 0 0.7rem;
+    border-spacing: 0 0.5rem;
 }
 
 .itg-conversation-table thead {
@@ -138,7 +218,7 @@ $operationalFilterMap = [
 }
 
 .itg-card {
-    padding: 0.9rem;
+    padding: 0.75rem;
 }
 
 .itg-card-title {
@@ -156,19 +236,20 @@ $operationalFilterMap = [
     gap: 0.35rem;
 }
 
-.itg-chat-panel {
-    display: flex;
-    flex-direction: column;
-}
-
 .itg-chat-body {
     background:
         radial-gradient(circle at 12% 20%, rgba(32, 107, 196, 0.08), transparent 30%),
         linear-gradient(180deg, #f8fafc 0%, #eef3f8 100%);
     flex: 1;
-    min-height: 420px;
+    min-height: 0;
     overflow-y: auto;
     padding: 1rem;
+}
+
+.itg-context-panel .itg-panel-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
 }
 
 .itg-context-list {
@@ -187,39 +268,63 @@ $operationalFilterMap = [
     pointer-events: none;
 }
 
-@media (max-width: 1199px) {
+@media (max-width: 991px) {
+    .itg-central-layout {
+        height: auto;
+        min-height: 0;
+        overflow: visible;
+    }
+
+    .itg-central-toolbar-header {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
     .itg-central-shell {
         grid-template-columns: 1fr;
+        height: auto;
+        min-height: 0;
+    }
+
+    .itg-conversation-panel,
+    .itg-chat-panel,
+    .itg-context-panel {
+        height: auto;
+        min-height: 0;
     }
 
     .itg-conversation-list,
-    .itg-chat-body {
+    .itg-chat-body,
+    .itg-context-panel .itg-panel-body {
         max-height: none;
+        overflow-y: visible;
     }
 }
 </style>
 
-<div class="itg-central-shell">
-    <aside class="itg-panel">
-        <div class="itg-panel-header">
-            <div class="d-flex justify-content-between align-items-start gap-2">
-                <div>
-                    <h2 class="h4 mb-1"><?= $this->escape(__('Console Operacional 2.0', 'glpiintegaglpi')); ?></h2>
-                    <small class="text-muted js-integaglpi-central-refreshed-at"></small>
-                </div>
-                <div class="d-flex gap-2 align-items-center">
-                    <button type="button" class="btn btn-sm btn-outline-secondary js-integaglpi-central-refresh">
-                        <?= $this->escape(__('Atualizar', 'glpiintegaglpi')); ?>
-                    </button>
-                    <span class="badge bg-secondary js-integaglpi-central-total">
-                        <?= $total; ?> <?= $this->escape(__('conversas', 'glpiintegaglpi')); ?>
-                    </span>
-                </div>
+<div class="itg-central-layout">
+    <div class="itg-central-toolbar">
+        <div class="itg-central-toolbar-header">
+            <div>
+                <h2 class="h6 mb-0"><?= $this->escape(__('Central WhatsApp', 'glpiintegaglpi')); ?></h2>
+                <small class="text-muted js-integaglpi-central-refreshed-at"></small>
+            </div>
+            <div class="d-flex gap-2 align-items-center">
+                <span class="small text-muted d-none js-integaglpi-central-refresh-message"></span>
+                <button type="button" class="btn btn-sm btn-outline-secondary js-integaglpi-central-refresh">
+                    <?= $this->escape(__('Atualizar', 'glpiintegaglpi')); ?>
+                </button>
+                <span class="badge bg-secondary js-integaglpi-central-total">
+                    <?= $total; ?> <?= $this->escape(__('conversas', 'glpiintegaglpi')); ?>
+                </span>
             </div>
         </div>
 
-        <div class="itg-panel-body">
-            <div class="alert d-none js-integaglpi-central-refresh-message mb-3"></div>
+        <details class="itg-central-filter-panel">
+            <summary class="btn btn-sm btn-outline-secondary">
+                <?= $this->escape(__('Filtros', 'glpiintegaglpi')); ?>
+            </summary>
+            <div class="itg-conversation-filters">
 
             <?php if ($error !== '') { ?>
                 <div class="alert alert-warning mb-3">
@@ -239,11 +344,11 @@ $operationalFilterMap = [
                 </div>
             <?php } ?>
 
-            <form method="get" action="<?= $this->escape($this->getCentralUrl()); ?>" class="mb-3 js-integaglpi-central-filter-form">
-                <div class="row g-2">
-                    <div class="col-6">
-                        <label class="form-label"><?= $this->escape(__('Status', 'glpiintegaglpi')); ?></label>
-                        <select name="status" class="form-select">
+            <form method="get" action="<?= $this->escape($this->getCentralUrl()); ?>" class="mb-2 js-integaglpi-central-filter-form">
+                <div class="row g-2 align-items-end">
+                    <div class="col-6 col-xl-2">
+                        <label class="form-label small mb-1"><?= $this->escape(__('Status', 'glpiintegaglpi')); ?></label>
+                        <select name="status" class="form-select form-select-sm">
                             <option value=""><?= $this->escape(__('Todos os status', 'glpiintegaglpi')); ?></option>
                             <?php foreach ($allowedStatuses as $status) { ?>
                                 <?php $statusValue = (string) $status; ?>
@@ -253,21 +358,9 @@ $operationalFilterMap = [
                             <?php } ?>
                         </select>
                     </div>
-                    <div class="col-6">
-                        <label class="form-label"><?= $this->escape(__('Queue', 'glpiintegaglpi')); ?></label>
-                        <select name="queue_id" class="form-select">
-                            <option value="0"><?= $this->escape(__('All queues', 'glpiintegaglpi')); ?></option>
-                            <?php foreach ($queues as $queue) { ?>
-                                <?php $queueId = (int) ($queue['id'] ?? 0); ?>
-                                <option value="<?= $queueId; ?>" <?= (int) ($filters['queue_id'] ?? 0) === $queueId ? "selected='selected'" : ''; ?>>
-                                    <?= $this->escape((string) ($queue['name'] ?? ('#' . $queueId))); ?>
-                                </option>
-                            <?php } ?>
-                        </select>
-                    </div>
-                    <div class="col-6">
-                        <label class="form-label"><?= $this->escape(__('Técnico', 'glpiintegaglpi')); ?></label>
-                        <select name="technician_id" class="form-select">
+                    <div class="col-6 col-xl-2">
+                        <label class="form-label small mb-1"><?= $this->escape(__('Técnico', 'glpiintegaglpi')); ?></label>
+                        <select name="technician_id" class="form-select form-select-sm">
                             <option value="0"><?= $this->escape(__('Todos os técnicos', 'glpiintegaglpi')); ?></option>
                             <?php foreach ($technicians as $technician) { ?>
                                 <?php $technicianId = (int) ($technician['id'] ?? 0); ?>
@@ -278,9 +371,9 @@ $operationalFilterMap = [
                             <?php } ?>
                         </select>
                     </div>
-                    <div class="col-6">
-                        <label class="form-label"><?= $this->escape(__('Entidade', 'glpiintegaglpi')); ?></label>
-                        <select name="entity_id" class="form-select">
+                    <div class="col-6 col-xl-2">
+                        <label class="form-label small mb-1"><?= $this->escape(__('Entidade', 'glpiintegaglpi')); ?></label>
+                        <select name="entity_id" class="form-select form-select-sm">
                             <option value="0"><?= $this->escape(__('Todas permitidas', 'glpiintegaglpi')); ?></option>
                             <?php foreach ($glpiEntities as $entity) { ?>
                                 <?php $entityId = (int) ($entity['id'] ?? 0); ?>
@@ -291,79 +384,107 @@ $operationalFilterMap = [
                             <?php } ?>
                         </select>
                     </div>
-                    <div class="col-6">
-                        <label class="form-label"><?= $this->escape(__('Janela 24h', 'glpiintegaglpi')); ?></label>
-                        <select name="window_status" class="form-select">
-                            <option value=""><?= $this->escape(__('Todas', 'glpiintegaglpi')); ?></option>
-                            <?php foreach ($windowFilterMap as $value => $label) { ?>
-                                <option value="<?= $this->escape($value); ?>" <?= (string) ($filters['window_status'] ?? '') === $value ? "selected='selected'" : ''; ?>>
-                                    <?= $this->escape((string) $label); ?>
-                                </option>
-                            <?php } ?>
-                        </select>
-                    </div>
-                    <div class="col-6">
-                        <label class="form-label"><?= $this->escape(__('Inatividade', 'glpiintegaglpi')); ?></label>
-                        <select name="inactivity" class="form-select">
-                            <option value=""><?= $this->escape(__('Todas', 'glpiintegaglpi')); ?></option>
-                            <?php foreach ($inactivityFilterMap as $value => $label) { ?>
-                                <option value="<?= $this->escape($value); ?>" <?= (string) ($filters['inactivity'] ?? '') === $value ? "selected='selected'" : ''; ?>>
-                                    <?= $this->escape((string) $label); ?>
-                                </option>
-                            <?php } ?>
-                        </select>
-                    </div>
-                    <div class="col-6">
-                        <label class="form-label"><?= $this->escape(__('Delivery', 'glpiintegaglpi')); ?></label>
-                        <select name="delivery" class="form-select">
-                            <option value=""><?= $this->escape(__('Todos', 'glpiintegaglpi')); ?></option>
-                            <?php foreach ($deliveryFilterMap as $value => $label) { ?>
-                                <option value="<?= $this->escape($value); ?>" <?= (string) ($filters['delivery'] ?? '') === $value ? "selected='selected'" : ''; ?>>
-                                    <?= $this->escape((string) $label); ?>
-                                </option>
-                            <?php } ?>
-                        </select>
-                    </div>
-                    <div class="col-6">
-                        <label class="form-label"><?= $this->escape(__('Operacional', 'glpiintegaglpi')); ?></label>
-                        <select name="operational_state" class="form-select">
-                            <option value=""><?= $this->escape(__('Todos', 'glpiintegaglpi')); ?></option>
-                            <?php foreach ($operationalFilterMap as $value => $label) { ?>
-                                <option value="<?= $this->escape($value); ?>" <?= (string) ($filters['operational_state'] ?? '') === $value ? "selected='selected'" : ''; ?>>
-                                    <?= $this->escape((string) $label); ?>
-                                </option>
-                            <?php } ?>
-                        </select>
-                    </div>
-                    <div class="col-8">
-                        <label class="form-label"><?= $this->escape(__('Phone or ticket', 'glpiintegaglpi')); ?></label>
+                    <div class="col-12 col-xl-4">
+                        <label class="form-label small mb-1"><?= $this->escape(__('Telefone ou ticket', 'glpiintegaglpi')); ?></label>
                         <input
                             type="search"
                             name="search"
-                            class="form-control"
+                            class="form-control form-control-sm"
                             value="<?= $this->escape((string) ($filters['search'] ?? '')); ?>"
                             placeholder="<?= $this->escape(__('Phone or ticket ID', 'glpiintegaglpi')); ?>"
                         >
                     </div>
-                    <div class="col-4">
-                        <label class="form-label"><?= $this->escape(__('Limit', 'glpiintegaglpi')); ?></label>
-                        <select name="limit" class="form-select">
-                            <?php foreach ($limitOptions as $limitOption) { ?>
-                                <?php $limitValue = (int) $limitOption; ?>
-                                <option value="<?= $limitValue; ?>" <?= $currentLimit === $limitValue ? "selected='selected'" : ''; ?>>
-                                    <?= $limitValue; ?>
-                                </option>
-                            <?php } ?>
-                        </select>
-                    </div>
-                    <div class="col-12">
-                        <button type="submit" class="btn btn-primary w-100">
+                    <div class="col-12 col-xl-2">
+                        <button type="submit" class="btn btn-sm btn-primary w-100">
                             <?= $this->escape(__('Filter', 'glpiintegaglpi')); ?>
                         </button>
                     </div>
+                    <div class="col-12">
+                        <details class="mt-1">
+                            <summary class="small text-muted"><?= $this->escape(__('Mais filtros', 'glpiintegaglpi')); ?></summary>
+                            <div class="row g-2 mt-1">
+                                <div class="col-6">
+                                    <label class="form-label small mb-1"><?= $this->escape(__('Queue', 'glpiintegaglpi')); ?></label>
+                                    <select name="queue_id" class="form-select form-select-sm">
+                                        <option value="0"><?= $this->escape(__('All queues', 'glpiintegaglpi')); ?></option>
+                                        <?php foreach ($queues as $queue) { ?>
+                                            <?php $queueId = (int) ($queue['id'] ?? 0); ?>
+                                            <option value="<?= $queueId; ?>" <?= (int) ($filters['queue_id'] ?? 0) === $queueId ? "selected='selected'" : ''; ?>>
+                                                <?= $this->escape((string) ($queue['name'] ?? ('#' . $queueId))); ?>
+                                            </option>
+                                        <?php } ?>
+                                    </select>
+                                </div>
+                                <div class="col-6">
+                                    <label class="form-label small mb-1"><?= $this->escape(__('Janela 24h', 'glpiintegaglpi')); ?></label>
+                                    <select name="window_status" class="form-select form-select-sm">
+                                        <option value=""><?= $this->escape(__('Todas', 'glpiintegaglpi')); ?></option>
+                                        <?php foreach ($windowFilterMap as $value => $label) { ?>
+                                            <option value="<?= $this->escape($value); ?>" <?= (string) ($filters['window_status'] ?? '') === $value ? "selected='selected'" : ''; ?>>
+                                                <?= $this->escape((string) $label); ?>
+                                            </option>
+                                        <?php } ?>
+                                    </select>
+                                </div>
+                                <div class="col-6">
+                                    <label class="form-label small mb-1"><?= $this->escape(__('Inatividade', 'glpiintegaglpi')); ?></label>
+                                    <select name="inactivity" class="form-select form-select-sm">
+                                        <option value=""><?= $this->escape(__('Todas', 'glpiintegaglpi')); ?></option>
+                                        <?php foreach ($inactivityFilterMap as $value => $label) { ?>
+                                            <option value="<?= $this->escape($value); ?>" <?= (string) ($filters['inactivity'] ?? '') === $value ? "selected='selected'" : ''; ?>>
+                                                <?= $this->escape((string) $label); ?>
+                                            </option>
+                                        <?php } ?>
+                                    </select>
+                                </div>
+                                <div class="col-6">
+                                    <label class="form-label small mb-1"><?= $this->escape(__('Delivery', 'glpiintegaglpi')); ?></label>
+                                    <select name="delivery" class="form-select form-select-sm">
+                                        <option value=""><?= $this->escape(__('Todos', 'glpiintegaglpi')); ?></option>
+                                        <?php foreach ($deliveryFilterMap as $value => $label) { ?>
+                                            <option value="<?= $this->escape($value); ?>" <?= (string) ($filters['delivery'] ?? '') === $value ? "selected='selected'" : ''; ?>>
+                                                <?= $this->escape((string) $label); ?>
+                                            </option>
+                                        <?php } ?>
+                                    </select>
+                                </div>
+                                <div class="col-8">
+                                    <label class="form-label small mb-1"><?= $this->escape(__('Operacional', 'glpiintegaglpi')); ?></label>
+                                    <select name="operational_state" class="form-select form-select-sm">
+                                        <option value=""><?= $this->escape(__('Todos', 'glpiintegaglpi')); ?></option>
+                                        <?php foreach ($operationalFilterMap as $value => $label) { ?>
+                                            <option value="<?= $this->escape($value); ?>" <?= (string) ($filters['operational_state'] ?? '') === $value ? "selected='selected'" : ''; ?>>
+                                                <?= $this->escape((string) $label); ?>
+                                            </option>
+                                        <?php } ?>
+                                    </select>
+                                </div>
+                                <div class="col-4">
+                                    <label class="form-label small mb-1"><?= $this->escape(__('Limit', 'glpiintegaglpi')); ?></label>
+                                    <select name="limit" class="form-select form-select-sm">
+                                        <?php foreach ($limitOptions as $limitOption) { ?>
+                                            <?php $limitValue = (int) $limitOption; ?>
+                                            <option value="<?= $limitValue; ?>" <?= $currentLimit === $limitValue ? "selected='selected'" : ''; ?>>
+                                                <?= $limitValue; ?>
+                                            </option>
+                                        <?php } ?>
+                                    </select>
+                                </div>
+                            </div>
+                        </details>
+                    </div>
                 </div>
             </form>
-        </div>
+            </div>
+        </details>
+    </div>
+
+    <div class="itg-central-shell">
+        <aside class="itg-panel itg-conversation-panel">
+            <div class="itg-panel-header d-flex justify-content-between align-items-center">
+                <strong><?= $this->escape(__('Conversas', 'glpiintegaglpi')); ?></strong>
+                <small class="text-muted"><?= $this->escape(__('cards e ações', 'glpiintegaglpi')); ?></small>
+            </div>
 
         <div class="itg-conversation-list">
             <table class="itg-conversation-table">
@@ -437,6 +558,16 @@ $operationalFilterMap = [
                         $profileSnapshot = is_array($row['contact_profile_snapshot'] ?? null)
                             ? $row['contact_profile_snapshot']
                             : null;
+                        $profileContext = is_array($row['profile_context'] ?? null)
+                            ? $row['profile_context']
+                            : [];
+                        $profileName = trim((string) ($profileContext['name'] ?? $contactName));
+                        $profileCompany = trim((string) ($profileContext['company'] ?? ''));
+                        $profileEmail = trim((string) ($profileContext['email'] ?? ''));
+                        $profileEquipment = trim((string) ($profileContext['equipment'] ?? ''));
+                        $profileReason = trim((string) ($profileContext['reason'] ?? ''));
+                        $profileAnswered = trim((string) ($profileContext['answered_label'] ?? '-'));
+                        $profilePending = trim((string) ($profileContext['pending_label'] ?? '-'));
                         $profileCollectionComplete = !empty($row['profile_collection_complete']);
                         $canClaim = $canUpdateActions
                             && $effectiveStatus === 'open'
@@ -468,6 +599,15 @@ $operationalFilterMap = [
                             data-phone="<?= $this->escape($phone); ?>"
                             data-masked-phone="<?= $this->escape($maskedPhone); ?>"
                             data-contact-name="<?= $this->escape($contactName); ?>"
+                            data-profile-name="<?= $this->escape($profileName); ?>"
+                            data-profile-company="<?= $this->escape($profileCompany); ?>"
+                            data-profile-email="<?= $this->escape($profileEmail); ?>"
+                            data-profile-equipment="<?= $this->escape($profileEquipment); ?>"
+                            data-profile-reason="<?= $this->escape($profileReason); ?>"
+                            data-profile-answered="<?= $this->escape($profileAnswered); ?>"
+                            data-profile-pending="<?= $this->escape($profilePending); ?>"
+                            data-memory-entity="<?= $this->escape($memoryEntityId > 0 ? ($memoryEntityName !== '' ? $memoryEntityName : (string) $memoryEntityId) : '-'); ?>"
+                            data-last-message="<?= $this->escape($lastMessagePreview); ?>"
                             data-status="<?= $this->escape($effectiveStatus); ?>"
                             data-status-label="<?= $this->escape($statusLabel); ?>"
                             data-operational-state="<?= $this->escape($operationalStateLabel); ?>"
@@ -498,9 +638,14 @@ $operationalFilterMap = [
                                     <div class="d-flex justify-content-between gap-2">
                                         <div>
                                             <div class="itg-card-title">
-                                                <?= $this->escape($contactName !== '' ? $contactName : $maskedPhone); ?>
+                                                <?= $this->escape($profileName !== '' ? $profileName : ($contactName !== '' ? $contactName : $maskedPhone)); ?>
                                             </div>
-                                            <div class="itg-card-meta"><?= $this->escape($maskedPhone); ?></div>
+                                            <div class="itg-card-meta">
+                                                <?= $this->escape($maskedPhone); ?>
+                                                <?php if ($profileCompany !== '') { ?>
+                                                    · <?= $this->escape($profileCompany); ?>
+                                                <?php } ?>
+                                            </div>
                                         </div>
                                         <span class="badge bg-light text-dark">
                                             <?= $this->escape($ticketLabel); ?>
@@ -531,6 +676,12 @@ $operationalFilterMap = [
                                         <?php foreach ($riskBadges as $badge) { ?>
                                             <span class="badge <?= $this->escape((string) ($badge['class'] ?? 'bg-light text-dark')); ?>">
                                                 <?= $this->escape((string) ($badge['label'] ?? '')); ?>
+                                            </span>
+                                        <?php } ?>
+                                        <?php if ($profilePending !== '' && $profilePending !== '-') { ?>
+                                            <span class="badge bg-warning text-dark">
+                                                <?= $this->escape(__('Pendente', 'glpiintegaglpi')); ?>:
+                                                <?= $this->escape($profilePending); ?>
                                             </span>
                                         <?php } ?>
                                     </div>
@@ -683,21 +834,23 @@ $operationalFilterMap = [
                                             <?= $this->escape(function_exists('mb_substr') ? mb_substr($lastMessagePreview, 0, 140) : substr($lastMessagePreview, 0, 140)); ?>
                                         </div>
                                     <?php } ?>
-                                    <?php if ($profileSnapshot !== null) { ?>
+                                    <?php if ($profileSnapshot !== null || $profileAnswered !== '-' || $profilePending !== '-') { ?>
                                         <div class="border rounded p-3 mt-3 mb-0 bg-light">
                                             <strong><?= $this->escape(__('Perfil do contato', 'glpiintegaglpi')); ?></strong><br>
                                             <?= $this->escape(__('Nome', 'glpiintegaglpi')); ?>:
-                                            <?= $this->escape((string) ($profileSnapshot['requester_name'] ?? '-')); ?><br>
+                                            <?= $this->escape($profileName !== '' ? $profileName : '-'); ?><br>
                                             <?= $this->escape(__('Empresa informada', 'glpiintegaglpi')); ?>:
-                                            <?= $this->escape((string) ($profileSnapshot['company_name_raw'] ?? '-')); ?><br>
+                                            <?= $this->escape($profileCompany !== '' ? $profileCompany : '-'); ?><br>
+                                            <?= $this->escape(__('E-mail', 'glpiintegaglpi')); ?>:
+                                            <?= $this->escape($profileEmail !== '' ? $profileEmail : '-'); ?><br>
                                             <?= $this->escape(__('Equipamento', 'glpiintegaglpi')); ?>:
-                                            <?= !empty($profileSnapshot['equipment_tag_unknown'])
-                                                ? $this->escape(__('Não informado', 'glpiintegaglpi'))
-                                                : $this->escape((string) ($profileSnapshot['last_equipment_tag'] ?? '-')); ?><br>
+                                            <?= $this->escape($profileEquipment !== '' ? $profileEquipment : '-'); ?><br>
                                             <?= $this->escape(__('Resumo', 'glpiintegaglpi')); ?>:
-                                            <?= $this->escape((string) ($profileSnapshot['last_problem_summary'] ?? '-')); ?><br>
-                                            <?= $this->escape(__('Status', 'glpiintegaglpi')); ?>:
-                                            <?= $this->escape((string) ($profileSnapshot['profile_status'] ?? 'incomplete')); ?>
+                                            <?= $this->escape($profileReason !== '' ? $profileReason : '-'); ?><br>
+                                            <?= $this->escape(__('Respondidos', 'glpiintegaglpi')); ?>:
+                                            <?= $this->escape($profileAnswered); ?><br>
+                                            <?= $this->escape(__('Pendentes', 'glpiintegaglpi')); ?>:
+                                            <?= $this->escape($profilePending); ?>
                                         </div>
                                     <?php } ?>
                                     <div class="mt-2 js-integaglpi-central-actions">
@@ -810,7 +963,7 @@ $operationalFilterMap = [
             </table>
         </div>
 
-        <div class="d-flex justify-content-between align-items-center p-3 border-top">
+        <div class="itg-conversation-pagination d-flex justify-content-between align-items-center p-3 border-top">
             <div class="text-muted js-integaglpi-central-page-label">
                 <?= $this->escape(sprintf(__('Page %d of %d', 'glpiintegaglpi'), $currentPage, $totalPages)); ?>
             </div>
@@ -840,13 +993,30 @@ $operationalFilterMap = [
         <div class="itg-chat-body js-integaglpi-central-messages"></div>
     </section>
 
-    <aside class="itg-panel">
+    <aside class="itg-panel itg-context-panel">
         <div class="itg-panel-header">
             <h3 class="h5 mb-1"><?= $this->escape(__('Contexto do ticket', 'glpiintegaglpi')); ?></h3>
             <small class="text-muted"><?= $this->escape(__('Resumo operacional da conversa selecionada', 'glpiintegaglpi')); ?></small>
         </div>
         <div class="itg-panel-body">
             <div class="itg-context-list">
+                <div class="itg-context-item">
+                    <small class="text-muted d-block"><?= $this->escape(__('Contato', 'glpiintegaglpi')); ?></small>
+                    <span class="js-integaglpi-central-context-contact">-</span><br>
+                    <span class="small text-muted js-integaglpi-central-context-phone">-</span>
+                </div>
+                <div class="itg-context-item">
+                    <small class="text-muted d-block"><?= $this->escape(__('Perfil informado', 'glpiintegaglpi')); ?></small>
+                    <span><?= $this->escape(__('Empresa', 'glpiintegaglpi')); ?>: <span class="js-integaglpi-central-context-company">-</span></span><br>
+                    <span><?= $this->escape(__('E-mail', 'glpiintegaglpi')); ?>: <span class="js-integaglpi-central-context-email">-</span></span><br>
+                    <span><?= $this->escape(__('Equipamento', 'glpiintegaglpi')); ?>: <span class="js-integaglpi-central-context-equipment">-</span></span>
+                </div>
+                <div class="itg-context-item">
+                    <small class="text-muted d-block"><?= $this->escape(__('Pré-ticket', 'glpiintegaglpi')); ?></small>
+                    <span><?= $this->escape(__('Respondidos', 'glpiintegaglpi')); ?>: <span class="js-integaglpi-central-context-answered">-</span></span><br>
+                    <span><?= $this->escape(__('Pendentes', 'glpiintegaglpi')); ?>: <span class="js-integaglpi-central-context-pending">-</span></span><br>
+                    <span><?= $this->escape(__('Próxima ação', 'glpiintegaglpi')); ?>: <span class="js-integaglpi-central-context-next-action">-</span></span>
+                </div>
                 <div class="itg-context-item">
                     <small class="text-muted d-block"><?= $this->escape(__('Ticket', 'glpiintegaglpi')); ?></small>
                     <a
@@ -871,6 +1041,9 @@ $operationalFilterMap = [
                 <div class="itg-context-item">
                     <small class="text-muted d-block"><?= $this->escape(__('Entidade', 'glpiintegaglpi')); ?></small>
                     <span class="js-integaglpi-central-context-entity">-</span>
+                    <br><small class="text-muted"><?= $this->escape(__('Memória', 'glpiintegaglpi')); ?>:
+                        <span class="js-integaglpi-central-context-memory-entity">-</span>
+                    </small>
                 </div>
                 <div class="itg-context-item">
                     <small class="text-muted d-block"><?= $this->escape(__('Janela WhatsApp 24h', 'glpiintegaglpi')); ?></small>
@@ -938,6 +1111,7 @@ $operationalFilterMap = [
             </div>
         </div>
     </aside>
+</div>
 </div>
 
 <div id="itg-iw-soft-close-modal" class="itg-iw-modal-backdrop d-none" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="itg-iw-soft-close-title">
@@ -1074,7 +1248,7 @@ $operationalFilterMap = [
             return;
         }
 
-        box.className = 'alert mb-3 js-integaglpi-central-refresh-message alert-' + type;
+        box.className = 'small js-integaglpi-central-refresh-message mt-1 text-' + (type === 'danger' ? 'danger' : 'muted');
         box.textContent = message;
         box.classList.remove('d-none');
     }
@@ -1273,6 +1447,19 @@ $operationalFilterMap = [
         const profile = row.contact_profile_snapshot && typeof row.contact_profile_snapshot === 'object'
             ? row.contact_profile_snapshot
             : null;
+        const profileContext = row.profile_context && typeof row.profile_context === 'object'
+            ? row.profile_context
+            : {};
+        const profileName = String(profileContext.name || contactName || '').trim();
+        const profileCompany = String(profileContext.company || '').trim();
+        const profileEmail = String(profileContext.email || '').trim();
+        const profileEquipment = String(profileContext.equipment || '').trim();
+        const profileReason = String(profileContext.reason || '').trim();
+        const profileAnswered = String(profileContext.answered_label || '-').trim();
+        const profilePending = String(profileContext.pending_label || '-').trim();
+        const pendingBadge = profilePending !== '' && profilePending !== '-'
+            ? '<span class="badge bg-warning text-dark">Pendente: ' + escapeHtml(profilePending) + '</span>'
+            : '';
         const memoryEntityId = Number(row.memory_entity_id || 0);
         const memoryEntityName = String(row.memory_entity_name || '').trim();
         const memoryEntityHtml = memoryEntityId > 0
@@ -1319,14 +1506,16 @@ $operationalFilterMap = [
         const deliveryAlert = deliveryError !== ''
             ? '<div class="alert alert-danger py-2 my-2">Falha Meta: ' + escapeHtml(deliveryError) + '</div>'
             : '';
-        const profileHtml = profile
+        const profileHtml = profile || profileAnswered !== '-' || profilePending !== '-'
             ? '<div class="border rounded p-3 mt-3 mb-0 bg-light">'
                 + '<strong>Perfil do contato</strong><br>'
-                + 'Nome: ' + escapeHtml(String(profile.requester_name || '-')) + '<br>'
-                + 'Empresa informada: ' + escapeHtml(String(profile.company_name_raw || '-')) + '<br>'
-                + 'Equipamento: ' + escapeHtml(profile.equipment_tag_unknown ? 'Não informado' : String(profile.last_equipment_tag || '-')) + '<br>'
-                + 'Resumo: ' + escapeHtml(String(profile.last_problem_summary || '-')) + '<br>'
-                + 'Status: ' + escapeHtml(String(profile.profile_status || 'incomplete'))
+                + 'Nome: ' + escapeHtml(profileName || '-') + '<br>'
+                + 'Empresa informada: ' + escapeHtml(profileCompany || '-') + '<br>'
+                + 'E-mail: ' + escapeHtml(profileEmail || '-') + '<br>'
+                + 'Equipamento: ' + escapeHtml(profileEquipment || '-') + '<br>'
+                + 'Resumo: ' + escapeHtml(profileReason || '-') + '<br>'
+                + 'Respondidos: ' + escapeHtml(profileAnswered || '-') + '<br>'
+                + 'Pendentes: ' + escapeHtml(profilePending || '-')
                 + '</div>'
             : '';
 
@@ -1336,6 +1525,15 @@ $operationalFilterMap = [
         element.setAttribute('data-phone', phone);
         element.setAttribute('data-masked-phone', maskedPhone);
         element.setAttribute('data-contact-name', contactName);
+        element.setAttribute('data-profile-name', profileName);
+        element.setAttribute('data-profile-company', profileCompany);
+        element.setAttribute('data-profile-email', profileEmail);
+        element.setAttribute('data-profile-equipment', profileEquipment);
+        element.setAttribute('data-profile-reason', profileReason);
+        element.setAttribute('data-profile-answered', profileAnswered);
+        element.setAttribute('data-profile-pending', profilePending);
+        element.setAttribute('data-memory-entity', memoryEntityId > 0 ? (memoryEntityName || String(memoryEntityId)) : '-');
+        element.setAttribute('data-last-message', lastMessagePreview);
         element.setAttribute('data-status', status);
         element.setAttribute('data-status-label', statusLabel);
         element.setAttribute('data-operational-state', operationalStateLabel);
@@ -1366,8 +1564,9 @@ $operationalFilterMap = [
         element.innerHTML =
             '<td colspan="8"><div class="itg-card">'
             + '<div class="d-flex justify-content-between gap-2"><div>'
-            + '<div class="itg-card-title">' + escapeHtml(title) + '</div>'
-            + '<div class="itg-card-meta">' + escapeHtml(maskedPhone) + '</div>'
+            + '<div class="itg-card-title">' + escapeHtml(profileName || title) + '</div>'
+            + '<div class="itg-card-meta">' + escapeHtml(maskedPhone)
+            + (profileCompany !== '' ? ' · ' + escapeHtml(profileCompany) : '') + '</div>'
             + '</div><span class="badge bg-light text-dark">' + escapeHtml(ticketLabel) + '</span></div>'
             + '<div class="itg-card-badges my-2">'
             + ownershipBadge
@@ -1376,6 +1575,7 @@ $operationalFilterMap = [
             + windowBadge
             + deliveryBadge
             + riskBadges
+            + pendingBadge
             + '</div>'
             + windowAlert
             + deliveryAlert
@@ -1613,11 +1813,20 @@ $operationalFilterMap = [
 
     function updateContextPanel(row) {
         const ticketId = row.getAttribute('data-ticket-id') || '';
+        const contact = document.querySelector('.js-integaglpi-central-context-contact');
+        const phone = document.querySelector('.js-integaglpi-central-context-phone');
+        const company = document.querySelector('.js-integaglpi-central-context-company');
+        const email = document.querySelector('.js-integaglpi-central-context-email');
+        const equipment = document.querySelector('.js-integaglpi-central-context-equipment');
+        const answered = document.querySelector('.js-integaglpi-central-context-answered');
+        const pending = document.querySelector('.js-integaglpi-central-context-pending');
+        const nextAction = document.querySelector('.js-integaglpi-central-context-next-action');
         const ticketLink = document.querySelector('.js-integaglpi-central-context-ticket');
         const queue = document.querySelector('.js-integaglpi-central-context-queue');
         const technician = document.querySelector('.js-integaglpi-central-context-technician');
         const status = document.querySelector('.js-integaglpi-central-context-status');
         const entity = document.querySelector('.js-integaglpi-central-context-entity');
+        const memoryEntity = document.querySelector('.js-integaglpi-central-context-memory-entity');
         const windowInfo = document.querySelector('.js-integaglpi-central-context-window');
         const delivery = document.querySelector('.js-integaglpi-central-context-delivery');
         const inactivity = document.querySelector('.js-integaglpi-central-context-inactivity');
@@ -1634,6 +1843,40 @@ $operationalFilterMap = [
         const canUseTicketActions = row.getAttribute('data-can-reply') === '1'
             && rowStatus === 'open'
             && Number(ticketId) > 0;
+
+        if (contact) {
+            contact.textContent = row.getAttribute('data-profile-name')
+                || row.getAttribute('data-contact-name')
+                || '-';
+        }
+
+        if (phone) {
+            phone.textContent = row.getAttribute('data-masked-phone') || '-';
+        }
+
+        if (company) {
+            company.textContent = row.getAttribute('data-profile-company') || '-';
+        }
+
+        if (email) {
+            email.textContent = row.getAttribute('data-profile-email') || '-';
+        }
+
+        if (equipment) {
+            equipment.textContent = row.getAttribute('data-profile-equipment') || '-';
+        }
+
+        if (answered) {
+            answered.textContent = row.getAttribute('data-profile-answered') || '-';
+        }
+
+        if (pending) {
+            pending.textContent = row.getAttribute('data-profile-pending') || '-';
+        }
+
+        if (nextAction) {
+            nextAction.textContent = row.getAttribute('data-next-action') || '-';
+        }
 
         if (ticketLink) {
             const tid = Number(ticketId);
@@ -1659,6 +1902,10 @@ $operationalFilterMap = [
 
         if (entity) {
             entity.textContent = row.getAttribute('data-entity') || '-';
+        }
+
+        if (memoryEntity) {
+            memoryEntity.textContent = row.getAttribute('data-memory-entity') || '-';
         }
 
         if (windowInfo) {

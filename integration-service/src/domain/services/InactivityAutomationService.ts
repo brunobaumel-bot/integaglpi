@@ -1,7 +1,11 @@
 import type { GlpiClient } from '../../adapters/glpi/GlpiClient.js';
 import { logger } from '../../infra/logger/logger.js';
 import type { AuditStatus } from '../../repositories/contracts/AuditEventRepository.js';
-import type { InactivityTrackingRecord, InactivityTrackingRepository } from '../../repositories/contracts/InactivityTrackingRepository.js';
+import type {
+  ProfileCollectionReminderCandidate,
+  InactivityTrackingRecord,
+  InactivityTrackingRepository,
+} from '../../repositories/contracts/InactivityTrackingRepository.js';
 import type { OutboundMessageService } from './OutboundMessageService.js';
 import type { AuditService } from './AuditService.js';
 import type { MessageConfigurationService, MessageSendPlan } from './MessageConfigurationService.js';
@@ -37,6 +41,11 @@ const REMINDER_TEXTS: Record<1 | 2 | 3, string> = {
 const AUTOCLOSE_TEXT =
   'Como não tivemos retorno, estamos encerrando este atendimento por falta de resposta. Se precisar, basta nos chamar novamente.';
 const AUTOCLOSE_WARNING_TEXT = 'Este atendimento poderá ser encerrado automaticamente se não houver resposta.';
+const PROFILE_COLLECTION_REMINDER_EVENT_KEY = 'profile_collection_reminder';
+const PROFILE_COLLECTION_REMINDER_TEXT =
+  'Ainda precisamos confirmar algumas informações para continuar seu atendimento. Por favor, responda as perguntas pendentes para seguirmos.';
+const PROFILE_COLLECTION_REMINDER_MINUTES = 5;
+export const TECHNICIAN_ACTIVITY_GUARD_MINUTES = 120;
 const AUTOCLOSE_REASON = 'Encerrado por falta de retorno do usuário';
 const SOLVED_STATUS = 5;
 
@@ -58,6 +67,14 @@ function hasManualHold(record: InactivityTrackingRecord, now: Date): boolean {
   }
 
   return Boolean(record.manualHoldReason && !record.manualHoldUntil);
+}
+
+function hasRecentTechnicianActivity(record: InactivityTrackingRecord, now: Date): boolean {
+  if (!record.lastOutboundActivityAt) {
+    return false;
+  }
+
+  return minutesBetween(record.lastOutboundActivityAt, now) < TECHNICIAN_ACTIVITY_GUARD_MINUTES;
 }
 
 export function parseReminderMinutes(value: string): [number, number, number] {
@@ -100,6 +117,10 @@ export function decideInactivityAction(
 
   if (hasClientResponseAfterOutbound(record)) {
     return { action: 'SKIP', reason: 'client_responded' };
+  }
+
+  if (hasRecentTechnicianActivity(record, now)) {
+    return { action: 'NOOP', reason: 'technician_activity_recent' };
   }
 
   if (record.status === 'failed') {
@@ -147,7 +168,7 @@ export class InactivityAutomationService {
 
   public constructor(
     private readonly repository: InactivityTrackingRepository,
-    private readonly outboundMessageService: Pick<OutboundMessageService, 'send'>,
+    private readonly outboundMessageService: Pick<OutboundMessageService, 'send' | 'sendProfileCollectionReminder'>,
     private readonly glpiClient: Pick<GlpiClient, 'getTicketStatus' | 'solveTicketByInactivity'>,
     private readonly auditService: AuditService | null,
     private readonly config: InactivityConfig,
@@ -217,8 +238,154 @@ export class InactivityAutomationService {
       for (const candidate of candidates) {
         await this.processCandidate(candidate);
       }
+      await this.processProfileCollectionReminderCandidates(limit);
     } finally {
       this.isRunning = false;
+    }
+  }
+
+  private async processProfileCollectionReminderCandidates(limit: number): Promise<void> {
+    const cutoff = new Date(this.nowProvider().getTime() - PROFILE_COLLECTION_REMINDER_MINUTES * 60_000);
+    const candidates = await this.repository.findProfileCollectionReminderCandidates(cutoff, limit);
+    await this.recordProfileDiagnostic(null, 'checked', {
+      reason: candidates.length > 0 ? 'profile_collection_candidates_found' : 'profile_collection_no_candidates',
+      checkedCount: candidates.length,
+      eligibleCount: candidates.length,
+    });
+
+    for (const candidate of candidates) {
+      await this.processProfileCollectionReminderCandidate(candidate);
+    }
+  }
+
+  private async processProfileCollectionReminderCandidate(candidate: ProfileCollectionReminderCandidate): Promise<void> {
+    const step = normalizeProfileCollectionStep(candidate.profileCollectionState);
+    if (!step || step === 'complete') {
+      await this.recordProfileDiagnostic(candidate, 'skipped', { reason: 'profile_collection_step_not_eligible' });
+      return;
+    }
+
+    const correlationId = createCorrelationId();
+    const windowOpen = this.nowProvider().getTime() - candidate.lastMessageAt.getTime() < 24 * 60 * 60 * 1000;
+    const sendPlan = await this.resolveInactivitySendPlan(
+      PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+      windowOpen,
+      PROFILE_COLLECTION_REMINDER_TEXT,
+    );
+    await this.recordProfileDiagnostic(candidate, 'eligible', { reason: 'profile_collection_reminder_due' });
+    await this.recordProfileDiagnostic(candidate, 'planned', {
+      eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+      reason: sendPlan.reason,
+    });
+    await this.messageConfigurationService?.recordAutomationEvent({
+      conversationId: candidate.conversationId,
+      phoneE164: candidate.phoneE164,
+      eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+      status: 'planned',
+      reason: sendPlan.reason,
+    });
+
+    const reserved = await this.repository.markProfileCollectionReminderSent(
+      candidate.conversationId,
+      step,
+      this.nowProvider(),
+    );
+    if (!reserved) {
+      await this.recordProfileDiagnostic(candidate, 'skipped', { reason: 'profile_collection_reminder_already_marked' });
+      return;
+    }
+
+    const idempotencyKey = `profile_collection_reminder:${candidate.conversationId}:${step}:${candidate.lastMessageAt.toISOString()}`;
+    if (!sendPlan.shouldSend) {
+      await this.recordProfileDiagnostic(candidate, 'skipped', {
+        eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+        reason: sendPlan.reason ?? 'not_sent_by_rule',
+      });
+      await this.messageConfigurationService?.recordAutomationEvent({
+        conversationId: candidate.conversationId,
+        phoneE164: candidate.phoneE164,
+        eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+        status: 'not_sent_by_rule',
+        reason: sendPlan.reason ?? 'not_sent_by_rule',
+      });
+      this.recordProfileAudit(candidate, 'PROFILE_COLLECTION_REMINDER_NOT_SENT_BY_RULE', 'ignored', correlationId, {
+        reason: sendPlan.reason ?? 'not_sent_by_rule',
+        profile_step: step,
+        idempotency_key: idempotencyKey,
+      });
+      return;
+    }
+
+    try {
+      const result = await this.outboundMessageService.sendProfileCollectionReminder({
+        conversationId: candidate.conversationId,
+        phoneE164: candidate.phoneE164,
+        text: sendPlan.text,
+        messageType: sendPlan.sendType === 'internal_only' ? 'text' : sendPlan.sendType,
+        templateName: sendPlan.templateName,
+        language: sendPlan.language,
+        buttons: sendPlan.buttons,
+        listOptions: sendPlan.listOptions,
+        idempotencyKey,
+        eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+        profileStep: step,
+      }, { correlationId });
+      if (result.body.status !== 'sent') {
+        await this.recordProfileDiagnostic(candidate, 'failed', {
+          eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+          reason: result.body.error_code,
+          metaErrorMessageSanitized: result.body.message.slice(0, 500),
+        });
+        await this.messageConfigurationService?.recordAutomationEvent({
+          conversationId: candidate.conversationId,
+          phoneE164: candidate.phoneE164,
+          eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+          status: 'failed',
+          errorCode: result.body.error_code,
+          errorMessageSanitized: result.body.message.slice(0, 500),
+        });
+        this.recordProfileAudit(candidate, 'PROFILE_COLLECTION_REMINDER_FAILED', 'failed', correlationId, {
+          profile_step: step,
+          error_code: result.body.error_code,
+        });
+        return;
+      }
+
+      await this.recordProfileDiagnostic(candidate, 'sent', {
+        eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+        messageId: result.body.message_id,
+        deliveryStatus: 'sent',
+      });
+      await this.messageConfigurationService?.recordAutomationEvent({
+        conversationId: candidate.conversationId,
+        phoneE164: candidate.phoneE164,
+        eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+        status: 'sent',
+        messageId: result.body.message_id,
+      });
+      this.recordProfileAudit(candidate, 'PROFILE_COLLECTION_REMINDER_SENT', 'success', correlationId, {
+        profile_step: step,
+        idempotency_key: idempotencyKey,
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.recordProfileDiagnostic(candidate, 'failed', {
+        eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+        reason: 'profile_collection_reminder_failed',
+        metaErrorMessageSanitized: message.slice(0, 500),
+      });
+      await this.messageConfigurationService?.recordAutomationEvent({
+        conversationId: candidate.conversationId,
+        phoneE164: candidate.phoneE164,
+        eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+        status: 'failed',
+        errorCode: 'PROFILE_COLLECTION_REMINDER_FAILED',
+        errorMessageSanitized: message.slice(0, 500),
+      });
+      this.recordProfileAudit(candidate, 'PROFILE_COLLECTION_REMINDER_FAILED', 'failed', correlationId, {
+        profile_step: step,
+        error_message: message.slice(0, 500),
+      });
     }
   }
 
@@ -360,8 +527,16 @@ export class InactivityAutomationService {
 
     const correlationId = createCorrelationId();
     const refreshed = await this.repository.findByConversationId(record.conversationId);
-    if (!refreshed || hasClientResponseAfterOutbound(refreshed) || hasManualHold(refreshed, this.nowProvider())) {
+    const now = this.nowProvider();
+    if (!refreshed || hasClientResponseAfterOutbound(refreshed) || hasManualHold(refreshed, now)) {
       await this.handleSkip(record, refreshed && hasClientResponseAfterOutbound(refreshed) ? 'client_responded' : 'manual_hold');
+      return;
+    }
+    if (hasRecentTechnicianActivity(refreshed, now)) {
+      await this.recordDiagnostic(refreshed, 'skipped', { reason: 'technician_activity_recent' });
+      this.recordAudit(refreshed, 'INACTIVITY_AUTOCLOSE_SKIPPED', 'ignored', correlationId, {
+        reason: 'technician_activity_recent',
+      });
       return;
     }
 
@@ -590,6 +765,58 @@ export class InactivityAutomationService {
     });
   }
 
+  private async recordProfileDiagnostic(
+    candidate: ProfileCollectionReminderCandidate | null,
+    status: 'checked' | 'eligible' | 'skipped' | 'planned' | 'sent' | 'failed',
+    details: {
+      eventKey?: string | null;
+      reason?: string | null;
+      messageId?: string | null;
+      deliveryStatus?: string | null;
+      metaErrorMessageSanitized?: string | null;
+      checkedCount?: number | null;
+      eligibleCount?: number | null;
+    } = {},
+  ): Promise<void> {
+    await this.messageConfigurationService?.recordInactivityJobEvent({
+      conversationId: candidate?.conversationId ?? null,
+      ticketId: null,
+      phoneE164: candidate?.phoneE164 ?? null,
+      eventKey: details.eventKey ?? PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+      status,
+      reason: details.reason ?? null,
+      messageId: details.messageId ?? null,
+      deliveryStatus: details.deliveryStatus ?? null,
+      metaErrorCode: null,
+      metaErrorMessageSanitized: details.metaErrorMessageSanitized ?? null,
+      checkedCount: details.checkedCount ?? null,
+      eligibleCount: details.eligibleCount ?? null,
+    });
+  }
+
+  private recordProfileAudit(
+    candidate: ProfileCollectionReminderCandidate,
+    eventType: string,
+    status: AuditStatus,
+    correlationId: string,
+    payload: Record<string, unknown>,
+  ): void {
+    this.auditService?.recordAuditEventFireAndForget({
+      correlationId,
+      ticketId: null,
+      conversationId: candidate.conversationId,
+      direction: 'outbound',
+      eventType,
+      status,
+      severity: status === 'failed' ? 'warning' : 'info',
+      source: 'InactivityAutomationService',
+      payload: {
+        ...payload,
+        phone_masked: maskPhone(candidate.phoneE164),
+      },
+    });
+  }
+
   private recordAudit(
     record: InactivityTrackingRecord,
     eventType: string,
@@ -620,4 +847,9 @@ function maskPhone(phone: string): string {
     return '****';
   }
   return `${digits.slice(0, 2)}******${digits.slice(-4)}`;
+}
+
+function normalizeProfileCollectionStep(state: Record<string, unknown>): string {
+  const step = state.step;
+  return typeof step === 'string' ? step.trim() : '';
 }

@@ -128,6 +128,16 @@ describe('MessageConfigurationService', () => {
     });
   });
 
+  it('provides a configurable profile collection reminder default', async () => {
+    const service = new MessageConfigurationService(repository({}));
+
+    await expect(service.getMessage('profile_collection_reminder')).resolves.toMatchObject({
+      groupName: 'Coleta de Perfil',
+      expectsResponse: true,
+      defaultText: expect.stringContaining('perguntas pendentes'),
+    });
+  });
+
   it('records automation events through the repository', async () => {
     const recordAutomationEvent = vi.fn().mockResolvedValue(undefined);
     const service = new MessageConfigurationService(repository({ recordAutomationEvent }));

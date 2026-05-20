@@ -20,6 +20,8 @@ Objetivo: checklist diário 24/7 para N1/N2 validar operação sem alterar produ
 - [ ] Confirmar reabertura com motivo quando houver caso real.
 - [ ] Confirmar CSAT recebido ou pendente de forma visível.
 - [ ] Confirmar inatividade/autoclose base sem loops.
+- [ ] Confirmar pré-ticket incompleto com campos pendentes visíveis e sem criação automática de ticket inválido.
+- [ ] Confirmar que `profile_collection_reminder` não é reenviado em loop.
 - [ ] Confirmar Contratos/Horas carregando para perfil autorizado.
 - [ ] Confirmar Dashboard de qualidade carregando para perfil autorizado.
 - [ ] Confirmar que conversas encerradas administrativamente aparecem auditadas e não retornam para lista ativa.
@@ -34,6 +36,7 @@ Objetivo: checklist diário 24/7 para N1/N2 validar operação sem alterar produ
 - Erro GLPI 403: validar permissão do usuário técnico ou token de serviço com responsável.
 - Timeout GLPI/Meta: registrar horário, operação e correlation_id.
 - Encerramento administrativo bloqueado: conferir se há ticket, atividade recente, status terminal ou lock antes de escalar.
+- Lembrete de pré-ticket bloqueado: conferir janela 24h/template e `skip_reason` sanitizado antes de escalar.
 
 ## Evidência Segura
 

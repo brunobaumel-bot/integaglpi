@@ -686,17 +686,35 @@ final class NotificationService
             }
 
             $size = filesize($path);
-            if ($size === false || $size <= 0 || $size > 15_728_640) {
+            if ($size === false || $size <= 0) {
                 $this->log('document][skip_invalid_size', ['document_id' => $documentId, 'size' => $size ?: 0]);
                 $fallbackText = 'Não consegui enviar o anexo pelo WhatsApp porque o arquivo excede o limite permitido. Acesse o GLPI para visualizar.';
                 return null;
             }
 
             $mime = $this->resolveDocumentMime($document, $path);
-            $messageType = str_starts_with($mime, 'image/') ? 'image' : 'document';
-            if (!in_array($mime, ['application/pdf', 'image/jpeg', 'image/png', 'image/gif'], true)) {
+            $messageType = $this->outboundMessageTypeForMime($mime);
+            if (!in_array($mime, [
+                'application/pdf',
+                'image/jpeg',
+                'image/png',
+                'image/gif',
+                'audio/ogg',
+                'audio/mpeg',
+                'audio/mp4',
+                'audio/aac',
+                'audio/webm',
+                'video/mp4',
+                'video/3gpp',
+            ], true)) {
                 $this->log('document][skip_unsupported_mime', ['document_id' => $documentId, 'mime' => $mime]);
-                $fallbackText = 'Não consegui enviar o anexo pelo WhatsApp porque o tipo de arquivo não é suportado. Acesse o GLPI para visualizar.';
+                $fallbackText = 'Formato de arquivo não suportado para envio via WhatsApp.';
+                return null;
+            }
+
+            if ($size > $this->outboundMaxBytesForMime($mime)) {
+                $this->log('document][skip_invalid_size', ['document_id' => $documentId, 'size' => $size ?: 0]);
+                $fallbackText = 'Não consegui enviar o anexo pelo WhatsApp porque o arquivo excede o limite permitido. Acesse o GLPI para visualizar.';
                 return null;
             }
 
@@ -758,6 +776,35 @@ final class NotificationService
         }
 
         return null;
+    }
+
+    private function outboundMessageTypeForMime(string $mime): string
+    {
+        $mime = strtolower(trim(explode(';', $mime, 2)[0]));
+        if (str_starts_with($mime, 'image/')) {
+            return 'image';
+        }
+        if (str_starts_with($mime, 'audio/')) {
+            return 'audio';
+        }
+        if (str_starts_with($mime, 'video/')) {
+            return 'video';
+        }
+
+        return 'document';
+    }
+
+    private function outboundMaxBytesForMime(string $mime): int
+    {
+        $messageType = $this->outboundMessageTypeForMime($mime);
+        if ($messageType === 'audio') {
+            return 16 * 1024 * 1024;
+        }
+        if ($messageType === 'video') {
+            return 64 * 1024 * 1024;
+        }
+
+        return 15_728_640;
     }
 
     private function resolveDocumentMime(\Document $document, string $path): string

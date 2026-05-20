@@ -97,6 +97,274 @@ describe('OutboundMessageService media outbound', () => {
     expect(JSON.stringify(insertedMessages[0]?.rawPayload)).not.toContain(contentBase64);
   });
 
+  it('uploads and sends audio media through Meta as audio', async () => {
+    const { conversationRepository, messageRepository, insertedMessages } = makeRepositories();
+    const metaClient = {
+      uploadMedia: vi.fn().mockResolvedValue('uploaded-audio-id'),
+      sendAudioMessage: vi.fn().mockResolvedValue({ messages: [{ id: 'wamid.audio' }] }),
+      sendDocumentMessage: vi.fn(),
+      sendImageMessage: vi.fn(),
+      sendVideoMessage: vi.fn(),
+      sendTextMessage: vi.fn(),
+    };
+    const service = new OutboundMessageService(
+      conversationRepository,
+      messageRepository,
+      metaClient as never,
+      'real',
+      '5511999999999',
+    );
+    const contentBase64 = Buffer.from('ogg-audio').toString('base64');
+
+    const result = await service.send({
+      ticket_id: 123,
+      conversation_id: 'conv-1',
+      text: 'Audio do chamado #123.',
+      message_type: 'audio',
+      glpi_user_id: 7,
+      media: {
+        document_id: 56,
+        filename: 'audio.ogg',
+        mime_type: 'audio/ogg',
+        content_base64: contentBase64,
+      },
+    }, { correlationId: 'WA-test-audio' });
+
+    expect(result.httpStatus).toBe(201);
+    expect(metaClient.uploadMedia).toHaveBeenCalledWith(expect.objectContaining({
+      filename: 'audio.ogg',
+      mimeType: 'audio/ogg',
+      buffer: Buffer.from('ogg-audio'),
+    }));
+    expect(metaClient.sendAudioMessage).toHaveBeenCalledWith({
+      to: '5541999999999',
+      mediaId: 'uploaded-audio-id',
+    });
+    expect(metaClient.sendDocumentMessage).not.toHaveBeenCalled();
+    expect(insertedMessages[0]).toMatchObject({
+      messageId: 'wamid.audio',
+      messageType: 'audio',
+      mediaInfo: expect.objectContaining({
+        message_type: 'audio',
+        mime_type: 'audio/ogg',
+        document_id: 56,
+      }),
+    });
+    expect(JSON.stringify(insertedMessages[0]?.rawPayload)).not.toContain(contentBase64);
+  });
+
+  it.each(['audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/webm'])('accepts outbound %s as audio', async (mimeType) => {
+    const { conversationRepository, messageRepository } = makeRepositories();
+    const metaClient = {
+      uploadMedia: vi.fn().mockResolvedValue('uploaded-audio-id'),
+      sendAudioMessage: vi.fn().mockResolvedValue({ messages: [{ id: `wamid.${mimeType}` }] }),
+      sendDocumentMessage: vi.fn(),
+      sendImageMessage: vi.fn(),
+      sendVideoMessage: vi.fn(),
+      sendTextMessage: vi.fn(),
+    };
+    const service = new OutboundMessageService(
+      conversationRepository,
+      messageRepository,
+      metaClient as never,
+      'real',
+      '5511999999999',
+    );
+
+    const result = await service.send({
+      ticket_id: 123,
+      conversation_id: 'conv-1',
+      text: 'Audio do chamado #123.',
+      message_type: 'audio',
+      glpi_user_id: 7,
+      media: {
+        filename: 'audio',
+        mime_type: mimeType,
+        content_base64: Buffer.from('audio-data').toString('base64'),
+      },
+    }, { correlationId: `WA-test-${mimeType}` });
+
+    expect(result.httpStatus).toBe(201);
+    expect(metaClient.uploadMedia).toHaveBeenCalledWith(expect.objectContaining({ mimeType }));
+    expect(metaClient.sendAudioMessage).toHaveBeenCalled();
+    expect(metaClient.sendDocumentMessage).not.toHaveBeenCalled();
+  });
+
+  it('uploads and sends video media through Meta as video', async () => {
+    const { conversationRepository, messageRepository, insertedMessages } = makeRepositories();
+    const metaClient = {
+      uploadMedia: vi.fn().mockResolvedValue('uploaded-video-id'),
+      sendAudioMessage: vi.fn(),
+      sendDocumentMessage: vi.fn(),
+      sendImageMessage: vi.fn(),
+      sendVideoMessage: vi.fn().mockResolvedValue({ messages: [{ id: 'wamid.video' }] }),
+      sendTextMessage: vi.fn(),
+    };
+    const service = new OutboundMessageService(
+      conversationRepository,
+      messageRepository,
+      metaClient as never,
+      'real',
+      '5511999999999',
+    );
+
+    const result = await service.send({
+      ticket_id: 123,
+      conversation_id: 'conv-1',
+      text: 'Video do chamado #123.',
+      message_type: 'video',
+      glpi_user_id: 7,
+      media: {
+        document_id: 57,
+        filename: 'video.3gp',
+        mime_type: 'video/3gpp',
+        content_base64: Buffer.from('3gpp-video').toString('base64'),
+      },
+    }, { correlationId: 'WA-test-video' });
+
+    expect(result.httpStatus).toBe(201);
+    expect(metaClient.uploadMedia).toHaveBeenCalledWith(expect.objectContaining({
+      filename: 'video.3gp',
+      mimeType: 'video/3gpp',
+    }));
+    expect(metaClient.sendVideoMessage).toHaveBeenCalledWith({
+      to: '5541999999999',
+      mediaId: 'uploaded-video-id',
+      caption: 'Video do chamado #123.',
+    });
+    expect(metaClient.sendDocumentMessage).not.toHaveBeenCalled();
+    expect(insertedMessages[0]).toMatchObject({
+      messageId: 'wamid.video',
+      messageType: 'video',
+      mediaInfo: expect.objectContaining({
+        message_type: 'video',
+        mime_type: 'video/3gpp',
+        document_id: 57,
+      }),
+    });
+  });
+
+  it('accepts outbound video/mp4 as video', async () => {
+    const { conversationRepository, messageRepository } = makeRepositories();
+    const metaClient = {
+      uploadMedia: vi.fn().mockResolvedValue('uploaded-video-id'),
+      sendAudioMessage: vi.fn(),
+      sendDocumentMessage: vi.fn(),
+      sendImageMessage: vi.fn(),
+      sendVideoMessage: vi.fn().mockResolvedValue({ messages: [{ id: 'wamid.video.mp4' }] }),
+      sendTextMessage: vi.fn(),
+    };
+    const service = new OutboundMessageService(
+      conversationRepository,
+      messageRepository,
+      metaClient as never,
+      'real',
+      '5511999999999',
+    );
+
+    const result = await service.send({
+      ticket_id: 123,
+      conversation_id: 'conv-1',
+      text: 'Video do chamado #123.',
+      message_type: 'video',
+      glpi_user_id: 7,
+      media: {
+        filename: 'video.mp4',
+        mime_type: 'video/mp4',
+        content_base64: Buffer.from('mp4-video').toString('base64'),
+      },
+    }, { correlationId: 'WA-test-video-mp4' });
+
+    expect(result.httpStatus).toBe(201);
+    expect(metaClient.uploadMedia).toHaveBeenCalledWith(expect.objectContaining({ mimeType: 'video/mp4' }));
+    expect(metaClient.sendVideoMessage).toHaveBeenCalled();
+    expect(metaClient.sendDocumentMessage).not.toHaveBeenCalled();
+  });
+
+  it('rejects oversized audio without calling Meta', async () => {
+    const { conversationRepository, messageRepository } = makeRepositories();
+    const metaClient = {
+      uploadMedia: vi.fn(),
+      sendAudioMessage: vi.fn(),
+      sendDocumentMessage: vi.fn(),
+      sendImageMessage: vi.fn(),
+      sendVideoMessage: vi.fn(),
+      sendTextMessage: vi.fn(),
+    };
+    const service = new OutboundMessageService(
+      conversationRepository,
+      messageRepository,
+      metaClient as never,
+      'real',
+      '5511999999999',
+    );
+
+    const result = await service.send({
+      ticket_id: 123,
+      conversation_id: 'conv-1',
+      text: 'Audio grande.',
+      message_type: 'audio',
+      glpi_user_id: 7,
+      media: {
+        filename: 'audio.ogg',
+        mime_type: 'audio/ogg',
+        content_base64: Buffer.alloc(16 * 1024 * 1024 + 1).toString('base64'),
+      },
+    }, { correlationId: 'WA-test-large-audio' });
+
+    expect(result).toMatchObject({
+      httpStatus: 400,
+      body: {
+        status: 'failed',
+        error_code: 'MEDIA_SIZE_INVALID',
+      },
+    });
+    expect(metaClient.uploadMedia).not.toHaveBeenCalled();
+    expect(messageRepository.insertOutbound).not.toHaveBeenCalled();
+  });
+
+  it('rejects oversized video without calling Meta', async () => {
+    const { conversationRepository, messageRepository } = makeRepositories();
+    const metaClient = {
+      uploadMedia: vi.fn(),
+      sendAudioMessage: vi.fn(),
+      sendDocumentMessage: vi.fn(),
+      sendImageMessage: vi.fn(),
+      sendVideoMessage: vi.fn(),
+      sendTextMessage: vi.fn(),
+    };
+    const service = new OutboundMessageService(
+      conversationRepository,
+      messageRepository,
+      metaClient as never,
+      'real',
+      '5511999999999',
+    );
+
+    const result = await service.send({
+      ticket_id: 123,
+      conversation_id: 'conv-1',
+      text: 'Video grande.',
+      message_type: 'video',
+      glpi_user_id: 7,
+      media: {
+        filename: 'video.mp4',
+        mime_type: 'video/mp4',
+        content_base64: Buffer.alloc(64 * 1024 * 1024 + 1).toString('base64'),
+      },
+    }, { correlationId: 'WA-test-large-video' });
+
+    expect(result).toMatchObject({
+      httpStatus: 400,
+      body: {
+        status: 'failed',
+        error_code: 'MEDIA_SIZE_INVALID',
+      },
+    });
+    expect(metaClient.uploadMedia).not.toHaveBeenCalled();
+    expect(messageRepository.insertOutbound).not.toHaveBeenCalled();
+  });
+
   it('falls back to a safe text message when Meta document sending fails', async () => {
     const { conversationRepository, messageRepository, insertedMessages } = makeRepositories();
     const metaClient = {

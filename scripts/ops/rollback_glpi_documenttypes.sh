@@ -67,11 +67,17 @@ if [ -z "$DEFAULTS_FILE" ] || [ -z "$DATABASE" ] || [ -z "$BACKUP_TABLE" ] || [ 
 fi
 
 case "$DATABASE" in
+  *'<'*|*'>'*) echo "--database must be a real schema name, not a placeholder with < or >." >&2; exit 2 ;;
   *[!A-Za-z0-9_]*|'') echo "--database must contain only letters, numbers, and underscore." >&2; exit 2 ;;
 esac
 
 case "$BACKUP_TABLE" in
-  glpi_documenttypes_backup_[0-9]*) ;;
+  glpi_documenttypes_backup_[0-9]*)
+    suffix=${BACKUP_TABLE#glpi_documenttypes_backup_}
+    case "$suffix" in
+      *[!0-9]*|'') echo "--backup-table must match glpi_documenttypes_backup_<digits>." >&2; exit 2 ;;
+    esac
+    ;;
   *) echo "--backup-table must match glpi_documenttypes_backup_<timestamp>." >&2; exit 2 ;;
 esac
 
@@ -96,6 +102,29 @@ SELECT COUNT(*) AS restored_count FROM glpi_documenttypes;
 SQL
 )
 
+validate_defaults_file() {
+  if [ ! -f "$DEFAULTS_FILE" ]; then
+    echo "--defaults-file not found. Keep credentials outside the repository." >&2
+    exit 2
+  fi
+
+  perms=""
+  if command -v stat >/dev/null 2>&1; then
+    perms=$(stat -c '%a' "$DEFAULTS_FILE" 2>/dev/null || stat -f '%Lp' "$DEFAULTS_FILE" 2>/dev/null || true)
+  fi
+
+  case "$perms" in
+    600|400) ;;
+    "")
+      echo "Warning: could not determine --defaults-file permissions. Verify it is 0600." >&2
+      ;;
+    *)
+      echo "--defaults-file permissions must be 0600 or 0400; current mode is $perms." >&2
+      exit 2
+      ;;
+  esac
+}
+
 if printf '%s' "$SQL_CONTENT" | grep -Eiq 'glpi_documents_items|(^|[^A-Z_])(DROP|DELETE|TRUNCATE)([^A-Z_]|$)'; then
   echo "Safety check failed: forbidden SQL token found." >&2
   exit 3
@@ -107,10 +136,7 @@ if [ "$EXECUTE" -ne 1 ]; then
   exit 0
 fi
 
-if [ ! -f "$DEFAULTS_FILE" ]; then
-  echo "--defaults-file not found. Keep credentials outside the repository." >&2
-  exit 2
-fi
+validate_defaults_file
 
 if ! command -v mysql >/dev/null 2>&1; then
   echo "mysql client is required." >&2

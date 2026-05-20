@@ -1533,9 +1533,14 @@ final class AttendanceCenterService
             $profileComplete = self::isProfileCollectionComplete($row['profile_collection_state'] ?? null);
             $row['profile_collection_complete'] = $profileComplete;
             $row['status_label'] = $this->statusLabel($row['effective_status']);
-            $row['next_action'] = $this->nextAction($row['effective_status'], $hasTicket, $profileComplete);
             $row['stalled_seconds'] = $this->calculateStalledSeconds((string) ($row['activity_at'] ?? ''));
             $row['stalled_label'] = $this->formatDuration((int) ($row['stalled_seconds'] ?? 0));
+            $row['contact_profile_snapshot'] = $this->decodeProfileSnapshot($row['profile_snapshot_json'] ?? null);
+            $row['profile_context'] = $this->buildProfileContext($row);
+            $awaitingProfileReturn = !empty($row['profile_context']['awaiting_return']);
+            $row['next_action'] = $awaitingProfileReturn
+                ? __('Aguardando retorno do cliente para completar o pré-ticket', 'glpiintegaglpi')
+                : $this->nextAction($row['effective_status'], $hasTicket, $profileComplete);
             $row['can_soft_close'] = self::isPotentialSoftCloseEligible($row);
             $row['entity_attempt_status_label'] = $this->entityAttemptStatusLabel(
                 (string) ($row['entity_attempt_status'] ?? ''),
@@ -1567,7 +1572,6 @@ final class AttendanceCenterService
             $row['operational_state_label'] = $this->operationalStateLabel($row);
             $row['risk_badges'] = $this->buildRiskBadges($row);
             $row['last_message_preview'] = trim((string) ($row['last_message_preview'] ?? ''));
-            $row['contact_profile_snapshot'] = $this->decodeProfileSnapshot($row['profile_snapshot_json'] ?? null);
 
             return $row;
         }, $rows);
@@ -2097,7 +2101,11 @@ final class AttendanceCenterService
                 'awaiting_entity_selection' => __('Aguardando entidade', 'glpiintegaglpi'),
                 'collecting_contact_profile' => !empty($row['profile_collection_complete'])
                     ? __('Perfil completo sem entidade', 'glpiintegaglpi')
-                    : __('Aguardando perfil', 'glpiintegaglpi'),
+                    : (
+                        !empty($row['profile_context']['awaiting_return'])
+                            ? __('Aguardando retorno do cliente', 'glpiintegaglpi')
+                            : __('Aguardando perfil', 'glpiintegaglpi')
+                    ),
                 'awaiting_queue_selection' => __('Aguardando fila', 'glpiintegaglpi'),
                 default => __('Pré-ticket', 'glpiintegaglpi'),
             };
@@ -2123,6 +2131,9 @@ final class AttendanceCenterService
 
         if ($window !== [] && empty($window['is_open'])) {
             $badges[] = ['label' => __('Janela 24h fechada', 'glpiintegaglpi'), 'class' => 'bg-warning text-dark'];
+        }
+        if (!empty($row['profile_context']['awaiting_return'])) {
+            $badges[] = ['label' => __('Aguardando retorno do cliente', 'glpiintegaglpi'), 'class' => 'bg-warning text-dark'];
         }
         if ($deliveryStatus === 'failed') {
             $badges[] = ['label' => __('Falha Meta', 'glpiintegaglpi'), 'class' => 'bg-danger'];
@@ -2251,6 +2262,93 @@ final class AttendanceCenterService
                 ? __('Acompanhe o chamado', 'glpiintegaglpi')
                 : __('Aguarde o usuário responder', 'glpiintegaglpi'),
         };
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private function buildProfileContext(array $row): array
+    {
+        $state = $this->decodeArrayValue($row['profile_collection_state'] ?? null);
+        $snapshot = is_array($row['contact_profile_snapshot'] ?? null)
+            ? $row['contact_profile_snapshot']
+            : [];
+        $source = array_merge($snapshot, $state);
+        $step = trim((string) ($state['step'] ?? $snapshot['profile_status'] ?? ''));
+
+        $name = trim((string) ($source['requester_name'] ?? $row['contact_name'] ?? ''));
+        $company = trim((string) ($source['company_name_raw'] ?? ''));
+        $email = trim((string) ($source['email_address'] ?? ''));
+        $equipmentUnknown = !empty($source['equipment_tag_unknown']);
+        $equipment = $equipmentUnknown
+            ? __('Não informado', 'glpiintegaglpi')
+            : trim((string) ($source['last_equipment_tag'] ?? $source['equipment_tag'] ?? ''));
+        $reason = trim((string) ($source['reason'] ?? $source['last_problem_summary'] ?? $source['problem_summary'] ?? ''));
+
+        $answered = [];
+        if ($company !== '') {
+            $answered[] = __('empresa', 'glpiintegaglpi');
+        }
+        if ($name !== '') {
+            $answered[] = __('nome', 'glpiintegaglpi');
+        }
+        if ($email !== '' || (string) ($source['email_status'] ?? '') === 'not_provided') {
+            $answered[] = __('e-mail', 'glpiintegaglpi');
+        }
+        if ($equipment !== '') {
+            $answered[] = __('equipamento', 'glpiintegaglpi');
+        }
+        if ($reason !== '') {
+            $answered[] = __('motivo', 'glpiintegaglpi');
+        }
+
+        $pendingByStep = [
+            'confirming_existing_profile' => [__('confirmação do perfil', 'glpiintegaglpi'), __('motivo', 'glpiintegaglpi')],
+            'asking_company' => [__('empresa', 'glpiintegaglpi'), __('nome', 'glpiintegaglpi'), __('e-mail', 'glpiintegaglpi'), __('equipamento', 'glpiintegaglpi'), __('motivo', 'glpiintegaglpi')],
+            'asking_name' => [__('nome', 'glpiintegaglpi'), __('e-mail', 'glpiintegaglpi'), __('equipamento', 'glpiintegaglpi'), __('motivo', 'glpiintegaglpi')],
+            'asking_email' => [__('e-mail', 'glpiintegaglpi'), __('equipamento', 'glpiintegaglpi'), __('motivo', 'glpiintegaglpi')],
+            'asking_tag' => [__('equipamento', 'glpiintegaglpi'), __('motivo', 'glpiintegaglpi')],
+            'asking_reason' => [__('motivo', 'glpiintegaglpi')],
+            'complete' => [],
+        ];
+        $pending = $pendingByStep[$step] ?? [];
+        if (self::isProfileCollectionComplete($row['profile_collection_state'] ?? null)) {
+            $pending = [];
+        }
+
+        return [
+            'name' => $name,
+            'company' => $company,
+            'email' => $email,
+            'equipment' => $equipment,
+            'reason' => $reason,
+            'step' => $step,
+            'answered_fields' => $answered,
+            'pending_fields' => $pending,
+            'answered_label' => $answered !== [] ? implode(', ', $answered) : '-',
+            'pending_label' => $pending !== [] ? implode(', ', $pending) : '-',
+            'awaiting_return' => (string) ($row['effective_status'] ?? '') === 'collecting_contact_profile'
+                && $pending !== []
+                && (int) ($row['stalled_seconds'] ?? 0) >= 300,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function decodeArrayValue(mixed $value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (!is_string($value) || trim($value) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($value, true);
+        return is_array($decoded) ? $decoded : [];
     }
 
     private static function isProfileCollectionComplete(mixed $value): bool

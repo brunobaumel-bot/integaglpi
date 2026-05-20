@@ -21,9 +21,12 @@ Este documento contém exemplos manuais com placeholders. Nenhum comando deve se
 
 ## Exemplo Manual de Sync TESTE para PRODUÇÃO
 
-Exemplo ilustrativo. Ajustar `<origem>`, `<destino>`, `<usuario>`, `<host>` e caminhos conforme procedimento aprovado.
+Exemplo ilustrativo. Ajustar variaveis conforme procedimento aprovado; nao colar placeholders com `<` ou `>` no shell.
 
 ```bash
+PACKAGE_SOURCE="/caminho/do/pacote/"
+PROD_TARGET="usuario@host-producao:/caminho/destino/"
+
 rsync -avz \
   --exclude=.env \
   --exclude=.ovpn \
@@ -33,7 +36,7 @@ rsync -avz \
   --exclude=node_modules \
   --exclude=vendor \
   --exclude=.git \
-  <origem-do-pacote>/ <usuario>@<host-producao>:<destino-do-pacote>/
+  "$PACKAGE_SOURCE" "$PROD_TARGET"
 ```
 
 Este exemplo não deve usar `--delete`. Cleanup, quando necessário, é manual, revisado e autorizado por humano.
@@ -60,6 +63,7 @@ Este exemplo não deve usar `--delete`. Cleanup, quando necessário, é manual, 
 - Restaurar vhost/PHP do backup aprovado se limites PHP precisarem voltar.
 - Restaurar `glpi_documenttypes` a partir do backup local de PRODUCAO se o ajuste de tipos precisar voltar.
 - Usar `scripts/ops/rollback_glpi_documenttypes.sh` em dry-run antes de qualquer `--execute`.
+- Usar `GLPI_PROD_DB`, `MYSQL_DEFAULTS_FILE`, `BACKUP_TABLE` e `ARCHIVE_SUFFIX` como variaveis revisadas; nao colar placeholders com `<` ou `>` no shell.
 - Preservar `.env` real de produção.
 - Reiniciar serviços somente conforme procedimento operacional autorizado.
 - Rodar smoke curto.
@@ -68,8 +72,8 @@ Este exemplo não deve usar `--delete`. Cleanup, quando necessário, é manual, 
 Exemplo manual para rollback de `glpi_documenttypes`, usando apenas backup criado na propria PRODUCAO:
 
 ```sql
-RENAME TABLE glpi_documenttypes TO glpi_documenttypes_after_reconciliation_<YYYYMMDDHHMMSS>;
-RENAME TABLE glpi_documenttypes_backup_<YYYYMMDDHHMMSS> TO glpi_documenttypes;
+RENAME TABLE glpi_documenttypes TO glpi_documenttypes_after_reconciliation_YYYYMMDDHHMMSS;
+RENAME TABLE glpi_documenttypes_backup_YYYYMMDDHHMMSS TO glpi_documenttypes;
 ```
 
 Nao apagar documentos ja criados e nao alterar `glpi_documents_items` manualmente.

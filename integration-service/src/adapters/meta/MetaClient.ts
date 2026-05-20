@@ -33,6 +33,17 @@ export interface MetaSendImageMessageInput {
   caption?: string;
 }
 
+export interface MetaSendAudioMessageInput {
+  to: string;
+  mediaId: string;
+}
+
+export interface MetaSendVideoMessageInput {
+  to: string;
+  mediaId: string;
+  caption?: string;
+}
+
 export interface MetaReplyButton {
   id: string;
   title: string;
@@ -256,6 +267,25 @@ export class MetaClient {
     return this.sendMediaMessage(input.to, {
       type: 'image',
       image: {
+        id: input.mediaId,
+        ...(input.caption ? { caption: input.caption } : {}),
+      },
+    });
+  }
+
+  public async sendAudioMessage(input: MetaSendAudioMessageInput): Promise<unknown> {
+    return this.sendMediaMessage(input.to, {
+      type: 'audio',
+      audio: {
+        id: input.mediaId,
+      },
+    });
+  }
+
+  public async sendVideoMessage(input: MetaSendVideoMessageInput): Promise<unknown> {
+    return this.sendMediaMessage(input.to, {
+      type: 'video',
+      video: {
         id: input.mediaId,
         ...(input.caption ? { caption: input.caption } : {}),
       },

@@ -45,9 +45,9 @@ function integaglpiBuildOutboundPayload(
         'ticket_id'       => $ticketId,
         'conversation_id' => $conversationId,
         'text'            => $replyText,
-        'message_type'    => $media !== null && str_starts_with((string) ($media['mime_type'] ?? ''), 'image/')
-            ? 'image'
-            : ($media !== null ? 'document' : 'text'),
+        'message_type'    => $media !== null
+            ? integaglpiMessageTypeForMime((string) ($media['mime_type'] ?? ''))
+            : 'text',
         'glpi_user_id'    => $userId,
         'idempotency_key' => $idempotencyKey,
     ];
@@ -57,6 +57,35 @@ function integaglpiBuildOutboundPayload(
     }
 
     return $payload;
+}
+
+function integaglpiMessageTypeForMime(string $mime): string
+{
+    $mime = strtolower(trim(explode(';', $mime, 2)[0]));
+    if (str_starts_with($mime, 'image/')) {
+        return 'image';
+    }
+    if (str_starts_with($mime, 'audio/')) {
+        return 'audio';
+    }
+    if (str_starts_with($mime, 'video/')) {
+        return 'video';
+    }
+
+    return 'document';
+}
+
+function integaglpiMaxBytesForMime(string $mime): int
+{
+    $messageType = integaglpiMessageTypeForMime($mime);
+    if ($messageType === 'audio') {
+        return 16 * 1024 * 1024;
+    }
+    if ($messageType === 'video') {
+        return 64 * 1024 * 1024;
+    }
+
+    return 15_728_640;
 }
 
 function integaglpiHasReplyUpload(): bool
@@ -82,8 +111,8 @@ function integaglpiBuildReplyMediaPayload(array $file): array
     }
 
     $size = (int) ($file['size'] ?? 0);
-    if ($size <= 0 || $size > 15_728_640) {
-        throw new RuntimeException('Não consegui enviar o anexo pelo WhatsApp porque o arquivo excede o limite permitido. Acesse o GLPI para visualizar.');
+    if ($size <= 0) {
+        throw new RuntimeException('Não consegui enviar o anexo pelo WhatsApp porque o arquivo está vazio.');
     }
 
     $detectedMime = '';
@@ -97,14 +126,39 @@ function integaglpiBuildReplyMediaPayload(array $file): array
         $detectedMime = is_string($candidate) ? strtolower($candidate) : '';
     }
     $mime = explode(';', $detectedMime, 2)[0];
-    if (!in_array($mime, ['application/pdf', 'image/jpeg', 'image/png', 'image/gif'], true)) {
-        throw new RuntimeException('Não consegui enviar o anexo pelo WhatsApp porque o tipo de arquivo não é suportado. Acesse o GLPI para visualizar.');
+    if (!in_array($mime, [
+        'application/pdf',
+        'image/jpeg',
+        'image/png',
+        'image/gif',
+        'audio/ogg',
+        'audio/mpeg',
+        'audio/mp4',
+        'audio/aac',
+        'audio/webm',
+        'video/mp4',
+        'video/3gpp',
+    ], true)) {
+        throw new RuntimeException('Formato de arquivo não suportado para envio via WhatsApp.');
+    }
+
+    if ($size > integaglpiMaxBytesForMime($mime)) {
+        throw new RuntimeException('Não consegui enviar o anexo pelo WhatsApp porque o arquivo excede o limite permitido. Acesse o GLPI para visualizar.');
     }
 
     $originalName = basename(str_replace(['\\', '/'], DIRECTORY_SEPARATOR, (string) ($file['name'] ?? '')));
     $safeName = preg_replace('/[^\w.\- ()\[\]]+/', '_', $originalName) ?: '';
     if ($safeName === '') {
-        $safeName = str_starts_with($mime, 'image/') ? 'imagem.png' : 'documento.pdf';
+        $messageType = integaglpiMessageTypeForMime($mime);
+        if ($messageType === 'image') {
+            $safeName = 'imagem.png';
+        } elseif ($messageType === 'audio') {
+            $safeName = 'audio.ogg';
+        } elseif ($messageType === 'video') {
+            $safeName = 'video.mp4';
+        } else {
+            $safeName = 'documento.pdf';
+        }
     }
 
     $content = file_get_contents($tmpName);

@@ -35,10 +35,20 @@ export interface TrackOutboundActivityInput {
   occurredAt: Date;
 }
 
+export interface ProfileCollectionReminderCandidate {
+  conversationId: string;
+  phoneE164: string;
+  profileCollectionState: Record<string, unknown>;
+  lastMessageAt: Date;
+  updatedAt: Date;
+}
+
 export interface InactivityTrackingRepository {
   trackOutboundActivity(input: TrackOutboundActivityInput): Promise<void>;
   findDueCandidates(limit: number): Promise<InactivityTrackingRecord[]>;
+  findProfileCollectionReminderCandidates(cutoff: Date, limit: number): Promise<ProfileCollectionReminderCandidate[]>;
   findByConversationId(conversationId: string): Promise<InactivityTrackingRecord | null>;
+  markProfileCollectionReminderSent(conversationId: string, step: string, sentAt: Date): Promise<boolean>;
   markReminderSent(conversationId: string, reminderNumber: 1 | 2 | 3, sentAt: Date): Promise<void>;
   tryMarkAutocloseAttempted(conversationId: string, attemptedAt: Date): Promise<boolean>;
   markAutocloseCompleted(conversationId: string, completedAt: Date): Promise<void>;

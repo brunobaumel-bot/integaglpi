@@ -39,7 +39,9 @@ describe('PHP WhatsApp ticket tab attachments', () => {
     expect(source).toContain('integaglpiBuildReplyMediaPayload');
     expect(source).toContain("'content_base64' => base64_encode($content)");
     expect(source).toContain("'message_type'    => $media !== null");
-    expect(source).toContain("['application/pdf', 'image/jpeg', 'image/png', 'image/gif']");
+    expect(source).toContain("'audio/ogg'");
+    expect(source).toContain("'video/mp4'");
+    expect(source).toContain('integaglpiMessageTypeForMime');
     expect(source).not.toContain('X-Integaglpi-Api-Key');
   });
 });

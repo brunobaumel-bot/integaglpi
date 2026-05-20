@@ -14,6 +14,8 @@ Objetivo: transformar os ajustes manuais validados em TESTE em um procedimento m
 - Nao alterar core GLPI.
 - Nao executar `DROP`, `TRUNCATE` ou `DELETE`.
 - Nao executar deploy automatico.
+- Nao colar exemplos com `<...>` diretamente no shell; definir variaveis com valores reais revisados.
+- Usar `--backup-suffix` unico por janela. Reutilizar o mesmo sufixo deve abortar em `--execute`.
 
 Nunca versionar, copiar ou colar em documentacao: .env real, .ovpn, tokens, Bearer tokens, PSK, Phone Number ID real, senhas, dumps SQL, backups reais, payloads brutos sensiveis ou dados pessoais desnecessarios.
 
@@ -95,41 +97,69 @@ Se qualquer valor divergir, ajustar o vhost/PHP do ambiente conforme runbook loc
 
 Antes de qualquer upsert, criar backup local em PRODUCAO. Usar timestamp da janela.
 
+### Defaults-file MySQL fora do repositorio
+
+Criar o arquivo de credenciais do cliente MySQL a partir do `config_db.php` real do GLPI. O script mostra apenas host, banco e usuario; a senha nao e impressa.
+
+```bash
+GLPI_CONFIG_DB="/caminho/seguro/do/glpi/config/config_db.php"
+MYSQL_DEFAULTS_FILE="/root/.my-prod.cnf"
+
+scripts/ops/create_mysql_defaults_from_glpi_config.sh \
+  --config "$GLPI_CONFIG_DB" \
+  --output "$MYSQL_DEFAULTS_FILE"
+```
+
+Escrita manual, somente apos revisao:
+
+```bash
+scripts/ops/create_mysql_defaults_from_glpi_config.sh \
+  --config "$GLPI_CONFIG_DB" \
+  --output "$MYSQL_DEFAULTS_FILE" \
+  --execute
+```
+
+O arquivo gerado deve ficar fora do repositorio, com permissao `0600`, e nao deve ser versionado, copiado para pacote ou colado em documentacao.
+
 O script versionado abaixo gera SQL em dry-run por padrao. Ele so aplica quando `--execute` e informado e o operador digita a confirmacao solicitada.
 
 ```bash
+GLPI_PROD_DB="sist_glpi"
+MYSQL_DEFAULTS_FILE="/root/.my-prod.cnf"
+BACKUP_SUFFIX="$(date +%Y%m%d%H%M%S)"
+
 scripts/ops/apply_glpi_documenttypes.sh \
-  --defaults-file <mysql-client-cnf-fora-do-repo> \
-  --database <glpi-db> \
-  --backup-suffix <YYYYMMDDHHMMSS>
+  --defaults-file "$MYSQL_DEFAULTS_FILE" \
+  --database "$GLPI_PROD_DB" \
+  --backup-suffix "$BACKUP_SUFFIX"
 ```
 
 Aplicacao manual, somente apos revisao:
 
 ```bash
 scripts/ops/apply_glpi_documenttypes.sh \
-  --defaults-file <mysql-client-cnf-fora-do-repo> \
-  --database <glpi-db> \
-  --backup-suffix <YYYYMMDDHHMMSS> \
+  --defaults-file "$MYSQL_DEFAULTS_FILE" \
+  --database "$GLPI_PROD_DB" \
+  --backup-suffix "$BACKUP_SUFFIX" \
   --execute
 ```
 
 O SQL conceitual gerado inclui backup antes de qualquer upsert:
 
 ```sql
-CREATE TABLE glpi_documenttypes_backup_<YYYYMMDDHHMMSS> AS
+CREATE TABLE glpi_documenttypes_backup_YYYYMMDDHHMMSS AS
 SELECT *
 FROM glpi_documenttypes;
 ```
 
-Validar o backup:
+Validar o backup substituindo o sufixo pela variavel da janela:
 
 ```sql
 SELECT COUNT(*) AS source_count
 FROM glpi_documenttypes;
 
 SELECT COUNT(*) AS backup_count
-FROM glpi_documenttypes_backup_<YYYYMMDDHHMMSS>;
+FROM glpi_documenttypes_backup_YYYYMMDDHHMMSS;
 ```
 
 O backup e local de PRODUCAO e nao deve entrar no pacote de deploy.
@@ -206,11 +236,16 @@ Nao criar tabelas manualmente se houver migration esperada. Usar apenas leitura 
 Usar o script versionado:
 
 ```bash
+PG_HOST="postgres-host"
+PG_PORT="5432"
+PG_DB="integration_service"
+PG_USER="integration_readonly_user"
+
 scripts/ops/check_integaglpi_postgres_tables.sh \
-  --host <postgres-host> \
-  --port <postgres-port> \
-  --database <postgres-db> \
-  --user <postgres-user> \
+  --host "$PG_HOST" \
+  --port "$PG_PORT" \
+  --database "$PG_DB" \
+  --user "$PG_USER" \
   --dry-run
 ```
 
@@ -218,10 +253,10 @@ Execucao read-only manual:
 
 ```bash
 scripts/ops/check_integaglpi_postgres_tables.sh \
-  --host <postgres-host> \
-  --port <postgres-port> \
-  --database <postgres-db> \
-  --user <postgres-user>
+  --host "$PG_HOST" \
+  --port "$PG_PORT" \
+  --database "$PG_DB" \
+  --user "$PG_USER"
 ```
 
 ```sql
@@ -292,27 +327,32 @@ Se o ambiente usa comando diferente para OpenLiteSpeed/CyberPanel, usar o runboo
 Exemplo de restauracao por backup local, somente com aprovacao humana:
 
 ```bash
+GLPI_PROD_DB="sist_glpi"
+MYSQL_DEFAULTS_FILE="/root/.my-prod.cnf"
+BACKUP_TABLE="glpi_documenttypes_backup_20260520152216"
+ARCHIVE_SUFFIX="$(date +%Y%m%d%H%M%S)"
+
 scripts/ops/rollback_glpi_documenttypes.sh \
-  --defaults-file <mysql-client-cnf-fora-do-repo> \
-  --database <glpi-db> \
-  --backup-table glpi_documenttypes_backup_<YYYYMMDDHHMMSS> \
-  --archive-suffix <YYYYMMDDHHMMSS>
+  --defaults-file "$MYSQL_DEFAULTS_FILE" \
+  --database "$GLPI_PROD_DB" \
+  --backup-table "$BACKUP_TABLE" \
+  --archive-suffix "$ARCHIVE_SUFFIX"
 ```
 
 Execucao manual, somente apos revisao:
 
 ```bash
 scripts/ops/rollback_glpi_documenttypes.sh \
-  --defaults-file <mysql-client-cnf-fora-do-repo> \
-  --database <glpi-db> \
-  --backup-table glpi_documenttypes_backup_<YYYYMMDDHHMMSS> \
-  --archive-suffix <YYYYMMDDHHMMSS> \
+  --defaults-file "$MYSQL_DEFAULTS_FILE" \
+  --database "$GLPI_PROD_DB" \
+  --backup-table "$BACKUP_TABLE" \
+  --archive-suffix "$ARCHIVE_SUFFIX" \
   --execute
 ```
 
 ```sql
-RENAME TABLE glpi_documenttypes TO glpi_documenttypes_after_reconciliation_<YYYYMMDDHHMMSS>;
-RENAME TABLE glpi_documenttypes_backup_<YYYYMMDDHHMMSS> TO glpi_documenttypes;
+RENAME TABLE glpi_documenttypes TO glpi_documenttypes_after_reconciliation_YYYYMMDDHHMMSS;
+RENAME TABLE glpi_documenttypes_backup_YYYYMMDDHHMMSS TO glpi_documenttypes;
 ```
 
 ## Evidencias Obrigatorias

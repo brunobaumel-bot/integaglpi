@@ -71,6 +71,10 @@ if [ -z "$DEFAULTS_FILE" ] || [ -z "$DATABASE" ] || [ -z "$BACKUP_SUFFIX" ]; the
 fi
 
 case "$DATABASE" in
+  *'<'*|*'>'*)
+    echo "--database must be a real schema name, not a placeholder with < or >." >&2
+    exit 2
+    ;;
   *[!A-Za-z0-9_]*|'')
     echo "--database must contain only letters, numbers, and underscore." >&2
     exit 2
@@ -86,11 +90,39 @@ esac
 
 BACKUP_TABLE="glpi_documenttypes_backup_${BACKUP_SUFFIX}"
 
+validate_defaults_file() {
+  if [ ! -f "$DEFAULTS_FILE" ]; then
+    echo "--defaults-file not found. Keep credentials outside the repository." >&2
+    exit 2
+  fi
+
+  perms=""
+  if command -v stat >/dev/null 2>&1; then
+    perms=$(stat -c '%a' "$DEFAULTS_FILE" 2>/dev/null || stat -f '%Lp' "$DEFAULTS_FILE" 2>/dev/null || true)
+  fi
+
+  case "$perms" in
+    600|400) ;;
+    "")
+      echo "Warning: could not determine --defaults-file permissions. Verify it is 0600." >&2
+      ;;
+    *)
+      echo "--defaults-file permissions must be 0600 or 0400; current mode is $perms." >&2
+      exit 2
+      ;;
+  esac
+}
+
 generate_sql() {
   cat <<SQL
 -- IntegraGLPI pre-production documenttypes reconciliation.
 -- Manual only. Review before executing.
 USE \`${DATABASE}\`;
+
+SELECT COUNT(*) AS existing_backup_table
+FROM information_schema.tables
+WHERE table_schema = DATABASE()
+  AND table_name = '${BACKUP_TABLE}';
 
 SELECT COLUMN_NAME, DATA_TYPE
 FROM information_schema.COLUMNS
@@ -98,7 +130,7 @@ WHERE TABLE_SCHEMA = DATABASE()
   AND TABLE_NAME = 'glpi_documenttypes'
 ORDER BY ORDINAL_POSITION;
 
-CREATE TABLE IF NOT EXISTS \`${BACKUP_TABLE}\` AS
+CREATE TABLE \`${BACKUP_TABLE}\` AS
 SELECT *
 FROM glpi_documenttypes;
 
@@ -166,14 +198,17 @@ if [ "$EXECUTE" -ne 1 ]; then
   exit 0
 fi
 
-if [ ! -f "$DEFAULTS_FILE" ]; then
-  echo "--defaults-file not found. Keep credentials outside the repository." >&2
-  exit 2
-fi
+validate_defaults_file
 
 if ! command -v mysql >/dev/null 2>&1; then
   echo "mysql client is required." >&2
   exit 2
+fi
+
+BACKUP_EXISTS=$(mysql --defaults-extra-file="$DEFAULTS_FILE" --database="$DATABASE" --batch --skip-column-names -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = '${BACKUP_TABLE}';")
+if [ "$BACKUP_EXISTS" != "0" ]; then
+  echo "Backup table already exists: ${BACKUP_TABLE}. Use a unique --backup-suffix for this window." >&2
+  exit 5
 fi
 
 printf 'Type APPLY_DOCUMENTTYPES_%s to execute against database %s: ' "$BACKUP_SUFFIX" "$DATABASE" >&2

@@ -18,6 +18,9 @@ Objetivo: validar produção após promoção manual, sem alterar regras funcion
 - [ ] Diagnóstico do plugin não mostra segredo.
 - [ ] Inbound WhatsApp chega e cria/atualiza conversa.
 - [ ] Outbound WhatsApp manual funciona em conversa com ticket.
+- [ ] Outbound WhatsApp com áudio enviado pelo GLPI chega como mídia real, sem fallback de tipo não suportado.
+- [ ] Outbound WhatsApp com vídeo enviado pelo GLPI chega como mídia real, sem fallback de tipo não suportado.
+- [ ] Automação de inatividade não envia lembrete/autoclose durante janela de 120 minutos após resposta técnica.
 - [ ] Criação de ticket GLPI funciona quando aplicável.
 - [ ] Follow-up GLPI é criado em conversa existente.
 - [ ] Mídia/anexo seguro é recebido e vinculado.

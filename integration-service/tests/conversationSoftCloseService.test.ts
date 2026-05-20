@@ -137,6 +137,28 @@ describe('ConversationSoftCloseService', () => {
     });
   });
 
+  it('does not treat a recent internal reminder update as customer activity', async () => {
+    const { service, softCloseAdministrative } = createService(createConversation({
+      status: 'collecting_contact_profile',
+      lastMessageAt: new Date('2026-05-18T10:00:00.000Z'),
+      updatedAt: new Date('2026-05-18T11:58:00.000Z'),
+    }));
+
+    const result = await service.softClose({
+      conversationId: 'conv-1',
+      reason: 'Pré-ticket abandonado após lembrete automático',
+      operatorId: 7,
+    });
+
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      previousStatus: 'collecting_contact_profile',
+      newStatus: 'cancelled',
+      idempotent: false,
+    });
+    expect(softCloseAdministrative).toHaveBeenCalledWith('conv-1', 'collecting_contact_profile', 'cancelled');
+  });
+
   it('blocks terminal statuses without mutating the conversation', async () => {
     const { service, softCloseAdministrative } = createService(createConversation({ status: 'closed' }));
 
