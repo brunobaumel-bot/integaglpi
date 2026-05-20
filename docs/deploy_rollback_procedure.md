@@ -59,6 +59,7 @@ Este exemplo não deve usar `--delete`. Cleanup, quando necessário, é manual, 
 - Restaurar pacote Node do backup aprovado.
 - Restaurar vhost/PHP do backup aprovado se limites PHP precisarem voltar.
 - Restaurar `glpi_documenttypes` a partir do backup local de PRODUCAO se o ajuste de tipos precisar voltar.
+- Usar `scripts/ops/rollback_glpi_documenttypes.sh` em dry-run antes de qualquer `--execute`.
 - Preservar `.env` real de produção.
 - Reiniciar serviços somente conforme procedimento operacional autorizado.
 - Rodar smoke curto.

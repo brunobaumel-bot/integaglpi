@@ -72,7 +72,8 @@ Exemplo manual com placeholders:
 
 ```bash
 # Copiar manualmente a sonda para <glpi-public-root>/_integaglpi_php_limits_probe.php
-curl -fsS https://<glpi-host>/_integaglpi_php_limits_probe.php
+scripts/ops/check_php_limits.sh --url https://<glpi-host>/_integaglpi_php_limits_probe.php --dry-run
+scripts/ops/check_php_limits.sh --url https://<glpi-host>/_integaglpi_php_limits_probe.php
 # Remover manualmente <glpi-public-root>/_integaglpi_php_limits_probe.php apos validar
 ```
 
@@ -93,6 +94,27 @@ Se qualquer valor divergir, ajustar o vhost/PHP do ambiente conforme runbook loc
 ## Backup Manual de `glpi_documenttypes`
 
 Antes de qualquer upsert, criar backup local em PRODUCAO. Usar timestamp da janela.
+
+O script versionado abaixo gera SQL em dry-run por padrao. Ele so aplica quando `--execute` e informado e o operador digita a confirmacao solicitada.
+
+```bash
+scripts/ops/apply_glpi_documenttypes.sh \
+  --defaults-file <mysql-client-cnf-fora-do-repo> \
+  --database <glpi-db> \
+  --backup-suffix <YYYYMMDDHHMMSS>
+```
+
+Aplicacao manual, somente apos revisao:
+
+```bash
+scripts/ops/apply_glpi_documenttypes.sh \
+  --defaults-file <mysql-client-cnf-fora-do-repo> \
+  --database <glpi-db> \
+  --backup-suffix <YYYYMMDDHHMMSS> \
+  --execute
+```
+
+O SQL conceitual gerado inclui backup antes de qualquer upsert:
 
 ```sql
 CREATE TABLE glpi_documenttypes_backup_<YYYYMMDDHHMMSS> AS
@@ -181,6 +203,27 @@ ORDER BY ext;
 
 Nao criar tabelas manualmente se houver migration esperada. Usar apenas leitura para confirmar estado.
 
+Usar o script versionado:
+
+```bash
+scripts/ops/check_integaglpi_postgres_tables.sh \
+  --host <postgres-host> \
+  --port <postgres-port> \
+  --database <postgres-db> \
+  --user <postgres-user> \
+  --dry-run
+```
+
+Execucao read-only manual:
+
+```bash
+scripts/ops/check_integaglpi_postgres_tables.sh \
+  --host <postgres-host> \
+  --port <postgres-port> \
+  --database <postgres-db> \
+  --user <postgres-user>
+```
+
 ```sql
 SELECT table_name
 FROM information_schema.tables
@@ -247,6 +290,25 @@ Se o ambiente usa comando diferente para OpenLiteSpeed/CyberPanel, usar o runboo
 7. Nao apagar documentos ja criados e nao alterar `glpi_documents_items` manualmente.
 
 Exemplo de restauracao por backup local, somente com aprovacao humana:
+
+```bash
+scripts/ops/rollback_glpi_documenttypes.sh \
+  --defaults-file <mysql-client-cnf-fora-do-repo> \
+  --database <glpi-db> \
+  --backup-table glpi_documenttypes_backup_<YYYYMMDDHHMMSS> \
+  --archive-suffix <YYYYMMDDHHMMSS>
+```
+
+Execucao manual, somente apos revisao:
+
+```bash
+scripts/ops/rollback_glpi_documenttypes.sh \
+  --defaults-file <mysql-client-cnf-fora-do-repo> \
+  --database <glpi-db> \
+  --backup-table glpi_documenttypes_backup_<YYYYMMDDHHMMSS> \
+  --archive-suffix <YYYYMMDDHHMMSS> \
+  --execute
+```
 
 ```sql
 RENAME TABLE glpi_documenttypes TO glpi_documenttypes_after_reconciliation_<YYYYMMDDHHMMSS>;

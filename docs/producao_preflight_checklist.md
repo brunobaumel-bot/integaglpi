@@ -24,9 +24,12 @@ Executar antes de qualquer promocao TESTE -> PRODUCAO.
 - [ ] Cloud sem Git: pacote sera copiado manualmente.
 - [ ] Reconciliacao manual pre-producao concluida conforme `docs/pre_prod_manual_state_reconciliation.md`.
 - [ ] Limites PHP web do GLPI conferidos e registrados.
+- [ ] `scripts/ops/check_php_limits.sh` executado contra sonda autorizada ou diagnostico equivalente.
 - [ ] Backup local de PRODUCAO para `glpi_documenttypes` criado antes de qualquer ajuste.
+- [ ] `scripts/ops/apply_glpi_documenttypes.sh` revisado em dry-run antes de qualquer `--execute`.
 - [ ] Tipos de documento audio/video conferidos por consulta read-only.
 - [ ] Tabelas PostgreSQL criticas da integracao validadas por consulta read-only.
+- [ ] `scripts/ops/check_integaglpi_postgres_tables.sh` executado em modo read-only ou dry-run revisado.
 
 ## Node
 
