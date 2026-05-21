@@ -3,9 +3,11 @@ import type { MetaClient } from '../../adapters/meta/MetaClient.js';
 import type { InboundMediaMetadata } from '../../adapters/meta/metaWebhookTypes.js';
 import { GlpiRequestError } from '../../errors/GlpiRequestError.js';
 import { logger } from '../../infra/logger/logger.js';
+import type { AuditService } from './AuditService.js';
+import { AttachmentSecurityService, type AttachmentStatus } from './AttachmentSecurityService.js';
 
 export interface MediaInfo {
-  status: 'synced' | 'uploaded_unlinked' | 'error' | 'skipped';
+  status: AttachmentStatus | 'uploaded_unlinked' | 'error' | 'skipped';
   provider: 'meta_whatsapp';
   media_id: string;
   message_type: string;
@@ -19,6 +21,13 @@ export interface MediaInfo {
   error: string | null;
   error_code?: string | null;
   error_stage?: string | null;
+  attachment_status?: AttachmentStatus;
+  attachment_blocked_reason?: string | null;
+  attachment_hash?: string | null;
+  attachment_mime_detected?: string | null;
+  attachment_extension?: string | null;
+  attachment_size_bytes?: number | null;
+  attachment_filename_sanitized?: string | null;
   processed_at: string;
 }
 
@@ -46,6 +55,12 @@ const ALLOWED_MIME_TYPES = new Set([
   'image/png',
   'image/webp',
   'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/plain',
+  'text/csv',
   'audio/ogg',
   'audio/mpeg',
   'audio/mp4',
@@ -60,6 +75,12 @@ const MIME_TO_EXTENSION: Record<string, string> = {
   'image/png': '.png',
   'image/webp': '.webp',
   'application/pdf': '.pdf',
+  'application/msword': '.doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+  'application/vnd.ms-excel': '.xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+  'text/plain': '.txt',
+  'text/csv': '.csv',
   'audio/ogg': '.ogg',
   'audio/mpeg': '.mp3',
   'audio/mp4': '.m4a',
@@ -110,6 +131,8 @@ export class MediaProcessingService {
     private readonly metaClient: MetaMediaClient,
     private readonly glpiClient: GlpiMediaClient,
     private readonly maxBytes: number,
+    private readonly auditService: AuditService | null = null,
+    private readonly attachmentSecurityService = new AttachmentSecurityService(),
   ) {}
 
   public async processMedia(input: ProcessMediaInput): Promise<ProcessMediaResult> {
@@ -203,7 +226,79 @@ export class MediaProcessingService {
         );
       }
 
-      const safeFilename = this.buildSafeFilename(messageType, effectiveMimeBase, mediaMetadata.fileName);
+      const initialFilename = this.buildSafeFilename(messageType, effectiveMimeBase, mediaMetadata.fileName);
+      const attachmentValidation = this.attachmentSecurityService.validate({
+        buffer: downloadResult.buffer,
+        filename: mediaMetadata.fileName ?? initialFilename,
+        declaredMime: effectiveMimeBase,
+        messageType,
+        maxBytes: this.maxBytes,
+      });
+      this.recordAttachmentAudit({
+        input,
+        ticketId,
+        mediaMetadata,
+        eventType: 'ATTACHMENT_RECEIVED',
+        status: 'pending',
+        severity: 'info',
+        payload: this.buildAttachmentAuditPayload(attachmentValidation, 'received', null),
+      });
+
+      if (!attachmentValidation.ok) {
+        logger.warn(
+          {
+            media_id: maskMediaId(mediaMetadata.mediaId),
+            conversation_id: input.conversationId ?? null,
+            message_id: input.messageId ?? null,
+            correlation_id: input.correlationId ?? null,
+            event_type: attachmentValidation.reason === 'path_traversal_attempt'
+              ? 'PATH_TRAVERSAL_ATTEMPT_DETECTED'
+              : 'ATTACHMENT_BLOCKED',
+            status: 'blocked',
+            reason: attachmentValidation.reason,
+            mime_detected: attachmentValidation.mimeDetected,
+            extension: attachmentValidation.extension,
+            size: attachmentValidation.sizeBytes,
+            hash: attachmentValidation.sha256,
+          },
+          '[integration-service][media][ATTACHMENT_BLOCKED]',
+        );
+        this.recordAttachmentAudit({
+          input,
+          ticketId,
+          mediaMetadata,
+          eventType: attachmentValidation.reason === 'mime_extension_mismatch'
+            ? 'ATTACHMENT_BLOCKED_DUE_TO_MIME_MISMATCH'
+            : attachmentValidation.reason === 'path_traversal_attempt'
+              ? 'PATH_TRAVERSAL_ATTEMPT_DETECTED'
+              : 'ATTACHMENT_BLOCKED',
+          status: 'failed',
+          severity: 'warning',
+          payload: this.buildAttachmentAuditPayload(attachmentValidation, 'blocked', attachmentValidation.reason),
+          errorMessage: attachmentValidation.reason,
+        });
+        return this.blockedResult(
+          mediaMetadata,
+          messageType,
+          attachmentValidation.mimeDetected,
+          ticketId,
+          now,
+          attachmentValidation.reason ?? 'blocked',
+          attachmentValidation,
+          downloadResult.contentType,
+        );
+      }
+
+      const safeFilename = attachmentValidation.filenameSanitized;
+      this.recordAttachmentAudit({
+        input,
+        ticketId,
+        mediaMetadata,
+        eventType: 'ATTACHMENT_VALIDATED',
+        status: 'success',
+        severity: 'info',
+        payload: this.buildAttachmentAuditPayload(attachmentValidation, 'validated', null),
+      });
 
       logger.info(
         {
@@ -235,7 +330,7 @@ export class MediaProcessingService {
       const documentId = await this.glpiClient.uploadDocument({
         fileBuffer: downloadResult.buffer,
         filename: safeFilename,
-        mimeType: effectiveMimeBase,
+        mimeType: attachmentValidation.mimeDetected,
         entitiesId: ticketEntityId,
       });
       logger.info(
@@ -275,9 +370,10 @@ export class MediaProcessingService {
           now,
           documentId,
           safeFilename,
-          effectiveMimeBase,
+          effectiveMimeBase: attachmentValidation.mimeDetected,
           downloadContentType: downloadResult.contentType,
           fileSize: downloadResult.size,
+          attachmentValidation,
           error,
           context: input,
         });
@@ -311,7 +407,7 @@ export class MediaProcessingService {
         provider: 'meta_whatsapp',
         media_id: mediaMetadata.mediaId,
         message_type: messageType,
-        mime_type: effectiveMimeBase,
+        mime_type: attachmentValidation.mimeDetected,
         download_content_type: downloadResult.contentType,
         file_name: safeFilename,
         file_size: downloadResult.size,
@@ -321,13 +417,30 @@ export class MediaProcessingService {
         error: null,
         error_code: null,
         error_stage: null,
+        attachment_status: 'synced',
+        attachment_blocked_reason: null,
+        attachment_hash: attachmentValidation.sha256,
+        attachment_mime_detected: attachmentValidation.mimeDetected,
+        attachment_extension: attachmentValidation.extension,
+        attachment_size_bytes: attachmentValidation.sizeBytes,
+        attachment_filename_sanitized: attachmentValidation.filenameSanitized,
         processed_at: now,
       };
+
+      this.recordAttachmentAudit({
+        input,
+        ticketId,
+        mediaMetadata,
+        eventType: 'ATTACHMENT_SYNCED',
+        status: 'success',
+        severity: 'info',
+        payload: this.buildAttachmentAuditPayload(attachmentValidation, 'synced', null, documentId),
+      });
 
       return {
         mediaInfo: info,
         followUpContent: this.buildSuccessFollowUp(
-          safeFilename, effectiveMimeBase, downloadResult.size, mediaMetadata.caption,
+          safeFilename, attachmentValidation.mimeDetected, downloadResult.size, mediaMetadata.caption,
         ),
       };
     } catch (error: unknown) {
@@ -365,8 +478,38 @@ export class MediaProcessingService {
         error: errorMessage,
         error_code: null,
         error_stage: stage,
+        attachment_status: 'failed',
+        attachment_blocked_reason: null,
+        attachment_hash: null,
+        attachment_mime_detected: null,
+        attachment_extension: null,
+        attachment_size_bytes: null,
+        attachment_filename_sanitized: null,
         processed_at: now,
       };
+
+      this.auditService?.recordAuditEventFireAndForget({
+        correlationId: input.correlationId ?? null,
+        ticketId,
+        conversationId: input.conversationId ?? null,
+        messageId: input.messageId ?? null,
+        direction: 'inbound',
+        eventType: 'ATTACHMENT_FAILED',
+        status: 'failed',
+        severity: 'error',
+        source: 'MediaProcessingService',
+        errorMessage,
+        payload: {
+          filename_sanitized: info.file_name,
+          mime_detected: info.attachment_mime_detected,
+          extension: info.attachment_extension,
+          size_bytes: info.attachment_size_bytes,
+          hash: info.attachment_hash,
+          status: 'failed',
+          reason: classifyError(error),
+          media_id_masked: maskMediaId(mediaMetadata.mediaId),
+        },
+      });
 
       return {
         mediaInfo: info,
@@ -402,11 +545,59 @@ export class MediaProcessingService {
       error: `${reason}: ${mimeType ?? 'unknown'}`,
       error_code: null,
       error_stage: null,
+      attachment_status: 'blocked',
+      attachment_blocked_reason: reason,
+      attachment_hash: null,
+      attachment_mime_detected: mimeType ?? 'unknown',
+      attachment_extension: null,
+      attachment_size_bytes: fileSize ?? 0,
+      attachment_filename_sanitized: null,
       processed_at: now,
     };
     return {
       mediaInfo: info,
       followUpContent: this.buildFallbackFollowUp(messageType, mimeType, mediaMetadata.caption, reason),
+    };
+  }
+
+  private blockedResult(
+    mediaMetadata: InboundMediaMetadata,
+    messageType: string,
+    mimeType: string | null,
+    ticketId: number,
+    now: string,
+    reason: string,
+    attachmentValidation: ReturnType<AttachmentSecurityService['validate']>,
+    downloadContentType?: string | null,
+  ): ProcessMediaResult {
+    const info: MediaInfo = {
+      status: 'blocked',
+      provider: 'meta_whatsapp',
+      media_id: mediaMetadata.mediaId,
+      message_type: messageType,
+      mime_type: mimeType ?? 'unknown',
+      download_content_type: downloadContentType ?? null,
+      file_name: attachmentValidation.filenameSanitized,
+      file_size: attachmentValidation.sizeBytes,
+      caption: mediaMetadata.caption,
+      glpi_document_id: null,
+      glpi_ticket_id: ticketId,
+      error: reason,
+      error_code: 'ATTACHMENT_BLOCKED',
+      error_stage: 'attachment_validation',
+      attachment_status: 'blocked',
+      attachment_blocked_reason: reason,
+      attachment_hash: attachmentValidation.sha256,
+      attachment_mime_detected: attachmentValidation.mimeDetected,
+      attachment_extension: attachmentValidation.extension,
+      attachment_size_bytes: attachmentValidation.sizeBytes,
+      attachment_filename_sanitized: attachmentValidation.filenameSanitized,
+      processed_at: now,
+    };
+
+    return {
+      mediaInfo: info,
+      followUpContent: this.buildFallbackFollowUp(messageType, mimeType, mediaMetadata.caption, 'anexo bloqueado por validação de segurança'),
     };
   }
 
@@ -447,6 +638,7 @@ export class MediaProcessingService {
     effectiveMimeBase: string;
     downloadContentType: string | null;
     fileSize: number;
+    attachmentValidation: ReturnType<AttachmentSecurityService['validate']>;
     error: unknown;
     context: ProcessMediaInput;
   }): ProcessMediaResult {
@@ -487,10 +679,63 @@ export class MediaProcessingService {
         error: errorMessage,
         error_code: errorCode,
         error_stage: 'glpi_document_item_link',
+        attachment_status: 'failed',
+        attachment_blocked_reason: null,
+        attachment_hash: input.attachmentValidation.sha256,
+        attachment_mime_detected: input.attachmentValidation.mimeDetected,
+        attachment_extension: input.attachmentValidation.extension,
+        attachment_size_bytes: input.attachmentValidation.sizeBytes,
+        attachment_filename_sanitized: input.attachmentValidation.filenameSanitized,
         processed_at: input.now,
       },
       followUpContent: this.buildUploadedUnlinkedFollowUp(input.safeFilename, input.mediaMetadata.caption),
     };
+  }
+
+  private buildAttachmentAuditPayload(
+    validation: ReturnType<AttachmentSecurityService['validate']>,
+    status: AttachmentStatus,
+    reason: string | null,
+    documentId?: number | null,
+  ): Record<string, unknown> {
+    return {
+      filename_sanitized: validation.filenameSanitized,
+      mime_detected: validation.mimeDetected,
+      extension: validation.extension,
+      size_bytes: validation.sizeBytes,
+      hash: validation.sha256,
+      status,
+      reason,
+      glpi_document_id: documentId ?? null,
+    };
+  }
+
+  private recordAttachmentAudit(input: {
+    input: ProcessMediaInput;
+    ticketId: number;
+    mediaMetadata: InboundMediaMetadata;
+    eventType: string;
+    status: 'success' | 'failed' | 'pending';
+    severity: 'info' | 'warning' | 'error';
+    payload: Record<string, unknown>;
+    errorMessage?: string | null;
+  }): void {
+    this.auditService?.recordAuditEventFireAndForget({
+      correlationId: input.input.correlationId ?? null,
+      ticketId: input.ticketId,
+      conversationId: input.input.conversationId ?? null,
+      messageId: input.input.messageId ?? null,
+      direction: 'inbound',
+      eventType: input.eventType,
+      status: input.status,
+      severity: input.severity,
+      source: 'MediaProcessingService',
+      errorMessage: input.errorMessage ?? null,
+      payload: {
+        ...input.payload,
+        media_id_masked: maskMediaId(input.mediaMetadata.mediaId),
+      },
+    });
   }
 
   private buildSafeFilename(messageType: string, mimeType: string | null | undefined, rawFilename: string | null): string {

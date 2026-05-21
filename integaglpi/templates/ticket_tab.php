@@ -73,6 +73,49 @@ $short = static function (mixed $value, int $max = 44): string {
 
     return strlen($text) > $max ? substr($text, 0, $max) . '...' : $text;
 };
+$attachmentActionUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/front/attachment.action.php';
+$attachmentStatusLabel = static function (string $status): string {
+    return match ($status) {
+        'received' => __('recebido', 'glpiintegaglpi'),
+        'validated' => __('validado', 'glpiintegaglpi'),
+        'blocked' => __('bloqueado', 'glpiintegaglpi'),
+        'synced' => __('sincronizado', 'glpiintegaglpi'),
+        'failed' => __('falhou', 'glpiintegaglpi'),
+        'deleted' => __('excluído logicamente', 'glpiintegaglpi'),
+        default => $status,
+    };
+};
+$attachmentStatusBadge = static function (string $status): string {
+    return match ($status) {
+        'synced', 'validated' => 'success',
+        'blocked', 'failed' => 'danger',
+        'deleted' => 'secondary',
+        default => 'info',
+    };
+};
+$shortHash = static function (mixed $value): string {
+    $hash = trim((string) $value);
+    if ($hash === '') {
+        return '';
+    }
+
+    return strlen($hash) > 24 ? substr($hash, 0, 12) . '...' . substr($hash, -8) : $hash;
+};
+$attachmentMediaValue = static function (array $message, string $key): string {
+    $value = $message[$key] ?? null;
+    if (is_string($value) && trim($value) !== '') {
+        return trim($value);
+    }
+    $mediaInfo = $message['media_info'] ?? null;
+    if (is_array($mediaInfo)) {
+        $mediaValue = $mediaInfo[$key] ?? null;
+        if (is_string($mediaValue) && trim($mediaValue) !== '') {
+            return trim($mediaValue);
+        }
+    }
+
+    return '';
+};
 $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
     $data = is_array($manualWhatsapp) ? $manualWhatsapp : [];
     $template = is_array($data['template'] ?? null) ? $data['template'] : null;
@@ -746,6 +789,74 @@ if ($auditPanelOk) {
                                 <span style="font-size: .68rem; color: #9aa0a6; white-space: nowrap;"><?= $timestamp; ?></span>
                             </div>
                             <div style="font-size: .875rem; line-height: 1.45;"><?= nl2br($this->escape((string) ($message['message_text'] ?? ''))); ?></div>
+                            <?php
+                            $mediaInfo = is_array($message['media_info'] ?? null) ? $message['media_info'] : [];
+                            $hasAttachment = $mediaInfo !== []
+                                || trim((string) ($message['attachment_hash'] ?? '')) !== ''
+                                || trim((string) ($message['attachment_status'] ?? '')) !== '';
+                            $attachmentStatus = (bool) ($message['is_deleted'] ?? false)
+                                ? 'deleted'
+                                : ($attachmentMediaValue($message, 'attachment_status')
+                                    ?: trim((string) ($mediaInfo['status'] ?? '')));
+                            $attachmentStatus = $attachmentStatus !== '' ? $attachmentStatus : 'received';
+                            $attachmentFilename = $attachmentMediaValue($message, 'attachment_filename_sanitized')
+                                ?: trim((string) ($mediaInfo['file_name'] ?? $mediaInfo['filename'] ?? ''));
+                            $attachmentMime = $attachmentMediaValue($message, 'attachment_mime_detected')
+                                ?: trim((string) ($mediaInfo['mime_type'] ?? ''));
+                            $attachmentReason = $attachmentMediaValue($message, 'attachment_blocked_reason')
+                                ?: trim((string) ($mediaInfo['error'] ?? ''));
+                            $attachmentHash = $attachmentMediaValue($message, 'attachment_hash');
+                            $attachmentSize = (int) ($message['attachment_size_bytes'] ?? $mediaInfo['attachment_size_bytes'] ?? $mediaInfo['file_size'] ?? 0);
+                            $attachmentSizeLabel = $attachmentSize > 0
+                                ? ($attachmentSize < 1048576 ? round($attachmentSize / 1024, 1) . ' KB' : round($attachmentSize / 1048576, 1) . ' MB')
+                                : '';
+                            ?>
+                            <?php if ($hasAttachment) { ?>
+                                <div class="mt-2 p-2 rounded border bg-white" style="font-size: .72rem;">
+                                    <div class="d-flex align-items-center justify-content-between gap-2 flex-wrap">
+                                        <strong><?= $this->escape($attachmentFilename !== '' ? $attachmentFilename : __('Anexo WhatsApp', 'glpiintegaglpi')); ?></strong>
+                                        <span class="badge bg-<?= $this->escape($attachmentStatusBadge($attachmentStatus)); ?>">
+                                            <?= $this->escape($attachmentStatusLabel($attachmentStatus)); ?>
+                                        </span>
+                                    </div>
+                                    <div class="text-muted mt-1">
+                                        <?php if ($attachmentMime !== '') { ?>
+                                            <?= $this->escape($attachmentMime); ?>
+                                        <?php } ?>
+                                        <?php if ($attachmentSizeLabel !== '') { ?>
+                                            <?= $attachmentMime !== '' ? ' · ' : ''; ?><?= $this->escape($attachmentSizeLabel); ?>
+                                        <?php } ?>
+                                        <?php if ($attachmentHash !== '') { ?>
+                                            <?= ($attachmentMime !== '' || $attachmentSizeLabel !== '') ? ' · ' : ''; ?>
+                                            SHA256 <?= $this->escape($shortHash($attachmentHash)); ?>
+                                        <?php } ?>
+                                    </div>
+                                    <?php if ($attachmentReason !== '' && in_array($attachmentStatus, ['blocked', 'failed', 'deleted'], true)) { ?>
+                                        <div class="text-danger mt-1">
+                                            <?= $this->escape(__('Motivo', 'glpiintegaglpi')); ?>:
+                                            <?= $this->escape($attachmentReason); ?>
+                                        </div>
+                                    <?php } ?>
+                                    <?php if (\GlpiPlugin\Integaglpi\Plugin::canUpdate() && trim((string) ($message['message_id'] ?? '')) !== '') { ?>
+                                        <form method="post" action="<?= $this->escape($attachmentActionUrl); ?>" class="mt-2 mb-0">
+                                            <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken(); ?>
+                                            <input type="hidden" name="ticket_id" value="<?= (int) $ticket->getID(); ?>">
+                                            <input type="hidden" name="message_id" value="<?= $this->escape((string) $message['message_id']); ?>">
+                                            <?php if ($attachmentStatus === 'deleted') { ?>
+                                                <input type="hidden" name="attachment_action" value="restore">
+                                                <button type="submit" class="btn btn-sm btn-outline-secondary">
+                                                    <?= $this->escape(__('Restaurar anexo', 'glpiintegaglpi')); ?>
+                                                </button>
+                                            <?php } else { ?>
+                                                <input type="hidden" name="attachment_action" value="soft_delete">
+                                                <button type="submit" class="btn btn-sm btn-outline-danger">
+                                                    <?= $this->escape(__('Excluir logicamente', 'glpiintegaglpi')); ?>
+                                                </button>
+                                            <?php } ?>
+                                        </form>
+                                    <?php } ?>
+                                </div>
+                            <?php } ?>
                             <?php if (!$isInbound && !empty($message['delivery_status'])) { ?>
                                 <?php
                                 $deliveryStatus = (string) $message['delivery_status'];

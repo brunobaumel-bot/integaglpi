@@ -34,6 +34,7 @@ final class MessageRepository
                     message_type,
                     message_text,
                     raw_payload,
+                    media_info,
                     processing_status,
                     glpi_sync_status,
                     meta_message_id,
@@ -41,6 +42,16 @@ final class MessageRepository
                     delivery_status_updated_at,
                     meta_error_code,
                     meta_error_message_sanitized,
+                    attachment_hash,
+                    attachment_status,
+                    attachment_blocked_reason,
+                    attachment_mime_detected,
+                    attachment_extension,
+                    attachment_size_bytes,
+                    attachment_filename_sanitized,
+                    is_deleted,
+                    deleted_at,
+                    deleted_by_user_id,
                     created_at,
                     updated_at
                 FROM glpi_plugin_integaglpi_messages
@@ -95,6 +106,7 @@ final class MessageRepository
                     message_type,
                     message_text,
                     raw_payload,
+                    media_info,
                     processing_status,
                     glpi_sync_status,
                     meta_message_id,
@@ -102,6 +114,16 @@ final class MessageRepository
                     delivery_status_updated_at,
                     meta_error_code,
                     meta_error_message_sanitized,
+                    attachment_hash,
+                    attachment_status,
+                    attachment_blocked_reason,
+                    attachment_mime_detected,
+                    attachment_extension,
+                    attachment_size_bytes,
+                    attachment_filename_sanitized,
+                    is_deleted,
+                    deleted_at,
+                    deleted_by_user_id,
                     created_at,
                     updated_at
                 FROM glpi_plugin_integaglpi_messages
@@ -131,6 +153,11 @@ final class MessageRepository
     private function decorateReplyContext(array $rows): array
     {
         foreach ($rows as &$row) {
+            if (isset($row['media_info']) && is_string($row['media_info'])) {
+                $decodedMediaInfo = json_decode($row['media_info'], true);
+                $row['media_info'] = is_array($decodedMediaInfo) ? $decodedMediaInfo : null;
+            }
+
             $contextMessageId = $this->extractReplyContextMessageId($row);
             unset($row['raw_payload']);
 

@@ -8,6 +8,7 @@ import type { ConversationRepository } from '../../repositories/contracts/Conver
 import type { InactivityTrackingRepository } from '../../repositories/contracts/InactivityTrackingRepository.js';
 import type { MessageRepository } from '../../repositories/contracts/MessageRepository.js';
 import type { AuditService } from './AuditService.js';
+import { AttachmentSecurityService } from './AttachmentSecurityService.js';
 import { createCorrelationId } from './correlationId.js';
 import type { MessageConfigurationService } from './MessageConfigurationService.js';
 
@@ -174,9 +175,15 @@ function applyMessageTemplate(text: string, values: Record<string, string | numb
 
 const OUTBOUND_MEDIA_MIME_ALLOWLIST = new Set([
   'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/plain',
+  'text/csv',
   'image/jpeg',
   'image/png',
-  'image/gif',
+  'image/webp',
   'audio/ogg',
   'audio/mpeg',
   'audio/mp4',
@@ -192,6 +199,7 @@ const OUTBOUND_MEDIA_LIMITS_BYTES: Record<'document' | 'image' | 'audio' | 'vide
   video: 64 * 1024 * 1024,
 };
 const INACTIVITY_AUTOCLOSE_REASON = 'Encerrado por falta de retorno do usuário';
+const attachmentSecurityService = new AttachmentSecurityService();
 
 function normalizeMimeType(value: string | undefined): string {
   return (value ?? '').split(';', 1)[0]?.trim().toLowerCase() ?? '';
@@ -1196,10 +1204,92 @@ export class OutboundMessageService {
       };
     }
 
+    const validation = attachmentSecurityService.validate({
+      buffer,
+      filename: media.filename,
+      declaredMime: mimeType,
+      messageType: body.message_type,
+      maxBytes,
+    });
+    this.recordAudit({
+      correlationId,
+      ticketId: body.ticket_id,
+      conversationId,
+      direction: 'outbound',
+      eventType: 'ATTACHMENT_RECEIVED',
+      status: 'pending',
+      severity: 'info',
+      source: 'OutboundMessageService',
+      payload: {
+        filename_sanitized: validation.filenameSanitized,
+        mime_detected: validation.mimeDetected,
+        extension: validation.extension,
+        size_bytes: validation.sizeBytes,
+        hash: validation.sha256,
+        status: 'received',
+        reason: null,
+        document_id: media.document_id ?? null,
+      },
+    });
+    if (!validation.ok) {
+      logger.warn(
+        {
+          ticket_id: body.ticket_id,
+          conversation_id: conversationId,
+          correlation_id: correlationId,
+          event_type: validation.reason === 'path_traversal_attempt'
+            ? 'PATH_TRAVERSAL_ATTEMPT_DETECTED'
+            : 'ATTACHMENT_BLOCKED',
+          status: 'failed',
+          message_type: body.message_type,
+          mime_detected: validation.mimeDetected,
+          extension: validation.extension,
+          size: validation.sizeBytes,
+          hash: validation.sha256,
+          reason: validation.reason,
+        },
+        '[integration-service][outbound][ATTACHMENT_BLOCKED]',
+      );
+      this.recordAudit({
+        correlationId,
+        ticketId: body.ticket_id,
+        conversationId,
+        direction: 'outbound',
+        eventType: validation.reason === 'mime_extension_mismatch'
+          ? 'ATTACHMENT_BLOCKED_DUE_TO_MIME_MISMATCH'
+          : validation.reason === 'path_traversal_attempt'
+            ? 'PATH_TRAVERSAL_ATTEMPT_DETECTED'
+            : 'ATTACHMENT_BLOCKED',
+        status: 'failed',
+        severity: 'warning',
+        source: 'OutboundMessageService',
+        errorMessage: validation.reason,
+        payload: {
+          filename_sanitized: validation.filenameSanitized,
+          mime_detected: validation.mimeDetected,
+          extension: validation.extension,
+          size_bytes: validation.sizeBytes,
+          hash: validation.sha256,
+          status: 'blocked',
+          reason: validation.reason,
+          document_id: media.document_id ?? null,
+        },
+      });
+
+      return {
+        httpStatus: 400,
+        body: {
+          status: 'failed',
+          error_code: 'ATTACHMENT_BLOCKED',
+          message: 'Attachment blocked by security validation.',
+        },
+      };
+    }
+
     let messageId: string;
     let metaResponse: unknown;
     let sendMode: 'media' | 'text_fallback' | 'mock' = 'media';
-    const safeFilename = media.filename.replace(/[^\w.\- ()\[\]]+/g, '_').slice(0, 180) || 'document.pdf';
+    const safeFilename = validation.filenameSanitized;
 
     logger.info(
       {
@@ -1244,7 +1334,7 @@ export class OutboundMessageService {
         );
         const uploadedMediaId = await this.metaClient.uploadMedia({
           buffer,
-          mimeType,
+          mimeType: validation.mimeDetected,
           filename: safeFilename,
         });
         if (body.message_type === 'image') {
@@ -1289,6 +1379,27 @@ export class OutboundMessageService {
           },
           '[integration-service][outbound][OUTBOUND_MEDIA_UPLOAD_FAILED]',
         );
+        this.recordAudit({
+          correlationId,
+          ticketId: body.ticket_id,
+          conversationId,
+          direction: 'outbound',
+          eventType: 'ATTACHMENT_FAILED',
+          status: 'failed',
+          severity: 'error',
+          source: 'OutboundMessageService',
+          errorMessage: error instanceof Error ? error.message : String(error),
+          payload: {
+            filename_sanitized: validation.filenameSanitized,
+            mime_detected: validation.mimeDetected,
+            extension: validation.extension,
+            size_bytes: validation.sizeBytes,
+            hash: validation.sha256,
+            status: 'failed',
+            reason: 'meta_upload_failed',
+            document_id: media.document_id ?? null,
+          },
+        });
         metaResponse = await this.metaClient.sendTextMessage({
           to: toForMeta,
           body: fallbackAttachmentText(),
@@ -1309,7 +1420,7 @@ export class OutboundMessageService {
         to_for_meta: toForMeta,
         media: {
           filename: safeFilename,
-          mime_type: mimeType,
+          mime_type: validation.mimeDetected,
           size: buffer.byteLength,
           document_id: media.document_id ?? null,
         },
@@ -1330,15 +1441,46 @@ export class OutboundMessageService {
         direction: 'outbound',
         message_type: body.message_type,
         filename: safeFilename,
-        mime_type: mimeType,
+        mime_type: validation.mimeDetected,
         size: buffer.byteLength,
         document_id: media.document_id ?? null,
         send_mode: sendMode,
+        attachment_status: 'synced',
+        attachment_blocked_reason: null,
+        attachment_hash: validation.sha256,
+        attachment_mime_detected: validation.mimeDetected,
+        attachment_extension: validation.extension,
+        attachment_size_bytes: validation.sizeBytes,
+        attachment_filename_sanitized: validation.filenameSanitized,
       },
       processingStatus: 'sent',
       glpiSyncStatus: 'synced',
       idempotencyKey: normalizedIdempotency,
     });
+
+    if (sendMode !== 'text_fallback') {
+      this.recordAudit({
+        correlationId,
+        ticketId: body.ticket_id,
+        conversationId,
+        messageId: inserted.messageId,
+        direction: 'outbound',
+        eventType: 'ATTACHMENT_SYNCED',
+        status: 'success',
+        severity: 'info',
+        source: 'OutboundMessageService',
+        payload: {
+          filename_sanitized: validation.filenameSanitized,
+          mime_detected: validation.mimeDetected,
+          extension: validation.extension,
+          size_bytes: validation.sizeBytes,
+          hash: validation.sha256,
+          status: 'synced',
+          reason: null,
+          document_id: media.document_id ?? null,
+        },
+      });
+    }
 
     await this.conversationRepository.touch(conversationId, new Date());
     await this.trackInactivityOutbound({
@@ -1374,7 +1516,7 @@ export class OutboundMessageService {
         postgres_message_row_id: inserted.id,
         send_mode: sendMode,
         message_type: body.message_type,
-        mime_type: mimeType,
+        mime_type: validation.mimeDetected,
         filename: safeFilename,
         document_id: media.document_id ?? null,
       },

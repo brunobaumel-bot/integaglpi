@@ -7,6 +7,15 @@ import type { ConversationRepository } from '../src/repositories/contracts/Conve
 import type { InactivityTrackingRepository } from '../src/repositories/contracts/InactivityTrackingRepository.js';
 import type { InsertOutboundMessageInput, MessageRepository } from '../src/repositories/contracts/MessageRepository.js';
 
+const PDF_BUFFER = Buffer.from('%PDF-1.4\n');
+const OGG_BUFFER = Buffer.from('OggS\x00audio');
+const MP3_BUFFER = Buffer.from('ID3\x03\x00');
+const MP4_BUFFER = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+const M4A_BUFFER = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x4d, 0x34, 0x41, 0x20]);
+const AAC_BUFFER = Buffer.from([0xff, 0xf1, 0x50, 0x80]);
+const WEBM_BUFFER = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x00]);
+const THREE_GP_BUFFER = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x33, 0x67, 0x70, 0x35]);
+
 function makeConversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
     id: 'conv-1',
@@ -55,7 +64,7 @@ describe('OutboundMessageService media outbound', () => {
       'real',
       '5511999999999',
     );
-    const contentBase64 = Buffer.from('%PDF-1.4').toString('base64');
+    const contentBase64 = PDF_BUFFER.toString('base64');
 
     const result = await service.send({
       ticket_id: 123,
@@ -76,7 +85,7 @@ describe('OutboundMessageService media outbound', () => {
     expect(metaClient.uploadMedia).toHaveBeenCalledWith(expect.objectContaining({
       filename: 'relatorio.pdf',
       mimeType: 'application/pdf',
-      buffer: Buffer.from('%PDF-1.4'),
+      buffer: PDF_BUFFER,
     }));
     expect(metaClient.sendDocumentMessage).toHaveBeenCalledWith({
       to: '5541999999999',
@@ -114,7 +123,7 @@ describe('OutboundMessageService media outbound', () => {
       'real',
       '5511999999999',
     );
-    const contentBase64 = Buffer.from('ogg-audio').toString('base64');
+    const contentBase64 = OGG_BUFFER.toString('base64');
 
     const result = await service.send({
       ticket_id: 123,
@@ -134,7 +143,7 @@ describe('OutboundMessageService media outbound', () => {
     expect(metaClient.uploadMedia).toHaveBeenCalledWith(expect.objectContaining({
       filename: 'audio.ogg',
       mimeType: 'audio/ogg',
-      buffer: Buffer.from('ogg-audio'),
+      buffer: OGG_BUFFER,
     }));
     expect(metaClient.sendAudioMessage).toHaveBeenCalledWith({
       to: '5541999999999',
@@ -153,7 +162,12 @@ describe('OutboundMessageService media outbound', () => {
     expect(JSON.stringify(insertedMessages[0]?.rawPayload)).not.toContain(contentBase64);
   });
 
-  it.each(['audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/webm'])('accepts outbound %s as audio', async (mimeType) => {
+  it.each([
+    ['audio/mpeg', 'audio.mp3', MP3_BUFFER],
+    ['audio/mp4', 'audio.m4a', M4A_BUFFER],
+    ['audio/aac', 'audio.aac', AAC_BUFFER],
+    ['audio/webm', 'audio.webm', WEBM_BUFFER],
+  ])('accepts outbound %s as audio', async (mimeType, filename, buffer) => {
     const { conversationRepository, messageRepository } = makeRepositories();
     const metaClient = {
       uploadMedia: vi.fn().mockResolvedValue('uploaded-audio-id'),
@@ -178,9 +192,9 @@ describe('OutboundMessageService media outbound', () => {
       message_type: 'audio',
       glpi_user_id: 7,
       media: {
-        filename: 'audio',
+        filename,
         mime_type: mimeType,
-        content_base64: Buffer.from('audio-data').toString('base64'),
+        content_base64: buffer.toString('base64'),
       },
     }, { correlationId: `WA-test-${mimeType}` });
 
@@ -218,7 +232,7 @@ describe('OutboundMessageService media outbound', () => {
         document_id: 57,
         filename: 'video.3gp',
         mime_type: 'video/3gpp',
-        content_base64: Buffer.from('3gpp-video').toString('base64'),
+        content_base64: THREE_GP_BUFFER.toString('base64'),
       },
     }, { correlationId: 'WA-test-video' });
 
@@ -271,7 +285,7 @@ describe('OutboundMessageService media outbound', () => {
       media: {
         filename: 'video.mp4',
         mime_type: 'video/mp4',
-        content_base64: Buffer.from('mp4-video').toString('base64'),
+        content_base64: MP4_BUFFER.toString('base64'),
       },
     }, { correlationId: 'WA-test-video-mp4' });
 
@@ -391,7 +405,7 @@ describe('OutboundMessageService media outbound', () => {
         document_id: 55,
         filename: 'relatorio.pdf',
         mime_type: 'application/pdf',
-        content_base64: Buffer.from('%PDF-1.4').toString('base64'),
+        content_base64: PDF_BUFFER.toString('base64'),
       },
     }, { correlationId: 'WA-test-document-fallback' });
 

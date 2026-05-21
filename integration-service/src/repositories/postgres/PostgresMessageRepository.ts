@@ -13,6 +13,16 @@ import type {
 
 import { mapInboundMessageRow } from './postgresRowMappers.js';
 
+interface AttachmentColumns {
+  attachment_hash: string | null;
+  attachment_status: string;
+  attachment_blocked_reason: string | null;
+  attachment_mime_detected: string | null;
+  attachment_extension: string | null;
+  attachment_size_bytes: number | null;
+  attachment_filename_sanitized: string | null;
+}
+
 export class PostgresMessageRepository implements MessageRepository {
   public constructor(private readonly executor: SqlExecutor) {}
 
@@ -111,12 +121,21 @@ export class PostgresMessageRepository implements MessageRepository {
           delivery_status,
           delivery_status_updated_at,
           conversation_id,
-          idempotency_key
+          idempotency_key,
+          attachment_hash,
+          attachment_status,
+          attachment_blocked_reason,
+          attachment_mime_detected,
+          attachment_extension,
+          attachment_size_bytes,
+          attachment_filename_sanitized
         )
-        VALUES ($1, 'outbound', $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $1, 'sent', NOW(), $10, $11)
+        VALUES ($1, 'outbound', $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $1, 'sent', NOW(), $10, $11, $12, $13, $14, $15, $16, $17, $18)
         RETURNING id, message_id
       `,
-      [
+      (() => {
+        const attachment = attachmentColumnsFromMediaInfo(input.mediaInfo ?? null);
+        return [
         input.messageId,
         input.senderPhone,
         input.recipientPhone,
@@ -128,7 +147,15 @@ export class PostgresMessageRepository implements MessageRepository {
         input.glpiSyncStatus,
         input.conversationId,
         input.idempotencyKey,
-      ],
+        attachment.attachment_hash,
+        attachment.attachment_status,
+        attachment.attachment_blocked_reason,
+        attachment.attachment_mime_detected,
+        attachment.attachment_extension,
+        attachment.attachment_size_bytes,
+        attachment.attachment_filename_sanitized,
+        ];
+      })(),
     );
 
     if (!result.rowCount) {
@@ -246,17 +273,78 @@ export class PostgresMessageRepository implements MessageRepository {
   }
 
   public async updateMediaInfo(messageId: string, mediaInfo: Record<string, unknown>): Promise<void> {
+    const attachment = attachmentColumnsFromMediaInfo(mediaInfo);
     await this.executor.query(
       `
         UPDATE ${DATABASE_TABLES.messages}
         SET
           media_info = $2::jsonb,
+          attachment_hash = $3,
+          attachment_status = $4,
+          attachment_blocked_reason = $5,
+          attachment_mime_detected = $6,
+          attachment_extension = $7,
+          attachment_size_bytes = $8,
+          attachment_filename_sanitized = $9,
           updated_at = NOW()
         WHERE message_id = $1
       `,
-      [messageId, JSON.stringify(mediaInfo)],
+      [
+        messageId,
+        JSON.stringify(mediaInfo),
+        attachment.attachment_hash,
+        attachment.attachment_status,
+        attachment.attachment_blocked_reason,
+        attachment.attachment_mime_detected,
+        attachment.attachment_extension,
+        attachment.attachment_size_bytes,
+        attachment.attachment_filename_sanitized,
+      ],
     );
   }
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
+}
+
+function numberOrNull(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return null;
+  }
+  return Math.trunc(value);
+}
+
+function attachmentColumnsFromMediaInfo(mediaInfo: Record<string, unknown> | null): AttachmentColumns {
+  if (mediaInfo === null) {
+    return {
+      attachment_hash: null,
+      attachment_status: 'received',
+      attachment_blocked_reason: null,
+      attachment_mime_detected: null,
+      attachment_extension: null,
+      attachment_size_bytes: null,
+      attachment_filename_sanitized: null,
+    };
+  }
+
+  const legacyStatus = stringOrNull(mediaInfo.status);
+  const status = stringOrNull(mediaInfo.attachment_status)
+    ?? (legacyStatus === 'synced' ? 'synced'
+      : legacyStatus === 'blocked' || legacyStatus === 'skipped' ? 'blocked'
+        : legacyStatus === 'error' || legacyStatus === 'uploaded_unlinked' ? 'failed'
+          : 'received');
+
+  return {
+    attachment_hash: stringOrNull(mediaInfo.attachment_hash),
+    attachment_status: status,
+    attachment_blocked_reason: stringOrNull(mediaInfo.attachment_blocked_reason)
+      ?? (status === 'blocked' ? stringOrNull(mediaInfo.error) : null),
+    attachment_mime_detected: stringOrNull(mediaInfo.attachment_mime_detected) ?? stringOrNull(mediaInfo.mime_type),
+    attachment_extension: stringOrNull(mediaInfo.attachment_extension),
+    attachment_size_bytes: numberOrNull(mediaInfo.attachment_size_bytes) ?? numberOrNull(mediaInfo.file_size),
+    attachment_filename_sanitized: stringOrNull(mediaInfo.attachment_filename_sanitized) ?? stringOrNull(mediaInfo.file_name),
+  };
 }
 
 const DELIVERY_ORDER: Record<MessageDeliveryStatus, number> = {

@@ -34,9 +34,15 @@ const baseInput = {
   ticketId: 100,
 };
 
+const JPEG_BUFFER = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x00]);
+const MP4_BUFFER = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+const WEBM_BUFFER = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x00]);
+const THREE_GP_BUFFER = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x33, 0x67, 0x70, 0x35]);
+const PDF_BUFFER = Buffer.from('%PDF-1.4\n');
+
 describe('MediaProcessingService', () => {
   it('processes image successfully: downloads, uploads, links and returns synced media_info', async () => {
-    const fakeBuffer = Buffer.from('fake-image-data');
+    const fakeBuffer = JPEG_BUFFER;
     const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/file', mimeType: 'image/jpeg', fileSize: null });
     const downloadMedia = vi.fn().mockResolvedValue({ buffer: fakeBuffer, contentType: 'image/jpeg', size: fakeBuffer.byteLength });
     const uploadDocument = vi.fn().mockResolvedValue(55);
@@ -60,7 +66,7 @@ describe('MediaProcessingService', () => {
   });
 
   it('uploads the Document in the ticket entity before linking Document_Item when available', async () => {
-    const fakeBuffer = Buffer.from('fake-image-data');
+    const fakeBuffer = JPEG_BUFFER;
     const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/file', mimeType: 'image/jpeg', fileSize: null });
     const downloadMedia = vi.fn().mockResolvedValue({ buffer: fakeBuffer, contentType: 'image/jpeg', size: fakeBuffer.byteLength });
     const uploadDocument = vi.fn().mockResolvedValue(56);
@@ -79,7 +85,7 @@ describe('MediaProcessingService', () => {
   });
 
   it('processes video successfully using the existing media pipeline', async () => {
-    const fakeBuffer = Buffer.from('fake-video-data');
+    const fakeBuffer = MP4_BUFFER;
     const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/video', mimeType: 'video/mp4', fileSize: null });
     const downloadMedia = vi.fn().mockResolvedValue({ buffer: fakeBuffer, contentType: 'video/mp4', size: fakeBuffer.byteLength });
     const uploadDocument = vi.fn().mockResolvedValue(57);
@@ -104,7 +110,7 @@ describe('MediaProcessingService', () => {
   });
 
   it('processes audio/webm with a safe generated filename and links it to GLPI', async () => {
-    const fakeBuffer = Buffer.from('fake-audio-data');
+    const fakeBuffer = WEBM_BUFFER;
     const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/audio', mimeType: 'audio/webm', fileSize: null });
     const downloadMedia = vi.fn().mockResolvedValue({ buffer: fakeBuffer, contentType: 'audio/webm', size: fakeBuffer.byteLength });
     const uploadDocument = vi.fn().mockResolvedValue(58);
@@ -127,7 +133,7 @@ describe('MediaProcessingService', () => {
   });
 
   it('processes video/3gpp with a safe generated filename and links it to GLPI', async () => {
-    const fakeBuffer = Buffer.from('fake-3gp-data');
+    const fakeBuffer = THREE_GP_BUFFER;
     const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/video-3gpp', mimeType: 'video/3gpp', fileSize: null });
     const downloadMedia = vi.fn().mockResolvedValue({ buffer: fakeBuffer, contentType: 'video/3gpp', size: fakeBuffer.byteLength });
     const uploadDocument = vi.fn().mockResolvedValue(59);
@@ -207,7 +213,7 @@ describe('MediaProcessingService', () => {
   });
 
   it('returns error status when GLPI upload fails without throwing', async () => {
-    const fakeBuffer = Buffer.from('data');
+    const fakeBuffer = JPEG_BUFFER;
     const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/file', mimeType: null, fileSize: null });
     const downloadMedia = vi.fn().mockResolvedValue({ buffer: fakeBuffer, contentType: 'image/jpeg', size: 4 });
     const uploadDocument = vi.fn().mockRejectedValue(new Error('GLPI upload timeout'));
@@ -222,7 +228,7 @@ describe('MediaProcessingService', () => {
   });
 
   it('preserves uploaded Document metadata when Document_Item linking is permission denied', async () => {
-    const fakeBuffer = Buffer.from('pdf-data');
+    const fakeBuffer = PDF_BUFFER;
     const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/doc', mimeType: 'application/pdf', fileSize: null });
     const downloadMedia = vi.fn().mockResolvedValue({ buffer: fakeBuffer, contentType: 'application/pdf', size: fakeBuffer.byteLength });
     const uploadDocument = vi.fn().mockResolvedValue(3844);
@@ -261,8 +267,8 @@ describe('MediaProcessingService', () => {
     expect(result.followUpContent).not.toContain('falha no processamento');
   });
 
-  it('uses document filename when provided and sanitizes it', async () => {
-    const fakeBuffer = Buffer.from('pdf-data');
+  it('blocks document filename with path traversal before GLPI upload', async () => {
+    const fakeBuffer = PDF_BUFFER;
     const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/doc', mimeType: null, fileSize: null });
     const downloadMedia = vi.fn().mockResolvedValue({ buffer: fakeBuffer, contentType: 'application/pdf', size: 8 });
     const uploadDocument = vi.fn().mockResolvedValue(77);
@@ -280,14 +286,14 @@ describe('MediaProcessingService', () => {
       ticketId: 200,
     });
 
-    expect(result.mediaInfo.status).toBe('synced');
-    // Path traversal chars replaced
-    expect(result.mediaInfo.file_name).not.toContain('../');
+    expect(uploadDocument).not.toHaveBeenCalled();
+    expect(result.mediaInfo.status).toBe('blocked');
+    expect(result.mediaInfo.error).toBe('path_traversal_attempt');
     expect(result.followUpContent).toContain('Relatório mensal');
   });
 
   it('generates a safe filename for PDF documents without filename', async () => {
-    const fakeBuffer = Buffer.from('pdf-data');
+    const fakeBuffer = PDF_BUFFER;
     const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/doc', mimeType: null, fileSize: null });
     const downloadMedia = vi.fn().mockResolvedValue({ buffer: fakeBuffer, contentType: 'application/pdf', size: 8 });
     const uploadDocument = vi.fn().mockResolvedValue(78);
@@ -315,7 +321,7 @@ describe('MediaProcessingService', () => {
   });
 
   it('uses webhook PDF MIME when Meta download returns generic octet-stream', async () => {
-    const fakeBuffer = Buffer.from('pdf-data');
+    const fakeBuffer = PDF_BUFFER;
     const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/doc', mimeType: null, fileSize: null });
     const downloadMedia = vi.fn().mockResolvedValue({
       buffer: fakeBuffer,
@@ -366,7 +372,7 @@ describe('MediaProcessingService', () => {
   });
 
   it('includes caption in success followup', async () => {
-    const fakeBuffer = Buffer.from('img');
+    const fakeBuffer = JPEG_BUFFER;
     const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/img', mimeType: null, fileSize: null });
     const downloadMedia = vi.fn().mockResolvedValue({ buffer: fakeBuffer, contentType: 'image/jpeg', size: 3 });
     const uploadDocument = vi.fn().mockResolvedValue(88);
@@ -383,7 +389,7 @@ describe('MediaProcessingService', () => {
   });
 
   it('escapes angle brackets in captions before building GLPI followup content', async () => {
-    const fakeBuffer = Buffer.from('img');
+    const fakeBuffer = JPEG_BUFFER;
     const getMediaUrl = vi.fn().mockResolvedValue({ url: 'https://meta.cdn/img', mimeType: null, fileSize: null });
     const downloadMedia = vi.fn().mockResolvedValue({ buffer: fakeBuffer, contentType: 'image/jpeg', size: 3 });
     const uploadDocument = vi.fn().mockResolvedValue(89);

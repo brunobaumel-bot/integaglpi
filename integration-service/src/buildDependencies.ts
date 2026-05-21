@@ -139,6 +139,7 @@ export function buildDependencies() {
     metaClient,
     glpiClient,
     env.META_MEDIA_MAX_BYTES,
+    auditService,
   );
   const ollamaClient = new OllamaClient(
     env.AI_SUPERVISOR_BASE_URL,
