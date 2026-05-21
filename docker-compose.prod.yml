@@ -1,0 +1,72 @@
+version: '3'
+
+services:
+  postgres-prod:
+    image: postgres:16-alpine
+    container_name: glpi-integaglpi-prod-postgres
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    volumes:
+      - postgres_prod_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5433:5432"
+    networks:
+      - integaglpi-prod-net
+
+  redis-prod:
+    image: redis:7-alpine
+    container_name: glpi-integaglpi-prod-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_prod_data:/data
+    networks:
+      - integaglpi-prod-net
+
+  integration-service-prod:
+    build:
+      context: ./integration-service
+      dockerfile: Dockerfile
+    container_name: glpi-integaglpi-prod-integration
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=postgres-prod
+      - REDIS_HOST=redis-prod
+      - PORT=3002
+    ports:
+      - "127.0.0.1:3002:3002"
+    depends_on:
+      - postgres-prod
+      - redis-prod
+    networks:
+      - integaglpi-prod-net
+
+  ai-service-prod:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    container_name: glpi-integaglpi-prod-ai
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      - NODE_ENV=production
+      - PORT=4001
+    ports:
+      - "127.0.0.1:4001:4001"
+    depends_on:
+      - integration-service-prod
+    networks:
+      - integaglpi-prod-net
+
+volumes:
+  postgres_prod_data:
+  redis_prod_data:
+
+networks:
+  integaglpi-prod-net:
+    driver: bridge

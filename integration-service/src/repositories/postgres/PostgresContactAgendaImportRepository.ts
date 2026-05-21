@@ -288,12 +288,12 @@ export class PostgresContactAgendaImportRepository implements ContactAgendaImpor
     await this.executor.query(
       `
         UPDATE ${DATABASE_TABLES.contactImportBatches}
-        SET status = $2,
-            error_message_sanitized = $3,
-            confirmed_at = CASE WHEN $2 = 'confirmed' THEN NOW() ELSE confirmed_at END,
-            completed_at = CASE WHEN $2 IN ('completed', 'failed') THEN NOW() ELSE completed_at END,
-            rolled_back_at = CASE WHEN $2 = 'rolled_back' THEN NOW() ELSE rolled_back_at END
-        WHERE batch_id = $1
+        SET status = $2::text,
+            error_message_sanitized = $3::text,
+            confirmed_at = CASE WHEN $2::text = 'confirmed' THEN NOW() ELSE confirmed_at END,
+            completed_at = CASE WHEN $2::text IN ('completed', 'failed') THEN NOW() ELSE completed_at END,
+            rolled_back_at = CASE WHEN $2::text = 'rolled_back' THEN NOW() ELSE rolled_back_at END
+        WHERE batch_id = $1::text
       `,
       [batchId, status, errorMessage],
     );
@@ -334,15 +334,15 @@ export class PostgresContactAgendaImportRepository implements ContactAgendaImpor
       await this.executor.query(
         `
           UPDATE ${DATABASE_TABLES.contactProfile}
-          SET requester_name = COALESCE($2, requester_name),
-              email_address = COALESCE($3, email_address),
-              email_status = CASE WHEN $3 IS NULL THEN email_status ELSE 'valid' END,
-              company_name_raw = COALESCE($4, company_name_raw),
-              last_equipment_tag = CASE WHEN $6 THEN NULL WHEN $5 IS NULL THEN last_equipment_tag ELSE $5 END,
-              equipment_tag_unknown = CASE WHEN $5 IS NULL AND $6 = FALSE THEN equipment_tag_unknown ELSE $6 END,
+          SET requester_name = COALESCE($2::text, requester_name),
+              email_address = COALESCE($3::text, email_address),
+              email_status = CASE WHEN $3::text IS NULL THEN email_status ELSE 'valid' END,
+              company_name_raw = COALESCE($4::text, company_name_raw),
+              last_equipment_tag = CASE WHEN $6::boolean THEN NULL WHEN $5::text IS NULL THEN last_equipment_tag ELSE $5::text END,
+              equipment_tag_unknown = CASE WHEN $5::text IS NULL AND $6::boolean = FALSE THEN equipment_tag_unknown ELSE $6::boolean END,
               profile_source = 'csv_import',
               updated_at = NOW()
-          WHERE id = $1
+          WHERE id = $1::bigint
         `,
         [
           Number(existing.id),
@@ -377,7 +377,7 @@ export class PostgresContactAgendaImportRepository implements ContactAgendaImpor
           is_active,
           updated_at
         )
-        VALUES ($1, $2, $3, CASE WHEN $3 IS NULL THEN 'not_provided' ELSE 'valid' END, $4, $5, $6, 'incomplete', 'csv_import', 0, TRUE, NOW())
+        VALUES ($1::text, $2::text, $3::text, CASE WHEN $3::text IS NULL THEN 'not_provided' ELSE 'valid' END, $4::text, $5::text, $6::boolean, 'incomplete', 'csv_import', 0, TRUE, NOW())
         RETURNING id
       `,
       [
@@ -408,11 +408,11 @@ export class PostgresContactAgendaImportRepository implements ContactAgendaImpor
     await this.executor.query(
       `
         UPDATE ${DATABASE_TABLES.contactImportItems}
-        SET action_applied = $2,
-            target_contact_profile_id = $3,
+        SET action_applied = $2::text,
+            target_contact_profile_id = $3::bigint,
             previous_state_json = $4::jsonb,
             applied_at = NOW()
-        WHERE item_id = $1
+        WHERE item_id = $1::bigint
       `,
       [
         itemId,
@@ -442,7 +442,7 @@ export class PostgresContactAgendaImportRepository implements ContactAgendaImpor
           requested_by,
           completed_at
         )
-        VALUES ($1, $2, $3, $4::jsonb, $5, $6, NOW())
+        VALUES ($1::text, $2::bigint, $3::text, $4::jsonb, $5::text, $6::bigint, NOW())
       `,
       [
         input.batchId,

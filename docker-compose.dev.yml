@@ -12,7 +12,7 @@ services:
       - POSTGRES_USER=${DB_USER}
       - POSTGRES_PASSWORD=${DB_PASSWORD}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
@@ -22,7 +22,7 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
     volumes:
       - redis_data:/data
 
@@ -40,7 +40,7 @@ services:
       - REDIS_HOST=redis
       - PORT=3001
     ports:
-      - "3001:3001"
+      - "127.0.0.1:3001:3001"
     depends_on:
       - postgres
       - redis
@@ -56,10 +56,8 @@ services:
     environment:
       - NODE_ENV=development
       - PORT=4000
-      - AI_ENABLED=${AI_ENABLED:-false}
-      - AI_PROVIDER=${AI_PROVIDER:-mock}
     ports:
-      - "4000:4000"
+      - "127.0.0.1:4000:4000"
     depends_on:
       - integration-service
 
