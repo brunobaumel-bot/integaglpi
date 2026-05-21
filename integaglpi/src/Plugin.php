@@ -184,6 +184,11 @@ final class Plugin
         return self::getWebBasePath() . '/front/contracts.hours.php';
     }
 
+    public static function getServiceCatalogUrl(): string
+    {
+        return self::getWebBasePath() . '/front/service.catalog.php';
+    }
+
     public static function getAiQualityUrl(): string
     {
         return self::getWebBasePath() . '/front/ai.quality.php';
@@ -333,6 +338,26 @@ final class Plugin
     }
 
     public static function requireContractUpdate(): void
+    {
+        Session::checkRight(self::RIGHT_NAME, UPDATE);
+    }
+
+    public static function canServiceCatalogRead(): bool
+    {
+        return self::hasRightBool(self::RIGHT_NAME, READ);
+    }
+
+    public static function requireServiceCatalogRead(): void
+    {
+        Session::checkRight(self::RIGHT_NAME, READ);
+    }
+
+    public static function canServiceCatalogUpdate(): bool
+    {
+        return self::hasRightBool(self::RIGHT_NAME, UPDATE);
+    }
+
+    public static function requireServiceCatalogUpdate(): void
     {
         Session::checkRight(self::RIGHT_NAME, UPDATE);
     }
