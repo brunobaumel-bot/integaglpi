@@ -12,18 +12,38 @@ Session::checkLoginUser();
 Session::checkRight(Plugin::RIGHT_NAME, UPDATE);
 Plugin::requireUpdate();
 
-Html::header(__('Importar agenda WhatsApp', 'glpiintegaglpi'), $_SERVER['PHP_SELF'], 'plugins', ContactAgendaImportMenu::class);
-
 $client = new IntegrationServiceClient();
 $view = [
     'error' => '',
+    'notice' => '',
     'response' => null,
     'batch_id' => trim((string) ($_GET['batch_id'] ?? '')),
+    'processed_filename' => '',
 ];
 
 function plugin_integaglpi_contact_import_redirect(string $batchId): void
 {
     Html::redirect(Plugin::getContactAgendaImportUrl() . '?' . http_build_query(['batch_id' => $batchId]));
+}
+
+function plugin_integaglpi_contact_import_upload_error_message(int $errorCode): string
+{
+    return match ($errorCode) {
+        UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => __('O arquivo CSV excede o limite de upload configurado.', 'glpiintegaglpi'),
+        UPLOAD_ERR_PARTIAL => __('O upload do CSV foi enviado parcialmente. Tente novamente.', 'glpiintegaglpi'),
+        UPLOAD_ERR_NO_FILE => __('Selecione um arquivo CSV antes de gerar o preview.', 'glpiintegaglpi'),
+        UPLOAD_ERR_NO_TMP_DIR => __('Diretório temporário de upload indisponível no servidor.', 'glpiintegaglpi'),
+        UPLOAD_ERR_CANT_WRITE => __('Não foi possível gravar o upload CSV no servidor.', 'glpiintegaglpi'),
+        UPLOAD_ERR_EXTENSION => __('Uma extensão PHP bloqueou o upload CSV.', 'glpiintegaglpi'),
+        default => __('Falha ao receber o arquivo CSV.', 'glpiintegaglpi'),
+    };
+}
+
+function plugin_integaglpi_contact_import_batch_id(array $body): string
+{
+    $batch = is_array($body['batch'] ?? null) ? $body['batch'] : [];
+
+    return trim((string) ($batch['batchId'] ?? $batch['batch_id'] ?? ''));
 }
 
 try {
@@ -35,13 +55,23 @@ try {
         $action = trim((string) ($_POST['action'] ?? ''));
         if ($action === 'preview') {
             $file = $_FILES['csv_file'] ?? null;
-            if (!is_array($file) || (int) ($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
-                throw new RuntimeException(__('Envie um arquivo CSV válido.', 'glpiintegaglpi'));
+            if (!is_array($file)) {
+                throw new RuntimeException(__('Selecione um arquivo CSV antes de gerar o preview.', 'glpiintegaglpi'));
+            }
+
+            $uploadError = (int) ($file['error'] ?? UPLOAD_ERR_NO_FILE);
+            if ($uploadError !== UPLOAD_ERR_OK) {
+                throw new RuntimeException(plugin_integaglpi_contact_import_upload_error_message($uploadError));
             }
 
             $tmpName = (string) ($file['tmp_name'] ?? '');
             if ($tmpName === '' || !is_uploaded_file($tmpName)) {
                 throw new RuntimeException(__('Upload CSV inválido.', 'glpiintegaglpi'));
+            }
+
+            $originalName = basename((string) ($file['name'] ?? 'agenda.csv'));
+            if (strtolower(pathinfo($originalName, PATHINFO_EXTENSION)) !== 'csv') {
+                throw new RuntimeException(__('Envie um arquivo com extensão .csv.', 'glpiintegaglpi'));
             }
 
             $content = file_get_contents($tmpName);
@@ -50,7 +80,7 @@ try {
             }
 
             $result = $client->previewContactAgendaImport([
-                'filename' => (string) ($file['name'] ?? 'agenda.csv'),
+                'filename' => $originalName,
                 'csv_base64' => base64_encode($content),
                 'uploaded_by' => Plugin::getCurrentUserId(),
             ]);
@@ -58,11 +88,15 @@ try {
                 throw new RuntimeException((string) ($result['body']['message'] ?? __('Falha no preview CSV.', 'glpiintegaglpi')));
             }
 
-            $batchId = (string) ($result['body']['batch']['batchId'] ?? '');
-            if ($batchId !== '') {
-                plugin_integaglpi_contact_import_redirect($batchId);
+            $batchId = plugin_integaglpi_contact_import_batch_id($result['body']);
+            if ($batchId === '') {
+                throw new RuntimeException(__('Preview retornou sem batch_id. Verifique o integration-service.', 'glpiintegaglpi'));
             }
+
+            $view['batch_id'] = $batchId;
+            $view['processed_filename'] = $originalName;
             $view['response'] = $result['body'];
+            $view['notice'] = __('Preview CSV gerado com sucesso. Revise as linhas antes de confirmar.', 'glpiintegaglpi');
         } elseif ($action === 'confirm') {
             $batchId = trim((string) ($_POST['batch_id'] ?? ''));
             if ($batchId === '') {
@@ -89,10 +123,12 @@ try {
                 throw new RuntimeException((string) ($result['body']['message'] ?? __('Falha no rollback lógico.', 'glpiintegaglpi')));
             }
             plugin_integaglpi_contact_import_redirect($batchId);
+        } else {
+            throw new RuntimeException(__('Ação de importação inválida.', 'glpiintegaglpi'));
         }
     }
 
-    if ($view['batch_id'] !== '') {
+    if ($view['batch_id'] !== '' && $view['response'] === null) {
         $result = $client->getContactAgendaImportStatus($view['batch_id']);
         if ($result['success']) {
             $view['response'] = $result['body'];
@@ -102,7 +138,10 @@ try {
     }
 } catch (Throwable $exception) {
     $view['error'] = $exception->getMessage();
+    error_log('[integaglpi][contact_import][ERROR] action=' . trim((string) ($_POST['action'] ?? '')) . ' message=' . $exception->getMessage());
 }
+
+Html::header(__('Importar agenda WhatsApp', 'glpiintegaglpi'), $_SERVER['PHP_SELF'], 'plugins', ContactAgendaImportMenu::class);
 
 require PLUGIN_INTEGAGLPI_ROOT . '/templates/contact_agenda_import.php';
 
