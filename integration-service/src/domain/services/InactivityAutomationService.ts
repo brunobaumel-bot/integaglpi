@@ -64,7 +64,7 @@ const PROFILE_COLLECTION_REMINDER_EVENT_KEY = 'profile_collection_reminder';
 const PRETICKET_REMINDER_EVENT_KEY = 'preticket_reminder';
 const PRETICKET_AUTOCLOSE_EVENT_KEY = 'preticket_autoclose';
 const PRETICKET_REMINDER_TEXT =
-  'Ainda precisamos confirmar algumas informações para continuar seu atendimento. Por favor, responda as perguntas pendentes para seguirmos.';
+  'Ainda precisamos confirmar algumas informações para continuar seu atendimento. Por favor, responda as perguntas pendentes para seguirmos. Se quiser encerrar, digite cancelar a qualquer momento.';
 const PRETICKET_AUTOCLOSE_TEXT =
   'Como não tivemos retorno, encerramos este pré-atendimento sem abrir chamado. Se precisar, inicie um novo atendimento.';
 const PRETICKET_TIMEOUT_REASON = 'preticket_timeout';

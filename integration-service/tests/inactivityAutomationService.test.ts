@@ -652,6 +652,82 @@ describe('InactivityAutomationService', () => {
     }));
   });
 
+  it('sends profile reminders to each eligible conversation without crossing phones', async () => {
+    const repository = new FakeRepository();
+    repository.profileReminderCandidates = [
+      {
+        conversationId: 'profile-conv-a',
+        phoneE164: '+5511999944449',
+        conversationStatus: 'collecting_contact_profile',
+        profileCollectionState: { step: 'asking_reason' },
+        lastMessageAt: minutesAgo(6),
+        updatedAt: minutesAgo(6),
+      },
+      {
+        conversationId: 'profile-conv-b',
+        phoneE164: '+5511999965662',
+        conversationStatus: 'collecting_contact_profile',
+        profileCollectionState: { step: 'asking_email' },
+        lastMessageAt: minutesAgo(6),
+        updatedAt: minutesAgo(6),
+      },
+    ];
+    const outbound = {
+      send: vi.fn(),
+      sendProfileCollectionReminder: vi.fn().mockResolvedValue({
+        httpStatus: 201,
+        body: {
+          status: 'sent',
+          message_id: 'wamid.profile.reminder',
+          conversation_id: 'profile-conv-a',
+          postgres_message_row_id: 'row-profile-1',
+          idempotent: false,
+        },
+      }),
+    };
+    const messageConfigurationService = {
+      resolveSendPlan: vi.fn().mockResolvedValue({
+        eventKey: 'preticket_reminder',
+        sendType: 'text',
+        text: 'Lembrete com cancelar.',
+        active: true,
+        shouldSend: true,
+        reason: null,
+        templateName: null,
+        language: 'pt_BR',
+        buttons: [],
+        listOptions: [],
+      }),
+      recordAutomationEvent: vi.fn().mockResolvedValue(undefined),
+      recordInactivityJobEvent: vi.fn().mockResolvedValue(undefined),
+    };
+    const service = new InactivityAutomationService(
+      repository,
+      outbound as never,
+      { getTicketStatus: vi.fn(), solveTicketByInactivity: vi.fn() } as never,
+      null,
+      config,
+      () => baseNow,
+      messageConfigurationService as never,
+    );
+
+    await service.runOnce();
+
+    expect(outbound.sendProfileCollectionReminder).toHaveBeenCalledTimes(2);
+    expect(outbound.sendProfileCollectionReminder).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      conversationId: 'profile-conv-a',
+      phoneE164: '+5511999944449',
+    }), expect.any(Object));
+    expect(outbound.sendProfileCollectionReminder).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      conversationId: 'profile-conv-b',
+      phoneE164: '+5511999965662',
+    }), expect.any(Object));
+    expect(repository.profileRemindersMarked).toEqual([
+      { conversationId: 'profile-conv-a', step: 'asking_reason', sentAt: baseNow },
+      { conversationId: 'profile-conv-b', step: 'asking_email', sentAt: baseNow },
+    ]);
+  });
+
   it('marks profile reminder cycle once and skips free text outside 24h without a template', async () => {
     const repository = new FakeRepository();
     repository.profileReminderCandidates = [{

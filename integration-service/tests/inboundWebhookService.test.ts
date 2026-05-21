@@ -2499,7 +2499,7 @@ describe('InboundWebhookService', () => {
     ]);
     expect(meta.sendTextMessage).toHaveBeenCalledWith({
       to: '5511999999999',
-      body: contactProfile.prompt,
+      body: `${contactProfile.prompt}\n\nSe quiser encerrar este atendimento, digite cancelar a qualquer momento.`,
     });
   });
 
@@ -2610,7 +2610,9 @@ describe('InboundWebhookService', () => {
     const result = await service.process(digitOnePayload);
 
     expect(result.results[0]?.outcome).toBe('processed');
-    expect(meta.sendTextMessage.mock.calls[0]?.[0].body).toBe(contactProfile.prompt);
+    expect(meta.sendTextMessage.mock.calls[0]?.[0].body).toBe(
+      `${contactProfile.prompt}\n\nSe quiser encerrar este atendimento, digite cancelar a qualquer momento.`,
+    );
     expect(glpiClient.createTicket).not.toHaveBeenCalled();
     expect(conversationRepository.profileStates[0]?.state).toMatchObject({
       step: 'asking_company',
@@ -2908,7 +2910,7 @@ describe('InboundWebhookService', () => {
     expect(glpiClient.createTicket).not.toHaveBeenCalled();
     expect(meta.sendTextMessage).toHaveBeenCalledWith({
       to: '5511999999999',
-      body: 'Informe seu nome completo.',
+      body: 'Informe seu nome completo.\n\nSe quiser encerrar este atendimento, digite cancelar a qualquer momento.',
     });
   });
 
@@ -2986,6 +2988,126 @@ describe('InboundWebhookService', () => {
     expect(messageConfiguration.resolveSendPlan).toHaveBeenCalledWith('preticket_invalid_input', {
       windowOpen: true,
       allowTemplateSend: true,
+    });
+  });
+
+  it('blocks audio during asking_reason before media download', async () => {
+    const webhookEventRepository = new FakeWebhookEventRepository();
+    const messageRepository = new FakeMessageRepository();
+    const conversationRepository = new FakeConversationRepository();
+    const contactResolutionService = { resolve: vi.fn().mockResolvedValue(resolvedContact) };
+    conversationRepository.reusableConversation = {
+      id: 'conv-collecting-audio',
+      phoneE164: '+5511999999999',
+      contactId: 'contact-1',
+      glpiTicketId: null,
+      queueId: 5,
+      profileCollectionState: { step: 'asking_reason', requester_name: 'Maria' },
+      status: 'collecting_contact_profile',
+      lastMessageAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const contactProfile = new FakeContactProfileService();
+    contactProfile.collectionEnabled = true;
+    const meta = { sendTextMessage: vi.fn().mockResolvedValue({}) };
+    const glpiClient = { createTicket: vi.fn(), addFollowUp: vi.fn() };
+    const mediaProcessing = { processMedia: vi.fn() };
+    const messageConfiguration = {
+      resolveSendPlan: vi.fn().mockResolvedValue({
+        eventKey: 'preticket_invalid_input',
+        sendType: 'text',
+        text: 'Neste momento preciso que você responda em texto. Envie uma breve descrição do problema. Se quiser encerrar, digite cancelar.',
+        active: true,
+        shouldSend: true,
+        reason: null,
+        templateName: null,
+        language: 'pt_BR',
+        buttons: [],
+        listOptions: [],
+      }),
+      recordAutomationEvent: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const audioPayload = structuredClone(basePayload) as typeof basePayload;
+    const message = audioPayload.entry[0].changes[0].value.messages[0] as unknown as Record<string, unknown>;
+    delete message.text;
+    message.type = 'audio';
+    message.audio = { id: 'media-audio-123', mime_type: 'audio/ogg' };
+
+    const service = makeInboundService(
+      webhookEventRepository,
+      messageRepository,
+      conversationRepository,
+      contactResolutionService,
+      glpiClient,
+      { meta, contactProfile, mediaProcessing, messageConfiguration },
+    );
+
+    const result = await service.process(audioPayload);
+
+    expect(result.results[0]?.outcome).toBe('processed');
+    expect(mediaProcessing.processMedia).not.toHaveBeenCalled();
+    expect(glpiClient.createTicket).not.toHaveBeenCalled();
+    expect(conversationRepository.profileStates).toEqual([]);
+    expect(meta.sendTextMessage).toHaveBeenCalledWith({
+      to: '5511999999999',
+      body: 'Neste momento preciso que você responda em texto. Envie uma breve descrição do problema. Se quiser encerrar, digite cancelar.',
+    });
+  });
+
+  it.each([
+    ['document', { id: 'media-doc-123', mime_type: 'application/pdf', filename: 'evidencia.pdf' }],
+    ['sticker', { id: 'sticker-123', mime_type: 'image/webp' }],
+  ])('blocks %s during asking_reason and keeps the pre-ticket state', async (messageType, mediaPayload) => {
+    const webhookEventRepository = new FakeWebhookEventRepository();
+    const messageRepository = new FakeMessageRepository();
+    const conversationRepository = new FakeConversationRepository();
+    const contactResolutionService = { resolve: vi.fn().mockResolvedValue(resolvedContact) };
+    conversationRepository.reusableConversation = {
+      id: `conv-collecting-${messageType}`,
+      phoneE164: '+5511999999999',
+      contactId: 'contact-1',
+      glpiTicketId: null,
+      queueId: 5,
+      profileCollectionState: { step: 'asking_reason', requester_name: 'Maria' },
+      status: 'collecting_contact_profile',
+      lastMessageAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const contactProfile = new FakeContactProfileService();
+    contactProfile.collectionEnabled = true;
+    const meta = { sendTextMessage: vi.fn().mockResolvedValue({}) };
+    const glpiClient = { createTicket: vi.fn(), addFollowUp: vi.fn() };
+    const mediaProcessing = { processMedia: vi.fn() };
+
+    const payload = structuredClone(basePayload) as typeof basePayload;
+    const message = payload.entry[0].changes[0].value.messages[0] as unknown as Record<string, unknown>;
+    delete message.text;
+    message.type = messageType;
+    message[messageType] = mediaPayload;
+
+    const service = makeInboundService(
+      webhookEventRepository,
+      messageRepository,
+      conversationRepository,
+      contactResolutionService,
+      glpiClient,
+      { meta, contactProfile, mediaProcessing },
+    );
+
+    const result = await service.process(payload);
+
+    expect(result.results[0]?.outcome).toBe('processed');
+    expect(mediaProcessing.processMedia).not.toHaveBeenCalled();
+    expect(glpiClient.createTicket).not.toHaveBeenCalled();
+    expect(glpiClient.addFollowUp).not.toHaveBeenCalled();
+    expect(conversationRepository.profileStates).toEqual([]);
+    expect(messageRepository.mediaInfoUpdates).toEqual([]);
+    expect(meta.sendTextMessage).toHaveBeenCalledWith({
+      to: '5511999999999',
+      body: 'Neste momento preciso que você responda em texto. Envie uma breve descrição do problema. Se quiser encerrar, digite cancelar.',
     });
   });
 
@@ -3072,7 +3194,7 @@ describe('InboundWebhookService', () => {
     expect(conversationRepository.lastCreateInput?.status).toBe('collecting_contact_profile');
     expect(meta.sendTextMessage).toHaveBeenCalledWith({
       to: '5511999999999',
-      body: contactProfile.prompt,
+      body: `${contactProfile.prompt}\n\nSe quiser encerrar este atendimento, digite cancelar a qualquer momento.`,
     });
   });
 
@@ -3941,7 +4063,16 @@ describe('InboundWebhookService', () => {
         payload: { action: 'solution_approve', csat_rating: 'very_satisfied' },
       }),
     );
-    expect(meta.sendTextMessage).not.toHaveBeenCalled();
+    expect(meta.sendTextMessage).toHaveBeenCalledWith({
+      to: '5511999999999',
+      body: 'Seu chamado foi encerrado. Obrigado pela avaliação.',
+    });
+    expect(audit.recordAuditEventFireAndForget).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'CSAT_THANK_YOU_CLOSURE_SENT',
+        conversationId: 'conv-solved',
+      }),
+    );
   });
 
   it('records dissatisfied CSAT on an already closed ticket without reopening or expiring the action', async () => {
@@ -4025,7 +4156,10 @@ describe('InboundWebhookService', () => {
     expect(solutionActions.markSuccessCalls).toEqual([
       { id: 'solution-action-1', finalTicketStatus: 6 },
     ]);
-    expect(meta.sendTextMessage).not.toHaveBeenCalled();
+    expect(meta.sendTextMessage).toHaveBeenCalledWith({
+      to: '5511999999999',
+      body: 'Seu chamado foi encerrado. Obrigado pela avaliação.',
+    });
     expect(audit.recordAuditEventFireAndForget).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: 'TICKET_CLOSED',
@@ -4034,6 +4168,12 @@ describe('InboundWebhookService', () => {
           csat_rating: 'dissatisfied',
           supervisor_review_required: true,
         },
+      }),
+    );
+    expect(audit.recordAuditEventFireAndForget).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'CSAT_THANK_YOU_CLOSURE_SENT',
+        conversationId: 'conv-solved',
       }),
     );
   });
@@ -4117,7 +4257,10 @@ describe('InboundWebhookService', () => {
     expect(solutionActions.markSuccessCalls).toEqual([
       { id: 'solution-action-1', finalTicketStatus: 6 },
     ]);
-    expect(meta.sendTextMessage).not.toHaveBeenCalled();
+    expect(meta.sendTextMessage).toHaveBeenCalledWith({
+      to: '5511999999999',
+      body: 'Seu chamado foi encerrado. Obrigado pela avaliação.',
+    });
     expect(audit.recordAuditEventFireAndForget).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: 'TICKET_CLOSED',
@@ -4126,6 +4269,11 @@ describe('InboundWebhookService', () => {
           csat_rating: 'dissatisfied',
           supervisor_review_required: true,
         },
+      }),
+    );
+    expect(audit.recordAuditEventFireAndForget).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'CSAT_THANK_YOU_CLOSURE_SENT',
       }),
     );
   });
@@ -4273,6 +4421,91 @@ describe('InboundWebhookService', () => {
       },
     ]);
     expect(glpiClient.closeTicket).not.toHaveBeenCalled();
+    expect(glpiClient.addFollowUp).not.toHaveBeenCalled();
+    expect(meta.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not send duplicate post-CSAT thank-you when the rating action was already processed', async () => {
+    const webhookEventRepository = new FakeWebhookEventRepository();
+    const messageRepository = new FakeMessageRepository();
+    const conversationRepository = new FakeConversationRepository();
+    const contactResolutionService = { resolve: vi.fn().mockResolvedValue(resolvedContact) };
+    conversationRepository.latestClosedConversation = {
+      id: 'conv-solved',
+      phoneE164: '+5511999999999',
+      contactId: 'contact-1',
+      glpiTicketId: 1234,
+      queueId: 5,
+      status: 'closed',
+      lastMessageAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const meta = { sendTextMessage: vi.fn().mockResolvedValue({}) };
+    const glpiClient = {
+      createTicket: vi.fn(),
+      addFollowUp: vi.fn(),
+      getTicket: vi.fn().mockResolvedValue({ id: 1234, status: 6 }),
+      closeTicket: vi.fn(),
+      reopenTicket: vi.fn(),
+      reopenTicketSolution: vi.fn(),
+      approveTicketSolution: vi.fn(),
+    };
+    const solutionActions = new FakeSolutionActionRepository();
+    solutionActions.successfulAction = {
+      id: 'previous-csat-success',
+      actionKey: 'solution:approve:1234:conv-solved:csat:very_satisfied',
+      whatsappMessageId: 'wamid.previous-csat',
+      ticketId: 1234,
+      conversationId: 'conv-solved',
+      phoneE164: '+5511999999999',
+      action: 'approve',
+      status: 'success',
+      previousTicketStatus: 6,
+      finalTicketStatus: 6,
+      errorCode: null,
+      errorMessage: null,
+      csatRating: 'very_satisfied',
+      supervisorReviewRequired: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const payload = structuredClone(basePayload) as typeof basePayload;
+    payload.entry[0].changes[0].value.messages[0] = {
+      id: 'wamid.solution-csat-again',
+      from: '5511999999999',
+      type: 'interactive',
+      interactive: {
+        type: 'button_reply',
+        button_reply: {
+          id: 'solution_csat:very_satisfied:1234:conv-solved',
+          title: 'Otimo',
+        },
+      },
+    } as never;
+
+    const service = makeInboundService(
+      webhookEventRepository,
+      messageRepository,
+      conversationRepository,
+      contactResolutionService,
+      glpiClient,
+      { meta, solutionActions },
+    );
+
+    const result = await service.process(payload);
+
+    expect(result.results[0]?.outcome).toBe('processed');
+    expect(solutionActions.reserveCalls).toHaveLength(1);
+    expect(solutionActions.markIgnoredCalls).toEqual([
+      {
+        id: 'solution-action-1',
+        errorCode: 'SOLUTION_ACTION_DUPLICATE',
+        errorMessage: 'A successful solution action already exists for this ticket and conversation.',
+      },
+    ]);
+    expect(glpiClient.approveTicketSolution).not.toHaveBeenCalled();
     expect(glpiClient.addFollowUp).not.toHaveBeenCalled();
     expect(meta.sendTextMessage).not.toHaveBeenCalled();
   });

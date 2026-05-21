@@ -51,8 +51,14 @@ const ENTITY_SELECTION_PENDING_MESSAGE =
   'Recebemos as suas informações, em breve um de nossos técnicos irá seguir com o atendimento.';
 const PRETICKET_INVALID_INPUT_EVENT_KEY = 'preticket_invalid_input';
 const PRETICKET_INVALID_INPUT_TEXT =
-  'Neste momento preciso de uma resposta em texto. Arquivos, imagens ou áudios poderão ser enviados depois que o chamado for aberto.';
+  'Neste momento preciso que você responda em texto. Envie uma breve descrição do problema. Se quiser encerrar, digite cancelar.';
+const PRETICKET_INVALID_REASON_INPUT_TEXT =
+  'Neste momento preciso que você responda em texto. Envie uma breve descrição do problema. Se quiser encerrar, digite cancelar.';
+const PRETICKET_CANCEL_HINT =
+  'Se quiser encerrar este atendimento, digite cancelar a qualquer momento.';
 const PRETICKET_USER_CANCELLED_EVENT_KEY = 'preticket_cancelled_by_user';
+const CSAT_THANK_YOU_CLOSURE_EVENT_KEY = 'csat_thank_you_closure';
+const CSAT_THANK_YOU_CLOSURE_TEXT = 'Seu chamado foi encerrado. Obrigado pela avaliação.';
 const PRETICKET_USER_CANCELLED_TEXT =
   'Atendimento cancelado. Nenhum chamado foi aberto. Se precisar, inicie um novo atendimento.';
 const PRETICKET_CANCEL_WORDS = new Set(['cancelar', 'sair', 'encerrar']);
@@ -633,7 +639,7 @@ export class InboundWebhookService {
             return;
           }
 
-          if (!this.isAllowedPreTicketTextInput(inboundMessage)) {
+          if (this.shouldRejectPreTicketInput(inboundMessage)) {
             await this.handleInvalidPreTicketInput({
               contact,
               conversation: activeConversation,
@@ -691,7 +697,7 @@ export class InboundWebhookService {
             return;
           }
 
-          if (!this.isAllowedPreTicketTextInput(inboundMessage)) {
+          if (this.shouldRejectPreTicketInput(inboundMessage)) {
             await this.handleInvalidPreTicketInput({
               contact,
               conversation: activeConversation,
@@ -704,23 +710,13 @@ export class InboundWebhookService {
           }
 
           if (!profileText) {
-            await this.conversationRepository.updateProfileCollectionState(activeConversation.id, collectionState);
-            const prompt = this.contactProfileService.getCollectionPrompt(collectionState, reliableExistingProfile);
-            await this.sendContactProfilePrompt({
+            await this.handleInvalidPreTicketInput({
+              contact,
+              conversation: activeConversation,
+              inboundMessage,
               toMeta,
-              body: prompt,
+              correlationId,
               state: collectionState,
-              conversationId: activeConversation.id,
-            });
-            logger.info(
-              { conversation_id: activeConversation.id },
-              '[integration-service][contact_profile][CONTACT_PROFILE_PROMPT_SENT]',
-            );
-            await this.messageRepository.updateState({
-              messageId: inboundMessage.messageId,
-              conversationId: activeConversation.id,
-              processingStatus: 'processed',
-              glpiSyncStatus: 'synced',
             });
             return;
           }
@@ -2433,6 +2429,14 @@ export class InboundWebhookService {
           );
           if (csatRating === null) {
             await this.sendConfiguredCsatPrompt(input.toMeta, input.action, input.correlationId);
+          } else {
+            await this.sendCsatThankYouClosure({
+              toMeta: input.toMeta,
+              conversation,
+              ticketId: input.action.ticketId,
+              correlationId: input.correlationId,
+              messageId: input.inboundMessage.messageId,
+            });
           }
         } else {
           solutionStage = 'glpi_solution_reopen';
@@ -2954,8 +2958,37 @@ export class InboundWebhookService {
     return false;
   }
 
+  private shouldRejectPreTicketInput(inboundMessage: ParsedMetaInboundMessage): boolean {
+    return this.isBlockedPreTicketInputType(inboundMessage.messageType)
+      || !this.isAllowedPreTicketTextInput(inboundMessage);
+  }
+
   private isBlockedPreTicketInputType(messageType: string): boolean {
     return PRETICKET_BLOCKED_INPUT_TYPES.has(messageType.trim().toLowerCase());
+  }
+
+  private appendPreTicketCancelHint(body: string): string {
+    const normalized = body.trim();
+    if (normalized.toLowerCase().includes('digite cancelar')) {
+      return normalized;
+    }
+
+    return `${normalized}\n\n${PRETICKET_CANCEL_HINT}`;
+  }
+
+  private resolvePreTicketInvalidInputFallback(
+    profileStep: string | null,
+    blockedMedia: boolean,
+  ): string {
+    if (profileStep === 'asking_reason') {
+      return PRETICKET_INVALID_REASON_INPUT_TEXT;
+    }
+
+    if (blockedMedia) {
+      return PRETICKET_INVALID_INPUT_TEXT;
+    }
+
+    return PRETICKET_INVALID_INPUT_TEXT;
   }
 
   private isPreTicketCancelText(text: string | null): boolean {
@@ -3033,10 +3066,12 @@ export class InboundWebhookService {
     correlationId: string;
     state: Record<string, unknown> | null;
   }): Promise<void> {
+    const profileStep = typeof input.state?.step === 'string' ? input.state.step : null;
+    const blockedMedia = this.isBlockedPreTicketInputType(input.inboundMessage.messageType);
     await this.sendConfiguredPreTicketMessage({
       toMeta: input.toMeta,
       eventKey: PRETICKET_INVALID_INPUT_EVENT_KEY,
-      fallbackText: PRETICKET_INVALID_INPUT_TEXT,
+      fallbackText: this.resolvePreTicketInvalidInputFallback(profileStep, blockedMedia),
       correlationId: input.correlationId,
       conversationId: input.conversation.id,
       messageId: input.inboundMessage.messageId,
@@ -3048,12 +3083,12 @@ export class InboundWebhookService {
       processingStatus: 'processed',
       glpiSyncStatus: 'synced',
     });
-    const blockedMedia = this.isBlockedPreTicketInputType(input.inboundMessage.messageType);
     logger.info(
       {
         conversation_id: input.conversation.id,
+        phone_masked: this.maskPhoneE164(input.contact.phoneE164),
         message_type: input.inboundMessage.messageType,
-        profile_step: typeof input.state?.step === 'string' ? input.state.step : null,
+        profile_step: profileStep,
         event_type: blockedMedia ? 'PRETICKET_MEDIA_INPUT_BLOCKED' : 'PRETICKET_INVALID_INPUT_BLOCKED',
         status: 'ignored',
       },
@@ -3070,7 +3105,8 @@ export class InboundWebhookService {
       source: 'InboundWebhookService',
       payload: {
         message_type: input.inboundMessage.messageType,
-        profile_step: typeof input.state?.step === 'string' ? input.state.step : null,
+        phone_masked: this.maskPhoneE164(input.contact.phoneE164),
+        profile_step: profileStep,
         blocked_before_download: true,
         state_preserved: true,
         glpi_ticket_created: false,
@@ -3199,12 +3235,188 @@ export class InboundWebhookService {
     };
   }
 
+  private maskPhoneE164(phoneE164: string): string {
+    const digits = phoneE164.replace(/\D/g, '');
+    if (digits.length < 8) {
+      return '******';
+    }
+
+    return `${digits.slice(0, 2)}******${digits.slice(-4)}`;
+  }
+
+  private async sendCsatThankYouClosure(input: {
+    toMeta: string;
+    conversation: Conversation;
+    ticketId: number;
+    correlationId: string;
+    messageId: string;
+  }): Promise<void> {
+    const windowOpen = this.nowProvider().getTime() - input.conversation.lastMessageAt.getTime() < 24 * 60 * 60 * 1000;
+    const plan = this.messageConfigurationService
+      ? await this.messageConfigurationService.resolveSendPlan(CSAT_THANK_YOU_CLOSURE_EVENT_KEY, {
+        windowOpen,
+        allowTemplateSend: true,
+      })
+      : {
+        eventKey: CSAT_THANK_YOU_CLOSURE_EVENT_KEY,
+        sendType: 'text' as const,
+        text: CSAT_THANK_YOU_CLOSURE_TEXT,
+        active: true,
+        shouldSend: true,
+        reason: null,
+        templateName: null,
+        language: 'pt_BR',
+        buttons: [],
+        listOptions: [],
+      };
+
+    await this.messageConfigurationService?.recordAutomationEvent({
+      conversationId: input.conversation.id,
+      phoneE164: input.conversation.phoneE164,
+      eventKey: CSAT_THANK_YOU_CLOSURE_EVENT_KEY,
+      status: 'planned',
+      reason: plan.reason,
+    });
+
+    if (!plan.shouldSend) {
+      await this.messageConfigurationService?.recordAutomationEvent({
+        conversationId: input.conversation.id,
+        phoneE164: input.conversation.phoneE164,
+        eventKey: CSAT_THANK_YOU_CLOSURE_EVENT_KEY,
+        status: 'not_sent_by_rule',
+        reason: plan.reason ?? 'not_sent_by_rule',
+      });
+      this.recordAudit({
+        correlationId: input.correlationId,
+        ticketId: input.ticketId,
+        conversationId: input.conversation.id,
+        messageId: input.messageId,
+        direction: 'outbound',
+        eventType: 'CSAT_THANK_YOU_CLOSURE_SKIPPED',
+        status: 'ignored',
+        severity: 'info',
+        source: 'InboundWebhookService',
+        payload: {
+          event_key: CSAT_THANK_YOU_CLOSURE_EVENT_KEY,
+          reason: plan.reason ?? 'not_sent_by_rule',
+          window_open: windowOpen,
+        },
+      });
+      logger.info(
+        {
+          ticket_id: input.ticketId,
+          conversation_id: input.conversation.id,
+          correlation_id: input.correlationId,
+          event_key: CSAT_THANK_YOU_CLOSURE_EVENT_KEY,
+          reason: plan.reason,
+        },
+        '[integration-service][solution][CSAT_THANK_YOU_CLOSURE_SKIPPED]',
+      );
+      return;
+    }
+
+    try {
+      if (plan.sendType === 'template') {
+        const sendTemplateMessage = (this.metaClient as unknown as {
+          sendTemplateMessage?: (payload: {
+            to: string;
+            templateName: string;
+            language: string;
+            parameters?: string[];
+          }) => Promise<unknown>;
+        }).sendTemplateMessage;
+        if (!plan.templateName || typeof sendTemplateMessage !== 'function') {
+          throw new Error('CSAT_THANK_YOU_TEMPLATE_UNAVAILABLE');
+        }
+        await sendTemplateMessage.call(this.metaClient, {
+          to: input.toMeta,
+          templateName: plan.templateName,
+          language: plan.language,
+          parameters: [],
+        });
+      } else {
+        await this.metaClient.sendTextMessage({
+          to: input.toMeta,
+          body: plan.text.trim() || CSAT_THANK_YOU_CLOSURE_TEXT,
+        });
+      }
+
+      await this.messageConfigurationService?.recordAutomationEvent({
+        conversationId: input.conversation.id,
+        phoneE164: input.conversation.phoneE164,
+        eventKey: CSAT_THANK_YOU_CLOSURE_EVENT_KEY,
+        status: 'sent',
+      });
+      this.recordAudit({
+        correlationId: input.correlationId,
+        ticketId: input.ticketId,
+        conversationId: input.conversation.id,
+        messageId: input.messageId,
+        direction: 'outbound',
+        eventType: 'CSAT_THANK_YOU_CLOSURE_SENT',
+        status: 'success',
+        severity: 'info',
+        source: 'InboundWebhookService',
+        payload: {
+          event_key: CSAT_THANK_YOU_CLOSURE_EVENT_KEY,
+          window_open: windowOpen,
+        },
+      });
+      logger.info(
+        {
+          ticket_id: input.ticketId,
+          conversation_id: input.conversation.id,
+          correlation_id: input.correlationId,
+          event_key: CSAT_THANK_YOU_CLOSURE_EVENT_KEY,
+        },
+        '[integration-service][solution][CSAT_THANK_YOU_CLOSURE_SENT]',
+      );
+    } catch (error: unknown) {
+      await this.messageConfigurationService?.recordAutomationEvent({
+        conversationId: input.conversation.id,
+        phoneE164: input.conversation.phoneE164,
+        eventKey: CSAT_THANK_YOU_CLOSURE_EVENT_KEY,
+        status: 'failed',
+        errorMessageSanitized: (error instanceof Error ? error.message : String(error)).slice(0, 500),
+      });
+      this.recordAudit({
+        correlationId: input.correlationId,
+        ticketId: input.ticketId,
+        conversationId: input.conversation.id,
+        messageId: input.messageId,
+        direction: 'outbound',
+        eventType: 'CSAT_THANK_YOU_CLOSURE_FAILED',
+        status: 'failed',
+        severity: 'warning',
+        source: 'InboundWebhookService',
+        errorMessage: error instanceof Error ? error.message : String(error),
+        payload: {
+          event_key: CSAT_THANK_YOU_CLOSURE_EVENT_KEY,
+        },
+      });
+      logger.warn(
+        {
+          ticket_id: input.ticketId,
+          conversation_id: input.conversation.id,
+          correlation_id: input.correlationId,
+          error_message: error instanceof Error ? error.message : String(error),
+        },
+        '[integration-service][solution][CSAT_THANK_YOU_CLOSURE_FAILED]',
+      );
+    }
+  }
+
+  private nowProvider(): Date {
+    return new Date();
+  }
+
   private async sendContactProfilePrompt(input: {
     toMeta: string;
     body: string;
     state?: ContactProfileCollectionState | null;
     conversationId?: string | null;
   }): Promise<void> {
+    const bodyWithHint = this.appendPreTicketCancelHint(input.body);
     const sendReplyButtons = (this.metaClient as unknown as {
       sendReplyButtons?: (
         to: string,
@@ -3215,7 +3427,7 @@ export class InboundWebhookService {
 
     if (input.state?.step === 'confirming_existing_profile' && typeof sendReplyButtons === 'function') {
       try {
-        await sendReplyButtons.call(this.metaClient, input.toMeta, input.body, [
+        await sendReplyButtons.call(this.metaClient, input.toMeta, bodyWithHint, [
           { id: 'profile_confirm_yes', title: 'Sim' },
           { id: 'profile_confirm_no', title: 'Nao' },
         ]);
@@ -3237,7 +3449,7 @@ export class InboundWebhookService {
 
     if (input.state?.step === 'asking_tag' && typeof sendReplyButtons === 'function') {
       try {
-        await sendReplyButtons.call(this.metaClient, input.toMeta, input.body, [
+        await sendReplyButtons.call(this.metaClient, input.toMeta, bodyWithHint, [
           { id: 'TAG_UNKNOWN', title: 'Não sei' },
         ]);
         logger.info(
@@ -3256,7 +3468,7 @@ export class InboundWebhookService {
       }
     }
 
-    await this.metaClient.sendTextMessage({ to: input.toMeta, body: input.body });
+    await this.metaClient.sendTextMessage({ to: input.toMeta, body: bodyWithHint });
   }
 
   private async advanceCompletedProfileConversation(input: CompletedProfileTransitionInput): Promise<void> {

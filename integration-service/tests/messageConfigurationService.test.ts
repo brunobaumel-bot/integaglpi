@@ -221,6 +221,25 @@ describe('MessageConfigurationService', () => {
     });
   });
 
+  it('provides a humanized invalid pre-ticket input default with cancel guidance', async () => {
+    const service = new MessageConfigurationService(repository({}));
+
+    await expect(service.getMessage('preticket_invalid_input')).resolves.toMatchObject({
+      groupName: 'Coleta de Perfil',
+      expectsResponse: true,
+      defaultText: 'Neste momento preciso que você responda em texto. Envie uma breve descrição do problema. Se quiser encerrar, digite cancelar.',
+    });
+  });
+
+  it('provides post-CSAT closure thank-you default', async () => {
+    const service = new MessageConfigurationService(repository({}));
+
+    await expect(service.getMessage('csat_thank_you_closure')).resolves.toMatchObject({
+      groupName: 'CSAT',
+      defaultText: 'Seu chamado foi encerrado. Obrigado pela avaliação.',
+    });
+  });
+
   it('records automation events through the repository', async () => {
     const recordAutomationEvent = vi.fn().mockResolvedValue(undefined);
     const service = new MessageConfigurationService(repository({ recordAutomationEvent }));
