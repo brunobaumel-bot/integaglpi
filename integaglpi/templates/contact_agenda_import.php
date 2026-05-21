@@ -10,6 +10,8 @@ $response = is_array($view['response'] ?? null) ? $view['response'] : [];
 $batch = is_array($response['batch'] ?? null) ? $response['batch'] : [];
 $items = is_array($response['items'] ?? null) ? $response['items'] : [];
 $error = trim((string) ($view['error'] ?? ''));
+$notice = trim((string) ($view['notice'] ?? ''));
+$processedFilename = trim((string) ($view['processed_filename'] ?? ''));
 
 if (!function_exists('plugin_integaglpi_contact_import_h')) {
     function plugin_integaglpi_contact_import_h(mixed $value): string
@@ -55,6 +57,10 @@ $conflictRows = (int) ($batch['conflictRows'] ?? 0);
     <div class="alert alert-warning"><?= plugin_integaglpi_contact_import_h($error); ?></div>
 <?php endif; ?>
 
+<?php if ($notice !== '') : ?>
+    <div class="alert alert-success"><?= plugin_integaglpi_contact_import_h($notice); ?></div>
+<?php endif; ?>
+
 <div class="card mb-3">
     <div class="card-header"><?= plugin_integaglpi_contact_import_h(__('1. Upload para preview', 'glpiintegaglpi')); ?></div>
     <div class="card-body">
@@ -94,6 +100,12 @@ $conflictRows = (int) ($batch['conflictRows'] ?? 0);
                 <div class="col-md-2 text-warning"><strong>Duplicados:</strong> <?= $duplicateRows; ?></div>
                 <div class="col-md-1 text-warning"><strong>Conflitos:</strong> <?= $conflictRows; ?></div>
             </div>
+            <?php if ($processedFilename !== '') : ?>
+                <div class="text-muted small mb-3">
+                    <?= plugin_integaglpi_contact_import_h(__('Arquivo processado:', 'glpiintegaglpi')); ?>
+                    <?= plugin_integaglpi_contact_import_h($processedFilename); ?>
+                </div>
+            <?php endif; ?>
 
             <?php if ($status === 'previewed' && $validRows > 0) : ?>
                 <form method="post" action="<?= plugin_integaglpi_contact_import_h(Plugin::getContactAgendaImportUrl()); ?>" class="d-inline">
