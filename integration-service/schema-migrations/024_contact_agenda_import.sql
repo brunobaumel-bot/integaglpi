@@ -2,7 +2,8 @@ CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_contact_import_batches 
   batch_id TEXT PRIMARY KEY,
   filename TEXT NOT NULL,
   uploaded_by BIGINT NULL,
-  status TEXT NOT NULL DEFAULT 'previewed',
+  status TEXT NOT NULL DEFAULT 'previewed'
+    CHECK (status IN ('previewed', 'confirmed', 'processing', 'completed', 'failed', 'rolled_back')),
   total_rows INTEGER NOT NULL DEFAULT 0,
   valid_rows INTEGER NOT NULL DEFAULT 0,
   invalid_rows INTEGER NOT NULL DEFAULT 0,
@@ -15,33 +16,20 @@ CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_contact_import_batches 
   rolled_back_at TIMESTAMPTZ NULL
 );
 
-ALTER TABLE public.glpi_plugin_integaglpi_contact_import_batches
-  ADD COLUMN IF NOT EXISTS batch_id TEXT,
-  ADD COLUMN IF NOT EXISTS filename TEXT,
-  ADD COLUMN IF NOT EXISTS uploaded_by BIGINT NULL,
-  ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'previewed',
-  ADD COLUMN IF NOT EXISTS total_rows INTEGER NOT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS valid_rows INTEGER NOT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS invalid_rows INTEGER NOT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS duplicate_rows INTEGER NOT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS conflict_rows INTEGER NOT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS error_message_sanitized TEXT NULL,
-  ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ NULL,
-  ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ NULL,
-  ADD COLUMN IF NOT EXISTS rolled_back_at TIMESTAMPTZ NULL;
-
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'glpi_intega_contact_import_batches_status_ck'
-  ) THEN
-    ALTER TABLE public.glpi_plugin_integaglpi_contact_import_batches
-      ADD CONSTRAINT glpi_intega_contact_import_batches_status_ck
-      CHECK (status IN ('previewed', 'confirmed', 'processing', 'completed', 'failed', 'rolled_back'));
-  END IF;
-END $$;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_batches ADD COLUMN IF NOT EXISTS batch_id TEXT;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_batches ADD COLUMN IF NOT EXISTS filename TEXT;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_batches ADD COLUMN IF NOT EXISTS uploaded_by BIGINT NULL;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_batches ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'previewed';
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_batches ADD COLUMN IF NOT EXISTS total_rows INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_batches ADD COLUMN IF NOT EXISTS valid_rows INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_batches ADD COLUMN IF NOT EXISTS invalid_rows INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_batches ADD COLUMN IF NOT EXISTS duplicate_rows INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_batches ADD COLUMN IF NOT EXISTS conflict_rows INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_batches ADD COLUMN IF NOT EXISTS error_message_sanitized TEXT NULL;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_batches ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_batches ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ NULL;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_batches ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ NULL;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_batches ADD COLUMN IF NOT EXISTS rolled_back_at TIMESTAMPTZ NULL;
 
 CREATE INDEX IF NOT EXISTS glpi_intega_contact_import_batches_status_idx
   ON public.glpi_plugin_integaglpi_contact_import_batches (status, created_at DESC);
@@ -67,25 +55,24 @@ CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_contact_import_items (
   applied_at TIMESTAMPTZ NULL
 );
 
-ALTER TABLE public.glpi_plugin_integaglpi_contact_import_items
-  ADD COLUMN IF NOT EXISTS item_id BIGSERIAL,
-  ADD COLUMN IF NOT EXISTS batch_id TEXT,
-  ADD COLUMN IF NOT EXISTS row_number INTEGER,
-  ADD COLUMN IF NOT EXISTS phone_e164 TEXT NULL,
-  ADD COLUMN IF NOT EXISTS email TEXT NULL,
-  ADD COLUMN IF NOT EXISTS contact_name TEXT NULL,
-  ADD COLUMN IF NOT EXISTS company_name TEXT NULL,
-  ADD COLUMN IF NOT EXISTS equipment_tag TEXT NULL,
-  ADD COLUMN IF NOT EXISTS equipment_tag_unknown BOOLEAN NOT NULL DEFAULT FALSE,
-  ADD COLUMN IF NOT EXISTS validation_status TEXT NOT NULL DEFAULT 'invalid',
-  ADD COLUMN IF NOT EXISTS validation_errors JSONB NOT NULL DEFAULT '[]'::jsonb,
-  ADD COLUMN IF NOT EXISTS dedup_status TEXT NOT NULL DEFAULT 'new',
-  ADD COLUMN IF NOT EXISTS action_planned TEXT NOT NULL DEFAULT 'none',
-  ADD COLUMN IF NOT EXISTS action_applied TEXT NOT NULL DEFAULT 'none',
-  ADD COLUMN IF NOT EXISTS target_contact_profile_id BIGINT NULL,
-  ADD COLUMN IF NOT EXISTS previous_state_json JSONB NULL,
-  ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  ADD COLUMN IF NOT EXISTS applied_at TIMESTAMPTZ NULL;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_items ADD COLUMN IF NOT EXISTS item_id BIGSERIAL;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_items ADD COLUMN IF NOT EXISTS batch_id TEXT;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_items ADD COLUMN IF NOT EXISTS row_number INTEGER;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_items ADD COLUMN IF NOT EXISTS phone_e164 TEXT NULL;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_items ADD COLUMN IF NOT EXISTS email TEXT NULL;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_items ADD COLUMN IF NOT EXISTS contact_name TEXT NULL;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_items ADD COLUMN IF NOT EXISTS company_name TEXT NULL;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_items ADD COLUMN IF NOT EXISTS equipment_tag TEXT NULL;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_items ADD COLUMN IF NOT EXISTS equipment_tag_unknown BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_items ADD COLUMN IF NOT EXISTS validation_status TEXT NOT NULL DEFAULT 'invalid';
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_items ADD COLUMN IF NOT EXISTS validation_errors JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_items ADD COLUMN IF NOT EXISTS dedup_status TEXT NOT NULL DEFAULT 'new';
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_items ADD COLUMN IF NOT EXISTS action_planned TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_items ADD COLUMN IF NOT EXISTS action_applied TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_items ADD COLUMN IF NOT EXISTS target_contact_profile_id BIGINT NULL;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_items ADD COLUMN IF NOT EXISTS previous_state_json JSONB NULL;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_items ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_items ADD COLUMN IF NOT EXISTS applied_at TIMESTAMPTZ NULL;
 
 CREATE INDEX IF NOT EXISTS glpi_intega_contact_import_items_batch_idx
   ON public.glpi_plugin_integaglpi_contact_import_items (batch_id, row_number);
@@ -113,16 +100,15 @@ CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_contact_import_rollback
   completed_at TIMESTAMPTZ NULL
 );
 
-ALTER TABLE public.glpi_plugin_integaglpi_contact_import_rollbacks
-  ADD COLUMN IF NOT EXISTS rollback_id BIGSERIAL,
-  ADD COLUMN IF NOT EXISTS batch_id TEXT,
-  ADD COLUMN IF NOT EXISTS item_id BIGINT NULL,
-  ADD COLUMN IF NOT EXISTS reason TEXT,
-  ADD COLUMN IF NOT EXISTS previous_state_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-  ADD COLUMN IF NOT EXISTS rollback_state TEXT NOT NULL DEFAULT 'pending',
-  ADD COLUMN IF NOT EXISTS requested_by BIGINT NULL,
-  ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ NULL;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_rollbacks ADD COLUMN IF NOT EXISTS rollback_id BIGSERIAL;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_rollbacks ADD COLUMN IF NOT EXISTS batch_id TEXT;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_rollbacks ADD COLUMN IF NOT EXISTS item_id BIGINT NULL;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_rollbacks ADD COLUMN IF NOT EXISTS reason TEXT;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_rollbacks ADD COLUMN IF NOT EXISTS previous_state_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_rollbacks ADD COLUMN IF NOT EXISTS rollback_state TEXT NOT NULL DEFAULT 'pending';
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_rollbacks ADD COLUMN IF NOT EXISTS requested_by BIGINT NULL;
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_rollbacks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE public.glpi_plugin_integaglpi_contact_import_rollbacks ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ NULL;
 
 CREATE INDEX IF NOT EXISTS glpi_intega_contact_import_rollbacks_batch_idx
   ON public.glpi_plugin_integaglpi_contact_import_rollbacks (batch_id, created_at DESC);
