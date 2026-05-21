@@ -19,6 +19,8 @@ final class IntegrationServiceClient
     private const PATH_CONTACT_AGENDA_IMPORT_STATUS = '/internal/glpi/contact-agenda/import/%s';
     private const PATH_CONTACT_AGENDA_IMPORT_CONFIRM = '/internal/glpi/contact-agenda/import/%s/confirm';
     private const PATH_CONTACT_AGENDA_IMPORT_ROLLBACK = '/internal/glpi/contact-agenda/import/%s/rollback';
+    private const PATH_MANUAL_TICKET_WHATSAPP_RESOLVE = '/internal/glpi/manual-ticket-whatsapp/%d/resolve';
+    private const PATH_MANUAL_TICKET_WHATSAPP_START_TEMPLATE = '/internal/glpi/manual-ticket-whatsapp/%d/start-template';
     private const PATH_AI_QUALITY_ANALYZE = '/internal/glpi/ai-quality/analyze';
     private const PATH_AI_QUALITY_FEEDBACK = '/internal/glpi/ai-quality/feedback';
     private const TIMEOUT_SECONDS   = 5;
@@ -169,6 +171,28 @@ final class IntegrationServiceClient
         $path = sprintf(self::PATH_CONTACT_AGENDA_IMPORT_ROLLBACK, rawurlencode($batchId));
 
         return $this->postJson($this->endpoint($path), $payload, 'contact_import][rollback', 60);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function resolveManualTicketWhatsapp(int $ticketId, array $payload): array
+    {
+        $path = sprintf(self::PATH_MANUAL_TICKET_WHATSAPP_RESOLVE, $ticketId);
+
+        return $this->postJson($this->endpoint($path), $payload, 'manual_ticket_whatsapp][resolve', 10);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function startManualTicketWhatsappTemplate(int $ticketId, array $payload): array
+    {
+        $path = sprintf(self::PATH_MANUAL_TICKET_WHATSAPP_START_TEMPLATE, $ticketId);
+
+        return $this->postJson($this->endpoint($path), $payload, 'manual_ticket_whatsapp][start_template', 20);
     }
 
     /**

@@ -25,6 +25,12 @@ const outboundBodySchema = z.discriminatedUnion('message_type', [
     message_type: z.literal('text'),
   }),
   outboundBaseSchema.extend({
+    message_type: z.literal('template'),
+    template_name: z.string().min(1).max(180),
+    language: z.string().min(2).max(16).optional(),
+    template_parameters: z.array(z.string().max(512)).max(20).optional(),
+  }),
+  outboundBaseSchema.extend({
     message_type: z.literal('document'),
     media: mediaSchema(25_000_000),
   }),

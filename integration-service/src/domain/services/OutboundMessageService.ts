@@ -20,6 +20,7 @@ export interface OutboundMessageRequestBody {
   idempotency_key?: string;
   template_name?: string;
   language?: string;
+  template_parameters?: string[];
   buttons?: Array<{ id: string; title: string }>;
   list_options?: Array<{ id: string; title: string; description?: string }>;
   media?: {
@@ -523,6 +524,7 @@ export class OutboundMessageService {
         message_type: body.message_type,
         template_name: body.message_type === 'template' ? body.template_name : undefined,
         language: body.message_type === 'template' ? body.language : undefined,
+        template_parameters: body.message_type === 'template' ? body.template_parameters : undefined,
         buttons: body.message_type === 'interactive_buttons' ? body.buttons : undefined,
         list_options: body.message_type === 'interactive_list' ? body.list_options : undefined,
         recipient_phone: recipientPhone,
@@ -1016,11 +1018,15 @@ export class OutboundMessageService {
       if (templateName === '') {
         throw new Error('TEMPLATE_NAME_REQUIRED');
       }
+      const parameters = body.template_parameters
+        ?.map((value) => String(value).trim())
+        .filter((value) => value !== '');
 
       return this.metaClient.sendTemplateMessage({
         to: toForMeta,
         templateName,
         language: body.language?.trim() || 'pt_BR',
+        ...(parameters && parameters.length > 0 ? { parameters } : {}),
       });
     }
 

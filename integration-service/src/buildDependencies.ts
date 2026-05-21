@@ -19,6 +19,7 @@ import { ContactEntityResolutionService } from './domain/services/ContactEntityR
 import { ContactProfileService } from './domain/services/ContactProfileService.js';
 import { CustomerExperienceService } from './domain/services/CustomerExperienceService.js';
 import { ContactAgendaImportService } from './domain/services/ContactAgendaImportService.js';
+import { ManualTicketWhatsappLinkService } from './domain/services/ManualTicketWhatsappLinkService.js';
 import { EntitySelectionService } from './domain/services/EntitySelectionService.js';
 import { ConversationSoftCloseService } from './domain/services/ConversationSoftCloseService.js';
 import { AiSupervisorService } from './domain/services/AiSupervisorService.js';
@@ -27,6 +28,7 @@ import { ResilientHttpClient } from './infra/http/ResilientHttpClient.js';
 import { PostgresContactEntityMemoryRepository } from './repositories/postgres/PostgresContactEntityMemoryRepository.js';
 import { PostgresContactProfileRepository } from './repositories/postgres/PostgresContactProfileRepository.js';
 import { PostgresContactAgendaImportRepository } from './repositories/postgres/PostgresContactAgendaImportRepository.js';
+import { PostgresManualTicketWhatsappRepository } from './repositories/postgres/PostgresManualTicketWhatsappRepository.js';
 import { PostgresContactRepository } from './repositories/postgres/PostgresContactRepository.js';
 import { PostgresConversationRepository } from './repositories/postgres/PostgresConversationRepository.js';
 import { PostgresMessageRepository } from './repositories/postgres/PostgresMessageRepository.js';
@@ -57,6 +59,7 @@ export function buildDependencies() {
   const contactEntityMemoryRepository = new PostgresContactEntityMemoryRepository(postgresPool);
   const contactProfileRepository = new PostgresContactProfileRepository(postgresPool);
   const contactAgendaImportRepository = new PostgresContactAgendaImportRepository(postgresPool);
+  const manualTicketWhatsappRepository = new PostgresManualTicketWhatsappRepository(postgresPool);
   const solutionActionRepository = new PostgresSolutionActionRepository(postgresPool);
   const auditEventRepository = new PostgresAuditEventRepository(postgresPool);
   const aiQualityAnalysisRepository = new PostgresAiQualityAnalysisRepository(postgresPool);
@@ -84,6 +87,12 @@ export function buildDependencies() {
     auditService,
     inactivityTrackingRepository,
     messageConfigurationService,
+  );
+  const manualTicketWhatsappLinkService = new ManualTicketWhatsappLinkService(
+    manualTicketWhatsappRepository,
+    outboundMessageService,
+    keyLock,
+    auditService,
   );
   const inactivityAutomationService = new InactivityAutomationService(
     inactivityTrackingRepository,
@@ -176,6 +185,7 @@ export function buildDependencies() {
     aiSupervisorService,
     qualityDashboardService,
     contactAgendaImportService,
+    manualTicketWhatsappLinkService,
     integrationServiceApiKey: env.INTEGRATION_SERVICE_API_KEY,
     glpiClient,
     metaClient,

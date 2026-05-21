@@ -12,6 +12,7 @@ export interface MetaSendTemplateMessageInput {
   to: string;
   templateName: string;
   language: string;
+  parameters?: string[];
 }
 
 export interface MetaUploadMediaInput {
@@ -438,6 +439,19 @@ export class MetaClient {
             language: {
               code: language,
             },
+            ...(input.parameters && input.parameters.length > 0
+              ? {
+                  components: [
+                    {
+                      type: 'body',
+                      parameters: input.parameters.map((text) => ({
+                        type: 'text',
+                        text,
+                      })),
+                    },
+                  ],
+                }
+              : {}),
           },
         }),
       },

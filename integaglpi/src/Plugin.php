@@ -124,6 +124,11 @@ final class Plugin
         return self::getWebBasePath() . '/front/ticket.whatsapp.action.php';
     }
 
+    public static function getManualTicketWhatsappUrl(): string
+    {
+        return self::getWebBasePath() . '/front/ticket.whatsapp.manual.php';
+    }
+
     public static function getQueueAdminUrl(): string
     {
         return self::getWebBasePath() . '/front/config.form.php';

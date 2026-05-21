@@ -7,6 +7,7 @@ namespace GlpiPlugin\Integaglpi\Renderer;
 use GlpiPlugin\Integaglpi\Plugin;
 use GlpiPlugin\Integaglpi\Service\TicketContextService;
 use GlpiPlugin\Integaglpi\Service\TicketRuntimeService;
+use GlpiPlugin\Integaglpi\Service\ManualTicketWhatsappService;
 use GlpiPlugin\Integaglpi\Support\AssetRenderer;
 use Html;
 
@@ -36,6 +37,7 @@ final class TicketTabRenderer
         $messages = [];
         $queues = [];
         $context = null;
+        $manualWhatsapp = null;
         $externalDbError = null;
         $isExternalConfigured = $this->runtimeService->isExternalConfigured();
         $connectionConfig = $this->runtimeService->getConnectionConfig();
@@ -48,6 +50,9 @@ final class TicketTabRenderer
                     : [];
                 $queues = $this->runtimeService->getQueues();
                 $context = $this->ticketContextService->getTicketContext($ticket);
+                if ($runtime === null) {
+                    $manualWhatsapp = (new ManualTicketWhatsappService())->getViewData($ticket);
+                }
             } catch (\Throwable $exception) {
                 error_log('[integaglpi][ticket_tab][external_db] ' . $exception->getMessage());
                 $externalDbError = __(

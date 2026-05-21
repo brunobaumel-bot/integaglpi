@@ -12,6 +12,7 @@ declare(strict_types=1);
 /** @var string|null $externalDbError */
 /** @var \Ticket $ticket */
 /** @var string $tabView */
+/** @var array<string, mixed>|null $manualWhatsapp */
 
 $timelineId = 'integaglpi-timeline-' . (int) $ticket->getID();
 $runtimeView = is_array($runtime) ? $runtime : [];
@@ -72,6 +73,103 @@ $short = static function (mixed $value, int $max = 44): string {
 
     return strlen($text) > $max ? substr($text, 0, $max) . '...' : $text;
 };
+$renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
+    $data = is_array($manualWhatsapp) ? $manualWhatsapp : [];
+    $template = is_array($data['template'] ?? null) ? $data['template'] : null;
+    $candidates = is_array($data['candidates'] ?? null) ? $data['candidates'] : [];
+    $requester = is_array($data['requester'] ?? null) ? $data['requester'] : [];
+    $csrfToken = \GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
+    ?>
+    <div class="border rounded p-3 bg-light mt-3">
+        <strong><?= $this->escape(__('Vincular/Iniciar WhatsApp', 'glpiintegaglpi')); ?></strong>
+        <p class="text-muted small mb-3">
+            <?= $this->escape(__('Use esta ação somente quando o chamado manual precisa iniciar atendimento WhatsApp por template aprovado. Texto livre fora da janela de 24h permanece bloqueado.', 'glpiintegaglpi')); ?>
+        </p>
+        <?php if (is_string($data['error'] ?? null) && $data['error'] !== '') { ?>
+            <div class="alert alert-warning"><?= $this->escape((string) $data['error']); ?></div>
+        <?php } ?>
+        <?php if ($template === null) { ?>
+            <div class="alert alert-warning mb-0">
+                <?= $this->escape(__('Template aprovado aviso_atendimento_fora_janela não está ativo.', 'glpiintegaglpi')); ?>
+            </div>
+        <?php } else { ?>
+            <form method="post" action="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getManualTicketWhatsappUrl()); ?>" class="mb-0">
+                <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrfToken); ?>">
+                <input type="hidden" name="ticket_id" value="<?= (int) $ticket->getID(); ?>">
+                <input type="hidden" name="manual_whatsapp_action" value="start_template">
+                <?php if ($candidates !== []) { ?>
+                    <div class="mb-3">
+                        <label class="form-label"><?= $this->escape(__('Telefones candidatos', 'glpiintegaglpi')); ?></label>
+                        <?php foreach ($candidates as $index => $candidate) { ?>
+                            <?php
+                            $phone = trim((string) ($candidate['phone_e164'] ?? ''));
+                            if ($phone === '') {
+                                continue;
+                            }
+                            $blocked = !empty($candidate['has_open_conflict']);
+                            ?>
+                            <label class="d-block border rounded p-2 mb-2 bg-white <?= $blocked ? 'text-muted' : ''; ?>">
+                                <input
+                                    type="radio"
+                                    name="candidate_phone_e164"
+                                    value="<?= $this->escape($phone); ?>"
+                                    <?= $index === 0 && !$blocked ? 'checked' : ''; ?>
+                                    <?= $blocked ? 'disabled' : ''; ?>
+                                >
+                                <strong><?= $this->escape((string) ($candidate['masked_phone'] ?? $phone)); ?></strong>
+                                <span class="badge bg-light text-dark border"><?= $this->escape((string) ($candidate['source'] ?? '')); ?></span>
+                                <?php if ($blocked) { ?>
+                                    <span class="text-danger small">
+                                        <?= $this->escape(sprintf(
+                                            __('bloqueado: conversa aberta no chamado #%s', 'glpiintegaglpi'),
+                                            (string) ($candidate['conflict_ticket_id'] ?? '-')
+                                        )); ?>
+                                    </span>
+                                <?php } ?>
+                            </label>
+                        <?php } ?>
+                    </div>
+                <?php } ?>
+                <div class="mb-3">
+                    <label class="form-label" for="integaglpi-manual-phone-<?= (int) $ticket->getID(); ?>">
+                        <?= $this->escape(__('Telefone manual em E.164', 'glpiintegaglpi')); ?>
+                    </label>
+                    <input
+                        type="text"
+                        class="form-control"
+                        id="integaglpi-manual-phone-<?= (int) $ticket->getID(); ?>"
+                        name="manual_phone_e164"
+                        placeholder="+5511999999999"
+                        pattern="^\+[1-9]\d{1,14}$"
+                    >
+                    <small class="text-muted"><?= $this->escape(__('Preencha somente se os candidatos estiverem ausentes ou incorretos.', 'glpiintegaglpi')); ?></small>
+                </div>
+                <div class="alert alert-warning">
+                    <strong><?= $this->escape(__('Alerta de custo WhatsApp/Meta', 'glpiintegaglpi')); ?></strong><br>
+                    <?= $this->escape(sprintf(
+                        __('Será enviado o template aprovado %s (%s) com variáveis: nome=%s, ticket_id=%d.', 'glpiintegaglpi'),
+                        (string) $template['name'],
+                        (string) $template['language'],
+                        (string) ($requester['name'] ?? __('Cliente', 'glpiintegaglpi')),
+                        (int) $ticket->getID()
+                    )); ?>
+                </div>
+                <label class="form-check mb-2">
+                    <input class="form-check-input" type="checkbox" name="cost_acknowledged" value="1" required>
+                    <span class="form-check-label"><?= $this->escape(__('Estou ciente de que o envio pode gerar custo Meta.', 'glpiintegaglpi')); ?></span>
+                </label>
+                <label class="form-check mb-3">
+                    <input class="form-check-input" type="checkbox" name="manual_confirmation" value="1" required>
+                    <span class="form-check-label"><?= $this->escape(__('Confirmo o início manual do atendimento WhatsApp para este chamado.', 'glpiintegaglpi')); ?></span>
+                </label>
+                <button type="submit" class="btn btn-primary">
+                    <?= $this->escape(__('Enviar template e vincular conversa', 'glpiintegaglpi')); ?>
+                </button>
+            </form>
+        <?php } ?>
+    </div>
+    <?php
+};
 ?>
 <?php if ($tabView === 'context') { ?>
 <div class="card mb-3">
@@ -87,8 +185,9 @@ $short = static function (mixed $value, int $max = 44): string {
             </div>
         <?php } elseif ($runtime === null) { ?>
             <div class="alert alert-info mb-0">
-                <?= $this->escape(__('Nenhuma conversa WhatsApp vinculada a este chamado.', 'glpiintegaglpi')); ?>
+                <?= $this->escape(__('Este chamado ainda não está vinculado a uma conversa WhatsApp.', 'glpiintegaglpi')); ?>
             </div>
+            <?php if (\GlpiPlugin\Integaglpi\Plugin::canUpdate()) { $renderManualWhatsappStart(); } ?>
         <?php } else { ?>
             <div class="row g-3">
                 <div class="col-md-3">
@@ -605,7 +704,12 @@ if ($auditPanelOk) {
     <div class="card-body">
         <?php if (!$isExternalConfigured) { ?>
             <p class="mb-0 text-muted"><?= $this->escape(__('The timeline becomes available after configuring the external PostgreSQL connection.', 'glpiintegaglpi')); ?></p>
-        <?php } elseif ($runtime === null || $messages === []) { ?>
+        <?php } elseif ($runtime === null) { ?>
+            <div class="alert alert-info">
+                <?= $this->escape(__('Este chamado ainda não está vinculado a uma conversa WhatsApp.', 'glpiintegaglpi')); ?>
+            </div>
+            <?php if (\GlpiPlugin\Integaglpi\Plugin::canUpdate()) { $renderManualWhatsappStart(); } ?>
+        <?php } elseif ($messages === []) { ?>
             <p class="mb-0 text-muted"><?= $this->escape(__('No WhatsApp messages were found for this ticket.', 'glpiintegaglpi')); ?></p>
         <?php } else { ?>
             <div

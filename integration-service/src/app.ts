@@ -8,6 +8,7 @@ import type { ConversationSoftCloseService } from './domain/services/Conversatio
 import type { AuditService } from './domain/services/AuditService.js';
 import type { AiSupervisorService } from './domain/services/AiSupervisorService.js';
 import type { ContactAgendaImportService } from './domain/services/ContactAgendaImportService.js';
+import type { ManualTicketWhatsappLinkService } from './domain/services/ManualTicketWhatsappLinkService.js';
 import type { GlpiClient } from './adapters/glpi/GlpiClient.js';
 import type { QualityDashboardService } from './services/QualityDashboardService.js';
 import { createOpsDiagnosticsController, healthController } from './controllers/healthController.js';
@@ -22,6 +23,10 @@ import {
   createContactAgendaImportRollbackController,
   createContactAgendaImportStatusController,
 } from './controllers/createContactAgendaImportController.js';
+import {
+  createManualTicketWhatsappResolveController,
+  createManualTicketWhatsappStartTemplateController,
+} from './controllers/createManualTicketWhatsappController.js';
 import {
   createConversationEntityController,
   createConversationEntityStatusController,
@@ -50,6 +55,7 @@ export interface AppDependencies {
   aiSupervisorService?: AiSupervisorService;
   qualityDashboardService?: QualityDashboardService;
   contactAgendaImportService?: ContactAgendaImportService;
+  manualTicketWhatsappLinkService?: ManualTicketWhatsappLinkService;
 }
 
 function createJsonParser(options: { limit?: string } = {}) {
@@ -70,6 +76,7 @@ export function createApp(dependencies: AppDependencies) {
       req.method === 'POST'
       && (
         req.path === '/internal/glpi/messages/outbound'
+        || req.path.startsWith('/internal/glpi/manual-ticket-whatsapp')
         || req.path.startsWith('/internal/glpi/contact-agenda/import')
       )
     ) {
@@ -148,6 +155,21 @@ export function createApp(dependencies: AppDependencies) {
       internalAuth,
       createJsonParser({ limit: CONTACT_AGENDA_IMPORT_JSON_LIMIT }),
       createContactAgendaImportRollbackController(dependencies.contactAgendaImportService),
+    );
+  }
+  if (dependencies.manualTicketWhatsappLinkService) {
+    const internalAuth = createInternalBearerMiddleware(dependencies.integrationServiceApiKey);
+    app.post(
+      '/internal/glpi/manual-ticket-whatsapp/:ticket_id/resolve',
+      internalAuth,
+      createJsonParser(),
+      createManualTicketWhatsappResolveController(dependencies.manualTicketWhatsappLinkService),
+    );
+    app.post(
+      '/internal/glpi/manual-ticket-whatsapp/:ticket_id/start-template',
+      internalAuth,
+      createJsonParser(),
+      createManualTicketWhatsappStartTemplateController(dependencies.manualTicketWhatsappLinkService),
     );
   }
   app.post(
