@@ -37,6 +37,18 @@ describe('OperationalSlaService', () => {
     expect(breached.solution.breached).toBe(true);
   });
 
+  it('reports unconfigured SLA honestly when no deadline can be calculated', () => {
+    const status = calculateSlaStatus(
+      { responseMinutes: null, solutionMinutes: null },
+      { startedAt, now: new Date('2026-05-21T12:05:00.000Z') },
+    );
+
+    expect(status.response.status).toBe('not_configured');
+    expect(status.solution.status).toBe('not_configured');
+    expect(status.response.deadline).toBeNull();
+    expect(status.solution.deadline).toBeNull();
+  });
+
   it('accumulates waiting-customer time and increments reopen count without deleting history', () => {
     expect(addWaitingCustomerTime(
       5,

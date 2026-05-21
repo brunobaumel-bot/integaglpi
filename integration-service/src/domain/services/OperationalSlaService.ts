@@ -1,4 +1,4 @@
-export type SlaVisualStatus = 'normal' | 'attention' | 'critical' | 'breached';
+export type SlaVisualStatus = 'not_configured' | 'normal' | 'attention' | 'critical' | 'breached';
 
 export interface SlaPolicy {
   responseMinutes: number | null;
@@ -70,7 +70,7 @@ function calculateMetricStatus(startedAt: Date, deadline: Date | null, completed
     return {
       deadline,
       consumedPercent: null,
-      status: 'normal',
+      status: 'not_configured',
       breached: false,
     };
   }

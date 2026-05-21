@@ -45,6 +45,8 @@ export type InactivitySkipReasonCode =
   | 'already_notified'
   | 'not_eligible_status'
   | 'missing_ticket'
+  | 'glpi_ticket_pending'
+  | 'awaiting_customer'
   | 'recent_inbound'
   | 'recent_outbound'
   | 'locked_or_duplicate_run';
@@ -87,12 +89,44 @@ function hasManualHold(record: InactivityTrackingRecord, now: Date): boolean {
   return Boolean(record.manualHoldReason && !record.manualHoldUntil);
 }
 
-function hasRecentTechnicianActivity(record: InactivityTrackingRecord, now: Date): boolean {
-  if (!record.lastOutboundActivityAt) {
-    return false;
+type InactivityTicketState = 'open' | 'closed' | 'pending' | 'unknown';
+
+function normalizeTicketState(rawStatus: unknown): InactivityTicketState {
+  if (typeof rawStatus === 'number' && Number.isFinite(rawStatus)) {
+    if (rawStatus === 4) {
+      return 'pending';
+    }
+    if (rawStatus === 5 || rawStatus === 6) {
+      return 'closed';
+    }
+    if (rawStatus > 0) {
+      return 'open';
+    }
   }
 
-  return minutesBetween(record.lastOutboundActivityAt, now) < TECHNICIAN_ACTIVITY_GUARD_MINUTES;
+  const status = String(rawStatus ?? '').trim().toLowerCase();
+  if (status === '') {
+    return 'unknown';
+  }
+  if (
+    status === '4'
+    || status.includes('pending')
+    || status.includes('pendente')
+    || status.includes('awaiting_customer')
+    || status.includes('aguardando_cliente')
+    || status.includes('aguardando cliente')
+    || status.includes('waiting_customer')
+  ) {
+    return 'pending';
+  }
+  if (status === '5' || status === '6' || status.includes('closed') || status.includes('solved') || status.includes('fechado') || status.includes('solucionado')) {
+    return 'closed';
+  }
+  if (status === 'open' || status === '1' || status === '2' || status === '3') {
+    return 'open';
+  }
+
+  return 'unknown';
 }
 
 export function parseReminderMinutes(value: string): [number, number, number] {
@@ -129,6 +163,10 @@ export function normalizeInactivitySkipReason(reason: string | null | undefined)
     case 'manual_hold':
     case 'profile_collection_step_not_eligible':
       return 'not_eligible_status';
+    case 'glpi_ticket_pending':
+      return 'glpi_ticket_pending';
+    case 'awaiting_customer':
+      return 'awaiting_customer';
     case 'missing_ticket':
       return 'missing_ticket';
     case 'client_responded':
@@ -170,10 +208,6 @@ export function decideInactivityAction(
     return { action: 'SKIP', reason: 'client_responded' };
   }
 
-  if (hasRecentTechnicianActivity(record, now)) {
-    return { action: 'NOOP', reason: 'technician_activity_recent' };
-  }
-
   if (record.status === 'failed') {
     return { action: 'NOOP', reason: 'previous_failure_requires_manual_review' };
   }
@@ -188,6 +222,9 @@ export function decideInactivityAction(
 
   const elapsedMinutes = minutesBetween(record.lastOutboundActivityAt, now);
   const [r1, r2, r3] = config.reminderMinutes;
+  if (elapsedMinutes < r1) {
+    return { action: 'NOOP', reason: 'technician_activity_recent' };
+  }
 
   if (!record.reminder1SentAt && elapsedMinutes >= r1) {
     return { action: 'SEND_REMINDER_1', reason: 'reminder_1_due', reminderNumber: 1 };
@@ -220,7 +257,7 @@ export class InactivityAutomationService {
   public constructor(
     private readonly repository: InactivityTrackingRepository,
     private readonly outboundMessageService: Pick<OutboundMessageService, 'send' | 'sendProfileCollectionReminder'>,
-    private readonly glpiClient: Pick<GlpiClient, 'getTicketStatus' | 'solveTicketByInactivity'>,
+    private readonly glpiClient: Pick<GlpiClient, 'getTicketStatus' | 'solveTicketByInactivity'> & Partial<Pick<GlpiClient, 'getTicket'>>,
     private readonly auditService: AuditService | null,
     private readonly config: InactivityConfig,
     private readonly nowProvider: () => Date = () => new Date(),
@@ -465,7 +502,7 @@ export class InactivityAutomationService {
     await this.recordDiagnostic(refreshed, 'eligible', { reason: decision.reason });
 
     if (decision.action === 'AUTO_CLOSE') {
-      await this.handleAutoclose(refreshed);
+      await this.handleAutoclose(refreshed, config);
       return;
     }
 
@@ -479,7 +516,7 @@ export class InactivityAutomationService {
       return;
     }
 
-    const ticketStatus = await this.glpiClient.getTicketStatus(record.ticketId);
+    const ticketStatus = await this.loadTicketState(record.ticketId);
     if (ticketStatus === 'closed') {
       await this.handleSkip(record, 'ticket_closed_or_solved');
       return;
@@ -583,7 +620,7 @@ export class InactivityAutomationService {
     });
   }
 
-  private async handleAutoclose(record: InactivityTrackingRecord): Promise<void> {
+  private async handleAutoclose(record: InactivityTrackingRecord, config: InactivityConfig): Promise<void> {
     if (!record.ticketId) {
       return;
     }
@@ -595,7 +632,10 @@ export class InactivityAutomationService {
       await this.handleSkip(record, refreshed && hasClientResponseAfterOutbound(refreshed) ? 'client_responded' : 'manual_hold');
       return;
     }
-    if (hasRecentTechnicianActivity(refreshed, now)) {
+    const elapsedMinutes = refreshed.lastOutboundActivityAt
+      ? minutesBetween(refreshed.lastOutboundActivityAt, now)
+      : Number.POSITIVE_INFINITY;
+    if (elapsedMinutes < config.reminderMinutes[0]) {
       await this.recordDiagnostic(refreshed, 'skipped', { reason: 'technician_activity_recent' });
       this.recordAudit(refreshed, 'INACTIVITY_AUTOCLOSE_SKIPPED', 'ignored', correlationId, {
         reason: 'technician_activity_recent',
@@ -603,9 +643,13 @@ export class InactivityAutomationService {
       return;
     }
 
-    const ticketStatus = await this.glpiClient.getTicketStatus(record.ticketId);
+    const ticketStatus = await this.loadTicketState(record.ticketId);
     if (ticketStatus === 'closed') {
       await this.handleSkip(record, 'ticket_closed_or_solved');
+      return;
+    }
+    if (ticketStatus === 'pending') {
+      await this.handleSkip(record, 'glpi_ticket_pending');
       return;
     }
 
@@ -687,7 +731,7 @@ export class InactivityAutomationService {
     const reasonCode = normalizeInactivitySkipReason(reason) ?? 'not_eligible_status';
     const status = reason === 'client_responded'
       ? 'skipped_by_response'
-      : reason === 'manual_hold'
+      : reason === 'manual_hold' || reason === 'glpi_ticket_pending' || reason === 'awaiting_customer'
         ? 'skipped_by_hold'
         : reason === 'feature_flag_disabled'
           ? 'skipped_by_feature_flag'
@@ -843,6 +887,25 @@ export class InactivityAutomationService {
 
       return this.config;
     }
+  }
+
+  private async loadTicketState(ticketId: number): Promise<InactivityTicketState> {
+    if (typeof this.glpiClient.getTicket === 'function') {
+      try {
+        const ticket = await this.glpiClient.getTicket(ticketId);
+        return normalizeTicketState(ticket.status);
+      } catch (error: unknown) {
+        logger.warn(
+          {
+            ticket_id: ticketId,
+            error: error instanceof Error ? { message: error.message, name: error.name } : String(error),
+          },
+          '[integration-service][inactivity][TICKET_STATE_READ_FAILED]',
+        );
+      }
+    }
+
+    return normalizeTicketState(await this.glpiClient.getTicketStatus(ticketId));
   }
 
   private buildOutboundRequest(

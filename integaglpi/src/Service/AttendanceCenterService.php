@@ -1606,6 +1606,11 @@ final class AttendanceCenterService
             $row['operational_state_label'] = $this->operationalStateLabel($row);
             $row['sla_context'] = $this->buildSlaContext($row);
             $row['risk_badges'] = $this->buildRiskBadges($row);
+            $row['activity_at'] = $this->formatDisplayTimestamp($row['activity_at'] ?? null);
+            $row['last_message_at'] = $this->formatDisplayTimestamp($row['last_message_at'] ?? null);
+            $row['last_inbound_at'] = $this->formatDisplayTimestamp($row['last_inbound_at'] ?? null);
+            $row['last_outbound_at'] = $this->formatDisplayTimestamp($row['last_outbound_at'] ?? null);
+            $row['inactivity_last_checked_at'] = $this->formatDisplayTimestamp($row['inactivity_last_checked_at'] ?? null);
             $row['last_message_preview'] = trim((string) ($row['last_message_preview'] ?? ''));
 
             return $row;
@@ -2346,7 +2351,7 @@ final class AttendanceCenterService
             $badges[] = ['label' => __('Contrato em atenção', 'glpiintegaglpi'), 'class' => 'bg-warning text-dark'];
         }
         $slaContext = is_array($row['sla_context'] ?? null) ? $row['sla_context'] : [];
-        $slaStatus = (string) ($slaContext['status'] ?? 'normal');
+        $slaStatus = (string) ($slaContext['status'] ?? 'not_configured');
         if ($slaStatus !== 'normal') {
             $badges[] = [
                 'label' => (string) ($slaContext['label'] ?? __('SLA em atenção', 'glpiintegaglpi')),
@@ -2377,8 +2382,9 @@ final class AttendanceCenterService
             ?? $this->timestampOrNull($row['conversation_updated_at'] ?? null)
             ?? $this->timestampOrNull($row['activity_at'] ?? null);
 
-        $status = 'normal';
+        $status = 'not_configured';
         if ($deadline !== null) {
+            $status = 'normal';
             if ($deadline <= $now) {
                 $status = 'breached';
             } elseif ($startedAt !== null && $deadline > $startedAt) {
@@ -2394,12 +2400,14 @@ final class AttendanceCenterService
         }
 
         $labels = [
+            'not_configured' => __('SLA não configurado', 'glpiintegaglpi'),
             'normal' => __('SLA normal', 'glpiintegaglpi'),
             'attention' => __('SLA atenção', 'glpiintegaglpi'),
             'critical' => __('SLA crítico', 'glpiintegaglpi'),
             'breached' => __('SLA vencido', 'glpiintegaglpi'),
         ];
         $classes = [
+            'not_configured' => 'bg-secondary',
             'normal' => 'bg-success',
             'attention' => 'bg-warning text-dark',
             'critical' => 'bg-danger',
@@ -2434,12 +2442,45 @@ final class AttendanceCenterService
 
     private function formatSlaTimestamp(mixed $value): string
     {
-        $timestamp = $this->timestampOrNull($value);
-        if ($timestamp === null) {
+        return $this->formatDisplayTimestamp($value);
+    }
+
+    private function displayTimezone(): \DateTimeZone
+    {
+        $timezone = date_default_timezone_get() ?: 'America/Sao_Paulo';
+        if (strtoupper($timezone) === 'UTC') {
+            $timezone = 'America/Sao_Paulo';
+        }
+
+        try {
+            return new \DateTimeZone($timezone);
+        } catch (\Throwable) {
+            return new \DateTimeZone('America/Sao_Paulo');
+        }
+    }
+
+    private function parseStorageTimestamp(mixed $value): ?\DateTimeImmutable
+    {
+        $value = trim((string) $value);
+        if ($value === '') {
+            return null;
+        }
+
+        try {
+            return new \DateTimeImmutable($value, new \DateTimeZone('UTC'));
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    private function formatDisplayTimestamp(mixed $value): string
+    {
+        $date = $this->parseStorageTimestamp($value);
+        if ($date === null) {
             return '';
         }
 
-        return date('Y-m-d H:i', $timestamp);
+        return $date->setTimezone($this->displayTimezone())->format('Y-m-d H:i');
     }
 
     private function statusLabel(string $status): string
@@ -2894,7 +2935,11 @@ final class AttendanceCenterService
     private function decorateMessages(array $messages): array
     {
         return array_map(
-            static fn (array $message): array => [
+            function (array $message): array {
+                $createdAt = (string) ($message['created_at'] ?? '');
+                $updatedAt = (string) ($message['updated_at'] ?? '');
+
+                return [
                 'id' => (string) ($message['id'] ?? ''),
                 'message_id' => (string) ($message['message_id'] ?? ''),
                 'conversation_id' => (string) ($message['conversation_id'] ?? ''),
@@ -2911,9 +2956,12 @@ final class AttendanceCenterService
                 'delivery_status_updated_at' => (string) ($message['delivery_status_updated_at'] ?? ''),
                 'meta_error_code' => (string) ($message['meta_error_code'] ?? ''),
                 'meta_error_message_sanitized' => (string) ($message['meta_error_message_sanitized'] ?? ''),
-                'created_at' => (string) ($message['created_at'] ?? ''),
-                'updated_at' => (string) ($message['updated_at'] ?? ''),
-            ],
+                'created_at' => $createdAt,
+                'created_at_display' => $this->formatDisplayTimestamp($createdAt),
+                'updated_at' => $updatedAt,
+                'updated_at_display' => $this->formatDisplayTimestamp($updatedAt),
+            ];
+            },
             $messages
         );
     }
@@ -2938,14 +2986,15 @@ final class AttendanceCenterService
             $expiresAt = $lastInbound->modify('+24 hours');
             $now = new \DateTimeImmutable('now', $expiresAt->getTimezone());
             $isOpen = $expiresAt > $now;
-            $formatted = $expiresAt->format('H:i');
+            $expiresAtLocal = $expiresAt->setTimezone($this->displayTimezone());
+            $formatted = $expiresAtLocal->format('H:i');
 
             return [
                 'is_open' => $isOpen,
                 'label' => $isOpen
                     ? sprintf(__('Janela aberta até %s', 'glpiintegaglpi'), $formatted)
                     : __('Janela fechada — use template', 'glpiintegaglpi'),
-                'expires_at' => $expiresAt->format('c'),
+                'expires_at' => $expiresAtLocal->format('c'),
                 'alert' => $isOpen
                     ? ''
                     : __('A janela de 24h está fechada. Use um template aprovado antes de enviar texto livre.', 'glpiintegaglpi'),

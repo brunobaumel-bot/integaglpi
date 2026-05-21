@@ -550,8 +550,8 @@ $operationalFilterMap = [
                             : (!empty($row['supervisor_review_required']) ? __('Revisão CSAT', 'glpiintegaglpi') : '');
                         $riskBadges = is_array($row['risk_badges'] ?? null) ? $row['risk_badges'] : [];
                         $slaContext = is_array($row['sla_context'] ?? null) ? $row['sla_context'] : [];
-                        $slaStatus = (string) ($slaContext['status'] ?? 'normal');
-                        $slaLabel = (string) ($slaContext['label'] ?? __('SLA normal', 'glpiintegaglpi'));
+                        $slaStatus = (string) ($slaContext['status'] ?? 'not_configured');
+                        $slaLabel = (string) ($slaContext['label'] ?? __('SLA não configurado', 'glpiintegaglpi'));
                         $slaResponseDeadline = (string) ($slaContext['response_deadline'] ?? '');
                         $slaSolutionDeadline = (string) ($slaContext['solution_deadline'] ?? '');
                         $slaPausedMinutes = (int) ($slaContext['paused_minutes'] ?? 0);
@@ -1529,8 +1529,8 @@ $operationalFilterMap = [
             ? 'CSAT insatisfeito'
             : (row.supervisor_review_required ? 'Revisão CSAT' : '-');
         const slaContext = row.sla_context && typeof row.sla_context === 'object' ? row.sla_context : {};
-        const slaLabel = String(slaContext.label || 'SLA normal').trim();
-        const slaStatus = String(slaContext.status || 'normal').trim();
+        const slaLabel = String(slaContext.label || 'SLA não configurado').trim();
+        const slaStatus = String(slaContext.status || 'not_configured').trim();
         const slaResponseDeadline = String(slaContext.response_deadline || '').trim();
         const slaSolutionDeadline = String(slaContext.solution_deadline || '').trim();
         const slaPausedMinutes = Number(slaContext.paused_minutes || 0);
@@ -1664,8 +1664,8 @@ $operationalFilterMap = [
         element.setAttribute('data-csat', csatLabel);
         element.setAttribute('data-attempt', String(row.entity_attempt_status_label || '-'));
         element.setAttribute('data-service', serviceCatalogName || '-');
-        element.setAttribute('data-sla', slaLabel || 'SLA normal');
-        element.setAttribute('data-sla-status', slaStatus || 'normal');
+        element.setAttribute('data-sla', slaLabel || 'SLA não configurado');
+        element.setAttribute('data-sla-status', slaStatus || 'not_configured');
         element.setAttribute('data-sla-response-deadline', slaResponseDeadline || '-');
         element.setAttribute('data-sla-solution-deadline', slaSolutionDeadline || '-');
         element.setAttribute('data-sla-paused', String(slaPausedMinutes));
@@ -1700,7 +1700,7 @@ $operationalFilterMap = [
             + (queueId > 0 ? ' <span>#' + queueId + '</span>' : '') + '</div>'
             + '<div class="itg-card-meta">Entidade: ' + escapeHtml(entityLabel || '-') + '</div>'
             + '<div class="itg-card-meta">Serviço: ' + escapeHtml(serviceCatalogName || '-') + '</div>'
-            + '<div class="itg-card-meta">SLA: ' + escapeHtml(slaLabel || 'SLA normal')
+            + '<div class="itg-card-meta">SLA: ' + escapeHtml(slaLabel || 'SLA não configurado')
             + (slaResponseDeadline !== '' ? ' · Resposta ' + escapeHtml(slaResponseDeadline) : '')
             + (slaSolutionDeadline !== '' ? ' · Solução ' + escapeHtml(slaSolutionDeadline) : '')
             + '</div>'
@@ -1795,7 +1795,7 @@ $operationalFilterMap = [
 
         const meta = document.createElement('div');
         meta.className = isOutbound ? 'small text-white-50' : 'small text-muted';
-        meta.textContent = (direction || 'message') + ' - ' + (message.created_at || '');
+        meta.textContent = (direction || 'message') + ' - ' + (message.created_at_display || message.created_at || '');
 
         const text = document.createElement('div');
         text.textContent = message.message_text || '[' + (message.message_type || 'message') + ']';

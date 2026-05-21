@@ -141,6 +141,7 @@ function createService(
   record: InactivityTrackingRecord,
   serviceConfig: InactivityConfig = config,
   messageConfigurationService: unknown = null,
+  configProvider: (() => Promise<{ enabled?: boolean | null; reminderMinutes?: [number, number, number] | null; autocloseMinutes?: number | null }>) | null = null,
 ) {
   const repository = new FakeRepository();
   repository.records.set(record.conversationId, record);
@@ -159,6 +160,7 @@ function createService(
   };
   const glpiClient = {
     getTicketStatus: vi.fn().mockResolvedValue('open'),
+    getTicket: vi.fn().mockResolvedValue({ id: record.ticketId ?? 123, status: 2, entitiesId: 1 }),
     solveTicketByInactivity: vi.fn().mockResolvedValue(undefined),
   };
   const auditService = {
@@ -172,6 +174,7 @@ function createService(
     serviceConfig,
     () => baseNow,
     messageConfigurationService as never,
+    configProvider,
   );
 
   return { service, repository, outbound, glpiClient, auditService };
@@ -209,7 +212,7 @@ describe('decideInactivityAction', () => {
   });
 
   it('does not send reminders while technician activity is recent', () => {
-    expect(decideInactivityAction(makeRecord({ lastOutboundActivityAt: minutesAgo(119) }), config, baseNow))
+    expect(decideInactivityAction(makeRecord({ lastOutboundActivityAt: minutesAgo(10) }), config, baseNow))
       .toMatchObject({
         action: 'NOOP',
         reason: 'technician_activity_recent',
@@ -298,12 +301,12 @@ describe('InactivityAutomationService', () => {
     expect(repository.reminders).toEqual([{ conversationId: 'conv-1', reminderNumber: 1 }]);
   });
 
-  it('does not send a reminder while technician activity is inside the guard window', async () => {
+  it('does not send a reminder before the first configured timer', async () => {
     const messageConfigurationService = {
       recordInactivityJobEvent: vi.fn().mockResolvedValue(undefined),
     };
     const { service, repository, outbound } = createService(
-      makeRecord({ lastOutboundActivityAt: minutesAgo(30) }),
+      makeRecord({ lastOutboundActivityAt: minutesAgo(10) }),
       config,
       messageConfigurationService,
     );
@@ -316,6 +319,20 @@ describe('InactivityAutomationService', () => {
       status: 'skipped',
       reason: 'technician_activity_recent',
     }));
+  });
+
+  it('uses runtime timers persisted in settings to send an eligible reminder', async () => {
+    const { service, repository, outbound } = createService(
+      makeRecord({ lastOutboundActivityAt: minutesAgo(2) }),
+      config,
+      null,
+      async () => ({ enabled: true, reminderMinutes: [1, 2, 3], autocloseMinutes: 5 }),
+    );
+
+    await service.runOnce();
+
+    expect(outbound.send).toHaveBeenCalledTimes(1);
+    expect(repository.reminders).toEqual([{ conversationId: 'conv-1', reminderNumber: 1 }]);
   });
 
   it('does not send free text outside 24h without a template and records the skip reason', async () => {
@@ -459,6 +476,35 @@ describe('InactivityAutomationService', () => {
     expect(repository.autocloseCompleted).toEqual(['conv-1']);
   });
 
+  it('does not autoclose GLPI tickets in pending status', async () => {
+    const messageConfigurationService = {
+      recordInactivityJobEvent: vi.fn().mockResolvedValue(undefined),
+    };
+    const { service, repository, glpiClient, outbound } = createService(
+      makeRecord({
+        lastOutboundActivityAt: minutesAgo(151),
+        reminder1SentAt: minutesAgo(28),
+        reminder2SentAt: minutesAgo(25),
+        reminder3SentAt: minutesAgo(20),
+        status: 'reminder_3_sent',
+      }),
+      config,
+      messageConfigurationService,
+    );
+    glpiClient.getTicket.mockResolvedValue({ id: 123, status: 4, entitiesId: 1 });
+
+    await service.runOnce();
+
+    expect(outbound.send).not.toHaveBeenCalled();
+    expect(glpiClient.solveTicketByInactivity).not.toHaveBeenCalled();
+    expect(repository.autocloseCompleted).toEqual([]);
+    expect(repository.skipped).toEqual([{
+      conversationId: 'conv-1',
+      status: 'skipped_by_hold',
+      reason: 'glpi_ticket_pending',
+    }]);
+  });
+
   it('does not retry autoclose after GLPI solve failure', async () => {
     const { service, repository, glpiClient, outbound } = createService(makeRecord({
       lastOutboundActivityAt: minutesAgo(151),
@@ -500,6 +546,7 @@ describe('InactivityAutomationService', () => {
   it('skips closed or solved tickets before reminder/autoclose', async () => {
     const { service, repository, outbound, glpiClient } = createService(makeRecord({ lastOutboundActivityAt: minutesAgo(124) }));
     glpiClient.getTicketStatus.mockResolvedValue('closed');
+    glpiClient.getTicket.mockResolvedValue({ id: 123, status: 5, entitiesId: 1 });
 
     await service.runOnce();
 
