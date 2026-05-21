@@ -22,7 +22,40 @@ export interface MessageSendPlan {
 export interface MessageSendContext {
   windowOpen: boolean;
   allowTemplateSend?: boolean;
+  placeholderValues?: Partial<Record<MessagePlaceholderKey, string | number | null | undefined>>;
 }
+
+export const MESSAGE_PLACEHOLDER_KEYS = [
+  'nome',
+  'empresa',
+  'ticket_id',
+  'fila',
+  'protocolo',
+  'tecnico',
+  'entidade',
+  'horario_atendimento',
+  'email',
+  'telefone_mascarado',
+  'link_ticket',
+] as const;
+
+export type MessagePlaceholderKey = typeof MESSAGE_PLACEHOLDER_KEYS[number];
+
+const MESSAGE_PLACEHOLDER_KEY_SET = new Set<string>(MESSAGE_PLACEHOLDER_KEYS);
+
+const MESSAGE_PLACEHOLDER_FALLBACKS: Record<MessagePlaceholderKey, string> = {
+  nome: 'cliente',
+  empresa: 'empresa',
+  ticket_id: 'chamado',
+  fila: 'fila de atendimento',
+  protocolo: 'protocolo',
+  tecnico: 'técnico',
+  entidade: 'entidade',
+  horario_atendimento: 'horário de atendimento',
+  email: 'e-mail cadastrado',
+  telefone_mascarado: '+55******0000',
+  link_ticket: 'link do chamado',
+};
 
 export const MESSAGE_EVENT_DEFAULTS: Record<string, { group: string; description: string; text: string; expectsResponse?: boolean }> = {
   welcome_message: {
@@ -135,7 +168,22 @@ export class MessageConfigurationService {
 
   public async resolveSendPlan(eventKey: string, context: MessageSendContext): Promise<MessageSendPlan> {
     const message = await this.getMessage(eventKey);
-    const text = selectMessageText(message);
+    const selectedText = selectMessageText(message);
+    const validation = validateMessagePlaceholders(selectedText);
+    const text = validation.valid
+      ? renderMessagePlaceholders(selectedText, context.placeholderValues)
+      : selectMessageText(fallbackMessage(eventKey));
+
+    if (!validation.valid) {
+      logger.warn(
+        {
+          event_key: eventKey,
+          invalid_placeholders: validation.invalidPlaceholders,
+          malformed_placeholders: validation.malformed,
+        },
+        '[message_config][PLACEHOLDER_FALLBACK]',
+      );
+    }
 
     if (!message.isActive) {
       return buildPlan(message, text, false, 'message_inactive');
@@ -249,4 +297,52 @@ function buildPlan(message: ConfiguredMessage, text: string, shouldSend: boolean
     buttons: message.buttons,
     listOptions: message.listOptions,
   };
+}
+
+export function validateMessagePlaceholders(text: string): {
+  valid: boolean;
+  invalidPlaceholders: string[];
+  malformed: boolean;
+} {
+  const invalidPlaceholders = new Set<string>();
+  const validTokens: string[] = [];
+  const tokenPattern = /\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = tokenPattern.exec(text)) !== null) {
+    const key = match[1];
+    validTokens.push(match[0]);
+    if (!MESSAGE_PLACEHOLDER_KEY_SET.has(key)) {
+      invalidPlaceholders.add(key);
+    }
+  }
+
+  let remainder = text;
+  for (const token of validTokens) {
+    remainder = remainder.replace(token, '');
+  }
+  const malformed = remainder.includes('{{') || remainder.includes('}}');
+
+  return {
+    valid: invalidPlaceholders.size === 0 && !malformed,
+    invalidPlaceholders: [...invalidPlaceholders],
+    malformed,
+  };
+}
+
+export function renderMessagePlaceholders(
+  text: string,
+  values: MessageSendContext['placeholderValues'] = {},
+): string {
+  return text.replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, (token, key: string) => {
+    if (!MESSAGE_PLACEHOLDER_KEY_SET.has(key)) {
+      return token;
+    }
+
+    const placeholderKey = key as MessagePlaceholderKey;
+    const value = values?.[placeholderKey];
+    const rendered = value === null || value === undefined ? '' : String(value).trim();
+
+    return rendered !== '' ? rendered : MESSAGE_PLACEHOLDER_FALLBACKS[placeholderKey];
+  });
 }

@@ -29,6 +29,33 @@ final class PluginConfigService
         'error_fallback_message' => 'Não conseguimos processar sua resposta agora. Vamos encaminhar para atendimento.',
     ];
     private const CATALOG_SEND_TYPES = ['text', 'interactive_buttons', 'interactive_list', 'template', 'internal_only'];
+    private const MESSAGE_PLACEHOLDER_KEYS = [
+        'nome',
+        'empresa',
+        'ticket_id',
+        'fila',
+        'protocolo',
+        'tecnico',
+        'entidade',
+        'horario_atendimento',
+        'email',
+        'telefone_mascarado',
+        'link_ticket',
+    ];
+    private const MESSAGE_PLACEHOLDER_PREVIEW_VALUES = [
+        'nome' => 'Cliente Exemplo',
+        'empresa' => 'Empresa Exemplo',
+        'ticket_id' => '12345',
+        'fila' => 'Suporte',
+        'protocolo' => 'WA-12345',
+        'tecnico' => 'Técnico',
+        'entidade' => 'Unidade Exemplo',
+        'horario_atendimento' => '08h às 18h',
+        'email' => 'cliente@example.com',
+        'telefone_mascarado' => '+55******0000',
+        'link_ticket' => 'https://glpi.example.com/front/ticket.form.php?id=12345',
+    ];
+    private const LOCAL_TEMPLATE_STATUSES = ['approved', 'pending', 'rejected', 'paused', 'draft'];
     private const MESSAGE_CATALOG_DEFAULTS = [
         'welcome_message' => ['Boas-vindas e Fila', 'Mensagem inicial do atendimento', 'Olá! Como podemos ajudar?', 'text', true],
         'queue_selection_prompt' => ['Boas-vindas e Fila', 'Solicita escolha de fila', 'Escolha uma das opções de atendimento.', 'interactive_buttons', true],
@@ -344,6 +371,27 @@ final class PluginConfigService
     }
 
     /**
+     * @return list<string>
+     */
+    public function getMessagePlaceholderAllowlist(): array
+    {
+        return self::MESSAGE_PLACEHOLDER_KEYS;
+    }
+
+    public function previewMessageText(mixed $text): string
+    {
+        return $this->renderPreviewPlaceholders($this->normalizeString($text));
+    }
+
+    /**
+     * @param array<string, mixed> $variablesMapping
+     */
+    public function previewTemplateText(mixed $text, array $variablesMapping): string
+    {
+        return $this->renderTemplatePreviewPlaceholders($this->normalizeString($text), $variablesMapping);
+    }
+
+    /**
      * @param array<string, mixed> $input
      */
     public function saveMessageCatalogEntry(array $input, int $userId): void
@@ -353,17 +401,30 @@ final class PluginConfigService
         $sendType = $this->normalizeSendType($input['send_type'] ?? null);
         $buttonsJson = $this->normalizeJsonList($input['buttons_json'] ?? '[]', 'buttons_json');
         $listOptionsJson = $this->normalizeJsonList($input['list_options_json'] ?? '[]', 'list_options_json');
+        $customText = $this->nullableString($input['custom_text'] ?? null);
+        $fallbackText = $this->nullableString($input['fallback_text'] ?? null);
+        $templateName = $this->nullableString($input['template_name'] ?? null);
+
+        $this->validateAllowedPlaceholders($customText ?? '', 'custom_text');
+        $this->validateAllowedPlaceholders($fallbackText ?? '', 'fallback_text');
+        if ($sendType === 'template' && $templateName === null) {
+            throw new RuntimeException(__('Template send type requires a local template name.', 'glpiintegaglpi'));
+        }
+        if ($templateName !== null) {
+            $this->requireValidTemplateName($templateName);
+        }
+
         $payload = [
             'event_key' => $eventKey,
             'description' => (string) $default['description'],
             'group_name' => (string) $default['group_name'],
             'default_text' => (string) $default['default_text'],
-            'custom_text' => $this->nullableString($input['custom_text'] ?? null),
+            'custom_text' => $customText,
             'is_active' => $this->normalizeBool($input['is_active'] ?? false),
             'send_type' => $sendType,
             'language' => $this->normalizeString($input['language'] ?? null) ?: 'pt_BR',
-            'fallback_text' => $this->nullableString($input['fallback_text'] ?? null),
-            'template_name' => $this->nullableString($input['template_name'] ?? null),
+            'fallback_text' => $fallbackText,
+            'template_name' => $templateName,
             'buttons_json' => json_encode($buttonsJson, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '[]',
             'list_options_json' => json_encode($listOptionsJson, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '[]',
             'expects_response' => $this->normalizeBool($input['expects_response'] ?? false),
@@ -494,7 +555,7 @@ final class PluginConfigService
     }
 
     /**
-     * @return list<array{id: string, name: string, language: string, category: string, body: string, is_active: bool}>
+     * @return list<array<string, mixed>>
      */
     public function getLocalTemplates(): array
     {
@@ -529,6 +590,16 @@ final class PluginConfigService
                 'language' => $language,
                 'category' => $this->normalizeString($template['category'] ?? null) ?: 'utility',
                 'body' => $body,
+                'body_preview' => $body,
+                'variables_mapping' => $this->normalizeTemplateMapping($template['variables_mapping'] ?? []),
+                'status' => $this->normalizeTemplateStatus($template['status'] ?? null),
+                'usage_context' => $this->normalizeString($template['usage_context'] ?? null),
+                'requires_manual_confirmation' => array_key_exists('requires_manual_confirmation', $template)
+                    ? $this->normalizeBool($template['requires_manual_confirmation'])
+                    : true,
+                'cost_warning_enabled' => array_key_exists('cost_warning_enabled', $template)
+                    ? $this->normalizeBool($template['cost_warning_enabled'])
+                    : true,
                 'is_active' => !empty($template['is_active']),
             ];
         }
@@ -537,7 +608,7 @@ final class PluginConfigService
     }
 
     /**
-     * @return list<array{id: string, name: string, language: string, category: string, body: string, is_active: bool}>
+     * @return list<array<string, mixed>>
      */
     public function getActiveLocalTemplates(): array
     {
@@ -550,7 +621,7 @@ final class PluginConfigService
     /**
      * @param array<string, mixed> $input
      */
-    public function saveLocalTemplate(array $input): void
+    public function saveLocalTemplate(array $input, int $userId = 0): void
     {
         $templates = $this->getLocalTemplates();
         $id = $this->normalizeString($input['template_id'] ?? null);
@@ -568,44 +639,58 @@ final class PluginConfigService
         );
         $category = $this->normalizeString($input['template_category'] ?? null) ?: 'utility';
         $isActive = !empty($input['template_is_active']);
+        $status = $this->normalizeTemplateStatus($input['template_status'] ?? null);
+        $usageContext = $this->normalizeString($input['template_usage_context'] ?? null);
+        $variablesMapping = $this->normalizeTemplateMapping($input['template_variables_mapping'] ?? '[]');
+        $requiresManualConfirmation = true;
+        $costWarningEnabled = true;
+        $this->validateTemplateBodyPlaceholders($body, $variablesMapping);
+        $this->requireValidTemplateName($name);
+        if ($isActive && $status !== 'approved') {
+            throw new RuntimeException(__('Only approved local templates can be activated.', 'glpiintegaglpi'));
+        }
         if ($id === '') {
             $id = sha1($name . '|' . $language . '|' . microtime(true));
         }
 
+        $templatePayload = [
+            'id' => $id,
+            'name' => $name,
+            'language' => $language,
+            'category' => $category,
+            'body' => $body,
+            'body_preview' => $body,
+            'variables_mapping' => $variablesMapping,
+            'status' => $status,
+            'usage_context' => $usageContext,
+            'requires_manual_confirmation' => $requiresManualConfirmation,
+            'cost_warning_enabled' => $costWarningEnabled,
+            'is_active' => $isActive,
+        ];
+
         $upserted = false;
+        $oldTemplate = null;
         foreach ($templates as &$template) {
             if ($template['id'] !== $id) {
                 continue;
             }
 
-            $template = [
-                'id' => $id,
-                'name' => $name,
-                'language' => $language,
-                'category' => $category,
-                'body' => $body,
-                'is_active' => $isActive,
-            ];
+            $oldTemplate = $template;
+            $template = $templatePayload;
             $upserted = true;
             break;
         }
         unset($template);
 
         if (!$upserted) {
-            $templates[] = [
-                'id' => $id,
-                'name' => $name,
-                'language' => $language,
-                'category' => $category,
-                'body' => $body,
-                'is_active' => $isActive,
-            ];
+            $templates[] = $templatePayload;
         }
 
         $this->saveLocalTemplates($templates);
+        $this->insertLocalTemplateAudit($upserted ? 'update' : 'create', $oldTemplate, $templatePayload, $userId);
     }
 
-    public function setLocalTemplateActive(string $templateId, bool $isActive): void
+    public function setLocalTemplateActive(string $templateId, bool $isActive, int $userId = 0): void
     {
         $templateId = $this->normalizeString($templateId);
         if ($templateId === '') {
@@ -614,12 +699,19 @@ final class PluginConfigService
 
         $templates = $this->getLocalTemplates();
         $found = false;
+        $oldTemplate = null;
+        $newTemplate = null;
         foreach ($templates as &$template) {
             if ($template['id'] !== $templateId) {
                 continue;
             }
 
+            $oldTemplate = $template;
+            if ($isActive && ($template['status'] ?? 'approved') !== 'approved') {
+                throw new RuntimeException(__('Only approved local templates can be activated.', 'glpiintegaglpi'));
+            }
             $template['is_active'] = $isActive;
+            $newTemplate = $template;
             $found = true;
             break;
         }
@@ -630,6 +722,7 @@ final class PluginConfigService
         }
 
         $this->saveLocalTemplates($templates);
+        $this->insertLocalTemplateAudit($isActive ? 'enable' : 'disable', $oldTemplate, $newTemplate ?? [], $userId);
     }
 
     private function ensureConfigSchema(): void
@@ -752,7 +845,7 @@ final class PluginConfigService
     }
 
     /**
-     * @param list<array{id: string, name: string, language: string, category: string, body: string, is_active: bool}> $templates
+     * @param list<array<string, mixed>> $templates
      */
     private function saveLocalTemplates(array $templates): void
     {
@@ -926,6 +1019,22 @@ final class PluginConfigService
         return $sendType;
     }
 
+    private function normalizeTemplateStatus(mixed $value): string
+    {
+        $status = strtolower($this->normalizeString($value));
+
+        return in_array($status, self::LOCAL_TEMPLATE_STATUSES, true) ? $status : 'approved';
+    }
+
+    private function requireValidTemplateName(string $templateName): string
+    {
+        if (!preg_match('/^[A-Za-z0-9_]+$/', $templateName)) {
+            throw new RuntimeException(__('Template name may contain only letters, numbers and underscore.', 'glpiintegaglpi'));
+        }
+
+        return $templateName;
+    }
+
     /**
      * @return list<array<string, mixed>>
      */
@@ -942,6 +1051,152 @@ final class PluginConfigService
         }
 
         return array_values(array_filter($decoded, static fn ($row): bool => is_array($row)));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function normalizeTemplateMapping(mixed $value): array
+    {
+        if (is_array($value)) {
+            $decoded = $value;
+        } else {
+            $raw = $this->normalizeString($value);
+            if ($raw === '') {
+                return [];
+            }
+            $decoded = json_decode($raw, true);
+            if (!is_array($decoded)) {
+                throw new RuntimeException(__('Invalid JSON in template variables mapping.', 'glpiintegaglpi'));
+            }
+        }
+
+        $mapping = [];
+        foreach ($decoded as $key => $placeholder) {
+            $normalizedKey = $this->normalizeString($key);
+            $normalizedPlaceholder = $this->normalizeString($placeholder);
+            if ($normalizedKey === '' || $normalizedPlaceholder === '') {
+                continue;
+            }
+            if (!in_array($normalizedPlaceholder, self::MESSAGE_PLACEHOLDER_KEYS, true)) {
+                throw new RuntimeException(sprintf(
+                    __('Unknown placeholder in template variables mapping: %s.', 'glpiintegaglpi'),
+                    $normalizedPlaceholder
+                ));
+            }
+            $mapping[$normalizedKey] = $normalizedPlaceholder;
+        }
+
+        return $mapping;
+    }
+
+    private function validateAllowedPlaceholders(string $text, string $field): void
+    {
+        if ($text === '') {
+            return;
+        }
+
+        preg_match_all('/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/', $text, $matches);
+        $validTokens = $matches[0] ?? [];
+        $placeholders = $matches[1] ?? [];
+        $invalid = array_values(array_unique(array_filter(
+            $placeholders,
+            static fn (string $placeholder): bool => !in_array($placeholder, self::MESSAGE_PLACEHOLDER_KEYS, true)
+        )));
+
+        $remainder = $text;
+        foreach ($validTokens as $token) {
+            $remainder = str_replace($token, '', $remainder);
+        }
+
+        if (str_contains($remainder, '{{') || str_contains($remainder, '}}')) {
+            throw new RuntimeException(sprintf(__('Malformed placeholder in %s.', 'glpiintegaglpi'), $field));
+        }
+
+        if ($invalid !== []) {
+            throw new RuntimeException(sprintf(
+                __('Unknown placeholder in %s: %s.', 'glpiintegaglpi'),
+                $field,
+                implode(', ', $invalid)
+            ));
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $variablesMapping
+     */
+    private function validateTemplateBodyPlaceholders(string $text, array $variablesMapping): void
+    {
+        if ($text === '') {
+            return;
+        }
+
+        preg_match_all('/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/', $text, $matches);
+        $validTokens = $matches[0] ?? [];
+        $placeholders = $matches[1] ?? [];
+        $invalid = [];
+        foreach ($placeholders as $placeholder) {
+            if (ctype_digit($placeholder)) {
+                if (!isset($variablesMapping[$placeholder])) {
+                    $invalid[] = $placeholder;
+                }
+                continue;
+            }
+            if (!in_array($placeholder, self::MESSAGE_PLACEHOLDER_KEYS, true)) {
+                $invalid[] = $placeholder;
+            }
+        }
+
+        $remainder = $text;
+        foreach ($validTokens as $token) {
+            $remainder = str_replace($token, '', $remainder);
+        }
+
+        if (str_contains($remainder, '{{') || str_contains($remainder, '}}')) {
+            throw new RuntimeException(__('Malformed placeholder in template_body.', 'glpiintegaglpi'));
+        }
+
+        $invalid = array_values(array_unique($invalid));
+        if ($invalid !== []) {
+            throw new RuntimeException(sprintf(
+                __('Template body has unmapped or unknown placeholders: %s.', 'glpiintegaglpi'),
+                implode(', ', $invalid)
+            ));
+        }
+    }
+
+    private function renderPreviewPlaceholders(string $text): string
+    {
+        return (string) preg_replace_callback(
+            '/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/',
+            static function (array $matches): string {
+                $key = (string) ($matches[1] ?? '');
+
+                return self::MESSAGE_PLACEHOLDER_PREVIEW_VALUES[$key] ?? (string) $matches[0];
+            },
+            $text
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $variablesMapping
+     */
+    private function renderTemplatePreviewPlaceholders(string $text, array $variablesMapping): string
+    {
+        return (string) preg_replace_callback(
+            '/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/',
+            static function (array $matches) use ($variablesMapping): string {
+                $key = (string) ($matches[1] ?? '');
+                if (ctype_digit($key)) {
+                    $mappedPlaceholder = (string) ($variablesMapping[$key] ?? '');
+
+                    return self::MESSAGE_PLACEHOLDER_PREVIEW_VALUES[$mappedPlaceholder] ?? (string) $matches[0];
+                }
+
+                return self::MESSAGE_PLACEHOLDER_PREVIEW_VALUES[$key] ?? (string) $matches[0];
+            },
+            $text
+        );
     }
 
     private function fetchCatalogRow(PDO $pdo, string $eventKey): ?array
@@ -977,6 +1232,18 @@ final class PluginConfigService
             ':new_value' => json_encode($this->sanitizeCatalogAuditPayload($new), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
             ':changed_by' => $userId > 0 ? $userId : null,
         ]);
+    }
+
+    private function insertLocalTemplateAudit(string $action, ?array $old, array $new, int $userId): void
+    {
+        try {
+            $name = $this->normalizeString($new['name'] ?? ($old['name'] ?? 'template'));
+            $eventKey = 'template:' . ($name !== '' ? $name : 'local');
+            $pdo = $this->getExternalPdo();
+            $this->insertCatalogAudit($pdo, $eventKey, $action, $old, $new, $userId);
+        } catch (\Throwable $exception) {
+            error_log('[integaglpi][local_template][audit] ' . $exception->getMessage());
+        }
     }
 
     /**

@@ -26,6 +26,7 @@ $messageCatalogGroups = $configService->getMessageCatalogGrouped();
 $businessHoursConfig = $configService->getBusinessHoursConfig();
 $messageCatalogAudit = $configService->getMessageCatalogAudit();
 $localTemplates = $configService->getLocalTemplates();
+$messagePlaceholderAllowlist = $configService->getMessagePlaceholderAllowlist();
 $aiSupervisorEnabled = $configService->isAiSupervisorEnabled();
 $activeTab = (string) ($_GET['tab'] ?? 'connection');
 if (!in_array($activeTab, ['connection', 'queues', 'messages', 'templates', 'contact_profile', 'diagnostics'], true)) {
@@ -321,6 +322,11 @@ $tabUrl = static fn (string $tab): string => $configUrl . '?tab=' . rawurlencode
 <?php if ($activeTab === 'messages') { ?>
     <div class="alert alert-info">
         <?= $this->escape(__('Catálogo configurável de mensagens automáticas. O plugin não envia mensagens de teste e não consulta a API de templates da Meta.', 'glpiintegaglpi')); ?>
+        <br>
+        <?= $this->escape(__('Placeholders permitidos:', 'glpiintegaglpi')); ?>
+        <?php foreach ($messagePlaceholderAllowlist as $placeholderKey) { ?>
+            <code>{{<?= $this->escape($placeholderKey); ?>}}</code>
+        <?php } ?>
     </div>
     <?php if (!$isConfigured) { ?>
         <div class="alert alert-warning">
@@ -468,7 +474,7 @@ $tabUrl = static fn (string $tab): string => $configUrl . '?tab=' . rawurlencode
                             <div class="col-md-8">
                                 <div class="alert alert-secondary py-2 mb-0">
                                     <strong><?= $this->escape(__('Preview:', 'glpiintegaglpi')); ?></strong>
-                                    <span class="js-message-preview"><?= $this->escape((string) (($message['custom_text'] ?? '') ?: ($message['default_text'] ?? ''))); ?></span>
+                                    <span class="js-message-preview"><?= $this->escape($configService->previewMessageText((string) (($message['custom_text'] ?? '') ?: ($message['default_text'] ?? '')))); ?></span>
                                 </div>
                             </div>
                             <div class="col-md-4 text-end">
@@ -528,6 +534,20 @@ $tabUrl = static fn (string $tab): string => $configUrl . '?tab=' . rawurlencode
                         <label class="form-label"><?= $this->escape(__('Categoria', 'glpiintegaglpi')); ?></label>
                         <input type="text" name="template_category" class="form-control" placeholder="utility">
                     </div>
+                    <div class="col-md-3">
+                        <label class="form-label"><?= $this->escape(__('Status local', 'glpiintegaglpi')); ?></label>
+                        <select name="template_status" class="form-select">
+                            <?php foreach (['approved', 'pending', 'rejected', 'paused', 'draft'] as $templateStatus) { ?>
+                                <option value="<?= $this->escape($templateStatus); ?>" <?= $templateStatus === 'approved' ? "selected='selected'" : ''; ?>>
+                                    <?= $this->escape($templateStatus); ?>
+                                </option>
+                            <?php } ?>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label"><?= $this->escape(__('Uso/event_key', 'glpiintegaglpi')); ?></label>
+                        <input type="text" name="template_usage_context" class="form-control" placeholder="inactivity_reminder_1">
+                    </div>
                     <div class="col-md-3 d-flex align-items-end">
                         <div class="form-check mb-2">
                             <input class="form-check-input" type="checkbox" name="template_is_active" value="1" checked>
@@ -537,6 +557,13 @@ $tabUrl = static fn (string $tab): string => $configUrl . '?tab=' . rawurlencode
                     <div class="col-md-12">
                         <label class="form-label"><?= $this->escape(__('Corpo / preview', 'glpiintegaglpi')); ?></label>
                         <textarea name="template_body" class="form-control" rows="4" required></textarea>
+                    </div>
+                    <div class="col-md-12">
+                        <label class="form-label"><?= $this->escape(__('Mapeamento de variáveis JSON', 'glpiintegaglpi')); ?></label>
+                        <textarea name="template_variables_mapping" class="form-control font-monospace" rows="3" placeholder='{"1":"nome","2":"ticket_id"}'>[]</textarea>
+                        <small class="text-muted">
+                            <?= $this->escape(__('Confirmação humana e alerta de custo ficam sempre obrigatórios para templates locais.', 'glpiintegaglpi')); ?>
+                        </small>
                     </div>
                     <div class="col-md-12">
                         <button type="submit" name="save_local_template" value="1" class="btn btn-primary">
@@ -582,6 +609,20 @@ $tabUrl = static fn (string $tab): string => $configUrl . '?tab=' . rawurlencode
                             <label class="form-label"><?= $this->escape(__('Categoria', 'glpiintegaglpi')); ?></label>
                             <input type="text" name="template_category" class="form-control" value="<?= $this->escape((string) $template['category']); ?>">
                         </div>
+                        <div class="col-md-3">
+                            <label class="form-label"><?= $this->escape(__('Status local', 'glpiintegaglpi')); ?></label>
+                            <select name="template_status" class="form-select">
+                                <?php foreach (['approved', 'pending', 'rejected', 'paused', 'draft'] as $templateStatus) { ?>
+                                    <option value="<?= $this->escape($templateStatus); ?>" <?= (string) ($template['status'] ?? 'approved') === $templateStatus ? "selected='selected'" : ''; ?>>
+                                        <?= $this->escape($templateStatus); ?>
+                                    </option>
+                                <?php } ?>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label"><?= $this->escape(__('Uso/event_key', 'glpiintegaglpi')); ?></label>
+                            <input type="text" name="template_usage_context" class="form-control" value="<?= $this->escape((string) ($template['usage_context'] ?? '')); ?>">
+                        </div>
                         <div class="col-md-3 d-flex align-items-end">
                             <div class="form-check mb-2">
                                 <input class="form-check-input" type="checkbox" name="template_is_active" value="1" <?= !empty($template['is_active']) ? "checked='checked'" : ''; ?>>
@@ -591,6 +632,20 @@ $tabUrl = static fn (string $tab): string => $configUrl . '?tab=' . rawurlencode
                         <div class="col-md-12">
                             <label class="form-label"><?= $this->escape(__('Corpo / preview', 'glpiintegaglpi')); ?></label>
                             <textarea name="template_body" class="form-control" rows="4" required><?= $this->escape((string) $template['body']); ?></textarea>
+                            <div class="alert alert-secondary py-2 mt-2 mb-0">
+                                <strong><?= $this->escape(__('Preview seguro:', 'glpiintegaglpi')); ?></strong>
+                                <?= $this->escape($configService->previewTemplateText((string) $template['body'], is_array($template['variables_mapping'] ?? null) ? $template['variables_mapping'] : [])); ?>
+                            </div>
+                        </div>
+                        <div class="col-md-12">
+                            <label class="form-label"><?= $this->escape(__('Mapeamento de variáveis JSON', 'glpiintegaglpi')); ?></label>
+                            <textarea name="template_variables_mapping" class="form-control font-monospace" rows="3"><?= $this->escape(json_encode($template['variables_mapping'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '[]'); ?></textarea>
+                            <small class="text-muted">
+                                <?= $this->escape(__('Confirmação humana obrigatória:', 'glpiintegaglpi')); ?>
+                                <?= $this->escape(!empty($template['requires_manual_confirmation']) ? __('sim', 'glpiintegaglpi') : __('não', 'glpiintegaglpi')); ?>.
+                                <?= $this->escape(__('Alerta de custo:', 'glpiintegaglpi')); ?>
+                                <?= $this->escape(!empty($template['cost_warning_enabled']) ? __('ativo', 'glpiintegaglpi') : __('inativo', 'glpiintegaglpi')); ?>.
+                            </small>
                         </div>
                         <div class="col-md-12 d-flex gap-2">
                             <button type="submit" name="save_local_template" value="1" class="btn btn-primary">

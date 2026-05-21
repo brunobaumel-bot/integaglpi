@@ -142,15 +142,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             $redirectUrl .= '?tab=contact_profile';
         } elseif (isset($_POST['save_local_template'])) {
-            $pluginConfigService->saveLocalTemplate($_POST);
+            $pluginConfigService->saveLocalTemplate($_POST, (int) ($_SESSION['glpiID'] ?? 0));
             Session::addMessageAfterRedirect(__('Template local salvo.', 'glpiintegaglpi'));
             $redirectUrl .= '?tab=templates';
         } elseif (isset($_POST['disable_local_template']) && !empty($_POST['template_id'])) {
-            $pluginConfigService->setLocalTemplateActive((string) $_POST['template_id'], false);
+            $pluginConfigService->setLocalTemplateActive((string) $_POST['template_id'], false, (int) ($_SESSION['glpiID'] ?? 0));
             Session::addMessageAfterRedirect(__('Template local desativado.', 'glpiintegaglpi'));
             $redirectUrl .= '?tab=templates';
         } elseif (isset($_POST['enable_local_template']) && !empty($_POST['template_id'])) {
-            $pluginConfigService->setLocalTemplateActive((string) $_POST['template_id'], true);
+            $pluginConfigService->setLocalTemplateActive((string) $_POST['template_id'], true, (int) ($_SESSION['glpiID'] ?? 0));
             Session::addMessageAfterRedirect(__('Template local ativado.', 'glpiintegaglpi'));
             $redirectUrl .= '?tab=templates';
         } else {

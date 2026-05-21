@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { MessageConfigurationService } from '../src/domain/services/MessageConfigurationService.js';
+import {
+  MessageConfigurationService,
+  renderMessagePlaceholders,
+  validateMessagePlaceholders,
+} from '../src/domain/services/MessageConfigurationService.js';
 import type { MessageFlowRepository } from '../src/repositories/contracts/MessageFlowRepository.js';
 
 function repository(overrides: Partial<MessageFlowRepository>): MessageFlowRepository {
@@ -53,6 +57,85 @@ describe('MessageConfigurationService', () => {
       text: 'Customizado',
       reason: null,
     }));
+  });
+
+  it('renders allowed placeholders and uses safe fallback values when missing', async () => {
+    const service = new MessageConfigurationService(repository({
+      findMessageByEventKey: vi.fn().mockResolvedValue({
+        eventKey: 'ticket_created_message',
+        description: 'Chamado criado',
+        groupName: 'Ticket',
+        defaultText: 'Default',
+        customText: 'Olá {{nome}}, chamado {{ticket_id}} aberto para {{empresa}}.',
+        isActive: true,
+        sendType: 'text',
+        language: 'pt_BR',
+        fallbackText: null,
+        templateName: null,
+        buttons: [],
+        listOptions: [],
+        expectsResponse: false,
+        updatedAt: null,
+        updatedBy: null,
+      }),
+    }));
+
+    const plan = await service.resolveSendPlan('ticket_created_message', {
+      windowOpen: true,
+      placeholderValues: {
+        nome: 'Bruno',
+        ticket_id: 123,
+      },
+    });
+
+    expect(plan.shouldSend).toBe(true);
+    expect(plan.text).toBe('Olá Bruno, chamado 123 aberto para empresa.');
+  });
+
+  it('falls back to the safe default when a configured message has an unknown placeholder', async () => {
+    const service = new MessageConfigurationService(repository({
+      findMessageByEventKey: vi.fn().mockResolvedValue({
+        eventKey: 'ticket_created_message',
+        description: 'Chamado criado',
+        groupName: 'Ticket',
+        defaultText: 'Default catalog text',
+        customText: 'Segredo {{token_meta}}',
+        isActive: true,
+        sendType: 'text',
+        language: 'pt_BR',
+        fallbackText: null,
+        templateName: null,
+        buttons: [],
+        listOptions: [],
+        expectsResponse: false,
+        updatedAt: null,
+        updatedBy: null,
+      }),
+    }));
+
+    const plan = await service.resolveSendPlan('ticket_created_message', { windowOpen: true });
+
+    expect(plan.shouldSend).toBe(true);
+    expect(plan.text).toBe('Seu chamado #{ticket_id} foi aberto.');
+  });
+
+  it('validates placeholder syntax and allowlist explicitly', () => {
+    expect(validateMessagePlaceholders('Olá {{nome}}')).toEqual({
+      valid: true,
+      invalidPlaceholders: [],
+      malformed: false,
+    });
+    expect(validateMessagePlaceholders('Olá {{token}}')).toEqual({
+      valid: false,
+      invalidPlaceholders: ['token'],
+      malformed: false,
+    });
+    expect(validateMessagePlaceholders('Olá {{nome')).toEqual({
+      valid: false,
+      invalidPlaceholders: [],
+      malformed: true,
+    });
+    expect(renderMessagePlaceholders('Ticket {{ticket_id}}', {})).toBe('Ticket chamado');
   });
 
   it('blocks free text outside the WhatsApp 24h window when no template send is allowed', async () => {
