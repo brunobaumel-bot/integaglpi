@@ -50,7 +50,7 @@ const envSchema = z.object({
     .union([z.literal('true'), z.literal('false')])
     .default('false')
     .transform((value) => value === 'true'),
-  INACTIVITY_REMINDER_MINUTES: z.string().default('3,5,10'),
+  INACTIVITY_REMINDER_MINUTES: z.string().default('15,20,25'),
   INACTIVITY_AUTOCLOSE_MINUTES: z.coerce.number().int().positive().default(30),
   INACTIVITY_JOB_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
   AI_SUPERVISOR_ENABLED: z

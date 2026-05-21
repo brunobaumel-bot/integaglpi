@@ -9,6 +9,7 @@ $filters = is_array($data['filters'] ?? null) ? $data['filters'] : [];
 $pagination = is_array($data['pagination'] ?? null) ? $data['pagination'] : [];
 $rows = is_array($data['rows'] ?? null) ? $data['rows'] : [];
 $queues = is_array($data['queues'] ?? null) ? $data['queues'] : [];
+$serviceCatalog = is_array($data['service_catalog'] ?? null) ? $data['service_catalog'] : [];
 $technicians = is_array($data['technicians'] ?? null) ? $data['technicians'] : [];
 $glpiEntities = is_array($data['glpi_entities'] ?? null) ? $data['glpi_entities'] : [];
 $diagnostics = is_array($data['diagnostics'] ?? null) ? $data['diagnostics'] : null;
@@ -548,6 +549,14 @@ $operationalFilterMap = [
                             ? __('CSAT insatisfeito', 'glpiintegaglpi')
                             : (!empty($row['supervisor_review_required']) ? __('Revisão CSAT', 'glpiintegaglpi') : '');
                         $riskBadges = is_array($row['risk_badges'] ?? null) ? $row['risk_badges'] : [];
+                        $slaContext = is_array($row['sla_context'] ?? null) ? $row['sla_context'] : [];
+                        $slaStatus = (string) ($slaContext['status'] ?? 'normal');
+                        $slaLabel = (string) ($slaContext['label'] ?? __('SLA normal', 'glpiintegaglpi'));
+                        $slaResponseDeadline = (string) ($slaContext['response_deadline'] ?? '');
+                        $slaSolutionDeadline = (string) ($slaContext['solution_deadline'] ?? '');
+                        $slaPausedMinutes = (int) ($slaContext['paused_minutes'] ?? 0);
+                        $slaReopenCount = (int) ($slaContext['reopen_count'] ?? 0);
+                        $serviceCatalogName = (string) ($slaContext['service_name'] ?? $row['service_catalog_name'] ?? '');
                         $ticketLabel = (string) ($row['ticket_label'] ?? ($ticketId > 0 ? '#' . $ticketId : __('Pré-Ticket', 'glpiintegaglpi')));
                         $whatsappWindow = is_array($row['whatsapp_window'] ?? null) ? $row['whatsapp_window'] : [];
                         $windowLabel = (string) ($whatsappWindow['label'] ?? '');
@@ -629,6 +638,13 @@ $operationalFilterMap = [
                             data-contract="<?= $this->escape($contractLabel !== '' ? trim($contractLabel . ' ' . $contractPercent) : '-'); ?>"
                             data-csat="<?= $this->escape($csatLabel !== '' ? $csatLabel : '-'); ?>"
                             data-attempt="<?= $this->escape($entityAttemptStatusLabel !== '' ? $entityAttemptStatusLabel : '-'); ?>"
+                            data-service="<?= $this->escape($serviceCatalogName !== '' ? $serviceCatalogName : '-'); ?>"
+                            data-sla="<?= $this->escape($slaLabel); ?>"
+                            data-sla-status="<?= $this->escape($slaStatus); ?>"
+                            data-sla-response-deadline="<?= $this->escape($slaResponseDeadline !== '' ? $slaResponseDeadline : '-'); ?>"
+                            data-sla-solution-deadline="<?= $this->escape($slaSolutionDeadline !== '' ? $slaSolutionDeadline : '-'); ?>"
+                            data-sla-paused="<?= $slaPausedMinutes; ?>"
+                            data-sla-reopen="<?= $slaReopenCount; ?>"
                             data-can-reply="<?= $canReply ? '1' : '0'; ?>"
                             data-can-edit-entity="<?= $canEditEntity ? '1' : '0'; ?>"
                             data-can-soft-close="<?= $canSoftClose ? '1' : '0'; ?>"
@@ -756,6 +772,20 @@ $operationalFilterMap = [
                                     <div class="itg-card-meta">
                                         <?= $this->escape(__('Entidade', 'glpiintegaglpi')); ?>:
                                         <?= $this->escape($entityLabel !== '' ? $entityLabel : '-'); ?>
+                                    </div>
+                                    <div class="itg-card-meta">
+                                        <?= $this->escape(__('Serviço', 'glpiintegaglpi')); ?>:
+                                        <?= $this->escape($serviceCatalogName !== '' ? $serviceCatalogName : '-'); ?>
+                                    </div>
+                                    <div class="itg-card-meta">
+                                        <?= $this->escape(__('SLA', 'glpiintegaglpi')); ?>:
+                                        <?= $this->escape($slaLabel); ?>
+                                        <?php if ($slaResponseDeadline !== '') { ?>
+                                            · <?= $this->escape(__('Resposta', 'glpiintegaglpi')); ?> <?= $this->escape($slaResponseDeadline); ?>
+                                        <?php } ?>
+                                        <?php if ($slaSolutionDeadline !== '') { ?>
+                                            · <?= $this->escape(__('Solução', 'glpiintegaglpi')); ?> <?= $this->escape($slaSolutionDeadline); ?>
+                                        <?php } ?>
                                     </div>
                                     <?php if ($canEditEntity) { ?>
                                         <details class="mt-2 mb-2 integaglpi-central-entity-edit" data-entity-box="1">
@@ -888,6 +918,41 @@ $operationalFilterMap = [
                                                         <?php } ?>
                                                     </select>
                                                 </div>
+                                                <?php if ($serviceCatalog !== []) { ?>
+                                                    <div style="min-width: 260px; max-width: 380px">
+                                                        <select
+                                                            class="form-select form-select-sm js-integaglpi-service-catalog-id"
+                                                            name="service_catalog_id"
+                                                        >
+                                                            <option value="0"><?= $this->escape(__('Serviço opcional', 'glpiintegaglpi')); ?></option>
+                                                            <?php foreach ($serviceCatalog as $serviceOption) { ?>
+                                                                <?php
+                                                                $serviceId = (int) ($serviceOption['id'] ?? 0);
+                                                                if ($serviceId <= 0) {
+                                                                    continue;
+                                                                }
+                                                                $requiredFields = is_array($serviceOption['required_fields'] ?? null)
+                                                                    ? $serviceOption['required_fields']
+                                                                    : [];
+                                                                $serviceLabel = (string) ($serviceOption['name'] ?? ('Serviço #' . $serviceId));
+                                                                ?>
+                                                                <option
+                                                                    value="<?= $serviceId; ?>"
+                                                                    data-required-fields="<?= $this->escape(json_encode($requiredFields, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '[]'); ?>"
+                                                                >
+                                                                    <?= $this->escape($serviceLabel); ?>
+                                                                </option>
+                                                            <?php } ?>
+                                                        </select>
+                                                    </div>
+                                                    <textarea
+                                                        class="form-control form-control-sm js-integaglpi-service-checklist-json"
+                                                        name="service_checklist_json"
+                                                        rows="2"
+                                                        placeholder="<?= $this->escape(__('Checklist do serviço em JSON quando obrigatório', 'glpiintegaglpi')); ?>"
+                                                        style="min-width: 260px; max-width: 420px"
+                                                    ></textarea>
+                                                <?php } ?>
                                                 <button
                                                     type="button"
                                                     class="btn btn-sm btn-warning js-integaglpi-confirm-entity"
@@ -1031,6 +1096,12 @@ $operationalFilterMap = [
                     <span class="js-integaglpi-central-context-queue">-</span>
                 </div>
                 <div class="itg-context-item">
+                    <small class="text-muted d-block"><?= $this->escape(__('Serviço / SLA', 'glpiintegaglpi')); ?></small>
+                    <span><?= $this->escape(__('Serviço', 'glpiintegaglpi')); ?>: <span class="js-integaglpi-central-context-service">-</span></span><br>
+                    <span><?= $this->escape(__('Status', 'glpiintegaglpi')); ?>: <span class="js-integaglpi-central-context-sla">-</span></span><br>
+                    <span class="small text-muted js-integaglpi-central-context-sla-deadlines">-</span>
+                </div>
+                <div class="itg-context-item">
                     <small class="text-muted d-block"><?= $this->escape(__('Técnico', 'glpiintegaglpi')); ?></small>
                     <span class="js-integaglpi-central-context-technician">-</span>
                 </div>
@@ -1165,6 +1236,7 @@ $operationalFilterMap = [
     const ticketUrlBase = <?= json_encode($ticketUrlBase, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
     const canUpdateActions = <?= json_encode($canUpdateActions); ?>;
     const glpiEntities = <?= json_encode(array_values($glpiEntities), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
+    const serviceCatalog = <?= json_encode(array_values($serviceCatalog), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
     const refreshMinIntervalMs = 15000;
     const pollingIntervalMs = 15000;
     let refreshInProgress = false;
@@ -1307,6 +1379,33 @@ $operationalFilterMap = [
         }).join('');
     }
 
+    function renderServiceCatalogControls() {
+        if (!Array.isArray(serviceCatalog) || serviceCatalog.length === 0) {
+            return '';
+        }
+
+        const options = serviceCatalog.map(function (service) {
+            const id = Number(service.id || 0);
+            if (!Number.isInteger(id) || id <= 0) {
+                return '';
+            }
+            const required = Array.isArray(service.required_fields) ? service.required_fields : [];
+            return '<option value="' + id + '" data-required-fields="' + escapeHtml(JSON.stringify(required)) + '">'
+                + escapeHtml(String(service.name || ('Serviço #' + id)))
+                + '</option>';
+        }).join('');
+
+        return '<div style="min-width: 260px; max-width: 380px">'
+            + '<select class="form-select form-select-sm js-integaglpi-service-catalog-id" name="service_catalog_id">'
+            + '<option value="0">Serviço opcional</option>'
+            + options
+            + '</select></div>'
+            + '<textarea class="form-control form-control-sm js-integaglpi-service-checklist-json"'
+            + ' name="service_checklist_json" rows="2"'
+            + ' placeholder="Checklist do serviço em JSON quando obrigatório"'
+            + ' style="min-width: 260px; max-width: 420px"></textarea>';
+    }
+
     function renderEntityEditControls(row) {
         if (!canUpdateActions || !row.can_edit_entity) {
             return '';
@@ -1358,6 +1457,7 @@ $operationalFilterMap = [
                 + ' style="min-width: 280px; max-width: 420px"' + (hasEntities ? '' : ' disabled') + '>'
                 + renderEntityOptions(0)
                 + '</select>'
+                + renderServiceCatalogControls()
                 + '<button type="button" class="btn btn-sm btn-warning js-integaglpi-confirm-entity"'
                 + ' data-conversation-id="' + conversationId + '" data-ticket-id="0"' + (hasEntities ? '' : ' disabled')
                 + '>Salvar entidade e criar chamado</button>'
@@ -1428,6 +1528,14 @@ $operationalFilterMap = [
         const csatLabel = row.csat_dissatisfied
             ? 'CSAT insatisfeito'
             : (row.supervisor_review_required ? 'Revisão CSAT' : '-');
+        const slaContext = row.sla_context && typeof row.sla_context === 'object' ? row.sla_context : {};
+        const slaLabel = String(slaContext.label || 'SLA normal').trim();
+        const slaStatus = String(slaContext.status || 'normal').trim();
+        const slaResponseDeadline = String(slaContext.response_deadline || '').trim();
+        const slaSolutionDeadline = String(slaContext.solution_deadline || '').trim();
+        const slaPausedMinutes = Number(slaContext.paused_minutes || 0);
+        const slaReopenCount = Number(slaContext.reopen_count || 0);
+        const serviceCatalogName = String(slaContext.service_name || row.service_catalog_name || '').trim();
         const riskBadges = Array.isArray(row.risk_badges)
             ? row.risk_badges.map(function (badge) {
                 return '<span class="badge ' + escapeHtml(String(badge.class || 'bg-light text-dark')) + '">'
@@ -1555,6 +1663,13 @@ $operationalFilterMap = [
         element.setAttribute('data-contract', contractLabel || '-');
         element.setAttribute('data-csat', csatLabel);
         element.setAttribute('data-attempt', String(row.entity_attempt_status_label || '-'));
+        element.setAttribute('data-service', serviceCatalogName || '-');
+        element.setAttribute('data-sla', slaLabel || 'SLA normal');
+        element.setAttribute('data-sla-status', slaStatus || 'normal');
+        element.setAttribute('data-sla-response-deadline', slaResponseDeadline || '-');
+        element.setAttribute('data-sla-solution-deadline', slaSolutionDeadline || '-');
+        element.setAttribute('data-sla-paused', String(slaPausedMinutes));
+        element.setAttribute('data-sla-reopen', String(slaReopenCount));
         element.setAttribute('data-can-reply', canUpdateActions && row.can_reply ? '1' : '0');
         element.setAttribute('data-can-edit-entity', canUpdateActions && row.can_edit_entity ? '1' : '0');
         element.setAttribute('data-can-soft-close', canUpdateActions && row.can_soft_close ? '1' : '0');
@@ -1584,6 +1699,11 @@ $operationalFilterMap = [
             + '<div class="itg-card-meta">Fila: ' + escapeHtml(queueName || '-')
             + (queueId > 0 ? ' <span>#' + queueId + '</span>' : '') + '</div>'
             + '<div class="itg-card-meta">Entidade: ' + escapeHtml(entityLabel || '-') + '</div>'
+            + '<div class="itg-card-meta">Serviço: ' + escapeHtml(serviceCatalogName || '-') + '</div>'
+            + '<div class="itg-card-meta">SLA: ' + escapeHtml(slaLabel || 'SLA normal')
+            + (slaResponseDeadline !== '' ? ' · Resposta ' + escapeHtml(slaResponseDeadline) : '')
+            + (slaSolutionDeadline !== '' ? ' · Solução ' + escapeHtml(slaSolutionDeadline) : '')
+            + '</div>'
             + renderEntityEditControls(row)
             + memoryEntityHtml
             + '<div class="itg-card-meta js-integaglpi-central-technician">Técnico: ' + technicianHtml + '</div>'
@@ -1823,6 +1943,9 @@ $operationalFilterMap = [
         const nextAction = document.querySelector('.js-integaglpi-central-context-next-action');
         const ticketLink = document.querySelector('.js-integaglpi-central-context-ticket');
         const queue = document.querySelector('.js-integaglpi-central-context-queue');
+        const service = document.querySelector('.js-integaglpi-central-context-service');
+        const sla = document.querySelector('.js-integaglpi-central-context-sla');
+        const slaDeadlines = document.querySelector('.js-integaglpi-central-context-sla-deadlines');
         const technician = document.querySelector('.js-integaglpi-central-context-technician');
         const status = document.querySelector('.js-integaglpi-central-context-status');
         const entity = document.querySelector('.js-integaglpi-central-context-entity');
@@ -1888,6 +2011,25 @@ $operationalFilterMap = [
             const queueName = row.getAttribute('data-queue') || '';
             const queueId = row.getAttribute('data-queue-id') || '';
             queue.textContent = queueName ? queueName + (queueId && queueId !== '0' ? ' #' + queueId : '') : '-';
+        }
+
+        if (service) {
+            service.textContent = row.getAttribute('data-service') || '-';
+        }
+
+        if (sla) {
+            sla.textContent = row.getAttribute('data-sla') || '-';
+        }
+
+        if (slaDeadlines) {
+            const responseDeadline = row.getAttribute('data-sla-response-deadline') || '-';
+            const solutionDeadline = row.getAttribute('data-sla-solution-deadline') || '-';
+            const paused = row.getAttribute('data-sla-paused') || '0';
+            const reopen = row.getAttribute('data-sla-reopen') || '0';
+            slaDeadlines.textContent = 'Resposta: ' + responseDeadline
+                + ' / Solução: ' + solutionDeadline
+                + ' / Pausa: ' + paused + ' min'
+                + ' / Reaberturas: ' + reopen;
         }
 
         if (technician) {
@@ -2667,6 +2809,8 @@ $operationalFilterMap = [
             const entityName = entitySelect && entitySelect.selectedOptions && entitySelect.selectedOptions.length > 0
                 ? entitySelect.selectedOptions[0].textContent.trim()
                 : '';
+            const serviceSelect = box ? box.querySelector('.js-integaglpi-service-catalog-id') : null;
+            const serviceChecklist = box ? box.querySelector('.js-integaglpi-service-checklist-json') : null;
 
             if (!Number.isInteger(entityId) || entityId <= 0) {
                 alert('Selecione uma entidade GLPI válida.');
@@ -2684,6 +2828,8 @@ $operationalFilterMap = [
                 payload.set('apply_to_ticket', '0');
             } else {
                 payload.set('create_ticket', '1');
+                payload.set('service_catalog_id', serviceSelect ? String(serviceSelect.value || '0') : '0');
+                payload.set('service_checklist_json', serviceChecklist ? String(serviceChecklist.value || '') : '');
                 payload.set('idempotency_key', buildEntitySelectionIdempotencyKey(
                     entityButton.dataset.conversationId || '',
                     entityId

@@ -26,11 +26,28 @@ export interface InactivityConfig {
   jobIntervalSeconds: number;
 }
 
+export type InactivityConfigProvider = () => Promise<{
+  enabled?: boolean | null;
+  reminderMinutes?: [number, number, number] | null;
+  autocloseMinutes?: number | null;
+}>;
+
 export interface InactivityDecision {
   action: InactivityDecisionAction;
   reason: string;
   reminderNumber?: 1 | 2 | 3;
 }
+
+export type InactivitySkipReasonCode =
+  | 'active_technical_interaction'
+  | 'outside_business_hours'
+  | 'window_closed_no_template'
+  | 'already_notified'
+  | 'not_eligible_status'
+  | 'missing_ticket'
+  | 'recent_inbound'
+  | 'recent_outbound'
+  | 'locked_or_duplicate_run';
 
 const REMINDER_TEXTS: Record<1 | 2 | 3, string> = {
   1: 'Olá! Estamos aguardando seu retorno para continuar o atendimento. Podemos ajudar em algo mais?',
@@ -46,6 +63,7 @@ const PROFILE_COLLECTION_REMINDER_TEXT =
   'Ainda precisamos confirmar algumas informações para continuar seu atendimento. Por favor, responda as perguntas pendentes para seguirmos.';
 const PROFILE_COLLECTION_REMINDER_MINUTES = 5;
 export const TECHNICIAN_ACTIVITY_GUARD_MINUTES = 120;
+const DEFAULT_REMINDER_MINUTES: [number, number, number] = [15, 20, 25];
 const AUTOCLOSE_REASON = 'Encerrado por falta de retorno do usuário';
 const SOLVED_STATUS = 5;
 
@@ -84,10 +102,43 @@ export function parseReminderMinutes(value: string): [number, number, number] {
     .filter((part) => Number.isInteger(part) && part > 0);
 
   if (parsed.length !== 3 || !(parsed[0] < parsed[1] && parsed[1] < parsed[2])) {
-    return [3, 5, 10];
+    return DEFAULT_REMINDER_MINUTES;
   }
 
   return [parsed[0], parsed[1], parsed[2]];
+}
+
+export function normalizeInactivitySkipReason(reason: string | null | undefined): InactivitySkipReasonCode | null {
+  switch ((reason ?? '').trim()) {
+    case 'technician_activity_recent':
+      return 'active_technical_interaction';
+    case 'skipped_missing_template_outside_24h':
+    case 'outside_24h_template_missing':
+      return 'window_closed_no_template';
+    case 'previous_run_active':
+    case 'profile_collection_reminder_already_marked':
+    case 'autoclose_attempt_exists':
+    case 'autoclose_already_attempted':
+      return 'locked_or_duplicate_run';
+    case 'autoclose_already_done':
+    case 'previous_failure_requires_manual_review':
+      return 'already_notified';
+    case 'conversation_not_open':
+    case 'ticket_closed_or_solved':
+    case 'feature_flag_disabled':
+    case 'manual_hold':
+    case 'profile_collection_step_not_eligible':
+      return 'not_eligible_status';
+    case 'missing_ticket':
+      return 'missing_ticket';
+    case 'client_responded':
+      return 'recent_inbound';
+    case 'no_outbound_activity':
+    case 'not_due':
+      return 'recent_outbound';
+    default:
+      return reason ? 'not_eligible_status' : null;
+  }
 }
 
 export function decideInactivityAction(
@@ -174,6 +225,7 @@ export class InactivityAutomationService {
     private readonly config: InactivityConfig,
     private readonly nowProvider: () => Date = () => new Date(),
     private readonly messageConfigurationService: MessageConfigurationService | null = null,
+    private readonly configProvider: InactivityConfigProvider | null = null,
   ) {}
 
   public start(): void {
@@ -203,7 +255,8 @@ export class InactivityAutomationService {
   }
 
   public async runOnce(limit = 100): Promise<void> {
-    if (!this.config.enabled) {
+    const effectiveConfig = await this.loadEffectiveConfig();
+    if (!effectiveConfig.enabled) {
       logger.info({ reason: 'feature_flag_disabled' }, '[integration-service][inactivity][CHECKED]');
       await this.recordDiagnostic(null, 'checked', {
         reason: 'feature_flag_disabled',
@@ -236,7 +289,7 @@ export class InactivityAutomationService {
         '[integration-service][inactivity][CHECKED]',
       );
       for (const candidate of candidates) {
-        await this.processCandidate(candidate);
+        await this.processCandidate(candidate, effectiveConfig);
       }
       await this.processProfileCollectionReminderCandidates(limit);
     } finally {
@@ -389,14 +442,14 @@ export class InactivityAutomationService {
     }
   }
 
-  private async processCandidate(candidate: InactivityTrackingRecord): Promise<void> {
+  private async processCandidate(candidate: InactivityTrackingRecord, config: InactivityConfig): Promise<void> {
     const refreshed = await this.repository.findByConversationId(candidate.conversationId);
     if (!refreshed) {
       return;
     }
 
     const now = this.nowProvider();
-    const decision = decideInactivityAction(refreshed, this.config, now);
+    const decision = decideInactivityAction(refreshed, config, now);
     await this.recordDiagnostic(refreshed, 'checked', { reason: decision.reason });
 
     if (decision.action === 'NOOP') {
@@ -455,21 +508,27 @@ export class InactivityAutomationService {
       reason: sendPlan.reason,
     });
     if (!sendPlan.shouldSend) {
-      await this.repository.markFailed(record.conversationId, sendPlan.reason ?? 'not_sent_by_rule');
+      const reason = sendPlan.reason ?? 'not_sent_by_rule';
+      await this.repository.markFailed(record.conversationId, reason);
       await this.recordDiagnostic(record, 'skipped', {
         eventKey,
-        reason: sendPlan.reason ?? 'not_sent_by_rule',
+        reason,
       });
       await this.messageConfigurationService?.recordAutomationEvent({
         conversationId: record.conversationId,
         phoneE164: record.phoneE164,
         eventKey,
         status: 'not_sent_by_rule',
-        reason: sendPlan.reason ?? 'not_sent_by_rule',
+        reason,
       });
       this.recordAudit(record, `INACTIVITY_REMINDER_${reminderNumber}_NOT_SENT_BY_RULE`, 'ignored', correlationId, {
-        reason: sendPlan.reason ?? 'not_sent_by_rule',
+        reason,
         idempotency_key: idempotencyKey,
+      });
+      this.recordAudit(record, 'INACTIVITY_REMINDER_SKIPPED', 'ignored', correlationId, {
+        reason_code: normalizeInactivitySkipReason(reason),
+        reason,
+        reminder_number: reminderNumber,
       });
       return;
     }
@@ -518,6 +577,10 @@ export class InactivityAutomationService {
       reminder_number: reminderNumber,
       idempotency_key: idempotencyKey,
     });
+    this.recordAudit(record, 'INACTIVITY_REMINDER_DISPATCHED', 'success', correlationId, {
+      reminder_number: reminderNumber,
+      idempotency_key: idempotencyKey,
+    });
   }
 
   private async handleAutoclose(record: InactivityTrackingRecord): Promise<void> {
@@ -558,7 +621,7 @@ export class InactivityAutomationService {
       const windowOpen = refreshed.lastClientActivityAt
         ? this.nowProvider().getTime() - refreshed.lastClientActivityAt.getTime() < 24 * 60 * 60 * 1000
         : false;
-      await this.sendAutocloseConfiguredMessage(
+      const warningSent = await this.sendAutocloseConfiguredMessage(
         record,
         'inactivity_autoclose_warning',
         AUTOCLOSE_WARNING_TEXT,
@@ -566,7 +629,16 @@ export class InactivityAutomationService {
         correlationId,
         windowOpen,
       );
-      await this.sendAutocloseConfiguredMessage(
+      if (!warningSent) {
+        await this.repository.markFailed(record.conversationId, 'window_closed_no_template');
+        this.recordAudit(record, 'SYSTEM_AUTOCLOSE_SKIPPED', 'ignored', correlationId, {
+          reason_code: 'window_closed_no_template',
+          event_key: 'inactivity_autoclose_warning',
+        });
+        return;
+      }
+
+      const noticeSent = await this.sendAutocloseConfiguredMessage(
         record,
         'inactivity_autoclose_message',
         AUTOCLOSE_TEXT,
@@ -574,6 +646,14 @@ export class InactivityAutomationService {
         correlationId,
         windowOpen,
       );
+      if (!noticeSent) {
+        await this.repository.markFailed(record.conversationId, 'window_closed_no_template');
+        this.recordAudit(record, 'SYSTEM_AUTOCLOSE_SKIPPED', 'ignored', correlationId, {
+          reason_code: 'window_closed_no_template',
+          event_key: 'inactivity_autoclose_message',
+        });
+        return;
+      }
 
       await this.glpiClient.solveTicketByInactivity(record.ticketId, `${AUTOCLOSE_REASON}\n\n${AUTOCLOSE_TEXT}`);
       await this.repository.markAutocloseCompleted(record.conversationId, this.nowProvider());
@@ -582,6 +662,10 @@ export class InactivityAutomationService {
         reason: 'autoclose_done',
       });
       this.recordAudit(record, 'INACTIVITY_AUTOCLOSE_DONE', 'success', correlationId, {
+        reason: 'no_client_response',
+        glpi_status: SOLVED_STATUS,
+      });
+      this.recordAudit(record, 'SYSTEM_AUTOCLOSE_EXECUTED', 'success', correlationId, {
         reason: 'no_client_response',
         glpi_status: SOLVED_STATUS,
       });
@@ -600,6 +684,7 @@ export class InactivityAutomationService {
   }
 
   private async handleSkip(record: InactivityTrackingRecord, reason: string): Promise<void> {
+    const reasonCode = normalizeInactivitySkipReason(reason) ?? 'not_eligible_status';
     const status = reason === 'client_responded'
       ? 'skipped_by_response'
       : reason === 'manual_hold'
@@ -607,9 +692,17 @@ export class InactivityAutomationService {
         : reason === 'feature_flag_disabled'
           ? 'skipped_by_feature_flag'
           : 'skipped_by_closed_ticket';
-    await this.repository.markSkipped(record.conversationId, status, reason);
+    await this.repository.markSkipped(record.conversationId, status, reasonCode);
     await this.recordDiagnostic(record, 'skipped', { reason });
     this.recordAudit(record, 'INACTIVITY_SKIPPED', 'ignored', createCorrelationId(), { reason });
+    this.recordAudit(record, 'INACTIVITY_REMINDER_SKIPPED', 'ignored', createCorrelationId(), {
+      reason_code: reasonCode,
+      reason,
+    });
+    this.recordAudit(record, 'SYSTEM_AUTOCLOSE_SKIPPED', 'ignored', createCorrelationId(), {
+      reason_code: reasonCode,
+      reason,
+    });
   }
 
   private async sendAutocloseConfiguredMessage(
@@ -619,7 +712,7 @@ export class InactivityAutomationService {
     idempotencyKey: string,
     correlationId: string,
     windowOpen: boolean,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const sendPlan = await this.resolveInactivitySendPlan(eventKey, windowOpen, fallbackText);
     await this.recordDiagnostic(record, 'planned', { eventKey, reason: sendPlan.reason });
     await this.messageConfigurationService?.recordAutomationEvent({
@@ -646,7 +739,7 @@ export class InactivityAutomationService {
         event_key: eventKey,
         reason: sendPlan.reason ?? 'not_sent_by_rule',
       });
-      return;
+      return false;
     }
 
     const noticeResult = await this.outboundMessageService.send(
@@ -673,7 +766,7 @@ export class InactivityAutomationService {
         event_key: eventKey,
         error_code: noticeResult.body.error_code,
       });
-      return;
+      return false;
     }
 
     await this.recordDiagnostic(record, 'sent', {
@@ -688,6 +781,7 @@ export class InactivityAutomationService {
       status: 'sent',
       messageId: noticeResult.body.message_id,
     });
+    return true;
   }
 
   private async resolveInactivitySendPlan(
@@ -714,6 +808,41 @@ export class InactivityAutomationService {
       buttons: [],
       listOptions: [],
     };
+  }
+
+  private async loadEffectiveConfig(): Promise<InactivityConfig> {
+    if (!this.configProvider) {
+      return this.config;
+    }
+
+    try {
+      const override = await this.configProvider();
+      const reminderMinutes = override.reminderMinutes
+        && override.reminderMinutes[0] < override.reminderMinutes[1]
+        && override.reminderMinutes[1] < override.reminderMinutes[2]
+        ? override.reminderMinutes
+        : this.config.reminderMinutes;
+      const autocloseMinutes = Number.isInteger(override.autocloseMinutes)
+        && Number(override.autocloseMinutes) > reminderMinutes[2]
+        ? Number(override.autocloseMinutes)
+        : this.config.autocloseMinutes;
+
+      return {
+        ...this.config,
+        enabled: typeof override.enabled === 'boolean' ? override.enabled : this.config.enabled,
+        reminderMinutes,
+        autocloseMinutes,
+      };
+    } catch (error: unknown) {
+      logger.error(
+        {
+          error: error instanceof Error ? { message: error.message, name: error.name } : String(error),
+        },
+        '[integration-service][inactivity][CONFIG_FALLBACK]',
+      );
+
+      return this.config;
+    }
   }
 
   private buildOutboundRequest(
@@ -762,6 +891,8 @@ export class InactivityAutomationService {
       metaErrorMessageSanitized: details.metaErrorMessageSanitized ?? null,
       checkedCount: details.checkedCount ?? null,
       eligibleCount: details.eligibleCount ?? null,
+      reasonCode: normalizeInactivitySkipReason(details.reason),
+      reasonDescription: details.reason ?? null,
     });
   }
 
@@ -791,6 +922,8 @@ export class InactivityAutomationService {
       metaErrorMessageSanitized: details.metaErrorMessageSanitized ?? null,
       checkedCount: details.checkedCount ?? null,
       eligibleCount: details.eligibleCount ?? null,
+      reasonCode: normalizeInactivitySkipReason(details.reason),
+      reasonDescription: details.reason ?? null,
     });
   }
 

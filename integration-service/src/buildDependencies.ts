@@ -109,6 +109,7 @@ export function buildDependencies() {
     },
     undefined,
     messageConfigurationService,
+    async () => settingsService.getInactivityRuntimeConfig(),
   );
   const entitySelectionService = new EntitySelectionService(
     conversationRepository,

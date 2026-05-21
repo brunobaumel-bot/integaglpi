@@ -201,9 +201,11 @@ export class PostgresMessageFlowRepository implements MessageFlowRepository {
           meta_error_code,
           meta_error_message_sanitized,
           checked_count,
-          eligible_count
+          eligible_count,
+          reason_code,
+          reason_description
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       `,
       [
         input.conversationId,
@@ -218,6 +220,8 @@ export class PostgresMessageFlowRepository implements MessageFlowRepository {
         input.metaErrorMessageSanitized ?? null,
         input.checkedCount ?? null,
         input.eligibleCount ?? null,
+        input.reasonCode ?? null,
+        input.reasonDescription ?? null,
       ],
     );
   }

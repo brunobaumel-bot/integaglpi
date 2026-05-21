@@ -53,15 +53,25 @@ const ENTITY_RESOLUTION_SETTING_KEYS = [
   'entity_selection_timeout_hours',
 ] as const;
 
+const INACTIVITY_SETTING_KEYS = [
+  'inactivity_enabled',
+  'inactivity_reminder_1_minutes',
+  'inactivity_reminder_2_minutes',
+  'inactivity_reminder_3_minutes',
+  'inactivity_autoclose_minutes',
+] as const;
+
 type MessageSettingKey = (typeof MESSAGE_SETTING_KEYS)[number];
 type BusinessHoursSettingKey = (typeof BUSINESS_HOURS_SETTING_KEYS)[number];
 type ContactProfileSettingKey = (typeof CONTACT_PROFILE_SETTING_KEYS)[number];
 type EntityResolutionSettingKey = (typeof ENTITY_RESOLUTION_SETTING_KEYS)[number];
+type InactivitySettingKey = (typeof INACTIVITY_SETTING_KEYS)[number];
 
 type MessageSettingsRow = Partial<Record<MessageSettingKey, unknown>>;
 type BusinessHoursSettingsRow = Partial<Record<BusinessHoursSettingKey, unknown>>;
 type ContactProfileSettingsRow = Partial<Record<ContactProfileSettingKey, unknown>>;
 type EntityResolutionSettingsRow = Partial<Record<EntityResolutionSettingKey, unknown>>;
+type InactivitySettingsRow = Partial<Record<InactivitySettingKey, unknown>>;
 type ColumnRow = { column_name: string };
 
 export class PostgresSettingsRepository implements SettingsRepository {
@@ -256,6 +266,55 @@ export class PostgresSettingsRepository implements SettingsRepository {
     const settings = new Map<string, unknown>();
 
     for (const key of ENTITY_RESOLUTION_SETTING_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(row, key)) {
+        settings.set(key, row[key]);
+      }
+    }
+
+    return settings;
+  }
+
+  public async findInactivitySettings(): Promise<Map<string, unknown>> {
+    const columnsResult = await this.executor.query<ColumnRow>(
+      `
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = $1
+          AND column_name = ANY($2::text[])
+      `,
+      [DATABASE_TABLES.configs, ['context', ...INACTIVITY_SETTING_KEYS]],
+    );
+
+    const hasContextColumn = columnsResult.rows.some((row) => row.column_name === 'context');
+    if (!hasContextColumn) {
+      return new Map();
+    }
+
+    const columns = columnsResult.rows
+      .map((row) => row.column_name)
+      .filter((column): column is InactivitySettingKey =>
+        INACTIVITY_SETTING_KEYS.includes(column as InactivitySettingKey),
+      );
+
+    if (columns.length === 0) {
+      return new Map();
+    }
+
+    const projection = columns.map((column) => `"${column}"`).join(', ');
+    const result = await this.executor.query<InactivitySettingsRow>(
+      `
+        SELECT ${projection}
+        FROM ${DATABASE_TABLES.configs}
+        WHERE context = 'inactivity'
+        LIMIT 1
+      `,
+    );
+
+    const row = result.rows[0] ?? {};
+    const settings = new Map<string, unknown>();
+
+    for (const key of INACTIVITY_SETTING_KEYS) {
       if (Object.prototype.hasOwnProperty.call(row, key)) {
         settings.set(key, row[key]);
       }

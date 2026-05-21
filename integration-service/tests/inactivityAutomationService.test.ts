@@ -42,7 +42,7 @@ function makeRecord(overrides: Partial<InactivityTrackingRecord> = {}): Inactivi
 
 const config: InactivityConfig = {
   enabled: true,
-  reminderMinutes: [3, 5, 10],
+  reminderMinutes: [15, 20, 25],
   autocloseMinutes: 30,
   jobIntervalSeconds: 60,
 };
@@ -230,7 +230,7 @@ describe('decideInactivityAction', () => {
   });
 
   it('uses safe defaults for invalid reminder config', () => {
-    expect(parseReminderMinutes('10,3,abc')).toEqual([3, 5, 10]);
+    expect(parseReminderMinutes('10,3,abc')).toEqual([15, 20, 25]);
     expect(parseReminderMinutes('3,5,10')).toEqual([3, 5, 10]);
   });
 });
@@ -418,7 +418,7 @@ describe('InactivityAutomationService', () => {
     await service.runOnce();
 
     expect(outbound.send).not.toHaveBeenCalled();
-    expect(repository.skipped).toEqual([{ conversationId: 'conv-1', status: 'skipped_by_response', reason: 'client_responded' }]);
+    expect(repository.skipped).toEqual([{ conversationId: 'conv-1', status: 'skipped_by_response', reason: 'recent_inbound' }]);
   });
 
   it('does not act while manual hold is active', async () => {
@@ -430,7 +430,7 @@ describe('InactivityAutomationService', () => {
     await service.runOnce();
 
     expect(outbound.send).not.toHaveBeenCalled();
-    expect(repository.skipped).toEqual([{ conversationId: 'conv-1', status: 'skipped_by_hold', reason: 'manual_hold' }]);
+    expect(repository.skipped).toEqual([{ conversationId: 'conv-1', status: 'skipped_by_hold', reason: 'not_eligible_status' }]);
   });
 
   it('solves ticket once after all reminders and final timeout', async () => {
@@ -507,7 +507,7 @@ describe('InactivityAutomationService', () => {
     expect(repository.skipped).toEqual([{
       conversationId: 'conv-1',
       status: 'skipped_by_closed_ticket',
-      reason: 'ticket_closed_or_solved',
+      reason: 'not_eligible_status',
     }]);
   });
 

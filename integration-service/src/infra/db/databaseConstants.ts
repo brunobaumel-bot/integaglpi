@@ -26,6 +26,8 @@ export const DATABASE_TABLES = {
   businessHours: `${DATABASE_PREFIX}business_hours`,
   messageAutomationEvents: `${DATABASE_PREFIX}message_automation_events`,
   inactivityJobEvents: `${DATABASE_PREFIX}inactivity_job_events`,
+  serviceCatalog: `${DATABASE_PREFIX}service_catalog`,
+  conversationSlaLogs: `${DATABASE_PREFIX}conversation_sla_logs`,
 } as const;
 
 export const DATABASE_SCHEMA_LOCK_ID = 81234756120345n;

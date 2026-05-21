@@ -744,6 +744,20 @@ export class OutboundMessageService {
           reason: 'inactivity_autoclose_does_not_send_csat',
         },
       });
+      this.recordAudit({
+        correlationId,
+        ticketId: body.ticket_id,
+        conversationId: body.conversation_id,
+        direction: 'outbound',
+        eventType: 'CSAT_SUPPRESSED_AFTER_AUTOCLOSE',
+        status: 'ignored',
+        severity: 'info',
+        source: 'OutboundMessageService',
+        payload: {
+          idempotency_key: idempotencyKey,
+          reason: 'inactivity_autoclose_does_not_send_csat',
+        },
+      });
       return {
         httpStatus: 200,
         body: {

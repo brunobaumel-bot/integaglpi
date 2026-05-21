@@ -63,6 +63,8 @@ export interface RecordInactivityJobEventInput {
   metaErrorMessageSanitized?: string | null;
   checkedCount?: number | null;
   eligibleCount?: number | null;
+  reasonCode?: string | null;
+  reasonDescription?: string | null;
 }
 
 export interface MessageFlowRepository {

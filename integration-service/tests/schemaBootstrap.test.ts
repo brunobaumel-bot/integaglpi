@@ -404,4 +404,23 @@ describe('database bootstrap hardening', () => {
     }
     expect(migration).not.toContain('raw_payload');
   });
+
+  it('keeps inactivity SLA and service catalog migration additive and indexed', async () => {
+    const migration = compactSql(await readProjectFile('schema-migrations/026_inactivity_sla_service_catalog.sql'));
+
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_service_catalog');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_conversation_sla_logs');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS glpi_service_catalog_id BIGINT NULL');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS sla_response_deadline TIMESTAMPTZ NULL');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS inactivity_skip_reason TEXT NULL');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS inactivity_reminder_1_minutes INTEGER NULL');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS inactivity_reminder_2_minutes INTEGER NULL');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS inactivity_reminder_3_minutes INTEGER NULL');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS inactivity_autoclose_minutes INTEGER NULL');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS reason_code TEXT NULL');
+    expect(migration).toContain('CREATE INDEX IF NOT EXISTS glpi_integaglpi_service_catalog_queue_entity_idx');
+    expect(migration).not.toContain('DROP TABLE');
+    expect(migration).not.toContain('TRUNCATE');
+    expect(migration).not.toContain('DELETE FROM');
+  });
 });

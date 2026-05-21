@@ -103,7 +103,9 @@ try {
             $userId,
             (string) ($_POST['create_ticket'] ?? '1') !== '0',
             $ticketId,
-            isset($_POST['idempotency_key']) ? (string) $_POST['idempotency_key'] : null
+            isset($_POST['idempotency_key']) ? (string) $_POST['idempotency_key'] : null,
+            (int) ($_POST['service_catalog_id'] ?? 0),
+            (string) ($_POST['service_checklist_json'] ?? '')
         );
     } elseif ($action === 'update_entity') {
         $rawEntityId = $_POST['glpi_entity_id'] ?? $_POST['entity_id'] ?? null;

@@ -26,10 +26,11 @@ $messageCatalogGroups = $configService->getMessageCatalogGrouped();
 $businessHoursConfig = $configService->getBusinessHoursConfig();
 $messageCatalogAudit = $configService->getMessageCatalogAudit();
 $localTemplates = $configService->getLocalTemplates();
+$inactivityConfig = $configService->getInactivityConfig();
 $messagePlaceholderAllowlist = $configService->getMessagePlaceholderAllowlist();
 $aiSupervisorEnabled = $configService->isAiSupervisorEnabled();
 $activeTab = (string) ($_GET['tab'] ?? 'connection');
-if (!in_array($activeTab, ['connection', 'queues', 'messages', 'templates', 'contact_profile', 'diagnostics'], true)) {
+if (!in_array($activeTab, ['connection', 'queues', 'messages', 'inactivity', 'templates', 'contact_profile', 'diagnostics'], true)) {
     $activeTab = 'connection';
 }
 
@@ -76,6 +77,12 @@ $tabUrl = static fn (string $tab): string => $configUrl . '?tab=' . rawurlencode
         <a class="nav-link <?= $activeTab === 'templates' ? 'active' : ''; ?>"
            href="<?= $this->escape($tabUrl('templates')); ?>">
             <?= $this->escape(__('Templates locais', 'glpiintegaglpi')); ?>
+        </a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link <?= $activeTab === 'inactivity' ? 'active' : ''; ?>"
+           href="<?= $this->escape($tabUrl('inactivity')); ?>">
+            <?= $this->escape(__('Inatividade', 'glpiintegaglpi')); ?>
         </a>
     </li>
     <li class="nav-item">
@@ -509,6 +516,71 @@ $tabUrl = static fn (string $tab): string => $configUrl . '?tab=' . rawurlencode
             </table>
         </div>
     </div>
+<?php } ?>
+
+<?php if ($activeTab === 'inactivity') { ?>
+    <div class="alert alert-info">
+        <?= $this->escape(__('Configuração operacional do job existente de inatividade. Valores inválidos usam fallback seguro no Node: 15/20/25/30 minutos.', 'glpiintegaglpi')); ?>
+    </div>
+    <?php if (!$isConfigured) { ?>
+        <div class="alert alert-warning">
+            <?= $this->escape(__('Configure a conexão PostgreSQL externa antes de salvar timers de inatividade.', 'glpiintegaglpi')); ?>
+        </div>
+    <?php } else { ?>
+        <div class="card mb-3">
+            <div class="card-header"><?= $this->escape(__('Timers de inatividade', 'glpiintegaglpi')); ?></div>
+            <div class="card-body">
+                <form method="post" action="<?= $this->escape($configUrl); ?>?tab=inactivity">
+                    <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken(); ?>
+                    <div class="row g-3 align-items-end">
+                        <div class="col-md-12">
+                            <div class="form-check">
+                                <input type="hidden" name="inactivity_enabled" value="0">
+                                <input
+                                    class="form-check-input"
+                                    type="checkbox"
+                                    name="inactivity_enabled"
+                                    value="1"
+                                    id="inactivity_enabled"
+                                    <?= !empty($inactivityConfig['inactivity_enabled']) ? "checked='checked'" : ''; ?>
+                                >
+                                <label class="form-check-label" for="inactivity_enabled">
+                                    <?= $this->escape(__('Habilitar automação de inatividade/autoclose no Node', 'glpiintegaglpi')); ?>
+                                </label>
+                            </div>
+                            <div class="form-text">
+                                <?= $this->escape(__('A trava operacional do container ainda deve estar habilitada no ambiente. Esta configuração controla a decisão do job, não cria job paralelo.', 'glpiintegaglpi')); ?>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label"><?= $this->escape(__('Reminder 1 minutos', 'glpiintegaglpi')); ?></label>
+                            <input class="form-control" type="number" min="1" max="10080" name="inactivity_reminder_1_minutes" value="<?= (int) ($inactivityConfig['inactivity_reminder_1_minutes'] ?? 15); ?>" required>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label"><?= $this->escape(__('Reminder 2 minutos', 'glpiintegaglpi')); ?></label>
+                            <input class="form-control" type="number" min="1" max="10080" name="inactivity_reminder_2_minutes" value="<?= (int) ($inactivityConfig['inactivity_reminder_2_minutes'] ?? 20); ?>" required>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label"><?= $this->escape(__('Reminder 3 minutos', 'glpiintegaglpi')); ?></label>
+                            <input class="form-control" type="number" min="1" max="10080" name="inactivity_reminder_3_minutes" value="<?= (int) ($inactivityConfig['inactivity_reminder_3_minutes'] ?? 25); ?>" required>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label"><?= $this->escape(__('Autoclose minutos', 'glpiintegaglpi')); ?></label>
+                            <input class="form-control" type="number" min="1" max="10080" name="inactivity_autoclose_minutes" value="<?= (int) ($inactivityConfig['inactivity_autoclose_minutes'] ?? 30); ?>" required>
+                        </div>
+                        <div class="col-md-12">
+                            <button type="submit" name="save_inactivity_timers" value="1" class="btn btn-primary">
+                                <?= $this->escape(__('Salvar timers', 'glpiintegaglpi')); ?>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="form-text mt-2">
+                        <?= $this->escape(__('Validação obrigatória: reminder_1 < reminder_2 < reminder_3 < autoclose. Não altera tickets, não envia WhatsApp e não remove histórico.', 'glpiintegaglpi')); ?>
+                    </div>
+                </form>
+            </div>
+        </div>
+    <?php } ?>
 <?php } ?>
 
 <?php if ($activeTab === 'templates') { ?>

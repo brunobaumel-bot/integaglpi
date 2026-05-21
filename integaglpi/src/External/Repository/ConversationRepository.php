@@ -129,6 +129,7 @@ final class ConversationRepository
                 c.glpi_entity_name,
                 c.status AS conversation_status,
                 c.queue_id,
+                c.glpi_service_catalog_id,
                 c.profile_collection_state,
                 c.last_message_at,
                 rt.assigned_user_id,
@@ -208,6 +209,13 @@ final class ConversationRepository
                 c.profile_collection_state,
                 c.last_message_at,
                 c.updated_at AS conversation_updated_at,
+                c.glpi_service_catalog_id,
+                c.sla_first_response_at,
+                c.sla_response_deadline,
+                c.sla_resolution_at,
+                c.sla_solution_deadline,
+                c.accumulated_paused_minutes,
+                c.reopen_count,
                 ct.name AS contact_name,
                 COALESCE(rt.queue_id, c.queue_id) AS queue_id,
                 rt.assigned_user_id,
@@ -215,6 +223,10 @@ final class ConversationRepository
                 rt.status AS runtime_status,
                 rt.updated_at AS runtime_updated_at,
                 q.name AS queue_name,
+                sc.name AS service_catalog_name,
+                sc.service_key AS service_catalog_key,
+                sc.sla_response_minutes AS service_sla_response_minutes,
+                sc.sla_solution_minutes AS service_sla_solution_minutes,
                 c.last_message_at AS activity_at,
                 lm.message_text AS last_message_preview,
                 li.created_at AS last_inbound_at,
@@ -261,6 +273,8 @@ final class ConversationRepository
                 ON rt.conversation_id = c.id
             LEFT JOIN glpi_plugin_integaglpi_queues q
                 ON q.id = COALESCE(rt.queue_id, c.queue_id)
+            LEFT JOIN glpi_plugin_integaglpi_service_catalog sc
+                ON sc.id = c.glpi_service_catalog_id
             LEFT JOIN LATERAL (
                 SELECT
                     m.message_text
@@ -442,6 +456,39 @@ final class ConversationRepository
         $rows = $statement->fetchAll();
 
         return is_array($rows) ? $rows : [];
+    }
+
+    public function assignServiceCatalogForPreTicket(string $conversationId, int $serviceCatalogId): void
+    {
+        $statement = $this->pdo->prepare(
+            <<<SQL
+            UPDATE glpi_plugin_integaglpi_conversations
+            SET
+                glpi_service_catalog_id = :service_catalog_id,
+                updated_at = NOW()
+            WHERE id = :conversation_id
+              AND (glpi_ticket_id IS NULL OR glpi_ticket_id = 0)
+            SQL
+        );
+        $statement->execute([
+            ':conversation_id' => $conversationId,
+            ':service_catalog_id' => $serviceCatalogId,
+        ]);
+    }
+
+    public function markFirstResponseIfMissing(string $conversationId): void
+    {
+        $statement = $this->pdo->prepare(
+            <<<SQL
+            UPDATE glpi_plugin_integaglpi_conversations
+            SET
+                sla_first_response_at = COALESCE(sla_first_response_at, NOW()),
+                updated_at = NOW()
+            WHERE id = :conversation_id
+              AND sla_first_response_at IS NULL
+            SQL
+        );
+        $statement->execute([':conversation_id' => $conversationId]);
     }
 
     /**

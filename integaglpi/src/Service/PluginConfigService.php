@@ -345,6 +345,94 @@ final class PluginConfigService
     }
 
     /**
+     * @return array<string, mixed>
+     */
+    public function getInactivityConfig(): array
+    {
+        $default = [
+            'inactivity_enabled' => false,
+            'inactivity_reminder_1_minutes' => 15,
+            'inactivity_reminder_2_minutes' => 20,
+            'inactivity_reminder_3_minutes' => 25,
+            'inactivity_autoclose_minutes' => 30,
+        ];
+
+        try {
+            $pdo = $this->getExternalPdo();
+            if (!$this->externalTableExists($pdo, 'glpi_plugin_integaglpi_configs')) {
+                return $default;
+            }
+            $stmt = $pdo->query(
+                "SELECT inactivity_enabled, inactivity_reminder_1_minutes, inactivity_reminder_2_minutes, inactivity_reminder_3_minutes, inactivity_autoclose_minutes
+                 FROM glpi_plugin_integaglpi_configs
+                 WHERE context = 'inactivity'
+                 LIMIT 1"
+            );
+            $row = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : false;
+            if (!is_array($row)) {
+                return $default;
+            }
+
+            return [
+                'inactivity_enabled' => $this->normalizeBool($row['inactivity_enabled'] ?? false),
+                'inactivity_reminder_1_minutes' => $this->positiveIntegerOrDefault($row['inactivity_reminder_1_minutes'] ?? null, 15),
+                'inactivity_reminder_2_minutes' => $this->positiveIntegerOrDefault($row['inactivity_reminder_2_minutes'] ?? null, 20),
+                'inactivity_reminder_3_minutes' => $this->positiveIntegerOrDefault($row['inactivity_reminder_3_minutes'] ?? null, 25),
+                'inactivity_autoclose_minutes' => $this->positiveIntegerOrDefault($row['inactivity_autoclose_minutes'] ?? null, 30),
+            ];
+        } catch (\Throwable $exception) {
+            error_log('[integaglpi][inactivity_config][load] ' . $exception->getMessage());
+            return $default;
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     */
+    public function saveInactivityConfig(array $input, int $userId): void
+    {
+        $r1 = $this->requirePositiveTimer($input['inactivity_reminder_1_minutes'] ?? null, 'reminder_1_minutes');
+        $r2 = $this->requirePositiveTimer($input['inactivity_reminder_2_minutes'] ?? null, 'reminder_2_minutes');
+        $r3 = $this->requirePositiveTimer($input['inactivity_reminder_3_minutes'] ?? null, 'reminder_3_minutes');
+        $autoclose = $this->requirePositiveTimer($input['inactivity_autoclose_minutes'] ?? null, 'autoclose_minutes');
+        if (!($r1 < $r2 && $r2 < $r3 && $r3 < $autoclose)) {
+            throw new RuntimeException(__('Timers inválidos: use reminder_1 < reminder_2 < reminder_3 < autoclose.', 'glpiintegaglpi'));
+        }
+
+        $payload = [
+            'context' => 'inactivity',
+            'inactivity_enabled' => !empty($input['inactivity_enabled']) ? '1' : '0',
+            'inactivity_reminder_1_minutes' => $r1,
+            'inactivity_reminder_2_minutes' => $r2,
+            'inactivity_reminder_3_minutes' => $r3,
+            'inactivity_autoclose_minutes' => $autoclose,
+        ];
+        $pdo = $this->getExternalPdo();
+        $stmt = $pdo->prepare(
+            "INSERT INTO glpi_plugin_integaglpi_configs
+              (context, inactivity_enabled, inactivity_reminder_1_minutes, inactivity_reminder_2_minutes, inactivity_reminder_3_minutes, inactivity_autoclose_minutes, updated_at)
+             VALUES
+              (:context, :inactivity_enabled, :r1, :r2, :r3, :autoclose, NOW())
+             ON CONFLICT (context) DO UPDATE SET
+              inactivity_enabled = EXCLUDED.inactivity_enabled,
+              inactivity_reminder_1_minutes = EXCLUDED.inactivity_reminder_1_minutes,
+              inactivity_reminder_2_minutes = EXCLUDED.inactivity_reminder_2_minutes,
+              inactivity_reminder_3_minutes = EXCLUDED.inactivity_reminder_3_minutes,
+              inactivity_autoclose_minutes = EXCLUDED.inactivity_autoclose_minutes,
+              updated_at = NOW()"
+        );
+        $stmt->execute([
+            ':context' => $payload['context'],
+            ':inactivity_enabled' => $payload['inactivity_enabled'],
+            ':r1' => $payload['inactivity_reminder_1_minutes'],
+            ':r2' => $payload['inactivity_reminder_2_minutes'],
+            ':r3' => $payload['inactivity_reminder_3_minutes'],
+            ':autoclose' => $payload['inactivity_autoclose_minutes'],
+        ]);
+        $this->insertCatalogAudit($pdo, 'inactivity:timers', 'update', null, $payload, $userId);
+    }
+
+    /**
      * @return list<array<string, mixed>>
      */
     public function getMessageCatalogAudit(int $limit = 20): array
@@ -1468,6 +1556,23 @@ final class PluginConfigService
         }
 
         return $port;
+    }
+
+    private function positiveIntegerOrDefault(mixed $value, int $default): int
+    {
+        $integer = (int) $value;
+
+        return $integer > 0 ? $integer : $default;
+    }
+
+    private function requirePositiveTimer(mixed $value, string $field): int
+    {
+        $integer = (int) $value;
+        if ($integer < 1 || $integer > 10080) {
+            throw new RuntimeException(sprintf(__('Timer inválido em %s. Use um inteiro positivo de até 10080 minutos.', 'glpiintegaglpi'), $field));
+        }
+
+        return $integer;
     }
 
     private function normalizeSslMode(mixed $value): string

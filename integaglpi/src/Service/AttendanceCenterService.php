@@ -108,6 +108,7 @@ final class AttendanceCenterService
             ],
             'rows' => [],
             'queues' => [],
+            'service_catalog' => [],
             'technicians' => [],
             'glpi_entities' => $glpiEntities,
             'glpi_entities_error' => null,
@@ -140,6 +141,7 @@ final class AttendanceCenterService
                 ...$baseData,
                 'rows' => $this->decorateRows($rows),
                 'queues' => $repository->findAttendanceQueues(),
+                'service_catalog' => $this->loadServiceCatalogOptions(),
                 'technicians' => $this->buildTechnicianOptions($repository->findAttendanceTechnicianIds()),
                 'diagnostics' => $this->loadReadOnlyDiagnostics(),
                 'pagination' => [
@@ -229,7 +231,9 @@ final class AttendanceCenterService
         int $userId,
         bool $createTicket,
         int $submittedTicketId = 0,
-        ?string $idempotencyKey = null
+        ?string $idempotencyKey = null,
+        int $serviceCatalogId = 0,
+        string $serviceChecklistJson = ''
     ): array {
         $conversationId = trim($conversationId);
         if ($glpiEntityId <= 0) {
@@ -319,6 +323,30 @@ final class AttendanceCenterService
                 'error' => 'ticket_already_linked',
                 'message' => __('Esta conversa já possui chamado vinculado. Atualize a Central.', 'glpiintegaglpi'),
             ];
+        }
+
+        $checklistValidation = $this->validateServiceChecklist($serviceCatalogId, $serviceChecklistJson);
+        if (!$checklistValidation['ok']) {
+            return [
+                'ok' => false,
+                'http_status' => 409,
+                'error' => 'service_checklist_incomplete',
+                'message' => (string) $checklistValidation['message'],
+            ];
+        }
+
+        if ($serviceCatalogId > 0) {
+            try {
+                $this->getConversationRepository()->assignServiceCatalogForPreTicket($conversationId, $serviceCatalogId);
+            } catch (Throwable $exception) {
+                error_log('[integaglpi][service_catalog][assign_error] ' . $exception->getMessage());
+                return [
+                    'ok' => false,
+                    'http_status' => 500,
+                    'error' => 'service_catalog_assign_failed',
+                    'message' => __('Não foi possível vincular o serviço ao pré-ticket agora.', 'glpiintegaglpi'),
+                ];
+            }
         }
 
         try {
@@ -1218,6 +1246,12 @@ final class AttendanceCenterService
             ];
         }
 
+        try {
+            $this->getConversationRepository()->markFirstResponseIfMissing($conversationId);
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][sla][first_response_update_failed] ' . $exception->getMessage());
+        }
+
         return [
             'ok' => true,
             'status' => (string) ($solutionResult['status'] ?? 'solved'),
@@ -1570,6 +1604,7 @@ final class AttendanceCenterService
             );
             $row['business_hours_label'] = $this->buildBusinessHoursLabel();
             $row['operational_state_label'] = $this->operationalStateLabel($row);
+            $row['sla_context'] = $this->buildSlaContext($row);
             $row['risk_badges'] = $this->buildRiskBadges($row);
             $row['last_message_preview'] = trim((string) ($row['last_message_preview'] ?? ''));
 
@@ -1595,6 +1630,160 @@ final class AttendanceCenterService
         }
 
         return $options;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function loadServiceCatalogOptions(): array
+    {
+        try {
+            if (!$this->externalTableExists('glpi_plugin_integaglpi_service_catalog')) {
+                return [];
+            }
+
+            $hasQueues = $this->externalTableExists('glpi_plugin_integaglpi_queues');
+            $sql = $hasQueues
+                ? "SELECT sc.id,
+                         sc.service_key,
+                         sc.name,
+                         sc.routing_queue_id,
+                         sc.glpi_entity_id,
+                         sc.required_fields_json::text AS required_fields_json,
+                         q.name AS queue_name
+                   FROM glpi_plugin_integaglpi_service_catalog sc
+                   LEFT JOIN glpi_plugin_integaglpi_queues q ON q.id = sc.routing_queue_id
+                   WHERE sc.is_active = TRUE
+                   ORDER BY sc.name ASC
+                   LIMIT 200"
+                : "SELECT sc.id,
+                         sc.service_key,
+                         sc.name,
+                         sc.routing_queue_id,
+                         sc.glpi_entity_id,
+                         sc.required_fields_json::text AS required_fields_json,
+                         NULL::text AS queue_name
+                   FROM glpi_plugin_integaglpi_service_catalog sc
+                   WHERE sc.is_active = TRUE
+                   ORDER BY sc.name ASC
+                   LIMIT 200";
+
+            $statement = $this->getPdo()->query($sql);
+            $rows = $statement ? ($statement->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+
+            return array_values(array_map(static function (array $row): array {
+                $requiredFields = json_decode((string) ($row['required_fields_json'] ?? '[]'), true);
+
+                return [
+                    'id' => (int) ($row['id'] ?? 0),
+                    'service_key' => (string) ($row['service_key'] ?? ''),
+                    'name' => (string) ($row['name'] ?? ''),
+                    'routing_queue_id' => isset($row['routing_queue_id']) ? (int) $row['routing_queue_id'] : 0,
+                    'glpi_entity_id' => isset($row['glpi_entity_id']) ? (int) $row['glpi_entity_id'] : 0,
+                    'queue_name' => (string) ($row['queue_name'] ?? ''),
+                    'required_fields' => is_array($requiredFields) ? $requiredFields : [],
+                ];
+            }, $rows));
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][service_catalog][central_options] ' . $exception->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * @return array{ok: bool, message: string}
+     */
+    private function validateServiceChecklist(int $serviceCatalogId, string $serviceChecklistJson): array
+    {
+        if ($serviceCatalogId <= 0) {
+            return ['ok' => true, 'message' => ''];
+        }
+
+        try {
+            if (!$this->externalTableExists('glpi_plugin_integaglpi_service_catalog')) {
+                return [
+                    'ok' => false,
+                    'message' => __('Catálogo de serviços indisponível para validar checklist.', 'glpiintegaglpi'),
+                ];
+            }
+
+            $statement = $this->getPdo()->prepare(
+                "SELECT required_fields_json::text AS required_fields_json
+                 FROM glpi_plugin_integaglpi_service_catalog
+                 WHERE id = :id AND is_active = TRUE
+                 LIMIT 1"
+            );
+            $statement->execute([':id' => $serviceCatalogId]);
+            $row = $statement->fetch(PDO::FETCH_ASSOC);
+            if (!is_array($row)) {
+                return [
+                    'ok' => false,
+                    'message' => __('Serviço selecionado não está ativo no catálogo.', 'glpiintegaglpi'),
+                ];
+            }
+
+            $requiredFields = json_decode((string) ($row['required_fields_json'] ?? '[]'), true);
+            if (!is_array($requiredFields) || $requiredFields === []) {
+                return ['ok' => true, 'message' => ''];
+            }
+
+            $answers = [];
+            $trimmedChecklist = trim($serviceChecklistJson);
+            if ($trimmedChecklist !== '') {
+                $decodedAnswers = json_decode($trimmedChecklist, true);
+                if (!is_array($decodedAnswers)) {
+                    return [
+                        'ok' => false,
+                        'message' => __('Checklist obrigatório inválido. Use JSON simples com os campos exigidos.', 'glpiintegaglpi'),
+                    ];
+                }
+                $answers = $decodedAnswers;
+            }
+
+            $missing = [];
+            foreach ($requiredFields as $field) {
+                if (is_string($field)) {
+                    $key = trim($field);
+                    $label = $key;
+                    $required = true;
+                } elseif (is_array($field)) {
+                    $key = trim((string) ($field['key'] ?? $field['name'] ?? ''));
+                    $label = trim((string) ($field['label'] ?? $key));
+                    $required = array_key_exists('required', $field)
+                        ? filter_var($field['required'], FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE) !== false
+                        : true;
+                } else {
+                    continue;
+                }
+
+                if ($key === '' || !$required) {
+                    continue;
+                }
+
+                $value = $answers[$key] ?? null;
+                if (is_array($value) || trim((string) $value) === '') {
+                    $missing[] = $label !== '' ? $label : $key;
+                }
+            }
+
+            if ($missing !== []) {
+                return [
+                    'ok' => false,
+                    'message' => sprintf(
+                        __('Checklist obrigatório incompleto: %s.', 'glpiintegaglpi'),
+                        implode(', ', $missing)
+                    ),
+                ];
+            }
+
+            return ['ok' => true, 'message' => ''];
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][service_catalog][checklist_validate] ' . $exception->getMessage());
+            return [
+                'ok' => false,
+                'message' => __('Não foi possível validar o checklist do serviço agora.', 'glpiintegaglpi'),
+            ];
+        }
     }
 
     /**
@@ -2156,8 +2345,101 @@ final class AttendanceCenterService
         if ((string) ($row['contract_alert_status'] ?? '') !== '' && (string) ($row['contract_alert_status'] ?? '') !== 'ok') {
             $badges[] = ['label' => __('Contrato em atenção', 'glpiintegaglpi'), 'class' => 'bg-warning text-dark'];
         }
+        $slaContext = is_array($row['sla_context'] ?? null) ? $row['sla_context'] : [];
+        $slaStatus = (string) ($slaContext['status'] ?? 'normal');
+        if ($slaStatus !== 'normal') {
+            $badges[] = [
+                'label' => (string) ($slaContext['label'] ?? __('SLA em atenção', 'glpiintegaglpi')),
+                'class' => (string) ($slaContext['badge_class'] ?? 'bg-warning text-dark'),
+            ];
+        }
 
         return $badges;
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private function buildSlaContext(array $row): array
+    {
+        $responseDeadline = $this->timestampOrNull($row['sla_response_deadline'] ?? null);
+        $solutionDeadline = $this->timestampOrNull($row['sla_solution_deadline'] ?? null);
+        $firstResponseAt = $this->timestampOrNull($row['sla_first_response_at'] ?? null);
+        $resolutionAt = $this->timestampOrNull($row['sla_resolution_at'] ?? null);
+        $pausedMinutes = max(0, (int) ($row['accumulated_paused_minutes'] ?? 0));
+        $reopenCount = max(0, (int) ($row['reopen_count'] ?? 0));
+        $now = time();
+        $deadline = $resolutionAt === null && $solutionDeadline !== null
+            ? $solutionDeadline
+            : ($firstResponseAt === null ? $responseDeadline : $solutionDeadline);
+        $startedAt = $this->timestampOrNull($row['last_inbound_at'] ?? null)
+            ?? $this->timestampOrNull($row['conversation_updated_at'] ?? null)
+            ?? $this->timestampOrNull($row['activity_at'] ?? null);
+
+        $status = 'normal';
+        if ($deadline !== null) {
+            if ($deadline <= $now) {
+                $status = 'breached';
+            } elseif ($startedAt !== null && $deadline > $startedAt) {
+                $elapsed = max(0, $now - $startedAt);
+                $total = max(1, $deadline - $startedAt);
+                $percent = ($elapsed / $total) * 100;
+                if ($percent >= 90) {
+                    $status = 'critical';
+                } elseif ($percent >= 70) {
+                    $status = 'attention';
+                }
+            }
+        }
+
+        $labels = [
+            'normal' => __('SLA normal', 'glpiintegaglpi'),
+            'attention' => __('SLA atenção', 'glpiintegaglpi'),
+            'critical' => __('SLA crítico', 'glpiintegaglpi'),
+            'breached' => __('SLA vencido', 'glpiintegaglpi'),
+        ];
+        $classes = [
+            'normal' => 'bg-success',
+            'attention' => 'bg-warning text-dark',
+            'critical' => 'bg-danger',
+            'breached' => 'bg-dark',
+        ];
+
+        return [
+            'status' => $status,
+            'label' => $labels[$status],
+            'badge_class' => $classes[$status],
+            'response_deadline' => $this->formatSlaTimestamp($row['sla_response_deadline'] ?? null),
+            'solution_deadline' => $this->formatSlaTimestamp($row['sla_solution_deadline'] ?? null),
+            'first_response_at' => $this->formatSlaTimestamp($row['sla_first_response_at'] ?? null),
+            'resolution_at' => $this->formatSlaTimestamp($row['sla_resolution_at'] ?? null),
+            'paused_minutes' => $pausedMinutes,
+            'reopen_count' => $reopenCount,
+            'service_name' => trim((string) ($row['service_catalog_name'] ?? '')),
+            'service_key' => trim((string) ($row['service_catalog_key'] ?? '')),
+        ];
+    }
+
+    private function timestampOrNull(mixed $value): ?int
+    {
+        $value = trim((string) $value);
+        if ($value === '') {
+            return null;
+        }
+
+        $timestamp = strtotime($value);
+        return $timestamp === false ? null : $timestamp;
+    }
+
+    private function formatSlaTimestamp(mixed $value): string
+    {
+        $timestamp = $this->timestampOrNull($value);
+        if ($timestamp === null) {
+            return '';
+        }
+
+        return date('Y-m-d H:i', $timestamp);
     }
 
     private function statusLabel(string $status): string

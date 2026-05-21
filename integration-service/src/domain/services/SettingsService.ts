@@ -35,6 +35,12 @@ export interface ContactProfileConfig {
   confirmMessage: string;
 }
 
+export interface InactivityRuntimeConfig {
+  enabled: boolean | null;
+  reminderMinutes: [number, number, number] | null;
+  autocloseMinutes: number | null;
+}
+
 const CONTACT_PROFILE_DEFAULTS: ContactProfileConfig = {
   collectionEnabled: false,
   promptMode: 'hybrid',
@@ -205,6 +211,40 @@ export class SettingsService {
     }
   }
 
+  public async getInactivityRuntimeConfig(): Promise<InactivityRuntimeConfig> {
+    try {
+      const rawValues = await this.repository.findInactivitySettings();
+      const r1 = this.toPositiveIntegerOrNull(rawValues.get('inactivity_reminder_1_minutes'));
+      const r2 = this.toPositiveIntegerOrNull(rawValues.get('inactivity_reminder_2_minutes'));
+      const r3 = this.toPositiveIntegerOrNull(rawValues.get('inactivity_reminder_3_minutes'));
+      const autoclose = this.toPositiveIntegerOrNull(rawValues.get('inactivity_autoclose_minutes'));
+      const reminderMinutes = r1 !== null && r2 !== null && r3 !== null && r1 < r2 && r2 < r3
+        ? [r1, r2, r3] as [number, number, number]
+        : null;
+
+      return {
+        enabled: rawValues.has('inactivity_enabled')
+          ? this.toBooleanOrDefault(rawValues.get('inactivity_enabled'), false)
+          : null,
+        reminderMinutes,
+        autocloseMinutes: autoclose,
+      };
+    } catch (error: unknown) {
+      logger.error(
+        {
+          error: error instanceof Error ? { message: error.message, name: error.name } : String(error),
+        },
+        '[config][INACTIVITY_ERROR]',
+      );
+
+      return {
+        enabled: null,
+        reminderMinutes: null,
+        autocloseMinutes: null,
+      };
+    }
+  }
+
   private toBooleanOrDefault(value: unknown, defaultValue: boolean): boolean {
     return normalizeBooleanSetting(value, defaultValue);
   }
@@ -237,6 +277,14 @@ export class SettingsService {
     }
 
     return normalized;
+  }
+
+  private toPositiveIntegerOrNull(value: unknown): number | null {
+    const parsed = typeof value === 'number'
+      ? value
+      : Number.parseInt(String(value ?? '').trim(), 10);
+
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
   }
 
   private async getCachedSettings(): Promise<Map<string, string>> {
