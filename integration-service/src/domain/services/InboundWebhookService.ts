@@ -24,7 +24,7 @@ import type { AuditService } from './AuditService.js';
 import type { ContactEntityResolutionService } from './ContactEntityResolutionService.js';
 import type { ContactProfileCollectionState, ContactProfileService } from './ContactProfileService.js';
 import type { CustomerExperienceService } from './CustomerExperienceService.js';
-import type { MessageConfigurationService } from './MessageConfigurationService.js';
+import type { MessageConfigurationService, MessageSendPlan } from './MessageConfigurationService.js';
 import type { BusinessHoursService } from './BusinessHoursService.js';
 import { hasValidGlpiTicketId } from './EntitySelectionService.js';
 import { createCorrelationId } from './correlationId.js';
@@ -49,6 +49,14 @@ const GLPI_STATUS_CLOSED = 6;
 const GLPI_STATUS_PROCESSING = 2;
 const ENTITY_SELECTION_PENDING_MESSAGE =
   'Recebemos as suas informações, em breve um de nossos técnicos irá seguir com o atendimento.';
+const PRETICKET_INVALID_INPUT_EVENT_KEY = 'preticket_invalid_input';
+const PRETICKET_INVALID_INPUT_TEXT =
+  'Neste momento preciso de uma resposta em texto. Arquivos, imagens ou áudios poderão ser enviados depois que o chamado for aberto.';
+const PRETICKET_USER_CANCELLED_EVENT_KEY = 'preticket_cancelled_by_user';
+const PRETICKET_USER_CANCELLED_TEXT =
+  'Atendimento cancelado. Nenhum chamado foi aberto. Se precisar, inicie um novo atendimento.';
+const PRETICKET_CANCEL_WORDS = new Set(['cancelar', 'sair', 'encerrar']);
+const PRETICKET_BLOCKED_INPUT_TYPES = new Set(['image', 'audio', 'voice', 'video', 'document', 'sticker', 'location', 'contacts', 'contact']);
 const REOPEN_REASON_OPTIONS: Array<{ key: ReopenReasonKey; eventKey: string; fallback: string }> = [
   { key: 'problem_persists', eventKey: 'reopen_reason_problem_persists', fallback: 'O problema permanece' },
   { key: 'missing_work', eventKey: 'reopen_reason_missing_work', fallback: 'Ficou faltando algo' },
@@ -609,6 +617,35 @@ export class InboundWebhookService {
           );
         }
 
+        if (
+          activeConversation?.status === 'awaiting_entity_selection'
+          && !hasValidGlpiTicketId(activeConversation.glpiTicketId)
+        ) {
+          const cancelled = await this.tryCancelPreTicketFromInbound({
+            contact,
+            conversation: activeConversation,
+            inboundMessage,
+            toMeta,
+            correlationId,
+            state: activeConversation.profileCollectionState ?? null,
+          });
+          if (cancelled) {
+            return;
+          }
+
+          if (!this.isAllowedPreTicketTextInput(inboundMessage)) {
+            await this.handleInvalidPreTicketInput({
+              contact,
+              conversation: activeConversation,
+              inboundMessage,
+              toMeta,
+              correlationId,
+              state: activeConversation.profileCollectionState ?? null,
+            });
+            return;
+          }
+        }
+
         if (activeConversation?.status === 'collecting_contact_profile') {
           if (!this.contactProfileService) {
             await this.metaClient.sendTextMessage({
@@ -641,6 +678,30 @@ export class InboundWebhookService {
             : reliableExistingProfile
               ? this.contactProfileService.startExistingProfileConfirmationState(reliableExistingProfile)
               : this.contactProfileService.startNewCollectionState();
+
+          const cancelled = await this.tryCancelPreTicketFromInbound({
+            contact,
+            conversation: activeConversation,
+            inboundMessage,
+            toMeta,
+            correlationId,
+            state: collectionState,
+          });
+          if (cancelled) {
+            return;
+          }
+
+          if (!this.isAllowedPreTicketTextInput(inboundMessage)) {
+            await this.handleInvalidPreTicketInput({
+              contact,
+              conversation: activeConversation,
+              inboundMessage,
+              toMeta,
+              correlationId,
+              state: collectionState,
+            });
+            return;
+          }
 
           if (!profileText) {
             await this.conversationRepository.updateProfileCollectionState(activeConversation.id, collectionState);
@@ -2879,6 +2940,263 @@ export class InboundWebhookService {
         option_keys: input.routingOptions.map((option) => option.optionKey),
       },
     });
+  }
+
+  private isAllowedPreTicketTextInput(inboundMessage: ParsedMetaInboundMessage): boolean {
+    if (inboundMessage.messageType === 'text') {
+      return typeof inboundMessage.messageText === 'string' && inboundMessage.messageText.trim() !== '';
+    }
+
+    if (inboundMessage.messageType === 'interactive') {
+      return typeof inboundMessage.messageText === 'string' && inboundMessage.messageText.trim() !== '';
+    }
+
+    return false;
+  }
+
+  private isBlockedPreTicketInputType(messageType: string): boolean {
+    return PRETICKET_BLOCKED_INPUT_TYPES.has(messageType.trim().toLowerCase());
+  }
+
+  private isPreTicketCancelText(text: string | null): boolean {
+    const normalized = (text ?? '').trim().toLowerCase();
+    return PRETICKET_CANCEL_WORDS.has(normalized);
+  }
+
+  private async tryCancelPreTicketFromInbound(input: {
+    contact: Contact;
+    conversation: Conversation;
+    inboundMessage: ParsedMetaInboundMessage;
+    toMeta: string;
+    correlationId: string;
+    state: Record<string, unknown> | null;
+  }): Promise<boolean> {
+    if (!this.isPreTicketCancelText(input.inboundMessage.messageText)) {
+      return false;
+    }
+
+    const closeState = {
+      ...(input.state ?? {}),
+      close_reason: 'preticket_user_cancelled',
+      preticket_cancelled_at: new Date().toISOString(),
+    };
+    await this.conversationRepository.updateProfileCollectionState(input.conversation.id, closeState);
+    await this.conversationRepository.updateStatus(input.conversation.id, 'cancelled');
+    await this.sendConfiguredPreTicketMessage({
+      toMeta: input.toMeta,
+      eventKey: PRETICKET_USER_CANCELLED_EVENT_KEY,
+      fallbackText: PRETICKET_USER_CANCELLED_TEXT,
+      correlationId: input.correlationId,
+      conversationId: input.conversation.id,
+      messageId: input.inboundMessage.messageId,
+      phoneE164: input.contact.phoneE164,
+    });
+    await this.messageRepository.updateState({
+      messageId: input.inboundMessage.messageId,
+      conversationId: input.conversation.id,
+      processingStatus: 'processed',
+      glpiSyncStatus: 'synced',
+    });
+    logger.info(
+      {
+        conversation_id: input.conversation.id,
+        message_type: input.inboundMessage.messageType,
+        event_type: 'PRETICKET_CANCELLED_BY_USER',
+        status: 'success',
+      },
+      '[integration-service][preticket][CANCELLED_BY_USER]',
+    );
+    this.recordAudit({
+      correlationId: input.correlationId,
+      conversationId: input.conversation.id,
+      messageId: input.inboundMessage.messageId,
+      direction: 'inbound',
+      eventType: 'PRETICKET_CANCELLED_BY_USER',
+      status: 'success',
+      severity: 'info',
+      source: 'InboundWebhookService',
+      payload: {
+        close_reason: 'preticket_user_cancelled',
+        glpi_ticket_created: false,
+        csat_suppressed: true,
+      },
+    });
+
+    return true;
+  }
+
+  private async handleInvalidPreTicketInput(input: {
+    contact: Contact;
+    conversation: Conversation;
+    inboundMessage: ParsedMetaInboundMessage;
+    toMeta: string;
+    correlationId: string;
+    state: Record<string, unknown> | null;
+  }): Promise<void> {
+    await this.sendConfiguredPreTicketMessage({
+      toMeta: input.toMeta,
+      eventKey: PRETICKET_INVALID_INPUT_EVENT_KEY,
+      fallbackText: PRETICKET_INVALID_INPUT_TEXT,
+      correlationId: input.correlationId,
+      conversationId: input.conversation.id,
+      messageId: input.inboundMessage.messageId,
+      phoneE164: input.contact.phoneE164,
+    });
+    await this.messageRepository.updateState({
+      messageId: input.inboundMessage.messageId,
+      conversationId: input.conversation.id,
+      processingStatus: 'processed',
+      glpiSyncStatus: 'synced',
+    });
+    const blockedMedia = this.isBlockedPreTicketInputType(input.inboundMessage.messageType);
+    logger.info(
+      {
+        conversation_id: input.conversation.id,
+        message_type: input.inboundMessage.messageType,
+        profile_step: typeof input.state?.step === 'string' ? input.state.step : null,
+        event_type: blockedMedia ? 'PRETICKET_MEDIA_INPUT_BLOCKED' : 'PRETICKET_INVALID_INPUT_BLOCKED',
+        status: 'ignored',
+      },
+      '[integration-service][preticket][INVALID_INPUT_BLOCKED]',
+    );
+    this.recordAudit({
+      correlationId: input.correlationId,
+      conversationId: input.conversation.id,
+      messageId: input.inboundMessage.messageId,
+      direction: 'inbound',
+      eventType: blockedMedia ? 'PRETICKET_MEDIA_INPUT_BLOCKED' : 'INVALID_MIME_INPUT_REJECTED_AT_PRETICKET',
+      status: 'ignored',
+      severity: 'warning',
+      source: 'InboundWebhookService',
+      payload: {
+        message_type: input.inboundMessage.messageType,
+        profile_step: typeof input.state?.step === 'string' ? input.state.step : null,
+        blocked_before_download: true,
+        state_preserved: true,
+        glpi_ticket_created: false,
+      },
+    });
+  }
+
+  private async sendConfiguredPreTicketMessage(input: {
+    toMeta: string;
+    eventKey: string;
+    fallbackText: string;
+    correlationId: string;
+    conversationId: string;
+    messageId: string;
+    phoneE164: string;
+  }): Promise<boolean> {
+    const plan = this.messageConfigurationService
+      ? await this.messageConfigurationService.resolveSendPlan(input.eventKey, {
+        windowOpen: true,
+        allowTemplateSend: true,
+      })
+      : this.buildFallbackPreTicketSendPlan(input.eventKey, input.fallbackText);
+
+    await this.messageConfigurationService?.recordAutomationEvent({
+      conversationId: input.conversationId,
+      phoneE164: input.phoneE164,
+      eventKey: input.eventKey,
+      status: 'planned',
+      reason: plan.reason,
+    });
+
+    if (!plan.shouldSend) {
+      await this.messageConfigurationService?.recordAutomationEvent({
+        conversationId: input.conversationId,
+        phoneE164: input.phoneE164,
+        eventKey: input.eventKey,
+        status: 'not_sent_by_rule',
+        reason: plan.reason ?? 'not_sent_by_rule',
+      });
+      this.recordAudit({
+        correlationId: input.correlationId,
+        conversationId: input.conversationId,
+        messageId: input.messageId,
+        direction: 'outbound',
+        eventType: 'PRETICKET_MESSAGE_SKIPPED',
+        status: 'ignored',
+        severity: 'warning',
+        source: 'InboundWebhookService',
+        payload: {
+          event_key: input.eventKey,
+          reason: plan.reason ?? 'not_sent_by_rule',
+        },
+      });
+      return false;
+    }
+
+    try {
+      if (plan.sendType === 'template') {
+        const sendTemplateMessage = (this.metaClient as unknown as {
+          sendTemplateMessage?: (payload: {
+            to: string;
+            templateName: string;
+            language: string;
+            parameters?: string[];
+          }) => Promise<unknown>;
+        }).sendTemplateMessage;
+        if (!plan.templateName || typeof sendTemplateMessage !== 'function') {
+          throw new Error('PRETICKET_TEMPLATE_UNAVAILABLE');
+        }
+        await sendTemplateMessage.call(this.metaClient, {
+          to: input.toMeta,
+          templateName: plan.templateName,
+          language: plan.language,
+          parameters: [],
+        });
+      } else {
+        await this.metaClient.sendTextMessage({ to: input.toMeta, body: plan.text || input.fallbackText });
+      }
+      await this.messageConfigurationService?.recordAutomationEvent({
+        conversationId: input.conversationId,
+        phoneE164: input.phoneE164,
+        eventKey: input.eventKey,
+        status: 'sent',
+      });
+      return true;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.messageConfigurationService?.recordAutomationEvent({
+        conversationId: input.conversationId,
+        phoneE164: input.phoneE164,
+        eventKey: input.eventKey,
+        status: 'failed',
+        errorCode: 'PRETICKET_MESSAGE_SEND_FAILED',
+        errorMessageSanitized: message.slice(0, 500),
+      });
+      this.recordAudit({
+        correlationId: input.correlationId,
+        conversationId: input.conversationId,
+        messageId: input.messageId,
+        direction: 'outbound',
+        eventType: 'PRETICKET_MESSAGE_FAILED',
+        status: 'failed',
+        severity: 'warning',
+        source: 'InboundWebhookService',
+        payload: {
+          event_key: input.eventKey,
+          error_message: message.slice(0, 500),
+        },
+      });
+      return false;
+    }
+  }
+
+  private buildFallbackPreTicketSendPlan(eventKey: string, fallbackText: string): MessageSendPlan {
+    return {
+      eventKey,
+      sendType: 'text',
+      text: fallbackText,
+      active: true,
+      shouldSend: true,
+      reason: null,
+      templateName: null,
+      language: 'pt_BR',
+      buttons: [],
+      listOptions: [],
+    };
   }
 
   private async sendContactProfilePrompt(input: {

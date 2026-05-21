@@ -149,12 +149,14 @@ export class PostgresInactivityTrackingRepository implements InactivityTrackingR
   }
 
   public async findProfileCollectionReminderCandidates(
-    cutoff: Date,
+    reminderCutoff: Date,
+    autocloseCutoff: Date,
     limit: number,
   ): Promise<ProfileCollectionReminderCandidate[]> {
     const result = await this.executor.query<{
       id: string;
       phone_e164: string;
+      status: string;
       profile_collection_state: Record<string, unknown> | null;
       last_message_at: Date | string;
       updated_at: Date | string;
@@ -163,29 +165,41 @@ export class PostgresInactivityTrackingRepository implements InactivityTrackingR
         SELECT
           id,
           phone_e164,
+          status,
           COALESCE(profile_collection_state, '{}'::jsonb) AS profile_collection_state,
           last_message_at,
           updated_at
         FROM ${DATABASE_TABLES.conversations}
-        WHERE status = 'collecting_contact_profile'
+        WHERE status IN ('collecting_contact_profile', 'awaiting_entity_selection')
           AND (glpi_ticket_id IS NULL OR glpi_ticket_id = 0)
-          AND COALESCE(profile_collection_state->>'step', '') <> ''
-          AND COALESCE(profile_collection_state->>'step', '') <> 'complete'
+          AND (
+            (
+              status = 'collecting_contact_profile'
+              AND COALESCE(profile_collection_state->>'step', '') <> ''
+              AND COALESCE(profile_collection_state->>'step', '') <> 'complete'
+            )
+            OR status = 'awaiting_entity_selection'
+          )
           AND last_message_at <= $1
           AND (
-            profile_collection_state->>'profile_reminder_sent_at' IS NULL
+            last_message_at <= $2
+            OR profile_collection_state->>'profile_reminder_sent_at' IS NULL
             OR profile_collection_state->>'profile_reminder_sent_for_step'
-              IS DISTINCT FROM COALESCE(profile_collection_state->>'step', '')
+              IS DISTINCT FROM CASE
+                WHEN status = 'awaiting_entity_selection' THEN 'awaiting_entity_selection'
+                ELSE COALESCE(profile_collection_state->>'step', '')
+              END
           )
         ORDER BY last_message_at ASC, updated_at ASC
-        LIMIT $2
+        LIMIT $3
       `,
-      [cutoff, limit],
+      [reminderCutoff, autocloseCutoff, limit],
     );
 
     return result.rows.map((row) => ({
       conversationId: row.id,
       phoneE164: row.phone_e164,
+      conversationStatus: row.status,
       profileCollectionState: row.profile_collection_state ?? {},
       lastMessageAt: row.last_message_at instanceof Date ? row.last_message_at : new Date(String(row.last_message_at)),
       updatedAt: row.updated_at instanceof Date ? row.updated_at : new Date(String(row.updated_at)),
@@ -239,15 +253,50 @@ export class PostgresInactivityTrackingRepository implements InactivityTrackingR
             ),
           updated_at = NOW()
         WHERE id = $1
-          AND status = 'collecting_contact_profile'
+          AND status IN ('collecting_contact_profile', 'awaiting_entity_selection')
           AND (glpi_ticket_id IS NULL OR glpi_ticket_id = 0)
-          AND COALESCE(profile_collection_state->>'step', '') = $2
+          AND CASE
+            WHEN status = 'awaiting_entity_selection' THEN 'awaiting_entity_selection'
+            ELSE COALESCE(profile_collection_state->>'step', '')
+          END = $2
           AND (
             profile_collection_state->>'profile_reminder_sent_at' IS NULL
             OR profile_collection_state->>'profile_reminder_sent_for_step' IS DISTINCT FROM $2
           )
       `,
       [conversationId, step, sentAt.toISOString()],
+    );
+
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  public async cancelProfileCollectionConversation(
+    conversationId: string,
+    step: string,
+    cancelledAt: Date,
+    reason: 'preticket_timeout',
+  ): Promise<boolean> {
+    const result = await this.executor.query(
+      `
+        UPDATE ${DATABASE_TABLES.conversations}
+        SET
+          status = 'cancelled',
+          profile_collection_state = COALESCE(profile_collection_state, '{}'::jsonb)
+            || jsonb_build_object(
+              'close_reason', $3::text,
+              'preticket_cancelled_at', $4::text,
+              'preticket_cancelled_for_step', $2::text
+            ),
+          updated_at = NOW()
+        WHERE id = $1
+          AND status IN ('collecting_contact_profile', 'awaiting_entity_selection')
+          AND (glpi_ticket_id IS NULL OR glpi_ticket_id = 0)
+          AND CASE
+            WHEN status = 'awaiting_entity_selection' THEN 'awaiting_entity_selection'
+            ELSE COALESCE(profile_collection_state->>'step', '')
+          END = $2
+      `,
+      [conversationId, step, reason, cancelledAt.toISOString()],
     );
 
     return (result.rowCount ?? 0) > 0;

@@ -89,6 +89,28 @@ export const MESSAGE_EVENT_DEFAULTS: Record<string, { group: string; description
     text: 'Ainda precisamos confirmar algumas informações para continuar seu atendimento. Por favor, responda as perguntas pendentes para seguirmos.',
     expectsResponse: true,
   },
+  preticket_reminder: {
+    group: 'Coleta de Perfil',
+    description: 'Lembrete de pré-ticket incompleto',
+    text: 'Ainda precisamos confirmar algumas informações para continuar seu atendimento. Por favor, responda as perguntas pendentes para seguirmos.',
+    expectsResponse: true,
+  },
+  preticket_autoclose: {
+    group: 'Coleta de Perfil',
+    description: 'Cancelamento de pré-ticket por falta de resposta',
+    text: 'Como não tivemos retorno, encerramos este pré-atendimento sem abrir chamado. Se precisar, inicie um novo atendimento.',
+  },
+  preticket_invalid_input: {
+    group: 'Coleta de Perfil',
+    description: 'Entrada inválida durante questionário textual',
+    text: 'Neste momento preciso de uma resposta em texto. Arquivos, imagens ou áudios poderão ser enviados depois que o chamado for aberto.',
+    expectsResponse: true,
+  },
+  preticket_cancelled_by_user: {
+    group: 'Coleta de Perfil',
+    description: 'Pré-ticket cancelado pelo usuário',
+    text: 'Atendimento cancelado. Nenhum chamado foi aberto. Se precisar, inicie um novo atendimento.',
+  },
   awaiting_entity_message: { group: 'Ticket e Solução', description: 'Aguardando seleção de entidade', text: 'Recebemos as suas informações, em breve um técnico seguirá com o atendimento.' },
   ticket_created_message: { group: 'Ticket e Solução', description: 'Chamado criado', text: 'Seu chamado #{ticket_id} foi aberto.' },
   ticket_updated_message: { group: 'Ticket e Solução', description: 'Chamado atualizado', text: 'Atualizamos seu chamado com a nova mensagem.' },

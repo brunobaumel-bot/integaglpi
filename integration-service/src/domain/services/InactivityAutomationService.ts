@@ -61,9 +61,13 @@ const AUTOCLOSE_TEXT =
   'Como não tivemos retorno, estamos encerrando este atendimento por falta de resposta. Se precisar, basta nos chamar novamente.';
 const AUTOCLOSE_WARNING_TEXT = 'Este atendimento poderá ser encerrado automaticamente se não houver resposta.';
 const PROFILE_COLLECTION_REMINDER_EVENT_KEY = 'profile_collection_reminder';
-const PROFILE_COLLECTION_REMINDER_TEXT =
+const PRETICKET_REMINDER_EVENT_KEY = 'preticket_reminder';
+const PRETICKET_AUTOCLOSE_EVENT_KEY = 'preticket_autoclose';
+const PRETICKET_REMINDER_TEXT =
   'Ainda precisamos confirmar algumas informações para continuar seu atendimento. Por favor, responda as perguntas pendentes para seguirmos.';
-const PROFILE_COLLECTION_REMINDER_MINUTES = 5;
+const PRETICKET_AUTOCLOSE_TEXT =
+  'Como não tivemos retorno, encerramos este pré-atendimento sem abrir chamado. Se precisar, inicie um novo atendimento.';
+const PRETICKET_TIMEOUT_REASON = 'preticket_timeout';
 export const TECHNICIAN_ACTIVITY_GUARD_MINUTES = 120;
 const DEFAULT_REMINDER_MINUTES: [number, number, number] = [15, 20, 25];
 const AUTOCLOSE_REASON = 'Encerrado por falta de retorno do usuário';
@@ -328,15 +332,17 @@ export class InactivityAutomationService {
       for (const candidate of candidates) {
         await this.processCandidate(candidate, effectiveConfig);
       }
-      await this.processProfileCollectionReminderCandidates(limit);
+      await this.processProfileCollectionReminderCandidates(limit, effectiveConfig);
     } finally {
       this.isRunning = false;
     }
   }
 
-  private async processProfileCollectionReminderCandidates(limit: number): Promise<void> {
-    const cutoff = new Date(this.nowProvider().getTime() - PROFILE_COLLECTION_REMINDER_MINUTES * 60_000);
-    const candidates = await this.repository.findProfileCollectionReminderCandidates(cutoff, limit);
+  private async processProfileCollectionReminderCandidates(limit: number, config: InactivityConfig): Promise<void> {
+    const now = this.nowProvider();
+    const reminderCutoff = new Date(now.getTime() - config.reminderMinutes[0] * 60_000);
+    const autocloseCutoff = new Date(now.getTime() - config.autocloseMinutes * 60_000);
+    const candidates = await this.repository.findProfileCollectionReminderCandidates(reminderCutoff, autocloseCutoff, limit);
     await this.recordProfileDiagnostic(null, 'checked', {
       reason: candidates.length > 0 ? 'profile_collection_candidates_found' : 'profile_collection_no_candidates',
       checkedCount: candidates.length,
@@ -344,33 +350,42 @@ export class InactivityAutomationService {
     });
 
     for (const candidate of candidates) {
-      await this.processProfileCollectionReminderCandidate(candidate);
+      await this.processProfileCollectionReminderCandidate(candidate, config);
     }
   }
 
-  private async processProfileCollectionReminderCandidate(candidate: ProfileCollectionReminderCandidate): Promise<void> {
-    const step = normalizeProfileCollectionStep(candidate.profileCollectionState);
+  private async processProfileCollectionReminderCandidate(
+    candidate: ProfileCollectionReminderCandidate,
+    config: InactivityConfig,
+  ): Promise<void> {
+    const step = normalizeProfileCollectionStep(candidate.profileCollectionState, candidate.conversationStatus);
     if (!step || step === 'complete') {
       await this.recordProfileDiagnostic(candidate, 'skipped', { reason: 'profile_collection_step_not_eligible' });
       return;
     }
 
     const correlationId = createCorrelationId();
+    const elapsedMinutes = minutesBetween(candidate.lastMessageAt, this.nowProvider());
+    if (elapsedMinutes >= config.autocloseMinutes) {
+      await this.cancelPreTicketByInactivity(candidate, step, correlationId);
+      return;
+    }
+
     const windowOpen = this.nowProvider().getTime() - candidate.lastMessageAt.getTime() < 24 * 60 * 60 * 1000;
     const sendPlan = await this.resolveInactivitySendPlan(
-      PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+      PRETICKET_REMINDER_EVENT_KEY,
       windowOpen,
-      PROFILE_COLLECTION_REMINDER_TEXT,
+      PRETICKET_REMINDER_TEXT,
     );
     await this.recordProfileDiagnostic(candidate, 'eligible', { reason: 'profile_collection_reminder_due' });
     await this.recordProfileDiagnostic(candidate, 'planned', {
-      eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+      eventKey: PRETICKET_REMINDER_EVENT_KEY,
       reason: sendPlan.reason,
     });
     await this.messageConfigurationService?.recordAutomationEvent({
       conversationId: candidate.conversationId,
       phoneE164: candidate.phoneE164,
-      eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+      eventKey: PRETICKET_REMINDER_EVENT_KEY,
       status: 'planned',
       reason: sendPlan.reason,
     });
@@ -382,23 +397,32 @@ export class InactivityAutomationService {
     );
     if (!reserved) {
       await this.recordProfileDiagnostic(candidate, 'skipped', { reason: 'profile_collection_reminder_already_marked' });
+      this.recordProfileAudit(candidate, 'PRETICKET_REMINDER_SKIPPED', 'ignored', correlationId, {
+        reason: 'profile_collection_reminder_already_marked',
+        profile_step: step,
+      });
       return;
     }
 
-    const idempotencyKey = `profile_collection_reminder:${candidate.conversationId}:${step}:${candidate.lastMessageAt.toISOString()}`;
+    const idempotencyKey = `preticket_reminder:${candidate.conversationId}:${step}:${candidate.lastMessageAt.toISOString()}`;
     if (!sendPlan.shouldSend) {
       await this.recordProfileDiagnostic(candidate, 'skipped', {
-        eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+        eventKey: PRETICKET_REMINDER_EVENT_KEY,
         reason: sendPlan.reason ?? 'not_sent_by_rule',
       });
       await this.messageConfigurationService?.recordAutomationEvent({
         conversationId: candidate.conversationId,
         phoneE164: candidate.phoneE164,
-        eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+        eventKey: PRETICKET_REMINDER_EVENT_KEY,
         status: 'not_sent_by_rule',
         reason: sendPlan.reason ?? 'not_sent_by_rule',
       });
       this.recordProfileAudit(candidate, 'PROFILE_COLLECTION_REMINDER_NOT_SENT_BY_RULE', 'ignored', correlationId, {
+        reason: sendPlan.reason ?? 'not_sent_by_rule',
+        profile_step: step,
+        idempotency_key: idempotencyKey,
+      });
+      this.recordProfileAudit(candidate, 'PRETICKET_REMINDER_SKIPPED', 'ignored', correlationId, {
         reason: sendPlan.reason ?? 'not_sent_by_rule',
         profile_step: step,
         idempotency_key: idempotencyKey,
@@ -417,19 +441,19 @@ export class InactivityAutomationService {
         buttons: sendPlan.buttons,
         listOptions: sendPlan.listOptions,
         idempotencyKey,
-        eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+        eventKey: PRETICKET_REMINDER_EVENT_KEY,
         profileStep: step,
       }, { correlationId });
       if (result.body.status !== 'sent') {
         await this.recordProfileDiagnostic(candidate, 'failed', {
-          eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+          eventKey: PRETICKET_REMINDER_EVENT_KEY,
           reason: result.body.error_code,
           metaErrorMessageSanitized: result.body.message.slice(0, 500),
         });
         await this.messageConfigurationService?.recordAutomationEvent({
           conversationId: candidate.conversationId,
           phoneE164: candidate.phoneE164,
-          eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+          eventKey: PRETICKET_REMINDER_EVENT_KEY,
           status: 'failed',
           errorCode: result.body.error_code,
           errorMessageSanitized: result.body.message.slice(0, 500),
@@ -442,14 +466,14 @@ export class InactivityAutomationService {
       }
 
       await this.recordProfileDiagnostic(candidate, 'sent', {
-        eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+        eventKey: PRETICKET_REMINDER_EVENT_KEY,
         messageId: result.body.message_id,
         deliveryStatus: 'sent',
       });
       await this.messageConfigurationService?.recordAutomationEvent({
         conversationId: candidate.conversationId,
         phoneE164: candidate.phoneE164,
-        eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+        eventKey: PRETICKET_REMINDER_EVENT_KEY,
         status: 'sent',
         messageId: result.body.message_id,
       });
@@ -457,17 +481,21 @@ export class InactivityAutomationService {
         profile_step: step,
         idempotency_key: idempotencyKey,
       });
+      this.recordProfileAudit(candidate, 'PRETICKET_REMINDER_DISPATCHED', 'success', correlationId, {
+        profile_step: step,
+        idempotency_key: idempotencyKey,
+      });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       await this.recordProfileDiagnostic(candidate, 'failed', {
-        eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+        eventKey: PRETICKET_REMINDER_EVENT_KEY,
         reason: 'profile_collection_reminder_failed',
         metaErrorMessageSanitized: message.slice(0, 500),
       });
       await this.messageConfigurationService?.recordAutomationEvent({
         conversationId: candidate.conversationId,
         phoneE164: candidate.phoneE164,
-        eventKey: PROFILE_COLLECTION_REMINDER_EVENT_KEY,
+        eventKey: PRETICKET_REMINDER_EVENT_KEY,
         status: 'failed',
         errorCode: 'PROFILE_COLLECTION_REMINDER_FAILED',
         errorMessageSanitized: message.slice(0, 500),
@@ -477,6 +505,132 @@ export class InactivityAutomationService {
         error_message: message.slice(0, 500),
       });
     }
+  }
+
+  private async cancelPreTicketByInactivity(
+    candidate: ProfileCollectionReminderCandidate,
+    step: string,
+    correlationId: string,
+  ): Promise<void> {
+    const windowOpen = this.nowProvider().getTime() - candidate.lastMessageAt.getTime() < 24 * 60 * 60 * 1000;
+    const sendPlan = await this.resolveInactivitySendPlan(
+      PRETICKET_AUTOCLOSE_EVENT_KEY,
+      windowOpen,
+      PRETICKET_AUTOCLOSE_TEXT,
+    );
+    await this.recordProfileDiagnostic(candidate, 'eligible', { reason: 'preticket_timeout_due' });
+    await this.recordProfileDiagnostic(candidate, 'planned', {
+      eventKey: PRETICKET_AUTOCLOSE_EVENT_KEY,
+      reason: sendPlan.reason,
+    });
+    await this.messageConfigurationService?.recordAutomationEvent({
+      conversationId: candidate.conversationId,
+      phoneE164: candidate.phoneE164,
+      eventKey: PRETICKET_AUTOCLOSE_EVENT_KEY,
+      status: 'planned',
+      reason: sendPlan.reason,
+    });
+
+    if (sendPlan.shouldSend) {
+      const idempotencyKey = `preticket_autoclose:${candidate.conversationId}:${step}:${candidate.lastMessageAt.toISOString()}`;
+      try {
+        const result = await this.outboundMessageService.sendProfileCollectionReminder({
+          conversationId: candidate.conversationId,
+          phoneE164: candidate.phoneE164,
+          text: sendPlan.text,
+          messageType: sendPlan.sendType === 'internal_only' ? 'text' : sendPlan.sendType,
+          templateName: sendPlan.templateName,
+          language: sendPlan.language,
+          buttons: sendPlan.buttons,
+          listOptions: sendPlan.listOptions,
+          idempotencyKey,
+          eventKey: PRETICKET_AUTOCLOSE_EVENT_KEY,
+          profileStep: step,
+        }, { correlationId });
+
+        if (result.body.status === 'sent') {
+          await this.recordProfileDiagnostic(candidate, 'sent', {
+            eventKey: PRETICKET_AUTOCLOSE_EVENT_KEY,
+            messageId: result.body.message_id,
+            deliveryStatus: 'sent',
+          });
+          await this.messageConfigurationService?.recordAutomationEvent({
+            conversationId: candidate.conversationId,
+            phoneE164: candidate.phoneE164,
+            eventKey: PRETICKET_AUTOCLOSE_EVENT_KEY,
+            status: 'sent',
+            messageId: result.body.message_id,
+          });
+        } else {
+          await this.recordProfileDiagnostic(candidate, 'failed', {
+            eventKey: PRETICKET_AUTOCLOSE_EVENT_KEY,
+            reason: result.body.error_code,
+            metaErrorMessageSanitized: result.body.message.slice(0, 500),
+          });
+          this.recordProfileAudit(candidate, 'PRETICKET_AUTOCLOSE_MESSAGE_FAILED', 'failed', correlationId, {
+            profile_step: step,
+            error_code: result.body.error_code,
+          });
+        }
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        await this.recordProfileDiagnostic(candidate, 'failed', {
+          eventKey: PRETICKET_AUTOCLOSE_EVENT_KEY,
+          reason: 'preticket_autoclose_message_failed',
+          metaErrorMessageSanitized: message.slice(0, 500),
+        });
+        this.recordProfileAudit(candidate, 'PRETICKET_AUTOCLOSE_MESSAGE_FAILED', 'failed', correlationId, {
+          profile_step: step,
+          error_message: message.slice(0, 500),
+        });
+      }
+    } else {
+      await this.recordProfileDiagnostic(candidate, 'skipped', {
+        eventKey: PRETICKET_AUTOCLOSE_EVENT_KEY,
+        reason: sendPlan.reason ?? 'not_sent_by_rule',
+      });
+      await this.messageConfigurationService?.recordAutomationEvent({
+        conversationId: candidate.conversationId,
+        phoneE164: candidate.phoneE164,
+        eventKey: PRETICKET_AUTOCLOSE_EVENT_KEY,
+        status: 'not_sent_by_rule',
+        reason: sendPlan.reason ?? 'not_sent_by_rule',
+      });
+      this.recordProfileAudit(candidate, 'PRETICKET_AUTOCLOSE_MESSAGE_SKIPPED', 'ignored', correlationId, {
+        profile_step: step,
+        reason: sendPlan.reason ?? 'not_sent_by_rule',
+      });
+    }
+
+    const cancelled = await this.repository.cancelProfileCollectionConversation(
+      candidate.conversationId,
+      step,
+      this.nowProvider(),
+      PRETICKET_TIMEOUT_REASON,
+    );
+    if (!cancelled) {
+      await this.recordProfileDiagnostic(candidate, 'skipped', { reason: 'preticket_cancel_conflict' });
+      this.recordProfileAudit(candidate, 'PRETICKET_REMINDER_SKIPPED', 'ignored', correlationId, {
+        profile_step: step,
+        reason: 'preticket_cancel_conflict',
+      });
+      return;
+    }
+
+    await this.recordProfileDiagnostic(candidate, 'sent', {
+      eventKey: PRETICKET_AUTOCLOSE_EVENT_KEY,
+      reason: PRETICKET_TIMEOUT_REASON,
+    });
+    this.recordProfileAudit(candidate, 'PRETICKET_CLOSED_BY_INACTIVITY', 'success', correlationId, {
+      profile_step: step,
+      close_reason: PRETICKET_TIMEOUT_REASON,
+      csat_suppressed: true,
+    });
+    this.recordProfileAudit(candidate, 'PRETICKET_TIMEOUT_CANCELLATION', 'success', correlationId, {
+      profile_step: step,
+      close_reason: PRETICKET_TIMEOUT_REASON,
+      csat_suppressed: true,
+    });
   }
 
   private async processCandidate(candidate: InactivityTrackingRecord, config: InactivityConfig): Promise<void> {
@@ -1045,7 +1199,11 @@ function maskPhone(phone: string): string {
   return `${digits.slice(0, 2)}******${digits.slice(-4)}`;
 }
 
-function normalizeProfileCollectionStep(state: Record<string, unknown>): string {
+function normalizeProfileCollectionStep(state: Record<string, unknown>, conversationStatus?: string | null): string {
+  if (conversationStatus === 'awaiting_entity_selection') {
+    return 'awaiting_entity_selection';
+  }
+
   const step = state.step;
   return typeof step === 'string' ? step.trim() : '';
 }

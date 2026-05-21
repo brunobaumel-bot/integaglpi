@@ -57,6 +57,7 @@ class FakeRepository implements InactivityTrackingRepository {
   public profileReminderCandidates: ProfileCollectionReminderCandidate[] = [];
   public profileRemindersMarked: Array<{ conversationId: string; step: string; sentAt: Date }> = [];
   public profileReminderMarkResult = true;
+  public preticketCancelled: Array<{ conversationId: string; step: string; reason: string }> = [];
 
   public async trackOutboundActivity(): Promise<void> {}
 
@@ -91,6 +92,16 @@ class FakeRepository implements InactivityTrackingRepository {
   ): Promise<boolean> {
     this.profileRemindersMarked.push({ conversationId, step, sentAt });
     return this.profileReminderMarkResult;
+  }
+
+  public async cancelProfileCollectionConversation(
+    conversationId: string,
+    step: string,
+    _cancelledAt: Date,
+    reason: 'preticket_timeout',
+  ): Promise<boolean> {
+    this.preticketCancelled.push({ conversationId, step, reason });
+    return true;
   }
 
   public async tryMarkAutocloseAttempted(conversationId: string): Promise<boolean> {
@@ -563,6 +574,7 @@ describe('InactivityAutomationService', () => {
     repository.profileReminderCandidates = [{
       conversationId: 'profile-conv-1',
       phoneE164: '+5511888887777',
+      conversationStatus: 'collecting_contact_profile',
       profileCollectionState: { step: 'asking_email', requester_name: 'Cliente' },
       lastMessageAt: minutesAgo(6),
       updatedAt: minutesAgo(6),
@@ -586,7 +598,7 @@ describe('InactivityAutomationService', () => {
     };
     const messageConfigurationService = {
       resolveSendPlan: vi.fn().mockResolvedValue({
-        eventKey: 'profile_collection_reminder',
+        eventKey: 'preticket_reminder',
         sendType: 'text',
         text: 'Ainda precisamos confirmar algumas informações para continuar seu atendimento.',
         active: true,
@@ -625,11 +637,11 @@ describe('InactivityAutomationService', () => {
       conversationId: 'profile-conv-1',
       phoneE164: '+5511888887777',
       messageType: 'text',
-      idempotencyKey: 'profile_collection_reminder:profile-conv-1:asking_email:2026-05-15T14:54:00.000Z',
+      idempotencyKey: 'preticket_reminder:profile-conv-1:asking_email:2026-05-15T14:54:00.000Z',
     }), expect.objectContaining({ correlationId: expect.any(String) }));
     expect(messageConfigurationService.recordInactivityJobEvent).toHaveBeenCalledWith(expect.objectContaining({
       conversationId: 'profile-conv-1',
-      eventKey: 'profile_collection_reminder',
+      eventKey: 'preticket_reminder',
       status: 'sent',
       deliveryStatus: 'sent',
     }));
@@ -645,6 +657,7 @@ describe('InactivityAutomationService', () => {
     repository.profileReminderCandidates = [{
       conversationId: 'profile-conv-2',
       phoneE164: '+5511777766666',
+      conversationStatus: 'collecting_contact_profile',
       profileCollectionState: { step: 'asking_reason' },
       lastMessageAt: minutesAgo(25 * 60),
       updatedAt: minutesAgo(25 * 60),
@@ -655,7 +668,7 @@ describe('InactivityAutomationService', () => {
     };
     const messageConfigurationService = {
       resolveSendPlan: vi.fn().mockResolvedValue({
-        eventKey: 'profile_collection_reminder',
+        eventKey: 'preticket_reminder',
         sendType: 'text',
         text: 'Nao enviar fora da janela',
         active: true,
@@ -674,7 +687,7 @@ describe('InactivityAutomationService', () => {
       outbound,
       { getTicketStatus: vi.fn(), solveTicketByInactivity: vi.fn() } as never,
       null,
-      config,
+      { ...config, autocloseMinutes: 26 * 60 },
       () => baseNow,
       messageConfigurationService as never,
     );
@@ -683,15 +696,87 @@ describe('InactivityAutomationService', () => {
 
     expect(repository.profileRemindersMarked).toHaveLength(1);
     expect(outbound.sendProfileCollectionReminder).not.toHaveBeenCalled();
-    expect(messageConfigurationService.resolveSendPlan).toHaveBeenCalledWith('profile_collection_reminder', {
+    expect(messageConfigurationService.resolveSendPlan).toHaveBeenCalledWith('preticket_reminder', {
       windowOpen: false,
       allowTemplateSend: true,
     });
     expect(messageConfigurationService.recordInactivityJobEvent).toHaveBeenCalledWith(expect.objectContaining({
       conversationId: 'profile-conv-2',
-      eventKey: 'profile_collection_reminder',
+      eventKey: 'preticket_reminder',
       status: 'skipped',
       reason: 'skipped_missing_template_outside_24h',
     }));
+  });
+
+  it('cancels stale pre-ticket collection without solving GLPI ticket or sending CSAT', async () => {
+    const repository = new FakeRepository();
+    repository.profileReminderCandidates = [{
+      conversationId: 'profile-conv-timeout',
+      phoneE164: '+5511777766666',
+      conversationStatus: 'collecting_contact_profile',
+      profileCollectionState: {
+        step: 'asking_reason',
+        profile_reminder_sent_at: minutesAgo(20).toISOString(),
+        profile_reminder_sent_for_step: 'asking_reason',
+      },
+      lastMessageAt: minutesAgo(35),
+      updatedAt: minutesAgo(35),
+    }];
+    const outbound = {
+      send: vi.fn(),
+      sendProfileCollectionReminder: vi.fn().mockResolvedValue({
+        httpStatus: 201,
+        body: {
+          status: 'sent',
+          message_id: 'wamid.preticket.closed',
+          conversation_id: 'profile-conv-timeout',
+          postgres_message_row_id: 'row-profile-timeout',
+          idempotent: false,
+        },
+      }),
+    };
+    const messageConfigurationService = {
+      resolveSendPlan: vi.fn().mockResolvedValue({
+        eventKey: 'preticket_autoclose',
+        sendType: 'text',
+        text: 'Pre-ticket encerrado.',
+        active: true,
+        shouldSend: true,
+        reason: null,
+        templateName: null,
+        language: 'pt_BR',
+        buttons: [],
+        listOptions: [],
+      }),
+      recordAutomationEvent: vi.fn().mockResolvedValue(undefined),
+      recordInactivityJobEvent: vi.fn().mockResolvedValue(undefined),
+    };
+    const glpiClient = {
+      getTicketStatus: vi.fn(),
+      solveTicketByInactivity: vi.fn(),
+    };
+    const service = new InactivityAutomationService(
+      repository,
+      outbound,
+      glpiClient as never,
+      { recordAuditEventFireAndForget: vi.fn() } as never,
+      config,
+      () => baseNow,
+      messageConfigurationService as never,
+    );
+
+    await service.runOnce();
+
+    expect(glpiClient.solveTicketByInactivity).not.toHaveBeenCalled();
+    expect(outbound.send).not.toHaveBeenCalled();
+    expect(outbound.sendProfileCollectionReminder).toHaveBeenCalledWith(expect.objectContaining({
+      eventKey: 'preticket_autoclose',
+      idempotencyKey: 'preticket_autoclose:profile-conv-timeout:asking_reason:2026-05-15T14:25:00.000Z',
+    }), expect.objectContaining({ correlationId: expect.any(String) }));
+    expect(repository.preticketCancelled).toEqual([{
+      conversationId: 'profile-conv-timeout',
+      step: 'asking_reason',
+      reason: 'preticket_timeout',
+    }]);
   });
 });
