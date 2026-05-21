@@ -46,6 +46,13 @@ function plugin_integaglpi_contact_import_batch_id(array $body): string
     return trim((string) ($batch['batchId'] ?? $batch['batch_id'] ?? ''));
 }
 
+function plugin_integaglpi_contact_import_status(array $body): string
+{
+    $batch = is_array($body['batch'] ?? null) ? $body['batch'] : [];
+
+    return trim((string) ($batch['status'] ?? ''));
+}
+
 try {
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!Plugin::isCsrfValid($_POST)) {
@@ -102,13 +109,20 @@ try {
             if ($batchId === '') {
                 throw new RuntimeException(__('Batch obrigatório.', 'glpiintegaglpi'));
             }
+            error_log('[integaglpi][contact_import][confirm][REQUEST] batch_id=' . substr($batchId, 0, 80));
             $result = $client->confirmContactAgendaImport($batchId, [
                 'confirmed_by' => Plugin::getCurrentUserId(),
             ]);
             if (!$result['success']) {
                 throw new RuntimeException((string) ($result['body']['message'] ?? __('Falha ao confirmar importação.', 'glpiintegaglpi')));
             }
-            plugin_integaglpi_contact_import_redirect($batchId);
+
+            $view['batch_id'] = $batchId;
+            $view['response'] = $result['body'];
+            $status = plugin_integaglpi_contact_import_status($result['body']);
+            $view['notice'] = $status === 'completed'
+                ? __('Importação confirmada e processada com sucesso.', 'glpiintegaglpi')
+                : sprintf(__('Confirmação enviada. Status atual do batch: %s.', 'glpiintegaglpi'), $status !== '' ? $status : __('indefinido', 'glpiintegaglpi'));
         } elseif ($action === 'rollback') {
             $batchId = trim((string) ($_POST['batch_id'] ?? ''));
             $reason = trim((string) ($_POST['reason'] ?? ''));

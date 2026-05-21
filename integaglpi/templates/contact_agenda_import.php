@@ -108,11 +108,20 @@ $conflictRows = (int) ($batch['conflictRows'] ?? 0);
             <?php endif; ?>
 
             <?php if ($status === 'previewed' && $validRows > 0) : ?>
-                <form method="post" action="<?= plugin_integaglpi_contact_import_h(Plugin::getContactAgendaImportUrl()); ?>" class="d-inline">
+                <form
+                    id="plugin-integaglpi-contact-import-confirm"
+                    method="post"
+                    action="<?= plugin_integaglpi_contact_import_h(Plugin::getContactAgendaImportUrl()); ?>"
+                    class="d-inline"
+                >
                     <?= Plugin::renderCsrfToken(); ?>
                     <input type="hidden" name="action" value="confirm">
                     <input type="hidden" name="batch_id" value="<?= plugin_integaglpi_contact_import_h($batchId); ?>">
-                    <button class="btn btn-success" type="submit">
+                    <button
+                        class="btn btn-success"
+                        type="submit"
+                        form="plugin-integaglpi-contact-import-confirm"
+                    >
                         <?= plugin_integaglpi_contact_import_h(__('Confirmar importação', 'glpiintegaglpi')); ?>
                     </button>
                 </form>
