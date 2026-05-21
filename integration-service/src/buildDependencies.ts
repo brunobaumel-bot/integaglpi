@@ -42,6 +42,7 @@ import { PostgresAiQualityAnalysisRepository } from './repositories/postgres/Pos
 import { PostgresMessageFlowRepository } from './repositories/postgres/PostgresMessageFlowRepository.js';
 import { redisClient } from './cache/redisClient.js';
 import { QualityDashboardService } from './services/QualityDashboardService.js';
+import { ObservabilityService } from './services/ObservabilityService.js';
 
 export function buildDependencies() {
   const httpClient = new ResilientHttpClient();
@@ -65,6 +66,7 @@ export function buildDependencies() {
   const aiQualityAnalysisRepository = new PostgresAiQualityAnalysisRepository(postgresPool);
   const messageFlowRepository = new PostgresMessageFlowRepository(postgresPool);
   const qualityDashboardService = new QualityDashboardService(postgresPool, redisClient);
+  const observabilityService = new ObservabilityService(postgresPool, redisClient, glpiClient);
   const auditService = new AuditService(auditEventRepository);
   const contactAgendaImportService = new ContactAgendaImportService(
     contactAgendaImportRepository,
@@ -184,6 +186,7 @@ export function buildDependencies() {
     inactivityAutomationService,
     aiSupervisorService,
     qualityDashboardService,
+    observabilityService,
     contactAgendaImportService,
     manualTicketWhatsappLinkService,
     integrationServiceApiKey: env.INTEGRATION_SERVICE_API_KEY,

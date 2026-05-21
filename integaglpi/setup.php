@@ -9,6 +9,7 @@ use GlpiPlugin\Integaglpi\ContractsHoursMenu;
 use GlpiPlugin\Integaglpi\Install\Installer;
 use GlpiPlugin\Integaglpi\OperationLogMenu;
 use GlpiPlugin\Integaglpi\OperationalDiagnosticsMenu;
+use GlpiPlugin\Integaglpi\ObservabilityMenu;
 use GlpiPlugin\Integaglpi\Plugin;
 use GlpiPlugin\Integaglpi\Profile;
 use GlpiPlugin\Integaglpi\QualityDashboardMenu;
@@ -167,6 +168,7 @@ function plugin_init_integaglpi(): void
             AttendanceCenterMenu::class,
             SupervisorBackofficeMenu::class,
             QualityDashboardMenu::class,
+            ObservabilityMenu::class,
             OperationalDiagnosticsMenu::class,
             ContractsHoursMenu::class,
         ],
@@ -209,6 +211,7 @@ function plugin_init_integaglpi(): void
     \Plugin::registerClass(AttendanceCenterMenu::class);
     \Plugin::registerClass(SupervisorBackofficeMenu::class);
     \Plugin::registerClass(QualityDashboardMenu::class);
+    \Plugin::registerClass(ObservabilityMenu::class);
     \Plugin::registerClass(OperationalDiagnosticsMenu::class);
     \Plugin::registerClass(ContractsHoursMenu::class);
 }

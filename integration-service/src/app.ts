@@ -11,10 +11,12 @@ import type { ContactAgendaImportService } from './domain/services/ContactAgenda
 import type { ManualTicketWhatsappLinkService } from './domain/services/ManualTicketWhatsappLinkService.js';
 import type { GlpiClient } from './adapters/glpi/GlpiClient.js';
 import type { QualityDashboardService } from './services/QualityDashboardService.js';
+import type { ObservabilityService } from './services/ObservabilityService.js';
 import { createOpsDiagnosticsController, healthController } from './controllers/healthController.js';
 import { createAiQualityAnalysisController } from './controllers/createAiQualityAnalysisController.js';
 import { createAiQualityFeedbackController } from './controllers/createAiQualityFeedbackController.js';
 import { createQualityDashboardController } from './controllers/createQualityDashboardController.js';
+import { createObservabilityController } from './controllers/createObservabilityController.js';
 import { createGlpiOutboundMessageController } from './controllers/createGlpiOutboundMessageController.js';
 import { createGlpiTicketSolvedNotificationController } from './controllers/createGlpiTicketSolvedNotificationController.js';
 import {
@@ -54,6 +56,7 @@ export interface AppDependencies {
   auditService?: AuditService;
   aiSupervisorService?: AiSupervisorService;
   qualityDashboardService?: QualityDashboardService;
+  observabilityService?: ObservabilityService;
   contactAgendaImportService?: ContactAgendaImportService;
   manualTicketWhatsappLinkService?: ManualTicketWhatsappLinkService;
 }
@@ -129,6 +132,13 @@ export function createApp(dependencies: AppDependencies) {
       '/internal/glpi/quality-dashboard',
       createInternalBearerMiddleware(dependencies.integrationServiceApiKey),
       createQualityDashboardController(dependencies.qualityDashboardService),
+    );
+  }
+  if (dependencies.observabilityService) {
+    app.get(
+      '/internal/glpi/observability',
+      createInternalBearerMiddleware(dependencies.integrationServiceApiKey),
+      createObservabilityController(dependencies.observabilityService),
     );
   }
   if (dependencies.contactAgendaImportService) {

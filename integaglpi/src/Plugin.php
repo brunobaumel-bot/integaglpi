@@ -174,6 +174,11 @@ final class Plugin
         return self::getWebBasePath() . '/front/operational.diagnostics.php';
     }
 
+    public static function getObservabilityUrl(): string
+    {
+        return self::getWebBasePath() . '/front/observability.php';
+    }
+
     public static function getContractHoursUrl(): string
     {
         return self::getWebBasePath() . '/front/contracts.hours.php';
@@ -240,6 +245,16 @@ final class Plugin
     }
 
     public static function requireOperationalDiagnosticsRead(): void
+    {
+        self::requireSupervisorRead();
+    }
+
+    public static function canObservabilityRead(): bool
+    {
+        return self::canSupervisorRead();
+    }
+
+    public static function requireObservabilityRead(): void
     {
         self::requireSupervisorRead();
     }

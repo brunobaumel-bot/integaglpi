@@ -15,6 +15,7 @@ final class IntegrationServiceClient
     private const PATH_CONVERSATION_SOFT_CLOSE = '/internal/glpi/conversations/%s/soft-close';
     private const PATH_DIAGNOSTICS = '/internal/glpi/diagnostics';
     private const PATH_QUALITY_DASHBOARD = '/internal/glpi/quality-dashboard';
+    private const PATH_OBSERVABILITY = '/internal/glpi/observability';
     private const PATH_CONTACT_AGENDA_IMPORT_PREVIEW = '/internal/glpi/contact-agenda/import/preview';
     private const PATH_CONTACT_AGENDA_IMPORT_STATUS = '/internal/glpi/contact-agenda/import/%s';
     private const PATH_CONTACT_AGENDA_IMPORT_CONFIRM = '/internal/glpi/contact-agenda/import/%s/confirm';
@@ -130,6 +131,21 @@ final class IntegrationServiceClient
         $path = self::PATH_QUALITY_DASHBOARD . ($query !== '' ? '?' . $query : '');
 
         return $this->getJson($this->endpoint($path), 'quality_dashboard', 8);
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function getObservability(array $filters): array
+    {
+        $query = http_build_query(array_filter(
+            $filters,
+            static fn (mixed $value): bool => $value !== null && $value !== '' && $value !== []
+        ));
+        $path = self::PATH_OBSERVABILITY . ($query !== '' ? '?' . $query : '');
+
+        return $this->getJson($this->endpoint($path), 'observability', 8);
     }
 
     /**
