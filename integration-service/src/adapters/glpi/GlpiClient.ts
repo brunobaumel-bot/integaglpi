@@ -239,6 +239,20 @@ function readTicketEntityIdFromResponse(body: unknown): number | null {
   return null;
 }
 
+function readTicketDeletedFromResponse(body: unknown): boolean {
+  if (!isJsonObject(body)) {
+    return false;
+  }
+
+  const explicitFlag = body.is_deleted ?? body.isDeleted ?? body.deleted;
+  if (explicitFlag !== undefined && explicitFlag !== null) {
+    return readBooleanLike(explicitFlag, false);
+  }
+
+  const deletedAt = body.date_delete ?? body.deleted_at;
+  return typeof deletedAt === 'string' && deletedAt.trim() !== '';
+}
+
 function readTicketEntityIdFromSearchRow(row: JsonObject): number | null {
   const raw = row[80] ?? row['80'] ?? row.entities_id ?? row.entity_id;
 
@@ -527,7 +541,7 @@ export class GlpiClient {
     }
   }
 
-  public async getTicket(ticketId: number): Promise<GlpiTicket> {
+  public async getTicket(ticketId: number): Promise<GlpiTicket & { isDeleted: boolean }> {
     const payload = await this.requestJson<JsonObject>(
       `/Ticket/${ticketId}`,
       { method: 'GET' },
@@ -538,6 +552,7 @@ export class GlpiClient {
       id: ticketId,
       status: readTicketStatusFromResponse(payload),
       entitiesId: readTicketEntityIdFromResponse(payload),
+      isDeleted: readTicketDeletedFromResponse(payload),
     };
   }
 

@@ -32,6 +32,32 @@ afterEach(() => {
 });
 
 describe('GlpiClient', () => {
+  it('maps GLPI soft-deleted ticket flags from getTicket', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const responses = [
+      new Response(JSON.stringify({ session_token: 'session-123' }), { status: 200 }),
+      new Response(JSON.stringify({
+        id: 2112319001,
+        status: 2,
+        entities_id: 42,
+        is_deleted: 1,
+      }), { status: 200 }),
+    ];
+
+    const httpClient = {
+      request: vi.fn().mockImplementation(async () => responses.shift()),
+    };
+
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    await expect(client.getTicket(2112319001)).resolves.toMatchObject({
+      id: 2112319001,
+      status: 2,
+      entitiesId: 42,
+      isDeleted: true,
+    });
+  });
+
   it('creates a ticket using initSession and the classic Session-Token flow', async () => {
     const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
     const responses = [

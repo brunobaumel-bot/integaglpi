@@ -5,6 +5,7 @@ import {
   ManualTicketWhatsappLinkService,
   type ManualTicketStartInput,
 } from '../src/domain/services/ManualTicketWhatsappLinkService.js';
+import { GlpiRequestError } from '../src/errors/GlpiRequestError.js';
 import type { OutboundMessageService } from '../src/domain/services/OutboundMessageService.js';
 import type { PostgresManualTicketWhatsappRepository } from '../src/repositories/postgres/PostgresManualTicketWhatsappRepository.js';
 
@@ -32,6 +33,7 @@ function makeService(overrides: {
   lastInboundAt?: Date | null;
   outboundResult?: Awaited<ReturnType<OutboundMessageService['send']>>;
   ticketReader?: { getTicket: ReturnType<typeof vi.fn> };
+  auditService?: { recordAuditEventFireAndForget: ReturnType<typeof vi.fn> };
 } = {}) {
   const repo = {
     findOpenConflict: vi.fn().mockResolvedValue(overrides.conflict ?? null),
@@ -76,9 +78,12 @@ function makeService(overrides: {
   const ticketReader = overrides.ticketReader ?? {
     getTicket: vi.fn().mockResolvedValue({ status: 2, isDeleted: false }),
   };
-  const service = new ManualTicketWhatsappLinkService(repo, outbound, null, null, ticketReader);
+  const auditService = overrides.auditService ?? {
+    recordAuditEventFireAndForget: vi.fn(),
+  };
+  const service = new ManualTicketWhatsappLinkService(repo, outbound, null, auditService as never, ticketReader);
 
-  return { service, repo, outbound, ticketReader };
+  return { service, repo, outbound, ticketReader, auditService };
 }
 
 describe('ManualTicketWhatsappLinkService', () => {
@@ -142,8 +147,8 @@ describe('ManualTicketWhatsappLinkService', () => {
     expect(outbound.send).not.toHaveBeenCalled();
   });
 
-  it('blocks start-template when the linked GLPI ticket is unavailable and never calls outbound', async () => {
-    const { service, repo, outbound, ticketReader } = makeService({
+  it('blocks start-template when the linked GLPI ticket is soft-deleted and never calls outbound', async () => {
+    const { service, repo, outbound, ticketReader, auditService } = makeService({
       ticketReader: {
         getTicket: vi.fn().mockResolvedValue({ status: 2, isDeleted: true }),
       },
@@ -160,5 +165,33 @@ describe('ManualTicketWhatsappLinkService', () => {
     });
     expect(repo.createManualConversation).not.toHaveBeenCalled();
     expect(outbound.send).not.toHaveBeenCalled();
+    expect(auditService.recordAuditEventFireAndForget).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'OUTBOUND_BLOCKED_DELETED_TICKET',
+      status: 'ignored',
+    }));
+  });
+
+  it('blocks start-template when GLPI returns 404 for the linked ticket and never calls outbound', async () => {
+    const { service, repo, outbound, ticketReader, auditService } = makeService({
+      ticketReader: {
+        getTicket: vi.fn().mockRejectedValue(new GlpiRequestError('Not found', 404, { message: 'Not found' }, 'glpi_ticket_read')),
+      },
+    });
+
+    await expect(service.startTemplate(makeInput())).rejects.toMatchObject({
+      errorCode: 'GLPI_TICKET_UNAVAILABLE',
+    } satisfies Partial<ManualTicketWhatsappLinkError>);
+
+    expect(ticketReader.getTicket).toHaveBeenCalledWith(123);
+    expect(repo.markOrphanedTicketConversations).toHaveBeenCalledWith({
+      ticketId: 123,
+      reason: 'glpi_ticket_missing',
+    });
+    expect(repo.createManualConversation).not.toHaveBeenCalled();
+    expect(outbound.send).not.toHaveBeenCalled();
+    expect(auditService.recordAuditEventFireAndForget).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'OUTBOUND_BLOCKED_DELETED_TICKET',
+      status: 'ignored',
+    }));
   });
 });
