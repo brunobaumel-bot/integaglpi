@@ -208,7 +208,27 @@ final class IntegrationServiceClient
     {
         $path = sprintf(self::PATH_MANUAL_TICKET_WHATSAPP_START_TEMPLATE, $ticketId);
 
-        return $this->postJson($this->endpoint($path), $payload, 'manual_ticket_whatsapp][start_template', 20);
+        try {
+            return $this->postJson($this->endpoint($path), $payload, 'manual_ticket_whatsapp][start_template', 20);
+        } catch (RuntimeException $exception) {
+            if (!$this->isCurlTimeout($exception)) {
+                throw $exception;
+            }
+
+            error_log('[integaglpi][manual_ticket_whatsapp][start_template][TIMEOUT_PENDING] ticket_id=' . $ticketId
+                . ' idempotency_key=' . ($payload['idempotency_key'] ?? ''));
+
+            return [
+                'status' => 202,
+                'success' => true,
+                'body' => [
+                    'ok' => true,
+                    'status' => 'processing',
+                    'message' => __('Envio em processamento. Verifique a conversa em alguns segundos antes de tentar novamente.', 'glpiintegaglpi'),
+                    'idempotency_key' => (string) ($payload['idempotency_key'] ?? ''),
+                ],
+            ];
+        }
     }
 
     /**
@@ -366,5 +386,14 @@ final class IntegrationServiceClient
         $configService = $this->pluginConfigService ?? new PluginConfigService();
 
         return rtrim($configService->getIntegrationServiceUrl(), '/') . $path;
+    }
+
+    private function isCurlTimeout(RuntimeException $exception): bool
+    {
+        $message = strtolower($exception->getMessage());
+
+        return str_contains($message, 'timed out')
+            || str_contains($message, 'timeout')
+            || str_contains($message, 'operation timed out');
     }
 }

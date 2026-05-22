@@ -112,6 +112,59 @@ describe('ManualTicketWhatsappLinkService', () => {
     });
   });
 
+  it('returns an idempotent replay when outbound already recorded the same template send', async () => {
+    const { service, outbound, auditService } = makeService({
+      outboundResult: {
+        httpStatus: 200,
+        body: {
+          status: 'sent',
+          message_id: 'wamid.existing',
+          conversation_id: 'conv-manual',
+          postgres_message_row_id: 'row-existing',
+          idempotent: true,
+        },
+      },
+    });
+
+    const result = await service.startTemplate(makeInput({
+      idempotencyKey: 'manual_ticket_template:123:hash',
+    }));
+
+    expect(outbound.send).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: 'sent',
+      conversation_id: 'conv-manual',
+      message_id: 'wamid.existing',
+      idempotent: true,
+    });
+    expect(auditService.recordAuditEventFireAndForget).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'MANUAL_TICKET_WHATSAPP_TEMPLATE_IDEMPOTENT_REPLAY',
+      status: 'success',
+    }));
+  });
+
+  it('preserves a real Meta failure message from outbound', async () => {
+    const { service, auditService } = makeService({
+      outboundResult: {
+        httpStatus: 502,
+        body: {
+          status: 'failed',
+          error_code: 'META_SEND_FAILED',
+          message: 'Meta retornou erro temporário.',
+        },
+      },
+    });
+
+    await expect(service.startTemplate(makeInput())).rejects.toMatchObject({
+      errorCode: 'TEMPLATE_SEND_FAILED',
+      message: 'Meta retornou erro temporário.',
+    } satisfies Partial<ManualTicketWhatsappLinkError>);
+    expect(auditService.recordAuditEventFireAndForget).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'MANUAL_TICKET_WHATSAPP_TEMPLATE_FAILED',
+      status: 'failed',
+    }));
+  });
+
   it('blocks open conversations already linked to another ticket', async () => {
     const { service, outbound } = makeService({
       conflict: {

@@ -211,6 +211,9 @@ export class ManualTicketWhatsappLinkService {
       }, { correlationId: createCorrelationId() });
 
       if (result.httpStatus < 200 || result.httpStatus >= 300 || result.body.status !== 'sent') {
+        const failureMessage = result.body.status === 'failed'
+          ? result.body.message
+          : 'Falha ao enviar template aprovado pelo WhatsApp.';
         this.audit(input, 'MANUAL_TICKET_WHATSAPP_TEMPLATE_FAILED', 'failed', 'error', {
           conversation_id: conversation.id,
           reason: 'template_send_failed',
@@ -218,13 +221,21 @@ export class ManualTicketWhatsappLinkService {
         });
         throw new ManualTicketWhatsappLinkError(
           'TEMPLATE_SEND_FAILED',
-          'Falha ao enviar template aprovado pelo WhatsApp.',
+          failureMessage,
           result.httpStatus >= 400 ? result.httpStatus : 502,
         );
       }
 
+      if (result.body.idempotent === true) {
+        this.audit(input, 'MANUAL_TICKET_WHATSAPP_TEMPLATE_IDEMPOTENT_REPLAY', 'success', 'info', {
+          conversation_id: result.body.conversation_id || conversation.id,
+          message_id: result.body.message_id,
+          template_name: input.templateName,
+          phone_masked: maskPhone(input.phoneE164),
+        });
+      }
       this.audit(input, 'MANUAL_TICKET_WHATSAPP_TEMPLATE_SENT', 'success', 'info', {
-        conversation_id: conversation.id,
+        conversation_id: result.body.conversation_id || conversation.id,
         message_id: result.body.message_id,
         template_name: input.templateName,
         window_open: windowOpen,
@@ -234,8 +245,9 @@ export class ManualTicketWhatsappLinkService {
       return {
         status: 'sent' as const,
         ticket_id: input.ticketId,
-        conversation_id: String(conversation.id),
+        conversation_id: result.body.conversation_id || String(conversation.id),
         message_id: result.body.message_id,
+        idempotent: result.body.idempotent,
         whatsapp_window: {
           is_open: windowOpen,
           last_inbound_at: lastInboundAt?.toISOString() ?? null,

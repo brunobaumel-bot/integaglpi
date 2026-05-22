@@ -98,6 +98,78 @@ function plugin_integaglpi_audit_blocked_deleted_ticket_outbound(int $ticketId, 
     }
 }
 
+function plugin_integaglpi_audit_manual_template_timeout_pending(int $ticketId, int $userId, string $idempotencyKey): void
+{
+    if ($ticketId <= 0) {
+        return;
+    }
+
+    try {
+        $configService = new PluginConfigService();
+        if (!$configService->isConfigured()) {
+            return;
+        }
+
+        $pdo = ExternalDatabase::getConnection($configService->getConnectionConfig());
+        $conversationId = null;
+        $lookup = $pdo->prepare(
+            "SELECT id
+             FROM glpi_plugin_integaglpi_conversations
+             WHERE glpi_ticket_id = :ticket_id
+             ORDER BY updated_at DESC
+             LIMIT 1"
+        );
+        $lookup->execute([':ticket_id' => $ticketId]);
+        $conversation = $lookup->fetch();
+        if (is_array($conversation)) {
+            $conversationId = trim((string) ($conversation['id'] ?? '')) ?: null;
+        }
+
+        $payload = json_encode([
+            'glpi_ticket_id' => $ticketId,
+            'conversation_id' => $conversationId,
+            'glpi_user_id' => $userId,
+            'reason' => 'php_timeout_pending',
+            'idempotency_key' => $idempotencyKey,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($payload === false) {
+            $payload = '{"reason":"php_timeout_pending"}';
+        }
+
+        $audit = $pdo->prepare(
+            "INSERT INTO glpi_plugin_integaglpi_audit_events (
+                correlation_id,
+                ticket_id,
+                conversation_id,
+                event_type,
+                status,
+                severity,
+                source,
+                payload_json,
+                created_at
+            ) VALUES (
+                :correlation_id,
+                :ticket_id,
+                :conversation_id,
+                'MANUAL_TICKET_WHATSAPP_TEMPLATE_TIMEOUT_PENDING',
+                'pending',
+                'warning',
+                'PluginManualTicketWhatsapp',
+                :payload_json::jsonb,
+                NOW()
+            )"
+        );
+        $audit->execute([
+            ':correlation_id' => 'manual_ticket_template_timeout_pending:' . $ticketId,
+            ':ticket_id' => $ticketId,
+            ':conversation_id' => $conversationId,
+            ':payload_json' => $payload,
+        ]);
+    } catch (Throwable $exception) {
+        error_log('[integaglpi][manual_ticket_whatsapp][timeout_pending_audit] ticket_id=' . $ticketId . ' ' . $exception->getMessage());
+    }
+}
+
 try {
     if (strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
         throw new RuntimeException(__('Método inválido.', 'glpiintegaglpi'));
@@ -126,6 +198,19 @@ try {
     }
 
     $result = (new ManualTicketWhatsappService())->startTemplate($ticket, $_POST, Plugin::getCurrentUserId());
+    if ((string) ($result['status'] ?? '') === 'processing') {
+        plugin_integaglpi_audit_manual_template_timeout_pending(
+            $ticketId,
+            Plugin::getCurrentUserId(),
+            (string) ($result['idempotency_key'] ?? '')
+        );
+        Session::addMessageAfterRedirect(
+            (string) ($result['message'] ?? __('Envio em processamento. Verifique a conversa em alguns segundos antes de tentar novamente.', 'glpiintegaglpi')),
+            false,
+            INFO
+        );
+        Html::redirect(Plugin::getTicketUrl($ticketId));
+    }
     $conversationId = (string) ($result['conversation_id'] ?? '');
     Session::addMessageAfterRedirect(sprintf(
         __('Atendimento WhatsApp iniciado por template aprovado. Conversa: %s', 'glpiintegaglpi'),
