@@ -73,6 +73,8 @@ final class AttendanceCenterService
 
     private ?TicketRuntimeService $ticketRuntimeService = null;
 
+    private int $orphanedConversationCleanupCount = 0;
+
     public function __construct(?PluginConfigService $pluginConfigService = null)
     {
         $this->pluginConfigService = $pluginConfigService ?? new PluginConfigService();
@@ -84,6 +86,7 @@ final class AttendanceCenterService
      */
     public function getCentralData(array $query): array
     {
+        $this->orphanedConversationCleanupCount = 0;
         $filters = $this->normalizeFilters($query);
         $pagination = $this->normalizePagination($query);
         $glpiEntities = $this->loadGlpiEntityOptions();
@@ -118,6 +121,7 @@ final class AttendanceCenterService
             'is_configured' => $this->pluginConfigService->isConfigured(),
             'allowed_statuses' => self::ALLOWED_STATUSES,
             'limit_options' => [25, 50],
+            'orphaned_cleanup_count' => 0,
         ];
 
         if (!$this->pluginConfigService->isConfigured()) {
@@ -136,10 +140,12 @@ final class AttendanceCenterService
             $offset = ($page - 1) * $pagination['limit'];
 
             $rows = $repository->findForAttendanceCenter($filters, $pagination['limit'], $offset);
+            $rows = $this->filterAndMarkDeletedTicketRows($rows);
 
             return [
                 ...$baseData,
                 'rows' => $this->decorateRows($rows),
+                'orphaned_cleanup_count' => $this->orphanedConversationCleanupCount,
                 'queues' => $repository->findAttendanceQueues(),
                 'service_catalog' => $this->loadServiceCatalogOptions(),
                 'technicians' => $this->buildTechnicianOptions($repository->findAttendanceTechnicianIds()),
@@ -1618,6 +1624,179 @@ final class AttendanceCenterService
     }
 
     /**
+     * @param list<array<string, mixed>> $rows
+     * @return list<array<string, mixed>>
+     */
+    private function filterAndMarkDeletedTicketRows(array $rows): array
+    {
+        $visibleRows = [];
+        foreach ($rows as $row) {
+            $ticketId = (int) ($row['glpi_ticket_id'] ?? 0);
+            if ($ticketId <= 0) {
+                $visibleRows[] = $row;
+                continue;
+            }
+
+            $reason = $this->detectUnavailableGlpiTicketReason($ticketId);
+            if ($reason === null) {
+                $visibleRows[] = $row;
+                continue;
+            }
+
+            $this->markConversationOrphaned($row, $reason);
+        }
+
+        return $visibleRows;
+    }
+
+    private function detectUnavailableGlpiTicketReason(int $ticketId): ?string
+    {
+        $ticket = new \Ticket();
+        if (!$ticket->getFromDB($ticketId)) {
+            return 'glpi_ticket_missing';
+        }
+
+        return (int) ($ticket->fields['is_deleted'] ?? 0) !== 0
+            ? 'glpi_ticket_deleted'
+            : null;
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     */
+    private function markConversationOrphaned(array $row, string $reason): void
+    {
+        $conversationId = trim((string) ($row['conversation_id'] ?? ''));
+        $ticketId = (int) ($row['glpi_ticket_id'] ?? 0);
+        if ($conversationId === '' || $ticketId <= 0) {
+            return;
+        }
+
+        try {
+            $pdo = $this->getPdo();
+            $startedTransaction = !$pdo->inTransaction();
+            if ($startedTransaction) {
+                $pdo->beginTransaction();
+            }
+
+            $statePayload = json_encode([
+                'orphan_reason' => $reason,
+                'orphaned_at' => gmdate('c'),
+                'orphan_source' => 'PluginAttendanceCenter',
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            if ($statePayload === false) {
+                $statePayload = '{"orphan_reason":"glpi_ticket_missing"}';
+            }
+
+            $conversationUpdate = $pdo->prepare(
+                "UPDATE glpi_plugin_integaglpi_conversations
+                 SET
+                    status = 'closed',
+                    profile_collection_state = COALESCE(profile_collection_state, '{}'::jsonb) || :state_payload::jsonb,
+                    updated_at = NOW()
+                 WHERE id = :conversation_id
+                   AND glpi_ticket_id = :ticket_id
+                   AND status <> 'closed'"
+            );
+            $conversationUpdate->execute([
+                ':state_payload' => $statePayload,
+                ':conversation_id' => $conversationId,
+                ':ticket_id' => $ticketId,
+            ]);
+            $changed = $conversationUpdate->rowCount() > 0;
+
+            if ($this->externalTableExists('glpi_plugin_integaglpi_conversation_runtime')) {
+                $runtimeUpdate = $pdo->prepare(
+                    "UPDATE glpi_plugin_integaglpi_conversation_runtime
+                     SET
+                        status = 'closed',
+                        closed_at = COALESCE(closed_at, NOW()),
+                        updated_at = NOW()
+                     WHERE conversation_id = :conversation_id
+                       AND ticket_id = :ticket_id
+                       AND status <> 'closed'"
+                );
+                $runtimeUpdate->execute([
+                    ':conversation_id' => $conversationId,
+                    ':ticket_id' => $ticketId,
+                ]);
+                $changed = $changed || $runtimeUpdate->rowCount() > 0;
+            }
+
+            if ($changed) {
+                $this->orphanedConversationCleanupCount++;
+                $this->insertOrphanConversationAudit($row, $reason, 'ORPHAN_CONVERSATION_DETECTED');
+                $this->insertOrphanConversationAudit($row, $reason, 'MANUAL_TICKET_LINK_ORPHANED');
+            }
+
+            if ($startedTransaction) {
+                $pdo->commit();
+            }
+        } catch (Throwable $exception) {
+            if (isset($pdo) && $pdo instanceof PDO && $pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            error_log('[integaglpi][central][orphan_conversation] ticket_id=' . $ticketId
+                . ' conversation_id=' . $conversationId . ' ' . $exception->getMessage());
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     */
+    private function insertOrphanConversationAudit(array $row, string $reason, string $eventType): void
+    {
+        if (!$this->externalTableExists('glpi_plugin_integaglpi_audit_events')) {
+            return;
+        }
+
+        $conversationId = trim((string) ($row['conversation_id'] ?? ''));
+        $ticketId = (int) ($row['glpi_ticket_id'] ?? 0);
+        $payload = json_encode([
+            'glpi_ticket_id' => $ticketId,
+            'conversation_id' => $conversationId,
+            'phone_masked' => $this->maskPhone((string) ($row['phone_e164'] ?? '')),
+            'reason' => $reason,
+            'previous_conversation_status' => (string) ($row['conversation_status'] ?? ''),
+            'previous_runtime_status' => (string) ($row['runtime_status'] ?? ''),
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($payload === false) {
+            $payload = '{"reason":"glpi_ticket_missing"}';
+        }
+
+        $statement = $this->getPdo()->prepare(
+            "INSERT INTO glpi_plugin_integaglpi_audit_events (
+                correlation_id,
+                ticket_id,
+                conversation_id,
+                event_type,
+                status,
+                severity,
+                source,
+                payload_json,
+                created_at
+            ) VALUES (
+                :correlation_id,
+                :ticket_id,
+                :conversation_id,
+                :event_type,
+                'ignored',
+                'warning',
+                'PluginAttendanceCenter',
+                :payload_json::jsonb,
+                NOW()
+            )"
+        );
+        $statement->execute([
+            ':correlation_id' => 'orphan_conversation:' . $conversationId . ':' . $eventType,
+            ':ticket_id' => $ticketId,
+            ':conversation_id' => $conversationId,
+            ':event_type' => $eventType,
+            ':payload_json' => $payload,
+        ]);
+    }
+
+    /**
      * @param list<int> $userIds
      * @return list<array{id: int, name: string}>
      */
@@ -1952,7 +2131,8 @@ final class AttendanceCenterService
 
         return [
             ...$baseData,
-            'rows' => $this->decorateRows(is_array($rows) ? $rows : []),
+            'rows' => $this->decorateRows($this->filterAndMarkDeletedTicketRows(is_array($rows) ? $rows : [])),
+            'orphaned_cleanup_count' => $this->orphanedConversationCleanupCount,
             'queues' => $hasQueues ? $this->loadFallbackQueues($pdo) : [],
             'technicians' => $hasRuntime ? $this->buildTechnicianOptions($this->loadFallbackTechnicianIds($pdo)) : [],
             'error' => __('Console carregado em modo de compatibilidade porque o schema operacional está incompleto. Revise migrations pendentes antes de produção.', 'glpiintegaglpi'),

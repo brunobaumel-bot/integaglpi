@@ -4,10 +4,18 @@ import type { AuditService } from './AuditService.js';
 import { createCorrelationId } from './correlationId.js';
 import type { OutboundMessageService } from './OutboundMessageService.js';
 import type { PostgresManualTicketWhatsappRepository } from '../../repositories/postgres/PostgresManualTicketWhatsappRepository.js';
+import { GlpiClient } from '../../adapters/glpi/GlpiClient.js';
+import { env } from '../../config/env.js';
+import { GlpiRequestError } from '../../errors/GlpiRequestError.js';
+import { ResilientHttpClient } from '../../infra/http/ResilientHttpClient.js';
 
 const E164_PATTERN = /^\+[1-9]\d{1,14}$/;
 const TEMPLATE_NAME = 'aviso_atendimento_fora_janela';
 const WINDOW_MS = 24 * 60 * 60 * 1000;
+
+interface ManualTicketAvailabilityReader {
+  getTicket(ticketId: number): Promise<{ status: number | null; isDeleted?: boolean | null }>;
+}
 
 export class ManualTicketWhatsappLinkError extends Error {
   public constructor(
@@ -69,11 +77,14 @@ function isWindowOpen(lastInboundAt: Date | null, now = Date.now()): boolean {
 }
 
 export class ManualTicketWhatsappLinkService {
+  private lazyTicketReader: ManualTicketAvailabilityReader | null = null;
+
   public constructor(
     private readonly repository: PostgresManualTicketWhatsappRepository,
     private readonly outboundMessageService: OutboundMessageService,
     private readonly keyLock: KeyLock | null = null,
     private readonly auditService: AuditService | null = null,
+    private readonly ticketAvailabilityReader: ManualTicketAvailabilityReader | null = null,
   ) {}
 
   public async resolve(input: ManualTicketResolveInput) {
@@ -138,6 +149,8 @@ export class ManualTicketWhatsappLinkService {
     if (!input.manualConfirmation || !input.costAcknowledged) {
       throw new ManualTicketWhatsappLinkError('MANUAL_CONFIRMATION_REQUIRED', 'Confirmação humana e ciência de custo são obrigatórias.');
     }
+
+    await this.assertLinkedTicketAvailable(input);
 
     const lockKey = `manual-ticket-whatsapp:${input.phoneE164}:${input.ticketId}`;
     const execute = async () => {
@@ -231,6 +244,74 @@ export class ManualTicketWhatsappLinkService {
     };
 
     return this.keyLock ? this.keyLock.withLock(lockKey, execute) : execute();
+  }
+
+  private async assertLinkedTicketAvailable(input: ManualTicketStartInput): Promise<void> {
+    try {
+      const ticket = await this.getTicketAvailabilityReader().getTicket(input.ticketId);
+      if (ticket.isDeleted === true) {
+        await this.blockDeletedTicketOutbound(input, 'glpi_ticket_deleted');
+      }
+    } catch (error: unknown) {
+      if (error instanceof ManualTicketWhatsappLinkError) {
+        throw error;
+      }
+      if (error instanceof GlpiRequestError && error.statusCode === 404) {
+        await this.blockDeletedTicketOutbound(input, 'glpi_ticket_missing');
+      }
+
+      this.audit(input, 'OUTBOUND_BLOCKED_DELETED_TICKET', 'failed', 'error', {
+        reason: 'glpi_ticket_validation_failed',
+        phone_masked: maskPhone(input.phoneE164),
+        error_message: error instanceof Error ? error.message : String(error),
+      });
+      throw new ManualTicketWhatsappLinkError(
+        'GLPI_TICKET_VALIDATION_FAILED',
+        'Não foi possível validar o chamado GLPI antes do envio WhatsApp.',
+        502,
+      );
+    }
+  }
+
+  private async blockDeletedTicketOutbound(input: ManualTicketStartInput, reason: 'glpi_ticket_deleted' | 'glpi_ticket_missing'): Promise<never> {
+    const orphanedConversations = await this.repository.markOrphanedTicketConversations({
+      ticketId: input.ticketId,
+      reason,
+    });
+    for (const conversation of orphanedConversations) {
+      this.audit(input, 'ORPHAN_CONVERSATION_DETECTED', 'ignored', 'warning', {
+        conversation_id: conversation.id,
+        reason,
+        phone_masked: maskPhone(conversation.phone_e164 || input.phoneE164),
+      });
+      this.audit(input, 'MANUAL_TICKET_LINK_ORPHANED', 'ignored', 'warning', {
+        conversation_id: conversation.id,
+        reason,
+        phone_masked: maskPhone(conversation.phone_e164 || input.phoneE164),
+      });
+    }
+    this.audit(input, 'OUTBOUND_BLOCKED_DELETED_TICKET', 'ignored', 'warning', {
+      reason,
+      phone_masked: maskPhone(input.phoneE164),
+      orphaned_conversation_count: orphanedConversations.length,
+    });
+
+    throw new ManualTicketWhatsappLinkError(
+      'GLPI_TICKET_UNAVAILABLE',
+      'O chamado GLPI vinculado foi excluído. Esta conversa foi encerrada logicamente e não permite novas mensagens.',
+      409,
+    );
+  }
+
+  private getTicketAvailabilityReader(): ManualTicketAvailabilityReader {
+    if (this.ticketAvailabilityReader !== null) {
+      return this.ticketAvailabilityReader;
+    }
+    if (this.lazyTicketReader === null) {
+      this.lazyTicketReader = new GlpiClient(env.GLPI_API_BASE_URL, new ResilientHttpClient());
+    }
+
+    return this.lazyTicketReader;
   }
 
   private audit(

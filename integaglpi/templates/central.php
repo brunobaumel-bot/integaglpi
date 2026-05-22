@@ -17,6 +17,7 @@ $centralErrorDiagnostic = is_array($data['central_error_diagnostic'] ?? null) ? 
 $allowedStatuses = is_array($data['allowed_statuses'] ?? null) ? $data['allowed_statuses'] : [];
 $limitOptions = is_array($data['limit_options'] ?? null) ? $data['limit_options'] : [25, 50];
 $error = isset($data['error']) ? (string) $data['error'] : '';
+$orphanedCleanupCount = (int) ($data['orphaned_cleanup_count'] ?? 0);
 $currentPage = (int) ($pagination['page'] ?? 1);
 $currentLimit = (int) ($pagination['limit'] ?? 25);
 $total = (int) ($pagination['total'] ?? 0);
@@ -342,6 +343,19 @@ $operationalFilterMap = [
                             <?php } ?>
                         </div>
                     <?php } ?>
+                </div>
+            <?php } ?>
+            <?php if ($orphanedCleanupCount > 0) { ?>
+                <div class="alert alert-warning mb-3">
+                    <?= $this->escape(sprintf(
+                        _n(
+                            'Uma conversa vinculada a chamado GLPI excluído foi encerrada logicamente e removida da lista ativa. O histórico foi preservado.',
+                            '%d conversas vinculadas a chamados GLPI excluídos foram encerradas logicamente e removidas da lista ativa. O histórico foi preservado.',
+                            $orphanedCleanupCount,
+                            'glpiintegaglpi'
+                        ),
+                        $orphanedCleanupCount
+                    )); ?>
                 </div>
             <?php } ?>
 

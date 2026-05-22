@@ -31,11 +31,13 @@ function makeService(overrides: {
   reusable?: Record<string, unknown> | null;
   lastInboundAt?: Date | null;
   outboundResult?: Awaited<ReturnType<OutboundMessageService['send']>>;
+  ticketReader?: { getTicket: ReturnType<typeof vi.fn> };
 } = {}) {
   const repo = {
     findOpenConflict: vi.fn().mockResolvedValue(overrides.conflict ?? null),
     findReusableConversation: vi.fn().mockResolvedValue(overrides.reusable ?? null),
     ensureContact: vi.fn().mockResolvedValue({ id: 'contact-1' }),
+    markOrphanedTicketConversations: vi.fn().mockResolvedValue([{ id: 'conv-orphan', phone_e164: '+5541999999999' }]),
     createManualConversation: vi.fn().mockResolvedValue({
       id: 'conv-manual',
       phone_e164: '+5541999999999',
@@ -71,9 +73,12 @@ function makeService(overrides: {
       },
     }),
   } as unknown as OutboundMessageService;
-  const service = new ManualTicketWhatsappLinkService(repo, outbound, null, null);
+  const ticketReader = overrides.ticketReader ?? {
+    getTicket: vi.fn().mockResolvedValue({ status: 2, isDeleted: false }),
+  };
+  const service = new ManualTicketWhatsappLinkService(repo, outbound, null, null, ticketReader);
 
-  return { service, repo, outbound };
+  return { service, repo, outbound, ticketReader };
 }
 
 describe('ManualTicketWhatsappLinkService', () => {
@@ -133,6 +138,26 @@ describe('ManualTicketWhatsappLinkService', () => {
     await expect(service.startTemplate(makeInput({ phoneE164: '41999999999' }))).rejects.toMatchObject({
       errorCode: 'INVALID_PHONE_E164',
     } satisfies Partial<ManualTicketWhatsappLinkError>);
+    expect(repo.createManualConversation).not.toHaveBeenCalled();
+    expect(outbound.send).not.toHaveBeenCalled();
+  });
+
+  it('blocks start-template when the linked GLPI ticket is unavailable and never calls outbound', async () => {
+    const { service, repo, outbound, ticketReader } = makeService({
+      ticketReader: {
+        getTicket: vi.fn().mockResolvedValue({ status: 2, isDeleted: true }),
+      },
+    });
+
+    await expect(service.startTemplate(makeInput())).rejects.toMatchObject({
+      errorCode: 'GLPI_TICKET_UNAVAILABLE',
+    } satisfies Partial<ManualTicketWhatsappLinkError>);
+
+    expect(ticketReader.getTicket).toHaveBeenCalledWith(123);
+    expect(repo.markOrphanedTicketConversations).toHaveBeenCalledWith({
+      ticketId: 123,
+      reason: 'glpi_ticket_deleted',
+    });
     expect(repo.createManualConversation).not.toHaveBeenCalled();
     expect(outbound.send).not.toHaveBeenCalled();
   });

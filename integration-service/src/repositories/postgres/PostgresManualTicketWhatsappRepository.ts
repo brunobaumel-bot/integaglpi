@@ -181,6 +181,32 @@ export class PostgresManualTicketWhatsappRepository {
     return result.rows[0];
   }
 
+  public async markOrphanedTicketConversations(input: {
+    ticketId: number;
+    reason: 'glpi_ticket_deleted' | 'glpi_ticket_missing';
+  }): Promise<Array<{ id: string; phone_e164: string }>> {
+    const result = await this.executor.query<{ id: string; phone_e164: string }>(
+      `
+        UPDATE ${DATABASE_TABLES.conversations}
+        SET
+          status = 'closed',
+          profile_collection_state = COALESCE(profile_collection_state, '{}'::jsonb)
+            || jsonb_build_object(
+              'orphan_reason', $2::text,
+              'orphaned_at', NOW(),
+              'orphan_source', 'ManualTicketWhatsappLinkService'
+            ),
+          updated_at = NOW()
+        WHERE glpi_ticket_id = $1
+          AND status <> 'closed'
+        RETURNING id, phone_e164
+      `,
+      [input.ticketId, input.reason],
+    );
+
+    return result.rows;
+  }
+
   public async findLastInboundAt(conversationId: string): Promise<Date | null> {
     const result = await this.executor.query<{ created_at: Date }>(
       `
