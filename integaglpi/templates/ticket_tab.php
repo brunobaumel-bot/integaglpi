@@ -44,6 +44,20 @@ $contextAiQuality = is_array($contextView['ai_quality'] ?? null) ? $contextView[
 $aiSupervisorEnabled = (bool) ($contextView['ai_supervisor_enabled'] ?? \GlpiPlugin\Integaglpi\Plugin::isAiSupervisorEnabled());
 $contextCorrelationId = trim((string) ($contextView['correlation_id'] ?? ''));
 $canViewTechnical = (bool) ($contextView['can_view_technical'] ?? false);
+$predictiveRiskScore = null;
+if ($canViewTechnical) {
+    try {
+        $predictiveRiskScore = (new \GlpiPlugin\Integaglpi\Service\RiskScoreService(
+            new \GlpiPlugin\Integaglpi\Service\PluginConfigService()
+        ))->getLatestScore(
+            is_array($contextConversation) ? (string) ($contextConversation['conversation_id'] ?? '') : '',
+            (int) $ticket->getID()
+        );
+    } catch (\Throwable $exception) {
+        error_log('[integaglpi][risk_score][ticket_tab] ' . substr($exception->getMessage(), 0, 180));
+        $predictiveRiskScore = null;
+    }
+}
 $localTemplates = [];
 try {
     $localTemplates = (new \GlpiPlugin\Integaglpi\Service\PluginConfigService())->getActiveLocalTemplates();
@@ -570,6 +584,16 @@ $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
                         <?= $this->escape((string) ($contextRisk['last_interaction_age'] ?? '-')); ?>
                     </div>
                 </div>
+            <?php } ?>
+
+            <?php if ($contextConversation !== null && $predictiveRiskScore !== null) { ?>
+                <?php
+                echo (new \GlpiPlugin\Integaglpi\Renderer\RiskScoreRenderer())->renderTicketBadge(
+                    $predictiveRiskScore,
+                    (int) $ticket->getID(),
+                    (string) ($contextConversation['conversation_id'] ?? '')
+                );
+                ?>
             <?php } ?>
 
             <?php if ($contextWarnings !== []) { ?>
