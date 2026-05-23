@@ -189,6 +189,11 @@ final class Plugin
         return self::getWebBasePath() . '/front/service.catalog.php';
     }
 
+    public static function getKnowledgeBaseUrl(): string
+    {
+        return self::getWebBasePath() . '/front/kb.php';
+    }
+
     public static function getAiQualityUrl(): string
     {
         return self::getWebBasePath() . '/front/ai.quality.php';
@@ -358,6 +363,26 @@ final class Plugin
     }
 
     public static function requireServiceCatalogUpdate(): void
+    {
+        Session::checkRight(self::RIGHT_NAME, UPDATE);
+    }
+
+    public static function canKnowledgeBaseRead(): bool
+    {
+        return self::hasRightBool(self::RIGHT_NAME, READ);
+    }
+
+    public static function requireKnowledgeBaseRead(): void
+    {
+        Session::checkRight(self::RIGHT_NAME, READ);
+    }
+
+    public static function canKnowledgeBaseUpdate(): bool
+    {
+        return self::hasRightBool(self::RIGHT_NAME, UPDATE);
+    }
+
+    public static function requireKnowledgeBaseUpdate(): void
     {
         Session::checkRight(self::RIGHT_NAME, UPDATE);
     }

@@ -423,4 +423,27 @@ describe('database bootstrap hardening', () => {
     expect(migration).not.toContain('TRUNCATE');
     expect(migration).not.toContain('DELETE FROM');
   });
+
+  it('keeps knowledge base foundation isolated, additive and free of vector/RAG storage', async () => {
+    const migration = compactSql(await readProjectFile('schema-migrations/028_knowledge_base_foundation.sql'));
+
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_kb_articles');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_kb_article_versions');
+    expect(migration).toContain("status TEXT NOT NULL DEFAULT 'draft'");
+    expect(migration).toContain('tags JSONB NOT NULL DEFAULT');
+    expect(migration).toContain('is_sensitive BOOLEAN NOT NULL DEFAULT FALSE');
+    expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS glpi_integaglpi_kb_versions_article_version_uq');
+    expect(migration).toContain('CREATE INDEX IF NOT EXISTS glpi_integaglpi_kb_articles_tags_gin_idx');
+    expect(migration).toContain("article_type IN ( 'procedimento_tecnico', 'solucao_comum', 'resposta_padrao', 'diagnostico_conhecido', 'faq_interno', 'alerta_operacional' )");
+    expect(migration).toContain("status IN ('draft', 'active', 'archived')");
+    expect(migration).not.toContain('DROP TABLE');
+    expect(migration).not.toContain('TRUNCATE');
+    expect(migration).not.toContain('DELETE FROM');
+    expect(migration).not.toContain('embedding');
+    expect(migration).not.toContain('vector');
+    expect(migration).not.toContain('rag');
+    expect(migration).not.toContain('glpi_plugin_integaglpi_conversations');
+    expect(migration).not.toContain('glpi_plugin_integaglpi_messages');
+    expect(migration).not.toContain('glpi_plugin_integaglpi_ai_quality_analyses');
+  });
 });
