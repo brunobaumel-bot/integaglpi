@@ -67,6 +67,40 @@ const envSchema = z.object({
     .union([z.literal('true'), z.literal('false')])
     .default('true')
     .transform((value) => value === 'true'),
+  AI_PILOT_CLOUD_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  AI_PILOT_EMBEDDINGS_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  AI_PILOT_PROVIDER: z.enum(['disabled', 'local', 'cloud']).default('disabled'),
+  AI_PILOT_MODEL: z.string().min(1).default('pilot-disabled'),
+  AI_PILOT_MONTHLY_BUDGET_LIMIT: z.coerce.number().min(0).default(0),
+  AI_PILOT_HARD_BUDGET_BLOCK: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('true')
+    .transform((value) => value === 'true'),
+  AI_PILOT_DPO_APPROVED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  AI_PILOT_ADMIN_OPT_IN: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  AI_PILOT_INCIDENT_ACK: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  AI_PILOT_TEST_ENVIRONMENT_ONLY: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('true')
+    .transform((value) => value === 'true'),
+  AI_PILOT_ENVIRONMENT: z.enum(['test', 'homologation', 'production']).default('test'),
+  AI_PILOT_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(45),
+  AI_PILOT_RETRY_COUNT: z.coerce.number().int().min(0).max(1).default(1),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;

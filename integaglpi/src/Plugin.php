@@ -164,6 +164,11 @@ final class Plugin
         return self::getWebBasePath() . '/front/quality.dashboard.php';
     }
 
+    public static function getAiPilotUrl(): string
+    {
+        return self::getWebBasePath() . '/front/ai.pilot.php';
+    }
+
     public static function getContactAgendaImportUrl(): string
     {
         return self::getWebBasePath() . '/front/contact.agenda.import.php';
@@ -255,6 +260,16 @@ final class Plugin
     }
 
     public static function requireQualityDashboardRead(): void
+    {
+        self::requireSupervisorRead();
+    }
+
+    public static function canAiPilotRead(): bool
+    {
+        return self::canSupervisorRead();
+    }
+
+    public static function requireAiPilotRead(): void
     {
         self::requireSupervisorRead();
     }

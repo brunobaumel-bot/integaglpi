@@ -513,4 +513,24 @@ describe('database bootstrap hardening', () => {
     expect(migration).not.toContain('vector');
     expect(migration).not.toContain('rag');
   });
+
+  it('keeps AI cloud and embedding pilot schema isolated, additive and disabled-safe', async () => {
+    const migration = compactSql(await readProjectFile('schema-migrations/034_ai_cloud_embedding_pilot.sql'));
+
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_ai_pilot_usage');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_ai_pilot_embeddings');
+    expect(migration).toContain('request_id TEXT UNIQUE NOT NULL');
+    expect(migration).toContain('anonymized_payload_hash TEXT NOT NULL');
+    expect(migration).toContain('source_id_hash TEXT NOT NULL');
+    expect(migration).toContain('vector_json JSONB NOT NULL DEFAULT');
+    expect(migration).toContain("provider IN ('disabled', 'local', 'cloud')");
+    expect(migration).toContain("status IN ('disabled', 'blocked', 'completed', 'failed', 'fallback_local')");
+    expect(migration).not.toContain('DROP TABLE');
+    expect(migration).not.toContain('TRUNCATE');
+    expect(migration).not.toContain('DELETE FROM');
+    expect(migration).not.toContain('glpi_tickets');
+    expect(migration).not.toContain('glpi_knowbaseitems');
+    expect(migration).not.toContain('raw_prompt');
+    expect(migration).not.toContain('access_token');
+  });
 });

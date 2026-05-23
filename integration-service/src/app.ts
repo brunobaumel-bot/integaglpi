@@ -8,6 +8,7 @@ import type { ConversationSoftCloseService } from './domain/services/Conversatio
 import type { AuditService } from './domain/services/AuditService.js';
 import type { AiSupervisorService } from './domain/services/AiSupervisorService.js';
 import type { CopilotDraftService } from './domain/services/CopilotDraftService.js';
+import type { AiPilotService } from './domain/services/AiPilotService.js';
 import type { ContactAgendaImportService } from './domain/services/ContactAgendaImportService.js';
 import type { ManualTicketWhatsappLinkService } from './domain/services/ManualTicketWhatsappLinkService.js';
 import type { GlpiClient } from './adapters/glpi/GlpiClient.js';
@@ -17,6 +18,7 @@ import { createOpsDiagnosticsController, healthController } from './controllers/
 import { createAiQualityAnalysisController } from './controllers/createAiQualityAnalysisController.js';
 import { createAiQualityFeedbackController } from './controllers/createAiQualityFeedbackController.js';
 import { createCopilotDraftController } from './controllers/createCopilotDraftController.js';
+import { createAiPilotStatusController, createAiPilotSyntheticTestController } from './controllers/createAiPilotController.js';
 import { createQualityDashboardController } from './controllers/createQualityDashboardController.js';
 import { createObservabilityController } from './controllers/createObservabilityController.js';
 import { createGlpiOutboundMessageController } from './controllers/createGlpiOutboundMessageController.js';
@@ -58,6 +60,7 @@ export interface AppDependencies {
   auditService?: AuditService;
   aiSupervisorService?: AiSupervisorService;
   copilotDraftService?: CopilotDraftService;
+  aiPilotService?: AiPilotService;
   qualityDashboardService?: QualityDashboardService;
   observabilityService?: ObservabilityService;
   contactAgendaImportService?: ContactAgendaImportService;
@@ -213,6 +216,19 @@ export function createApp(dependencies: AppDependencies) {
       '/internal/glpi/copilot/draft',
       createInternalBearerMiddleware(dependencies.integrationServiceApiKey),
       createCopilotDraftController(dependencies.copilotDraftService),
+    );
+  }
+  if (dependencies.aiPilotService) {
+    const internalAuth = createInternalBearerMiddleware(dependencies.integrationServiceApiKey);
+    app.get(
+      '/internal/glpi/ai-pilot/status',
+      internalAuth,
+      createAiPilotStatusController(dependencies.aiPilotService),
+    );
+    app.post(
+      '/internal/glpi/ai-pilot/test',
+      internalAuth,
+      createAiPilotSyntheticTestController(dependencies.aiPilotService),
     );
   }
 

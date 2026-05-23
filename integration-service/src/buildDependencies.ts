@@ -24,7 +24,11 @@ import { EntitySelectionService } from './domain/services/EntitySelectionService
 import { ConversationSoftCloseService } from './domain/services/ConversationSoftCloseService.js';
 import { AiSupervisorService } from './domain/services/AiSupervisorService.js';
 import { CopilotDraftService } from './domain/services/CopilotDraftService.js';
+import { AiPilotService } from './domain/services/AiPilotService.js';
 import { OllamaCopilotProvider } from './copilot/OllamaCopilotProvider.js';
+import { AiPilotBudgetGuard } from './aiPilot/budgetGuard.js';
+import { AiPilotRepository } from './aiPilot/repository.js';
+import { createPilotProvider } from './cloud/providerRegistry.js';
 import { postgresPool } from './infra/db/postgres.js';
 import { ResilientHttpClient } from './infra/http/ResilientHttpClient.js';
 import { PostgresContactEntityMemoryRepository } from './repositories/postgres/PostgresContactEntityMemoryRepository.js';
@@ -66,6 +70,7 @@ export function buildDependencies() {
   const solutionActionRepository = new PostgresSolutionActionRepository(postgresPool);
   const auditEventRepository = new PostgresAuditEventRepository(postgresPool);
   const aiQualityAnalysisRepository = new PostgresAiQualityAnalysisRepository(postgresPool);
+  const aiPilotRepository = new AiPilotRepository(postgresPool);
   const messageFlowRepository = new PostgresMessageFlowRepository(postgresPool);
   const qualityDashboardService = new QualityDashboardService(postgresPool, redisClient);
   const observabilityService = new ObservabilityService(postgresPool, redisClient, glpiClient);
@@ -177,6 +182,27 @@ export function buildDependencies() {
     },
     auditService,
   );
+  const aiPilotService = new AiPilotService(
+    {
+      cloudEnabled: env.AI_PILOT_CLOUD_ENABLED,
+      embeddingsEnabled: env.AI_PILOT_EMBEDDINGS_ENABLED,
+      provider: env.AI_PILOT_PROVIDER,
+      model: env.AI_PILOT_MODEL,
+      monthlyBudgetLimit: env.AI_PILOT_MONTHLY_BUDGET_LIMIT,
+      hardBudgetBlock: env.AI_PILOT_HARD_BUDGET_BLOCK,
+      dpoApproved: env.AI_PILOT_DPO_APPROVED,
+      adminOptIn: env.AI_PILOT_ADMIN_OPT_IN,
+      incidentAck: env.AI_PILOT_INCIDENT_ACK,
+      testEnvironmentOnly: env.AI_PILOT_TEST_ENVIRONMENT_ONLY,
+      environment: env.AI_PILOT_ENVIRONMENT,
+      timeoutMs: env.AI_PILOT_TIMEOUT_SECONDS * 1000,
+      retryCount: env.AI_PILOT_RETRY_COUNT,
+    },
+    createPilotProvider(env.AI_PILOT_PROVIDER),
+    new AiPilotBudgetGuard(postgresPool, env.AI_PILOT_MONTHLY_BUDGET_LIMIT, env.AI_PILOT_HARD_BUDGET_BLOCK),
+    aiPilotRepository,
+    auditService,
+  );
   const inboundWebhookService = new InboundWebhookService(
     webhookEventRepository,
     messageRepository,
@@ -207,6 +233,7 @@ export function buildDependencies() {
     inactivityAutomationService,
     aiSupervisorService,
     copilotDraftService,
+    aiPilotService,
     qualityDashboardService,
     observabilityService,
     contactAgendaImportService,
