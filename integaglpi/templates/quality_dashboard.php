@@ -8,6 +8,25 @@ declare(strict_types=1);
 $filters = is_array($data['filters'] ?? null) ? $data['filters'] : [];
 $kpis = is_array($data['kpis'] ?? null) ? $data['kpis'] : [];
 $breakdowns = is_array($data['breakdowns'] ?? null) ? $data['breakdowns'] : [];
+$cxInsights = is_array($data['cx_insights'] ?? null) ? $data['cx_insights'] : [];
+$aiQuality = is_array($cxInsights['ai_quality'] ?? null) ? $cxInsights['ai_quality'] : [];
+$aiTotals = is_array($aiQuality['totals'] ?? null) ? $aiQuality['totals'] : [];
+$communication = is_array($aiQuality['communication'] ?? null) ? $aiQuality['communication'] : [];
+$kbAlignmentRows = is_array($aiQuality['kb_alignment'] ?? null) ? $aiQuality['kb_alignment'] : [];
+$procedureRows = is_array($aiQuality['procedure_followed'] ?? null) ? $aiQuality['procedure_followed'] : [];
+$satisfactionRiskRows = is_array($aiQuality['satisfaction_risk'] ?? null) ? $aiQuality['satisfaction_risk'] : [];
+$riskLevelRows = is_array($aiQuality['risk_level'] ?? null) ? $aiQuality['risk_level'] : [];
+$sentimentRows = is_array($aiQuality['sentiment'] ?? null) ? $aiQuality['sentiment'] : [];
+$historicalInsights = is_array($cxInsights['historical'] ?? null) ? $cxInsights['historical'] : [];
+$historicalPatterns = is_array($historicalInsights['patterns'] ?? null) ? $historicalInsights['patterns'] : [];
+$historicalInsightRows = is_array($historicalInsights['insights'] ?? null) ? $historicalInsights['insights'] : [];
+$kbCandidateInsights = is_array($cxInsights['kb_candidates'] ?? null) ? $cxInsights['kb_candidates'] : [];
+$candidateTotals = is_array($kbCandidateInsights['totals'] ?? null) ? $kbCandidateInsights['totals'] : [];
+$candidateStatusRows = is_array($kbCandidateInsights['status_counts'] ?? null) ? $kbCandidateInsights['status_counts'] : [];
+$candidateTypeRows = is_array($kbCandidateInsights['type_counts'] ?? null) ? $kbCandidateInsights['type_counts'] : [];
+$candidateReviewRows = is_array($kbCandidateInsights['review_actions'] ?? null) ? $kbCandidateInsights['review_actions'] : [];
+$pendingCandidates = is_array($kbCandidateInsights['pending_candidates'] ?? null) ? $kbCandidateInsights['pending_candidates'] : [];
+$trendRows = is_array($cxInsights['trends'] ?? null) ? $cxInsights['trends'] : [];
 $rows = is_array($data['rows'] ?? null) ? $data['rows'] : [];
 $pagination = is_array($data['pagination'] ?? null) ? $data['pagination'] : [];
 $entityOptions = is_array($data['entity_options'] ?? null) ? $data['entity_options'] : [];
@@ -67,6 +86,9 @@ $inactivityOptions = ['' => __('Todos', 'glpiintegaglpi'), 'pending' => __('Pend
         <div class="text-muted">
             <?= $this->escape(__('Métricas read-only de atendimento, CSAT, delivery, inatividade, contratos e IA Supervisora.', 'glpiintegaglpi')); ?>
         </div>
+        <div class="text-muted small">
+            <?= $this->escape(__('Dashboard de Qualidade e CX: visão agregada de comunicação, aderência à KB e candidatos de conhecimento.', 'glpiintegaglpi')); ?>
+        </div>
     </div>
     <div class="d-flex align-items-center gap-2">
         <a class="btn btn-outline-secondary" href="<?= $this->escape($this->getConsoleUrl($filters)); ?>">
@@ -83,6 +105,10 @@ $inactivityOptions = ['' => __('Todos', 'glpiintegaglpi'), 'pending' => __('Pend
 <?php if ($error !== '') : ?>
     <div class="alert alert-warning"><?= $this->escape($error); ?></div>
 <?php endif; ?>
+
+<div class="alert alert-warning">
+    <?= $this->escape(__('Indicadores gerados por IA e regras. Use para melhoria contínua e coaching, não como avaliação disciplinar automática.', 'glpiintegaglpi')); ?>
+</div>
 
 <div class="card mb-3">
     <div class="card-header"><?= $this->escape(__('Filtros', 'glpiintegaglpi')); ?></div>
@@ -174,6 +200,198 @@ $inactivityOptions = ['' => __('Todos', 'glpiintegaglpi'), 'pending' => __('Pend
                 <?= $this->escape(__('Período obrigatório. Limite máximo: 30 dias. Consultas usam cache Redis por filtros e escopo.', 'glpiintegaglpi')); ?>
             </div>
         </form>
+    </div>
+</div>
+
+<div class="row g-3 mb-3">
+    <div class="col-md-3">
+        <div class="border rounded p-3 h-100">
+            <div class="text-muted small mb-1"><?= $this->escape(__('Análises IA no período', 'glpiintegaglpi')); ?></div>
+            <div class="fs-3 fw-bold text-primary"><?= (int) ($aiTotals['completed'] ?? 0); ?></div>
+            <div class="text-muted small"><?= (int) ($aiTotals['total'] ?? 0); ?> <?= $this->escape(__('registro(s) totais', 'glpiintegaglpi')); ?></div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="border rounded p-3 h-100">
+            <div class="text-muted small mb-1"><?= $this->escape(__('Clareza média', 'glpiintegaglpi')); ?></div>
+            <div class="fs-3 fw-bold text-info"><?= $this->escape((string) ($communication['avg_clarity'] ?? 'n/a')); ?></div>
+            <div class="text-muted small"><?= $this->escape(__('Escala 1-10, agregada.', 'glpiintegaglpi')); ?></div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="border rounded p-3 h-100">
+            <div class="text-muted small mb-1"><?= $this->escape(__('Empatia média', 'glpiintegaglpi')); ?></div>
+            <div class="fs-3 fw-bold text-success"><?= $this->escape((string) ($communication['avg_empathy'] ?? 'n/a')); ?></div>
+            <div class="text-muted small"><?= $this->escape(__('Escala 1-10, agregada.', 'glpiintegaglpi')); ?></div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="border rounded p-3 h-100">
+            <div class="text-muted small mb-1"><?= $this->escape(__('Candidatos de KB pendentes', 'glpiintegaglpi')); ?></div>
+            <div class="fs-3 fw-bold text-warning"><?= (int) ($candidateTotals['suggested'] ?? 0) + (int) ($candidateTotals['in_review'] ?? 0) + (int) ($candidateTotals['possible_duplicate'] ?? 0); ?></div>
+            <div class="text-muted small"><?= $this->escape(__('Revisão humana obrigatória.', 'glpiintegaglpi')); ?></div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-3 mb-3">
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-header"><?= $this->escape(__('Aderência à KB', 'glpiintegaglpi')); ?></div>
+            <div class="card-body">
+                <?php if ($kbAlignmentRows === [] && $procedureRows === []) : ?>
+                    <div class="text-muted small"><?= $this->escape(__('Sem análises P1 no período filtrado.', 'glpiintegaglpi')); ?></div>
+                <?php endif; ?>
+                <?php foreach ($kbAlignmentRows as $row) : ?>
+                    <div class="d-flex justify-content-between">
+                        <span><?= $this->escape((string) ($row['label'] ?? 'unknown')); ?></span>
+                        <strong><?= (int) ($row['total'] ?? 0); ?></strong>
+                    </div>
+                <?php endforeach; ?>
+                <?php if ($procedureRows !== []) : ?>
+                    <hr>
+                    <div class="text-muted small mb-1"><?= $this->escape(__('Procedimento seguido', 'glpiintegaglpi')); ?></div>
+                    <?php foreach ($procedureRows as $row) : ?>
+                        <div class="d-flex justify-content-between small">
+                            <span><?= $this->escape((string) ($row['label'] ?? 'unknown')); ?></span>
+                            <strong><?= (int) ($row['total'] ?? 0); ?></strong>
+                        </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-header"><?= $this->escape(__('Qualidade de comunicação e risco', 'glpiintegaglpi')); ?></div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <span><?= $this->escape(__('Completude média', 'glpiintegaglpi')); ?></span>
+                    <strong><?= $this->escape((string) ($communication['avg_completeness'] ?? 'n/a')); ?></strong>
+                </div>
+                <hr>
+                <div class="text-muted small mb-1"><?= $this->escape(__('Risco de satisfação', 'glpiintegaglpi')); ?></div>
+                <?php foreach ($satisfactionRiskRows as $row) : ?>
+                    <div class="d-flex justify-content-between small"><span><?= $this->escape((string) ($row['label'] ?? 'unknown')); ?></span><strong><?= (int) ($row['total'] ?? 0); ?></strong></div>
+                <?php endforeach; ?>
+                <div class="text-muted small mt-2 mb-1"><?= $this->escape(__('Risco operacional', 'glpiintegaglpi')); ?></div>
+                <?php foreach ($riskLevelRows as $row) : ?>
+                    <div class="d-flex justify-content-between small"><span><?= $this->escape((string) ($row['label'] ?? 'unknown')); ?></span><strong><?= (int) ($row['total'] ?? 0); ?></strong></div>
+                <?php endforeach; ?>
+                <div class="text-muted small mt-2 mb-1"><?= $this->escape(__('Sentimento', 'glpiintegaglpi')); ?></div>
+                <?php foreach ($sentimentRows as $row) : ?>
+                    <div class="d-flex justify-content-between small"><span><?= $this->escape((string) ($row['label'] ?? 'unknown')); ?></span><strong><?= (int) ($row['total'] ?? 0); ?></strong></div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-header"><?= $this->escape(__('Tendências seguras', 'glpiintegaglpi')); ?></div>
+            <div class="card-body">
+                <?php foreach (['analysis_count' => __('Análises IA', 'glpiintegaglpi'), 'high_risk' => __('Risco alto', 'glpiintegaglpi'), 'pending_candidates' => __('Candidatos pendentes', 'glpiintegaglpi')] as $key => $label) : ?>
+                    <?php $trend = is_array($trendRows[$key] ?? null) ? $trendRows[$key] : null; ?>
+                    <div class="d-flex justify-content-between">
+                        <span><?= $this->escape($label); ?></span>
+                        <strong>
+                            <?php if ($trend === null) : ?>
+                                n/a
+                            <?php else : ?>
+                                <?= (int) ($trend['current'] ?? 0); ?> (<?= (int) ($trend['delta'] ?? 0); ?>)
+                            <?php endif; ?>
+                        </strong>
+                    </div>
+                <?php endforeach; ?>
+                <div class="text-muted small mt-2">
+                    <?= $this->escape(__('Comparação com período anterior de mesmo tamanho. Volume baixo deve ser tratado apenas como sinal fraco.', 'glpiintegaglpi')); ?>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-3 mb-3">
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-header"><?= $this->escape(__('Lacunas históricas agregadas', 'glpiintegaglpi')); ?></div>
+            <div class="card-body">
+                <?php if ($historicalPatterns === [] && $historicalInsightRows === []) : ?>
+                    <div class="text-muted small"><?= $this->escape(__('Sem padrões históricos P2 no período.', 'glpiintegaglpi')); ?></div>
+                <?php endif; ?>
+                <?php foreach ($historicalPatterns as $row) : ?>
+                    <div class="d-flex justify-content-between">
+                        <span><?= $this->escape((string) ($row['pattern_type'] ?? '')); ?> · <?= $this->escape((string) ($row['category'] ?? '')); ?></span>
+                        <strong><?= (int) ($row['total'] ?? 0); ?></strong>
+                    </div>
+                <?php endforeach; ?>
+                <?php foreach ($historicalInsightRows as $row) : ?>
+                    <div class="d-flex justify-content-between small text-muted">
+                        <span><?= $this->escape((string) ($row['insight_type'] ?? '')); ?> · <?= $this->escape((string) ($row['priority'] ?? '')); ?></span>
+                        <strong><?= (int) ($row['total'] ?? 0); ?></strong>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-header"><?= $this->escape(__('Candidatos de KB', 'glpiintegaglpi')); ?></div>
+            <div class="card-body">
+                <?php foreach ($candidateStatusRows as $row) : ?>
+                    <div class="d-flex justify-content-between">
+                        <span><?= $this->escape((string) ($row['label'] ?? '')); ?></span>
+                        <strong><?= (int) ($row['total'] ?? 0); ?></strong>
+                    </div>
+                <?php endforeach; ?>
+                <?php if ($candidateTypeRows !== []) : ?>
+                    <hr>
+                    <div class="text-muted small mb-1"><?= $this->escape(__('Tipos', 'glpiintegaglpi')); ?></div>
+                    <?php foreach ($candidateTypeRows as $row) : ?>
+                        <div class="d-flex justify-content-between small">
+                            <span><?= $this->escape((string) ($row['label'] ?? '')); ?></span>
+                            <strong><?= (int) ($row['total'] ?? 0); ?></strong>
+                        </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+                <?php if ($candidateReviewRows !== []) : ?>
+                    <hr>
+                    <div class="text-muted small mb-1"><?= $this->escape(__('Adoção por revisão humana', 'glpiintegaglpi')); ?></div>
+                    <?php foreach ($candidateReviewRows as $row) : ?>
+                        <div class="d-flex justify-content-between small">
+                            <span><?= $this->escape((string) ($row['label'] ?? '')); ?></span>
+                            <strong><?= (int) ($row['total'] ?? 0); ?></strong>
+                        </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-header"><?= $this->escape(__('Coaching não punitivo', 'glpiintegaglpi')); ?></div>
+            <div class="card-body">
+                <?php if ($pendingCandidates === []) : ?>
+                    <div class="text-muted small"><?= $this->escape(__('Sem candidatos pendentes no período.', 'glpiintegaglpi')); ?></div>
+                <?php else : ?>
+                    <?php foreach ($pendingCandidates as $row) : ?>
+                        <div class="mb-2">
+                            <a href="<?= $this->escape($this->getKbCandidateUrl((int) ($row['id'] ?? 0))); ?>">
+                                <?= $this->escape((string) ($row['title'] ?? '')); ?>
+                            </a>
+                            <div class="text-muted small">
+                                <?= $this->escape((string) ($row['status'] ?? '')); ?> · <?= $this->escape((string) ($row['article_type'] ?? '')); ?> · <?= (int) ($row['confidence_score'] ?? 0); ?>%
+                                <?php if ((bool) ($row['possible_duplicate'] ?? false)) : ?>
+                                    · <?= $this->escape(__('possível duplicidade', 'glpiintegaglpi')); ?>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+                <div class="text-muted small mt-2">
+                    <?= $this->escape(__('Sem ranking disciplinar. Use os sinais para orientar melhoria de comunicação e revisão de conhecimento.', 'glpiintegaglpi')); ?>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 

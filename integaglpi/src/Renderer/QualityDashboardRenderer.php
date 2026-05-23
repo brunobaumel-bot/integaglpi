@@ -45,6 +45,16 @@ final class QualityDashboardRenderer
         return Plugin::getTicketUrl($ticketId);
     }
 
+    public function getKbCandidateUrl(int $candidateId = 0): string
+    {
+        $url = Plugin::getKbCandidatesUrl();
+        if ($candidateId > 0) {
+            $url .= '?' . http_build_query(['view_id' => $candidateId]);
+        }
+
+        return $url;
+    }
+
     /**
      * @param array<string, mixed> $filters
      */

@@ -18,6 +18,8 @@ final class QualityDashboardService
     private const MAX_LIMIT = 50;
     private const MAX_RANGE_DAYS = 30;
 
+    private ?PDO $pdo = null;
+
     public function __construct(private readonly PluginConfigService $pluginConfigService)
     {
     }
@@ -81,6 +83,7 @@ final class QualityDashboardService
 
         $breakdowns = is_array($body['breakdowns'] ?? null) ? $body['breakdowns'] : [];
         $breakdowns = $this->mergeSupplementalBreakdowns($breakdowns, $filters, $scopedEntityIds);
+        $cxInsights = $this->loadCxQualityInsights($filters);
 
         return [
             'filters' => $filters,
@@ -88,6 +91,7 @@ final class QualityDashboardService
             'entity_scope_label' => sprintf(__('%d entidade(s) no escopo', 'glpiintegaglpi'), count($scopedEntityIds)),
             'kpis' => is_array($body['kpis'] ?? null) ? $body['kpis'] : [],
             'breakdowns' => $breakdowns,
+            'cx_insights' => $cxInsights,
             'rows' => $this->decorateRows(is_array($body['rows'] ?? null) ? $body['rows'] : []),
             'pagination' => is_array($body['pagination'] ?? null) ? $body['pagination'] : [],
             'cache_status' => (string) ($body['cache_status'] ?? ''),
@@ -313,7 +317,7 @@ final class QualityDashboardService
             implode(', ', $entityPlaceholders)
         );
 
-        $statement = ExternalDatabase::getConnection($this->pluginConfigService->getConnectionConfig())->prepare($sql);
+        $statement = $this->getConnection()->prepare($sql);
         $statement->bindValue(':date_from', (string) ($filters['date_from'] ?? '') . ' 00:00:00');
         $statement->bindValue(':date_to', (string) ($filters['date_to'] ?? '') . ' 23:59:59');
         foreach ($scopedEntityIds as $index => $entityId) {
@@ -345,6 +349,499 @@ final class QualityDashboardService
         $message = preg_replace('/(password|token|secret|authorization|bearer)\s*[:=]\s*[^,\s]+/i', '$1=[redacted]', $message) ?? '';
 
         return mb_substr($message, 0, 240);
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return array<string, mixed>
+     */
+    private function loadCxQualityInsights(array $filters): array
+    {
+        $data = $this->emptyCxInsights();
+        if (!$this->pluginConfigService->isConfigured()) {
+            return $data;
+        }
+
+        try {
+            if ($this->tableExists('glpi_plugin_integaglpi_ai_quality_analyses')) {
+                $data['ai_quality'] = $this->loadAiQualityInsights($filters);
+            }
+            if (
+                $this->tableExists('glpi_plugin_integaglpi_hist_patterns')
+                && $this->tableExists('glpi_plugin_integaglpi_hist_insights')
+            ) {
+                $data['historical'] = $this->loadHistoricalInsights($filters);
+            }
+            if ($this->tableExists('glpi_plugin_integaglpi_kb_candidates')) {
+                $data['kb_candidates'] = $this->loadKbCandidateInsights($filters);
+            }
+            $data['trends'] = $this->loadTrendInsights($filters);
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][quality_dashboard][cx] ' . $this->sanitizeLogMessage($exception->getMessage()));
+            $data['error'] = __('Insights de CX indisponíveis no momento.', 'glpiintegaglpi');
+        }
+
+        return $data;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function emptyCxInsights(): array
+    {
+        return [
+            'ai_quality' => [
+                'totals' => ['total' => 0, 'completed' => 0],
+                'communication' => ['avg_clarity' => null, 'avg_empathy' => null, 'avg_completeness' => null],
+                'kb_alignment' => [],
+                'procedure_followed' => [],
+                'satisfaction_risk' => [],
+                'risk_level' => [],
+                'sentiment' => [],
+            ],
+            'historical' => ['patterns' => [], 'insights' => []],
+            'kb_candidates' => [
+                'status_counts' => [],
+                'type_counts' => [],
+                'review_actions' => [],
+                'pending_candidates' => [],
+                'totals' => ['suggested' => 0, 'in_review' => 0, 'approved' => 0, 'rejected' => 0, 'possible_duplicate' => 0],
+            ],
+            'trends' => ['analysis_count' => null, 'high_risk' => null, 'pending_candidates' => null],
+            'error' => '',
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return array<string, mixed>
+     */
+    private function loadAiQualityInsights(array $filters): array
+    {
+        $totals = $this->fetchOne(
+            "
+            SELECT
+                COUNT(*)::int AS total,
+                COUNT(*) FILTER (WHERE status = 'completed')::int AS completed
+            FROM glpi_plugin_integaglpi_ai_quality_analyses
+            WHERE created_at >= CAST(:date_from AS timestamptz)
+              AND created_at <= CAST(:date_to AS timestamptz)
+            ",
+            $filters
+        );
+
+        $communication = $this->fetchOne(
+            "
+            WITH extracted AS (
+                SELECT
+                    COALESCE(result_json->'communicationQuality'->>'clarity', result_json->'communication_quality'->>'clarity') AS clarity,
+                    COALESCE(result_json->'communicationQuality'->>'empathy', result_json->'communication_quality'->>'empathy') AS empathy,
+                    COALESCE(result_json->'communicationQuality'->>'completeness', result_json->'communication_quality'->>'completeness') AS completeness
+                FROM glpi_plugin_integaglpi_ai_quality_analyses
+                WHERE status = 'completed'
+                  AND created_at >= CAST(:date_from AS timestamptz)
+                  AND created_at <= CAST(:date_to AS timestamptz)
+            )
+            SELECT
+                ROUND(AVG(CASE WHEN clarity ~ '^[0-9]+(\\.[0-9]+)?$' THEN clarity::numeric END), 1) AS avg_clarity,
+                ROUND(AVG(CASE WHEN empathy ~ '^[0-9]+(\\.[0-9]+)?$' THEN empathy::numeric END), 1) AS avg_empathy,
+                ROUND(AVG(CASE WHEN completeness ~ '^[0-9]+(\\.[0-9]+)?$' THEN completeness::numeric END), 1) AS avg_completeness
+            FROM extracted
+            ",
+            $filters
+        );
+
+        return [
+            'totals' => [
+                'total' => (int) ($totals['total'] ?? 0),
+                'completed' => (int) ($totals['completed'] ?? 0),
+            ],
+            'communication' => [
+                'avg_clarity' => $this->nullableNumber($communication['avg_clarity'] ?? null),
+                'avg_empathy' => $this->nullableNumber($communication['avg_empathy'] ?? null),
+                'avg_completeness' => $this->nullableNumber($communication['avg_completeness'] ?? null),
+            ],
+            'kb_alignment' => $this->fetchLabelTotals(
+                "
+                SELECT COALESCE(result_json->>'kbAlignment', result_json->>'kb_alignment', 'unknown') AS label, COUNT(*)::int AS total
+                FROM glpi_plugin_integaglpi_ai_quality_analyses
+                WHERE status = 'completed'
+                  AND created_at >= CAST(:date_from AS timestamptz)
+                  AND created_at <= CAST(:date_to AS timestamptz)
+                GROUP BY label
+                ORDER BY total DESC, label ASC
+                LIMIT 10
+                ",
+                $filters
+            ),
+            'procedure_followed' => $this->fetchLabelTotals(
+                "
+                SELECT COALESCE(result_json->>'procedureFollowed', result_json->>'procedure_followed', 'unknown') AS label, COUNT(*)::int AS total
+                FROM glpi_plugin_integaglpi_ai_quality_analyses
+                WHERE status = 'completed'
+                  AND created_at >= CAST(:date_from AS timestamptz)
+                  AND created_at <= CAST(:date_to AS timestamptz)
+                GROUP BY label
+                ORDER BY total DESC, label ASC
+                LIMIT 10
+                ",
+                $filters
+            ),
+            'satisfaction_risk' => $this->fetchLabelTotals(
+                "
+                SELECT COALESCE(result_json->>'clientSatisfactionRisk', result_json->>'client_satisfaction_risk', 'unknown') AS label, COUNT(*)::int AS total
+                FROM glpi_plugin_integaglpi_ai_quality_analyses
+                WHERE status = 'completed'
+                  AND created_at >= CAST(:date_from AS timestamptz)
+                  AND created_at <= CAST(:date_to AS timestamptz)
+                GROUP BY label
+                ORDER BY total DESC, label ASC
+                LIMIT 10
+                ",
+                $filters
+            ),
+            'risk_level' => $this->fetchLabelTotals(
+                "
+                SELECT COALESCE(result_json->>'riskLevel', result_json->>'risk_level', 'unknown') AS label, COUNT(*)::int AS total
+                FROM glpi_plugin_integaglpi_ai_quality_analyses
+                WHERE status = 'completed'
+                  AND created_at >= CAST(:date_from AS timestamptz)
+                  AND created_at <= CAST(:date_to AS timestamptz)
+                GROUP BY label
+                ORDER BY total DESC, label ASC
+                LIMIT 10
+                ",
+                $filters
+            ),
+            'sentiment' => $this->fetchLabelTotals(
+                "
+                SELECT COALESCE(NULLIF(result_json->>'sentiment', ''), NULLIF(sentiment, ''), 'unknown') AS label, COUNT(*)::int AS total
+                FROM glpi_plugin_integaglpi_ai_quality_analyses
+                WHERE created_at >= CAST(:date_from AS timestamptz)
+                  AND created_at <= CAST(:date_to AS timestamptz)
+                GROUP BY label
+                ORDER BY total DESC, label ASC
+                LIMIT 10
+                ",
+                $filters
+            ),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return array<string, mixed>
+     */
+    private function loadHistoricalInsights(array $filters): array
+    {
+        return [
+            'patterns' => $this->fetchRows(
+                "
+                SELECT
+                    pattern_type,
+                    COALESCE(NULLIF(category, ''), 'sem_categoria') AS category,
+                    severity,
+                    SUM(frequency_abs)::int AS total
+                FROM glpi_plugin_integaglpi_hist_patterns
+                WHERE created_at >= CAST(:date_from AS timestamptz)
+                  AND created_at <= CAST(:date_to AS timestamptz)
+                GROUP BY pattern_type, category, severity
+                ORDER BY total DESC, severity DESC, pattern_type ASC
+                LIMIT 10
+                ",
+                $filters
+            ),
+            'insights' => $this->fetchRows(
+                "
+                SELECT insight_type, priority, COUNT(*)::int AS total
+                FROM glpi_plugin_integaglpi_hist_insights
+                WHERE created_at >= CAST(:date_from AS timestamptz)
+                  AND created_at <= CAST(:date_to AS timestamptz)
+                GROUP BY insight_type, priority
+                ORDER BY total DESC, priority ASC, insight_type ASC
+                LIMIT 10
+                ",
+                $filters
+            ),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return array<string, mixed>
+     */
+    private function loadKbCandidateInsights(array $filters): array
+    {
+        $statusCounts = $this->fetchLabelTotals(
+            "
+            SELECT status AS label, COUNT(*)::int AS total
+            FROM glpi_plugin_integaglpi_kb_candidates
+            WHERE created_at >= CAST(:date_from AS timestamptz)
+              AND created_at <= CAST(:date_to AS timestamptz)
+            GROUP BY status
+            ORDER BY total DESC, label ASC
+            LIMIT 12
+            ",
+            $filters
+        );
+        $totals = ['suggested' => 0, 'in_review' => 0, 'approved' => 0, 'rejected' => 0, 'possible_duplicate' => 0];
+        foreach ($statusCounts as $row) {
+            $label = (string) ($row['label'] ?? '');
+            if (array_key_exists($label, $totals)) {
+                $totals[$label] = (int) ($row['total'] ?? 0);
+            }
+        }
+
+        $possibleDuplicate = $this->fetchOne(
+            "
+            SELECT COUNT(*)::int AS total
+            FROM glpi_plugin_integaglpi_kb_candidates
+            WHERE possible_duplicate = TRUE
+              AND created_at >= CAST(:date_from AS timestamptz)
+              AND created_at <= CAST(:date_to AS timestamptz)
+            ",
+            $filters
+        );
+        $totals['possible_duplicate'] = (int) ($possibleDuplicate['total'] ?? 0);
+
+        return [
+            'status_counts' => $statusCounts,
+            'type_counts' => $this->fetchLabelTotals(
+                "
+                SELECT article_type AS label, COUNT(*)::int AS total
+                FROM glpi_plugin_integaglpi_kb_candidates
+                WHERE created_at >= CAST(:date_from AS timestamptz)
+                  AND created_at <= CAST(:date_to AS timestamptz)
+                GROUP BY article_type
+                ORDER BY total DESC, label ASC
+                LIMIT 12
+                ",
+                $filters
+            ),
+            'review_actions' => $this->tableExists('glpi_plugin_integaglpi_kb_candidate_reviews')
+                ? $this->fetchLabelTotals(
+                    "
+                    SELECT action AS label, COUNT(*)::int AS total
+                    FROM glpi_plugin_integaglpi_kb_candidate_reviews
+                    WHERE created_at >= CAST(:date_from AS timestamptz)
+                      AND created_at <= CAST(:date_to AS timestamptz)
+                    GROUP BY action
+                    ORDER BY total DESC, label ASC
+                    LIMIT 12
+                    ",
+                    $filters
+                )
+                : [],
+            'pending_candidates' => array_map(
+                static fn (array $row): array => [
+                    'id' => (int) ($row['id'] ?? 0),
+                    'title' => mb_substr((string) ($row['title'] ?? ''), 0, 160),
+                    'status' => (string) ($row['status'] ?? ''),
+                    'article_type' => (string) ($row['article_type'] ?? ''),
+                    'confidence_score' => (int) ($row['confidence_score'] ?? 0),
+                    'possible_duplicate' => (bool) ($row['possible_duplicate'] ?? false),
+                    'created_at' => (string) ($row['created_at'] ?? ''),
+                ],
+                $this->fetchRows(
+                    "
+                    SELECT id, title, status, article_type, confidence_score, possible_duplicate, created_at
+                    FROM glpi_plugin_integaglpi_kb_candidates
+                    WHERE status IN ('suggested', 'in_review', 'possible_duplicate')
+                      AND created_at >= CAST(:date_from AS timestamptz)
+                      AND created_at <= CAST(:date_to AS timestamptz)
+                    ORDER BY confidence_score DESC, created_at DESC
+                    LIMIT 8
+                    ",
+                    $filters
+                )
+            ),
+            'totals' => $totals,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return array<string, mixed>
+     */
+    private function loadTrendInsights(array $filters): array
+    {
+        $currentFrom = new DateTimeImmutable((string) ($filters['date_from'] ?? 'now'));
+        $currentTo = new DateTimeImmutable((string) ($filters['date_to'] ?? 'now'));
+        $days = max(1, (int) $currentFrom->diff($currentTo)->format('%a') + 1);
+        $previousTo = $currentFrom->sub(new DateInterval('P1D'));
+        $previousFrom = $previousTo->sub(new DateInterval('P' . max(0, $days - 1) . 'D'));
+        $previousFilters = [
+            'date_from' => $previousFrom->format('Y-m-d'),
+            'date_to' => $previousTo->format('Y-m-d'),
+        ];
+
+        $trends = ['analysis_count' => null, 'high_risk' => null, 'pending_candidates' => null];
+        if ($this->tableExists('glpi_plugin_integaglpi_ai_quality_analyses')) {
+            $trends['analysis_count'] = $this->buildTrend(
+                $this->countAiAnalyses($filters),
+                $this->countAiAnalyses($previousFilters)
+            );
+            $trends['high_risk'] = $this->buildTrend(
+                $this->countHighRiskAnalyses($filters),
+                $this->countHighRiskAnalyses($previousFilters)
+            );
+        }
+        if ($this->tableExists('glpi_plugin_integaglpi_kb_candidates')) {
+            $trends['pending_candidates'] = $this->buildTrend(
+                $this->countPendingCandidates($filters),
+                $this->countPendingCandidates($previousFilters)
+            );
+        }
+
+        return $trends;
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     */
+    private function countAiAnalyses(array $filters): int
+    {
+        $row = $this->fetchOne(
+            "
+            SELECT COUNT(*)::int AS total
+            FROM glpi_plugin_integaglpi_ai_quality_analyses
+            WHERE status = 'completed'
+              AND created_at >= CAST(:date_from AS timestamptz)
+              AND created_at <= CAST(:date_to AS timestamptz)
+            ",
+            $filters
+        );
+
+        return (int) ($row['total'] ?? 0);
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     */
+    private function countHighRiskAnalyses(array $filters): int
+    {
+        $row = $this->fetchOne(
+            "
+            SELECT COUNT(*)::int AS total
+            FROM glpi_plugin_integaglpi_ai_quality_analyses
+            WHERE status = 'completed'
+              AND COALESCE(result_json->>'clientSatisfactionRisk', result_json->>'client_satisfaction_risk', result_json->>'riskLevel', result_json->>'risk_level') IN ('high', 'critical')
+              AND created_at >= CAST(:date_from AS timestamptz)
+              AND created_at <= CAST(:date_to AS timestamptz)
+            ",
+            $filters
+        );
+
+        return (int) ($row['total'] ?? 0);
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     */
+    private function countPendingCandidates(array $filters): int
+    {
+        $row = $this->fetchOne(
+            "
+            SELECT COUNT(*)::int AS total
+            FROM glpi_plugin_integaglpi_kb_candidates
+            WHERE status IN ('suggested', 'in_review', 'possible_duplicate')
+              AND created_at >= CAST(:date_from AS timestamptz)
+              AND created_at <= CAST(:date_to AS timestamptz)
+            ",
+            $filters
+        );
+
+        return (int) ($row['total'] ?? 0);
+    }
+
+    /**
+     * @return array{current: int, previous: int, delta: int, direction: string}
+     */
+    private function buildTrend(int $current, int $previous): array
+    {
+        return [
+            'current' => $current,
+            'previous' => $previous,
+            'delta' => $current - $previous,
+            'direction' => $current === $previous ? 'stable' : ($current > $previous ? 'up' : 'down'),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return list<array{label: string, total: int}>
+     */
+    private function fetchLabelTotals(string $sql, array $filters): array
+    {
+        return array_map(
+            static fn (array $row): array => [
+                'label' => (string) ($row['label'] ?? 'unknown'),
+                'total' => (int) ($row['total'] ?? 0),
+            ],
+            $this->fetchRows($sql, $filters)
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return array<string, mixed>
+     */
+    private function fetchOne(string $sql, array $filters): array
+    {
+        $rows = $this->fetchRows($sql, $filters);
+
+        return $rows[0] ?? [];
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return list<array<string, mixed>>
+     */
+    private function fetchRows(string $sql, array $filters): array
+    {
+        $statement = $this->getConnection()->prepare($sql);
+        $statement->bindValue(':date_from', (string) ($filters['date_from'] ?? '') . ' 00:00:00');
+        $statement->bindValue(':date_to', (string) ($filters['date_to'] ?? '') . ' 23:59:59');
+        $statement->execute();
+
+        $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+
+        return is_array($rows) ? $rows : [];
+    }
+
+    private function tableExists(string $table): bool
+    {
+        $statement = $this->getConnection()->prepare(
+            "
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = current_schema()
+              AND table_name = :table_name
+            LIMIT 1
+            "
+        );
+        $statement->bindValue(':table_name', $table);
+        $statement->execute();
+
+        return (bool) $statement->fetchColumn();
+    }
+
+    private function getConnection(): PDO
+    {
+        if (!$this->pdo instanceof PDO) {
+            $this->pdo = ExternalDatabase::getConnection($this->pluginConfigService->getConnectionConfig());
+        }
+
+        return $this->pdo;
+    }
+
+    private function nullableNumber(mixed $value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return round((float) $value, 1);
     }
 
     private static function statusLabel(string $status): string
@@ -382,6 +879,7 @@ final class QualityDashboardService
             'entity_scope_label' => '',
             'kpis' => [],
             'breakdowns' => [],
+            'cx_insights' => $this->emptyCxInsights(),
             'rows' => [],
             'pagination' => ['page' => 1, 'limit' => (int) ($filters['limit'] ?? self::DEFAULT_LIMIT), 'total' => 0, 'total_pages' => 1],
             'cache_status' => '',
