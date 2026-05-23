@@ -446,4 +446,27 @@ describe('database bootstrap hardening', () => {
     expect(migration).not.toContain('glpi_plugin_integaglpi_messages');
     expect(migration).not.toContain('glpi_plugin_integaglpi_ai_quality_analyses');
   });
+
+  it('keeps historical mining schema isolated, additive and offline scoped', async () => {
+    const migration = compactSql(await readProjectFile('schema-migrations/029_ai_historical_mining_offline.sql'));
+
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_hist_mining_runs');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_hist_patterns');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_hist_insights');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_hist_evidence');
+    expect(migration).toContain('ticket_id_hash TEXT NOT NULL');
+    expect(migration).toContain('anonymized_excerpt TEXT NOT NULL');
+    expect(migration).toContain('summary_sanitized TEXT NOT NULL');
+    expect(migration).toContain('recommendation_sanitized TEXT NOT NULL');
+    expect(migration).toContain('CREATE INDEX IF NOT EXISTS glpi_integaglpi_hist_patterns_type_idx');
+    expect(migration).not.toContain('DROP TABLE');
+    expect(migration).not.toContain('TRUNCATE');
+    expect(migration).not.toContain('DELETE FROM');
+    expect(migration).not.toContain('glpi_tickets');
+    expect(migration).not.toContain('glpi_itilfollowups');
+    expect(migration).not.toContain('glpi_itilsolutions');
+    expect(migration).not.toContain('embedding');
+    expect(migration).not.toContain('vector');
+    expect(migration).not.toContain('rag');
+  });
 });
