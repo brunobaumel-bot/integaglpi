@@ -34,6 +34,12 @@ describe('plugin knowledge base foundation static safety', () => {
     expect(service).toContain('KB_ARTICLE_PUBLISHED');
     expect(service).toContain('KB_ARTICLE_ARCHIVED');
     expect(service).toContain('KB_ARTICLE_VERSION_CREATED');
+    const auditInsert = service.match(/INSERT INTO public\.' \. self::AUDIT_TABLE \. ' \([\s\S]+?\)\s*'\s*\);/);
+    expect(auditInsert?.[0] ?? '').toContain('source,');
+    expect(auditInsert?.[0] ?? '').toContain(':source,');
+    expect(auditInsert?.[0] ?? '').toContain('payload_json');
+    expect(service).toContain("$stmt->bindValue(':source', 'PluginKnowledgeBase', PDO::PARAM_STR);");
+    expect(service).toContain("'PluginKnowledgeBase'");
     expect(service).not.toMatch(/\$sql\s*\.=\s*\$_(?:GET|POST|REQUEST)/);
     expect(service).not.toMatch(/DROP\s+|TRUNCATE\s+|DELETE\s+FROM/i);
     expect(service).not.toMatch(/Ollama|embedd|vector|rag/i);

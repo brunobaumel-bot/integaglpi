@@ -476,6 +476,7 @@ final class KnowledgeBaseService
                 event_type,
                 status,
                 severity,
+                source,
                 payload_json,
                 created_at
             ) VALUES (
@@ -487,6 +488,7 @@ final class KnowledgeBaseService
                 :event_type,
                 :status,
                 :severity,
+                :source,
                 CAST(:payload_json AS jsonb),
                 NOW()
             )'
@@ -495,6 +497,7 @@ final class KnowledgeBaseService
         $stmt->bindValue(':event_type', $eventType, PDO::PARAM_STR);
         $stmt->bindValue(':status', 'success', PDO::PARAM_STR);
         $stmt->bindValue(':severity', 'info', PDO::PARAM_STR);
+        $stmt->bindValue(':source', 'PluginKnowledgeBase', PDO::PARAM_STR);
         $stmt->bindValue(':payload_json', json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), PDO::PARAM_STR);
         $stmt->execute();
     }
