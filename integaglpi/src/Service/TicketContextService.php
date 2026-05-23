@@ -254,12 +254,50 @@ final class TicketContextService
             $flags = [];
         }
 
+        $resultJson = $analysis['result_json'] ?? null;
+        if (is_string($resultJson) && trim($resultJson) !== '') {
+            $decoded = json_decode($resultJson, true);
+            $resultJson = is_array($decoded) ? $decoded : [];
+        }
+        if (!is_array($resultJson)) {
+            $resultJson = [];
+        }
+
         $analysis['flags'] = array_values(array_filter(
             array_map('strval', $flags),
             static fn (string $flag): bool => trim($flag) !== ''
         ));
+        $analysis['result_json'] = $resultJson;
+        $analysis['urgency'] = (string) ($resultJson['urgency'] ?? '-');
+        $analysis['risk_level'] = (string) ($resultJson['riskLevel'] ?? $resultJson['risk_level'] ?? '-');
+        $analysis['risk_flags'] = $this->normalizeStringList($resultJson['riskFlags'] ?? $resultJson['risk_flags'] ?? []);
+        $analysis['quality_flags'] = $this->normalizeStringList($resultJson['qualityFlags'] ?? $resultJson['quality_flags'] ?? []);
+        $analysis['missing_context'] = $this->normalizeStringList($resultJson['missingContext'] ?? $resultJson['missing_context'] ?? []);
+        $analysis['probable_cause'] = (string) ($resultJson['probableCause'] ?? $resultJson['probable_cause'] ?? '-');
+        $analysis['suggested_next_action'] = (string) ($resultJson['suggestedNextAction'] ?? $resultJson['suggested_next_action'] ?? ($analysis['recommendation'] ?? '-'));
+        $analysis['supervisor_notes'] = (string) ($resultJson['supervisorNotes'] ?? $resultJson['supervisor_notes'] ?? '-');
+        $analysis['confidence_score'] = isset($resultJson['confidenceScore'])
+            ? (int) $resultJson['confidenceScore']
+            : (isset($resultJson['confidence_score']) ? (int) $resultJson['confidence_score'] : null);
+        $analysis['safety_notes'] = $this->normalizeStringList($resultJson['safetyNotes'] ?? $resultJson['safety_notes'] ?? []);
 
         return $analysis;
+    }
+
+    /**
+     * @param mixed $value
+     * @return list<string>
+     */
+    private function normalizeStringList(mixed $value): array
+    {
+        if (!is_array($value)) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            array_map('strval', $value),
+            static fn (string $item): bool => trim($item) !== ''
+        ));
     }
 
     /**

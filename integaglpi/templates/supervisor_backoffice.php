@@ -194,6 +194,16 @@ $statusOptions = [
                             $ticketId = (int) ($row['glpi_ticket_id'] ?? 0);
                             $reasons = is_array($row['review_reasons'] ?? null) ? $row['review_reasons'] : [];
                             $aiQuality = is_array($row['ai_quality'] ?? null) ? $row['ai_quality'] : null;
+                            $aiResult = [];
+                            if ($aiQuality !== null) {
+                                $rawAiResult = $aiQuality['result_json'] ?? null;
+                                if (is_string($rawAiResult) && trim($rawAiResult) !== '') {
+                                    $decodedAiResult = json_decode($rawAiResult, true);
+                                    $aiResult = is_array($decodedAiResult) ? $decodedAiResult : [];
+                                } elseif (is_array($rawAiResult)) {
+                                    $aiResult = $rawAiResult;
+                                }
+                            }
                             ?>
                             <tr>
                                 <td>#<?= $ticketId; ?></td>
@@ -220,6 +230,18 @@ $statusOptions = [
                                     <?php if ($aiQuality !== null) : ?>
                                         <span class="badge bg-secondary"><?= $this->escape((string) ($aiQuality['status'] ?? '-')); ?></span>
                                         <div class="small text-muted"><?= $this->escape((string) ($aiQuality['summary'] ?? '')); ?></div>
+                                        <?php if ($aiResult !== []) : ?>
+                                            <div class="small">
+                                                <?= $this->escape(__('Risco', 'glpiintegaglpi')); ?>:
+                                                <?= $this->escape((string) ($aiResult['riskLevel'] ?? $aiResult['risk_level'] ?? '-')); ?>
+                                                · <?= $this->escape(__('Urgência', 'glpiintegaglpi')); ?>:
+                                                <?= $this->escape((string) ($aiResult['urgency'] ?? '-')); ?>
+                                            </div>
+                                            <div class="small text-muted">
+                                                <?= $this->escape(__('Próxima ação', 'glpiintegaglpi')); ?>:
+                                                <?= $this->escape((string) ($aiResult['suggestedNextAction'] ?? $aiResult['suggested_next_action'] ?? $aiQuality['recommendation'] ?? '-')); ?>
+                                            </div>
+                                        <?php endif; ?>
                                     <?php elseif ($aiSupervisorEnabled && $ticketId > 0 && trim((string) ($row['conversation_id'] ?? '')) !== '') : ?>
                                         <form method="post" action="<?= $this->escape($this->getAiQualityUrl()); ?>">
                                             <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken(); ?>

@@ -37,9 +37,18 @@ interface AiQualityContextRow extends QueryResultRow {
   conversation_id: string;
   glpi_ticket_id: string | number;
   ticket_status: string | null;
+  conversation_status: string | null;
+  queue_name: string | null;
+  glpi_entity_name: string | null;
+  service_name: string | null;
+  sla_response_deadline: Date | null;
+  sla_solution_deadline: Date | null;
+  accumulated_paused_minutes: string | number | null;
+  reopen_count: string | number | null;
   csat_rating: string | null;
   supervisor_review_required: boolean | null;
   inactivity_status: string | null;
+  inactivity_skip_reason: string | null;
   requester_name: string | null;
 }
 
@@ -47,6 +56,37 @@ interface AiQualityMessageRow extends QueryResultRow {
   direction: string;
   message_type: string;
   message_text: string | null;
+  created_at: Date;
+}
+
+interface AiQualityEventRow extends QueryResultRow {
+  event_type: string;
+  status: string | null;
+  severity: string | null;
+  error_message: string | null;
+  created_at: Date;
+}
+
+interface AiQualityAttachmentRow extends QueryResultRow {
+  message_type: string;
+  attachment_status: string | null;
+  attachment_mime_detected: string | null;
+  attachment_size_bytes: string | number | null;
+  attachment_filename_sanitized: string | null;
+  created_at: Date;
+}
+
+interface AiQualityDeliveryFailureRow extends QueryResultRow {
+  message_type: string;
+  delivery_status: string | null;
+  meta_error_message_sanitized: string | null;
+  created_at: Date;
+}
+
+interface AiQualityTemplateEventRow extends QueryResultRow {
+  template_name: string | null;
+  delivery_status: string | null;
+  meta_error_message_sanitized: string | null;
   created_at: Date;
 }
 
@@ -88,6 +128,28 @@ function mapAiQualityAnalysisRow(row: AiQualityAnalysisRow): AiQualityAnalysisRe
   };
 }
 
+function legacySentimentForStorage(result: AiQualityResult): string {
+  if (result.riskLevel === 'critical') {
+    return 'high_risk';
+  }
+
+  return matchSentiment(result.sentiment);
+}
+
+function matchSentiment(sentiment: AiQualityResult['sentiment']): string {
+  switch (sentiment) {
+    case 'positive':
+      return 'satisfied';
+    case 'negative':
+    case 'frustrated':
+      return 'dissatisfied';
+    case 'neutral':
+    case 'unknown':
+    default:
+      return 'neutral';
+  }
+}
+
 export class PostgresAiQualityAnalysisRepository implements AiQualityAnalysisRepository {
   public constructor(private readonly executor: SqlExecutor) {}
 
@@ -102,11 +164,24 @@ export class PostgresAiQualityAnalysisRepository implements AiQualityAnalysisRep
           c.id AS conversation_id,
           c.glpi_ticket_id,
           c.status AS ticket_status,
+          c.status AS conversation_status,
+          q.name AS queue_name,
+          c.glpi_entity_name,
+          sc.name AS service_name,
+          c.sla_response_deadline,
+          c.sla_solution_deadline,
+          c.accumulated_paused_minutes,
+          c.reopen_count,
+          c.inactivity_skip_reason,
           cp.requester_name,
           sa.csat_rating,
           COALESCE(sa.supervisor_review_required, FALSE) AS supervisor_review_required,
           it.status AS inactivity_status
         FROM ${DATABASE_TABLES.conversations} c
+        LEFT JOIN ${DATABASE_TABLES.queues} q
+          ON q.id = c.queue_id
+        LEFT JOIN ${DATABASE_TABLES.serviceCatalog} sc
+          ON sc.id = c.glpi_service_catalog_id
         LEFT JOIN ${DATABASE_TABLES.contactProfile} cp
           ON cp.phone_e164 = c.phone_e164
          AND cp.is_active = TRUE
@@ -146,6 +221,64 @@ export class PostgresAiQualityAnalysisRepository implements AiQualityAnalysisRep
       `,
       [conversationId, Math.max(1, Math.min(maxMessages, 30))],
     );
+    const eventsResult = await this.executor.query<AiQualityEventRow>(
+      `
+        SELECT event_type, status, severity, error_message, created_at
+        FROM ${DATABASE_TABLES.auditEvents}
+        WHERE conversation_id = $1
+           OR ticket_id = $2
+        ORDER BY created_at DESC, id DESC
+        LIMIT 8
+      `,
+      [conversationId, glpiTicketId],
+    );
+    const attachmentsResult = await this.executor.query<AiQualityAttachmentRow>(
+      `
+        SELECT
+          message_type,
+          attachment_status,
+          attachment_mime_detected,
+          attachment_size_bytes,
+          attachment_filename_sanitized,
+          created_at
+        FROM ${DATABASE_TABLES.messages}
+        WHERE conversation_id = $1
+          AND (
+            attachment_status IS NOT NULL
+            OR attachment_mime_detected IS NOT NULL
+            OR attachment_filename_sanitized IS NOT NULL
+            OR message_type IN ('image', 'audio', 'video', 'document')
+          )
+        ORDER BY created_at DESC, id DESC
+        LIMIT 8
+      `,
+      [conversationId],
+    );
+    const deliveryFailuresResult = await this.executor.query<AiQualityDeliveryFailureRow>(
+      `
+        SELECT message_type, delivery_status, meta_error_message_sanitized, created_at
+        FROM ${DATABASE_TABLES.messages}
+        WHERE conversation_id = $1
+          AND (
+            delivery_status = 'failed'
+            OR meta_error_message_sanitized IS NOT NULL
+          )
+        ORDER BY created_at DESC, id DESC
+        LIMIT 5
+      `,
+      [conversationId],
+    );
+    const templateEventsResult = await this.executor.query<AiQualityTemplateEventRow>(
+      `
+        SELECT raw_payload->>'template_name' AS template_name, delivery_status, meta_error_message_sanitized, created_at
+        FROM ${DATABASE_TABLES.messages}
+        WHERE conversation_id = $1
+          AND message_type = 'template'
+        ORDER BY created_at DESC, id DESC
+        LIMIT 5
+      `,
+      [conversationId],
+    );
 
     const context = contextResult.rows[0];
 
@@ -153,14 +286,50 @@ export class PostgresAiQualityAnalysisRepository implements AiQualityAnalysisRep
       conversationId: context.conversation_id,
       glpiTicketId: Number(context.glpi_ticket_id),
       ticketStatus: context.ticket_status,
+      conversationStatus: context.conversation_status,
+      queueName: context.queue_name,
+      entityName: context.glpi_entity_name,
+      serviceName: context.service_name,
+      slaResponseDeadline: context.sla_response_deadline,
+      slaSolutionDeadline: context.sla_solution_deadline,
+      accumulatedPausedMinutes: context.accumulated_paused_minutes === null ? null : Number(context.accumulated_paused_minutes),
+      reopenCount: context.reopen_count === null ? null : Number(context.reopen_count),
       csatRating: context.csat_rating,
       supervisorReviewRequired: context.supervisor_review_required === true,
       inactivityStatus: context.inactivity_status,
+      inactivitySkipReason: context.inactivity_skip_reason,
       requesterName: context.requester_name,
       messages: messagesResult.rows.map((row) => ({
         direction: row.direction,
         messageType: row.message_type,
         messageText: row.message_text ?? '',
+        createdAt: row.created_at,
+      })),
+      recentEvents: eventsResult.rows.map((row) => ({
+        eventType: row.event_type,
+        status: row.status,
+        severity: row.severity,
+        errorSummary: row.error_message,
+        createdAt: row.created_at,
+      })),
+      attachmentMetadata: attachmentsResult.rows.map((row) => ({
+        messageType: row.message_type,
+        status: row.attachment_status,
+        mimeDetected: row.attachment_mime_detected,
+        sizeBytes: row.attachment_size_bytes === null ? null : Number(row.attachment_size_bytes),
+        fileName: row.attachment_filename_sanitized,
+        createdAt: row.created_at,
+      })),
+      deliveryFailures: deliveryFailuresResult.rows.map((row) => ({
+        messageType: row.message_type,
+        deliveryStatus: row.delivery_status,
+        metaErrorMessage: row.meta_error_message_sanitized,
+        createdAt: row.created_at,
+      })),
+      templateEvents: templateEventsResult.rows.map((row) => ({
+        templateName: row.template_name,
+        deliveryStatus: row.delivery_status,
+        metaErrorMessage: row.meta_error_message_sanitized,
         createdAt: row.created_at,
       })),
     };
@@ -213,7 +382,7 @@ export class PostgresAiQualityAnalysisRepository implements AiQualityAnalysisRep
       [
         id,
         result.resolution,
-        result.sentiment,
+        legacySentimentForStorage(result),
         JSON.stringify(result.flags),
         result.summary,
         result.recommendation,

@@ -132,6 +132,7 @@ final class TicketContextRepository
                 flags,
                 summary,
                 recommendation,
+                result_json,
                 supervisor_feedback,
                 feedback_notes,
                 created_by,

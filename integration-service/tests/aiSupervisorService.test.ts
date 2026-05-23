@@ -17,7 +17,7 @@ function makeRecord(overrides: Partial<AiQualityAnalysisRecord> = {}): AiQuality
     id: '1',
     conversationId: 'conv-1',
     glpiTicketId: 123,
-    analysisVersion: 'ai_quality_v1',
+    analysisVersion: 'ai_quality_v2',
     provider: 'ollama',
     model: 'llama3.1',
     status: 'pending',
@@ -41,9 +41,18 @@ function makeContext(overrides: Partial<AiQualityContext> = {}): AiQualityContex
     conversationId: 'conv-1',
     glpiTicketId: 123,
     ticketStatus: 'open',
+    conversationStatus: 'open',
+    queueName: 'Suporte',
+    entityName: 'Empresa Teste',
+    serviceName: 'Service Desk',
+    slaResponseDeadline: new Date('2026-05-16T13:00:00.000Z'),
+    slaSolutionDeadline: new Date('2026-05-16T18:00:00.000Z'),
+    accumulatedPausedMinutes: 0,
+    reopenCount: 1,
     csatRating: null,
     supervisorReviewRequired: false,
     inactivityStatus: null,
+    inactivitySkipReason: null,
     requesterName: 'Cliente Teste',
     messages: [
       {
@@ -53,6 +62,48 @@ function makeContext(overrides: Partial<AiQualityContext> = {}): AiQualityContex
         createdAt: now,
       },
     ],
+    recentEvents: [{
+      eventType: 'DELIVERY_FAILED',
+      status: 'failed',
+      severity: 'warning',
+      errorSummary: 'Meta error token=secret123',
+      createdAt: now,
+    }],
+    attachmentMetadata: [{
+      messageType: 'document',
+      status: 'validated',
+      mimeDetected: 'application/pdf',
+      sizeBytes: 1234,
+      fileName: 'documento.pdf',
+      createdAt: now,
+    }],
+    deliveryFailures: [{
+      messageType: 'template',
+      deliveryStatus: 'failed',
+      metaErrorMessage: 'OAuthException',
+      createdAt: now,
+    }],
+    ...overrides,
+  };
+}
+
+function makeAiResult(overrides: Partial<AiQualityResult> = {}): AiQualityResult {
+  return {
+    summary: 'Atendimento resumido.',
+    resolution: 'resolved',
+    sentiment: 'positive',
+    urgency: 'medium',
+    riskLevel: 'low',
+    riskFlags: [],
+    qualityFlags: ['complete_context'],
+    missingContext: [],
+    probableCause: 'Hipótese: dúvida operacional do cliente.',
+    suggestedNextAction: 'Supervisor deve revisar a orientação registrada.',
+    supervisorNotes: 'Sem indício de ação automática.',
+    confidenceScore: 80,
+    safetyNotes: ['Nenhuma ação automática executada.'],
+    flags: [],
+    recommendation: 'Supervisor deve revisar a orientação registrada.',
     ...overrides,
   };
 }
@@ -123,13 +174,7 @@ function createService(overrides: {
 } = {}) {
   const repository = overrides.repository ?? new FakeRepository();
   const provider = overrides.provider ?? {
-    analyze: vi.fn().mockResolvedValue({
-      summary: 'Atendimento resumido.',
-      resolution: 'resolved',
-      sentiment: 'satisfied',
-      flags: [],
-      recommendation: 'Sem ação automática.',
-    } satisfies AiQualityResult),
+    analyze: vi.fn().mockResolvedValue(makeAiResult()),
   };
   const auditService = overrides.auditService ?? {
     recordAuditEventSafe: vi.fn().mockResolvedValue(undefined),
@@ -222,19 +267,22 @@ describe('AiSupervisorService', () => {
     expect(repository.completedResults[0]).toMatchObject({
       resolution: 'uncertain',
       sentiment: 'neutral',
+      urgency: 'low',
+      riskLevel: 'low',
       flags: ['supervisor_review_required'],
     });
   });
 
   it('calls the provider only in explicit non-dry-run mode and persists the insight', async () => {
     const provider = {
-      analyze: vi.fn().mockResolvedValue({
+      analyze: vi.fn().mockResolvedValue(makeAiResult({
         summary: 'Cliente atendido.',
-        resolution: 'resolved',
-        sentiment: 'satisfied',
+        sentiment: 'positive',
+        urgency: 'high',
+        riskLevel: 'medium',
+        qualityFlags: ['needs_follow_up'],
         flags: ['needs_training'],
-        recommendation: 'Supervisor deve revisar a orientação registrada.',
-      } satisfies AiQualityResult),
+      })),
     };
     const { service, repository } = createService({ provider, dryRun: false });
 
@@ -248,7 +296,9 @@ describe('AiSupervisorService', () => {
     expect(provider.analyze).toHaveBeenCalledTimes(1);
     expect(repository.completedResults[0]).toMatchObject({
       resolution: 'resolved',
-      sentiment: 'satisfied',
+      sentiment: 'positive',
+      urgency: 'high',
+      riskLevel: 'medium',
       flags: ['needs_training'],
     });
   });

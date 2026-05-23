@@ -356,13 +356,17 @@ $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
                 <?php
                 $aiFlags = is_array($contextAiQuality['flags'] ?? null) ? $contextAiQuality['flags'] : [];
                 $aiStatus = (string) ($contextAiQuality['status'] ?? '');
+                $aiRiskFlags = is_array($contextAiQuality['risk_flags'] ?? null) ? $contextAiQuality['risk_flags'] : [];
+                $aiQualityFlags = is_array($contextAiQuality['quality_flags'] ?? null) ? $contextAiQuality['quality_flags'] : [];
+                $aiMissingContext = is_array($contextAiQuality['missing_context'] ?? null) ? $contextAiQuality['missing_context'] : [];
+                $aiSafetyNotes = is_array($contextAiQuality['safety_notes'] ?? null) ? $contextAiQuality['safety_notes'] : [];
                 ?>
                 <div class="border rounded p-3 mt-3 mb-0">
                     <div class="d-flex align-items-center justify-content-between gap-2">
                         <div>
                             <strong><?= $this->escape(__('Análise IA — revisão humana obrigatória', 'glpiintegaglpi')); ?></strong>
                             <div class="small text-muted">
-                                <?= $this->escape(__('IA supervisora read-only. Não conversa com cliente e não altera chamado.', 'glpiintegaglpi')); ?>
+                                <?= $this->escape(__('Sugestão gerada por IA. Técnico deve revisar. Nenhuma ação é executada automaticamente.', 'glpiintegaglpi')); ?>
                             </div>
                         </div>
                         <?php if ($aiStatus !== '') { ?>
@@ -384,6 +388,18 @@ $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
                                 <small class="text-muted d-block"><?= $this->escape(__('Sentimento', 'glpiintegaglpi')); ?></small>
                                 <?= $this->escape((string) ($contextAiQuality['sentiment'] ?? '-')); ?>
                             </div>
+                            <div class="col-md-3">
+                                <small class="text-muted d-block"><?= $this->escape(__('Urgência', 'glpiintegaglpi')); ?></small>
+                                <?= $this->escape((string) ($contextAiQuality['urgency'] ?? '-')); ?>
+                            </div>
+                            <div class="col-md-3">
+                                <small class="text-muted d-block"><?= $this->escape(__('Risco', 'glpiintegaglpi')); ?></small>
+                                <?= $this->escape((string) ($contextAiQuality['risk_level'] ?? '-')); ?>
+                            </div>
+                            <div class="col-md-3">
+                                <small class="text-muted d-block"><?= $this->escape(__('Confiança', 'glpiintegaglpi')); ?></small>
+                                <?= $contextAiQuality['confidence_score'] === null ? '-' : (int) $contextAiQuality['confidence_score'] . '%'; ?>
+                            </div>
                             <div class="col-md-12">
                                 <small class="text-muted d-block"><?= $this->escape(__('Flags', 'glpiintegaglpi')); ?></small>
                                 <?php if ($aiFlags === []) { ?>
@@ -393,9 +409,39 @@ $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
                                     <span class="badge bg-secondary me-1"><?= $this->escape((string) $flag); ?></span>
                                 <?php } ?>
                             </div>
+                            <div class="col-md-6">
+                                <small class="text-muted d-block"><?= $this->escape(__('Causa provável (hipótese)', 'glpiintegaglpi')); ?></small>
+                                <?= $this->escape((string) ($contextAiQuality['probable_cause'] ?? '-')); ?>
+                            </div>
+                            <div class="col-md-6">
+                                <small class="text-muted d-block"><?= $this->escape(__('Próxima ação sugerida', 'glpiintegaglpi')); ?></small>
+                                <?= $this->escape((string) ($contextAiQuality['suggested_next_action'] ?? $contextAiQuality['recommendation'] ?? '-')); ?>
+                            </div>
+                            <div class="col-md-6">
+                                <small class="text-muted d-block"><?= $this->escape(__('Qualidade do atendimento', 'glpiintegaglpi')); ?></small>
+                                <?php if ($aiQualityFlags === []) { ?><span class="text-muted">-</span><?php } ?>
+                                <?php foreach ($aiQualityFlags as $flag) { ?>
+                                    <span class="badge bg-info text-dark me-1"><?= $this->escape((string) $flag); ?></span>
+                                <?php } ?>
+                            </div>
+                            <div class="col-md-6">
+                                <small class="text-muted d-block"><?= $this->escape(__('Riscos detectados', 'glpiintegaglpi')); ?></small>
+                                <?php if ($aiRiskFlags === []) { ?><span class="text-muted">-</span><?php } ?>
+                                <?php foreach ($aiRiskFlags as $flag) { ?>
+                                    <span class="badge bg-warning text-dark me-1"><?= $this->escape((string) $flag); ?></span>
+                                <?php } ?>
+                            </div>
+                            <div class="col-md-6">
+                                <small class="text-muted d-block"><?= $this->escape(__('Lacunas de contexto', 'glpiintegaglpi')); ?></small>
+                                <?= $this->escape($aiMissingContext === [] ? '-' : implode('; ', $aiMissingContext)); ?>
+                            </div>
+                            <div class="col-md-6">
+                                <small class="text-muted d-block"><?= $this->escape(__('Notas de segurança', 'glpiintegaglpi')); ?></small>
+                                <?= $this->escape($aiSafetyNotes === [] ? '-' : implode('; ', $aiSafetyNotes)); ?>
+                            </div>
                             <div class="col-md-12">
-                                <small class="text-muted d-block"><?= $this->escape(__('Recomendação ao supervisor', 'glpiintegaglpi')); ?></small>
-                                <?= $this->escape((string) ($contextAiQuality['recommendation'] ?? '-')); ?>
+                                <small class="text-muted d-block"><?= $this->escape(__('Notas ao supervisor', 'glpiintegaglpi')); ?></small>
+                                <?= $this->escape((string) ($contextAiQuality['supervisor_notes'] ?? '-')); ?>
                             </div>
                         </div>
 

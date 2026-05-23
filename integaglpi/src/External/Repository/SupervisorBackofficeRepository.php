@@ -241,6 +241,7 @@ final class SupervisorBackofficeRepository
                 sentiment,
                 summary,
                 recommendation,
+                result_json,
                 supervisor_feedback,
                 created_at,
                 updated_at
