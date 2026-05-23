@@ -490,4 +490,27 @@ describe('database bootstrap hardening', () => {
     expect(migration).not.toContain('vector');
     expect(migration).not.toContain('rag');
   });
+
+  it('keeps predictive risk score schema isolated, additive and feedback-only', async () => {
+    const migration = compactSql(await readProjectFile('schema-migrations/033_predictive_risk_scores.sql'));
+
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_risk_scores');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_risk_score_feedback');
+    expect(migration).toContain('score_id TEXT UNIQUE NOT NULL');
+    expect(migration).toContain('model_version TEXT NOT NULL');
+    expect(migration).toContain('input_hash TEXT NOT NULL');
+    expect(migration).toContain('reasons_json JSONB NOT NULL DEFAULT');
+    expect(migration).toContain('signals_used_json JSONB NOT NULL DEFAULT');
+    expect(migration).toContain('data_quality_warnings_json JSONB NOT NULL DEFAULT');
+    expect(migration).toContain("reopen_risk IN ('low', 'medium', 'high', 'unknown')");
+    expect(migration).toContain("feedback_rating IN ('useful', 'incorrect', 'unsure')");
+    expect(migration).not.toContain('DROP TABLE');
+    expect(migration).not.toContain('TRUNCATE');
+    expect(migration).not.toContain('DELETE FROM');
+    expect(migration).not.toContain('glpi_tickets');
+    expect(migration).not.toContain('glpi_knowbaseitems');
+    expect(migration).not.toContain('embedding');
+    expect(migration).not.toContain('vector');
+    expect(migration).not.toContain('rag');
+  });
 });

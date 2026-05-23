@@ -27,6 +27,14 @@ $candidateTypeRows = is_array($kbCandidateInsights['type_counts'] ?? null) ? $kb
 $candidateReviewRows = is_array($kbCandidateInsights['review_actions'] ?? null) ? $kbCandidateInsights['review_actions'] : [];
 $pendingCandidates = is_array($kbCandidateInsights['pending_candidates'] ?? null) ? $kbCandidateInsights['pending_candidates'] : [];
 $trendRows = is_array($cxInsights['trends'] ?? null) ? $cxInsights['trends'] : [];
+$predictiveRiskSummary = ['available' => false, 'total' => 0, 'high' => 0, 'medium' => 0, 'low' => 0, 'unknown' => 0];
+try {
+    $predictiveRiskSummary = (new \GlpiPlugin\Integaglpi\Service\RiskScoreService(
+        new \GlpiPlugin\Integaglpi\Service\PluginConfigService()
+    ))->getDashboardSummary(30);
+} catch (\Throwable $exception) {
+    error_log('[integaglpi][quality_dashboard][risk_score] ' . substr($exception->getMessage(), 0, 180));
+}
 $rows = is_array($data['rows'] ?? null) ? $data['rows'] : [];
 $pagination = is_array($data['pagination'] ?? null) ? $data['pagination'] : [];
 $entityOptions = is_array($data['entity_options'] ?? null) ? $data['entity_options'] : [];
@@ -232,6 +240,16 @@ $inactivityOptions = ['' => __('Todos', 'glpiintegaglpi'), 'pending' => __('Pend
             <div class="text-muted small"><?= $this->escape(__('Revisão humana obrigatória.', 'glpiintegaglpi')); ?></div>
         </div>
     </div>
+    <div class="col-md-3">
+        <div class="border rounded p-3 h-100">
+            <div class="text-muted small mb-1"><?= $this->escape(__('Predição de risco alto', 'glpiintegaglpi')); ?></div>
+            <div class="fs-3 fw-bold text-danger"><?= (int) ($predictiveRiskSummary['high'] ?? 0); ?></div>
+            <div class="text-muted small">
+                <?= (int) ($predictiveRiskSummary['total'] ?? 0); ?>
+                <?= $this->escape(__('score(s) nos últimos 30 dias', 'glpiintegaglpi')); ?>
+            </div>
+        </div>
+    </div>
 </div>
 
 <div class="row g-3 mb-3">
@@ -304,6 +322,26 @@ $inactivityOptions = ['' => __('Todos', 'glpiintegaglpi'), 'pending' => __('Pend
                 <?php endforeach; ?>
                 <div class="text-muted small mt-2">
                     <?= $this->escape(__('Comparação com período anterior de mesmo tamanho. Volume baixo deve ser tratado apenas como sinal fraco.', 'glpiintegaglpi')); ?>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="card h-100">
+            <div class="card-header"><?= $this->escape(__('Risco preditivo read-only', 'glpiintegaglpi')); ?></div>
+            <div class="card-body">
+                <?php if (empty($predictiveRiskSummary['available'])) : ?>
+                    <div class="text-muted small"><?= $this->escape(__('Sem scores preditivos persistidos no período.', 'glpiintegaglpi')); ?></div>
+                <?php else : ?>
+                    <?php foreach (['high' => __('Alto', 'glpiintegaglpi'), 'medium' => __('Médio', 'glpiintegaglpi'), 'low' => __('Baixo', 'glpiintegaglpi'), 'unknown' => __('Dados insuficientes', 'glpiintegaglpi')] as $key => $label) : ?>
+                        <div class="d-flex justify-content-between">
+                            <span><?= $this->escape($label); ?></span>
+                            <strong><?= (int) ($predictiveRiskSummary[$key] ?? 0); ?></strong>
+                        </div>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+                <div class="text-muted small mt-2">
+                    <?= $this->escape(__('Indicador preditivo para apoio humano. Não altera prioridade, status ou ticket automaticamente.', 'glpiintegaglpi')); ?>
                 </div>
             </div>
         </div>
