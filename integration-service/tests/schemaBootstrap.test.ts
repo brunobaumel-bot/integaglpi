@@ -469,4 +469,25 @@ describe('database bootstrap hardening', () => {
     expect(migration).not.toContain('vector');
     expect(migration).not.toContain('rag');
   });
+
+  it('keeps KB candidate schema isolated, additive and review-only', async () => {
+    const migration = compactSql(await readProjectFile('schema-migrations/030_ai_kb_candidates_from_history.sql'));
+
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_kb_candidates');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_kb_candidate_reviews');
+    expect(migration).toContain('candidate_key TEXT UNIQUE NOT NULL');
+    expect(migration).toContain('content_markdown TEXT NOT NULL');
+    expect(migration).toContain('possible_duplicate BOOLEAN NOT NULL DEFAULT FALSE');
+    expect(migration).toContain('confidence_score INTEGER NOT NULL');
+    expect(migration).toContain('review_notes TEXT NULL');
+    expect(migration).toContain('CREATE INDEX IF NOT EXISTS glpi_integaglpi_kb_candidates_status_idx');
+    expect(migration).not.toContain('DROP TABLE');
+    expect(migration).not.toContain('TRUNCATE');
+    expect(migration).not.toContain('DELETE FROM');
+    expect(migration).not.toContain('glpi_knowbaseitems');
+    expect(migration).not.toContain('glpi_tickets');
+    expect(migration).not.toContain('embedding');
+    expect(migration).not.toContain('vector');
+    expect(migration).not.toContain('rag');
+  });
 });

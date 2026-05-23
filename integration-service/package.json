@@ -11,6 +11,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/main.ts",
     "mine:history": "tsx src/historicalMining/cli.ts",
+    "generate:kb-candidates": "tsx src/kbCandidates/cli.ts",
     "start": "node dist/main.js",
     "lint": "eslint .",
     "format": "prettier --write .",

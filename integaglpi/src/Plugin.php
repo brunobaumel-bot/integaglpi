@@ -199,6 +199,11 @@ final class Plugin
         return self::getWebBasePath() . '/front/kb.native.php';
     }
 
+    public static function getKbCandidatesUrl(): string
+    {
+        return self::getWebBasePath() . '/front/kb.candidates.php';
+    }
+
     public static function getAiQualityUrl(): string
     {
         return self::getWebBasePath() . '/front/ai.quality.php';
