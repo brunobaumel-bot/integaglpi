@@ -533,4 +533,23 @@ describe('database bootstrap hardening', () => {
     expect(migration).not.toContain('raw_prompt');
     expect(migration).not.toContain('access_token');
   });
+
+  it('keeps coaching onboarding schema isolated, additive and feedback-only', async () => {
+    const migration = compactSql(await readProjectFile('schema-migrations/035_coaching_onboarding.sql'));
+
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_coaching_recommendations');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_coaching_feedback');
+    expect(migration).toContain('recommendation_key TEXT UNIQUE NOT NULL');
+    expect(migration).toContain('recommendation_version TEXT NOT NULL');
+    expect(migration).toContain('input_hash TEXT NOT NULL');
+    expect(migration).toContain('onboarding_plan_json JSONB NOT NULL DEFAULT');
+    expect(migration).toContain("status IN ('active', 'dismissed', 'archived')");
+    expect(migration).toContain("rating IN ('useful', 'not_useful', 'not_applicable')");
+    expect(migration).not.toContain('DROP TABLE');
+    expect(migration).not.toContain('TRUNCATE');
+    expect(migration).not.toContain('DELETE FROM');
+    expect(migration).not.toContain('glpi_tickets');
+    expect(migration).not.toContain('glpi_knowbaseitems');
+    expect(migration).not.toContain('ranking');
+  });
 });

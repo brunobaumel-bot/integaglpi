@@ -164,6 +164,11 @@ final class Plugin
         return self::getWebBasePath() . '/front/quality.dashboard.php';
     }
 
+    public static function getCoachingUrl(): string
+    {
+        return self::getWebBasePath() . '/front/coaching.php';
+    }
+
     public static function getAiPilotUrl(): string
     {
         return self::getWebBasePath() . '/front/ai.pilot.php';
@@ -260,6 +265,16 @@ final class Plugin
     }
 
     public static function requireQualityDashboardRead(): void
+    {
+        self::requireSupervisorRead();
+    }
+
+    public static function canCoachingRead(): bool
+    {
+        return self::canSupervisorRead();
+    }
+
+    public static function requireCoachingRead(): void
     {
         self::requireSupervisorRead();
     }
