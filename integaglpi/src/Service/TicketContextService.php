@@ -280,6 +280,17 @@ final class TicketContextService
             ? (int) $resultJson['confidenceScore']
             : (isset($resultJson['confidence_score']) ? (int) $resultJson['confidence_score'] : null);
         $analysis['safety_notes'] = $this->normalizeStringList($resultJson['safetyNotes'] ?? $resultJson['safety_notes'] ?? []);
+        $analysis['related_kb_articles'] = $this->normalizeKbArticles($resultJson['relatedKbArticles'] ?? $resultJson['related_kb_articles'] ?? []);
+        $analysis['kb_alignment'] = (string) ($resultJson['kbAlignment'] ?? $resultJson['kb_alignment'] ?? '-');
+        $analysis['procedure_followed'] = (string) ($resultJson['procedureFollowed'] ?? $resultJson['procedure_followed'] ?? '-');
+        $analysis['procedure_notes'] = (string) ($resultJson['procedureNotes'] ?? $resultJson['procedure_notes'] ?? '-');
+        $analysis['communication_quality'] = is_array($resultJson['communicationQuality'] ?? null)
+            ? $resultJson['communicationQuality']
+            : (is_array($resultJson['communication_quality'] ?? null) ? $resultJson['communication_quality'] : []);
+        $analysis['client_satisfaction_risk'] = (string) ($resultJson['clientSatisfactionRisk'] ?? $resultJson['client_satisfaction_risk'] ?? '-');
+        $analysis['key_insights'] = $this->normalizeStringList($resultJson['keyInsights'] ?? $resultJson['key_insights'] ?? []);
+        $analysis['suggested_improvements_for_technician'] = $this->normalizeStringList($resultJson['suggestedImprovementsForTechnician'] ?? $resultJson['suggested_improvements_for_technician'] ?? []);
+        $analysis['supervisor_recommendation'] = $this->normalizeStringList($resultJson['supervisorRecommendation'] ?? $resultJson['supervisor_recommendation'] ?? []);
 
         return $analysis;
     }
@@ -298,6 +309,35 @@ final class TicketContextService
             array_map('strval', $value),
             static fn (string $item): bool => trim($item) !== ''
         ));
+    }
+
+    /**
+     * @param mixed $value
+     * @return list<array<string, mixed>>
+     */
+    private function normalizeKbArticles(mixed $value): array
+    {
+        if (!is_array($value)) {
+            return [];
+        }
+
+        $articles = [];
+        foreach (array_slice($value, 0, 5) as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $articles[] = [
+                'article_id' => (int) ($item['articleId'] ?? $item['article_id'] ?? 0),
+                'title' => (string) ($item['title'] ?? ''),
+                'category' => (string) ($item['category'] ?? ''),
+                'relevance_score' => (int) ($item['relevanceScore'] ?? $item['relevance_score'] ?? 0),
+                'why_relevant' => (string) ($item['whyRelevant'] ?? $item['why_relevant'] ?? ''),
+                'internal_url' => (string) ($item['internalUrl'] ?? $item['internal_url'] ?? ''),
+            ];
+        }
+
+        return $articles;
     }
 
     /**

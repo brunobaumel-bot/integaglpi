@@ -1,4 +1,7 @@
 export const AI_QUALITY_ANALYSIS_VERSION = 'ai_quality_v2';
+export const AI_QUALITY_KB_MAX_ARTICLES = 5;
+export const AI_QUALITY_KB_MAX_EXCERPT_CHARS = 800;
+export const AI_QUALITY_KB_MAX_TOTAL_CHARS = 3000;
 
 export const AI_QUALITY_RESOLUTIONS = [
   'resolved',
@@ -60,6 +63,33 @@ export const AI_QUALITY_FLAGS = [
   'poor_tone',
 ] as const;
 
+export const AI_QUALITY_KB_ALIGNMENTS = [
+  'aligned',
+  'partially_aligned',
+  'not_aligned',
+  'no_article_found',
+] as const;
+
+export const AI_QUALITY_PROCEDURE_FOLLOWED = [
+  'yes',
+  'partial',
+  'no',
+  'unknown',
+] as const;
+
+export const AI_QUALITY_COMMUNICATION_TONES = [
+  'professional',
+  'friendly',
+  'cold',
+  'confusing',
+] as const;
+
+export const AI_QUALITY_CLIENT_SATISFACTION_RISKS = [
+  'low',
+  'medium',
+  'high',
+] as const;
+
 export type AiQualityResolution = typeof AI_QUALITY_RESOLUTIONS[number];
 export type AiQualitySentiment = typeof AI_QUALITY_SENTIMENTS[number];
 export type AiQualityUrgency = typeof AI_QUALITY_URGENCY_LEVELS[number];
@@ -67,6 +97,34 @@ export type AiQualityRiskLevel = typeof AI_QUALITY_RISK_LEVELS[number];
 export type AiQualityRiskFlag = typeof AI_QUALITY_RISK_FLAGS[number];
 export type AiQualityQualityFlag = typeof AI_QUALITY_QUALITY_FLAGS[number];
 export type AiQualityFlag = typeof AI_QUALITY_FLAGS[number];
+export type AiQualityKbAlignment = typeof AI_QUALITY_KB_ALIGNMENTS[number];
+export type AiQualityProcedureFollowed = typeof AI_QUALITY_PROCEDURE_FOLLOWED[number];
+export type AiQualityCommunicationTone = typeof AI_QUALITY_COMMUNICATION_TONES[number];
+export type AiQualityClientSatisfactionRisk = typeof AI_QUALITY_CLIENT_SATISFACTION_RISKS[number];
+
+export interface AiQualityKbArticle {
+  articleId: number;
+  title: string;
+  category: string;
+  excerpt: string;
+  internalUrl: string;
+}
+
+export interface AiQualityRelatedKbArticle {
+  articleId: number;
+  title: string;
+  category: string;
+  relevanceScore: number;
+  whyRelevant: string;
+  internalUrl: string;
+}
+
+export interface AiQualityCommunicationQuality {
+  clarity: number;
+  empathy: number;
+  completeness: number;
+  tone: AiQualityCommunicationTone;
+}
 
 export interface AiQualityResult {
   summary: string;
@@ -84,6 +142,15 @@ export interface AiQualityResult {
   safetyNotes: string[];
   flags: AiQualityFlag[];
   recommendation: string;
+  relatedKbArticles: AiQualityRelatedKbArticle[];
+  kbAlignment: AiQualityKbAlignment;
+  procedureFollowed: AiQualityProcedureFollowed;
+  procedureNotes: string;
+  communicationQuality: AiQualityCommunicationQuality;
+  clientSatisfactionRisk: AiQualityClientSatisfactionRisk;
+  keyInsights: string[];
+  suggestedImprovementsForTechnician: string[];
+  supervisorRecommendation: string[];
 }
 
 export interface AiQualityMessage {
@@ -115,6 +182,7 @@ export interface AiQualityContext {
   attachmentMetadata?: AiQualityAttachmentMetadata[];
   deliveryFailures?: AiQualityDeliveryFailure[];
   templateEvents?: AiQualityTemplateEvent[];
+  kbContext?: AiQualityKbArticle[];
 }
 
 export interface AiQualityEvent {

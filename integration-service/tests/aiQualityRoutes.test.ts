@@ -60,7 +60,20 @@ describe('AI quality internal routes', () => {
     const response = await request(app)
       .post('/internal/glpi/ai-quality/analyze')
       .set('Authorization', `Bearer ${testApiKey}`)
-      .send({ conversation_id: 'conv-1', glpi_ticket_id: 123, glpi_user_id: 7 });
+      .send({
+        conversation_id: 'conv-1',
+        glpi_ticket_id: 123,
+        glpi_user_id: 7,
+        kb_context: [{
+          article_id: 10,
+          title: 'Procedimento',
+          category: 'Suporte',
+          excerpt: 'contexto seguro '.repeat(100),
+          internal_url: '/front/knowbaseitem.form.php?id=10',
+          raw_html: '<script>alert(1)</script>',
+          creator_id: 99,
+        }],
+      });
 
     expect(response.status).toBe(200);
     expect(response.body.analysis.status).toBe('completed');
@@ -68,6 +81,13 @@ describe('AI quality internal routes', () => {
       conversationId: 'conv-1',
       glpiTicketId: 123,
       createdBy: 7,
+      kbContext: [{
+        articleId: 10,
+        title: 'Procedimento',
+        category: 'Suporte',
+        excerpt: 'contexto seguro '.repeat(100).slice(0, 800),
+        internalUrl: '/front/knowbaseitem.form.php?id=10',
+      }],
     });
   });
 

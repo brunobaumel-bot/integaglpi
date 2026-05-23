@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildAiQualityPrompt } from '../src/ai/aiQualityPrompt.js';
+import { buildAiQualityPrompt, normalizeAiQualityKbContext } from '../src/ai/aiQualityPrompt.js';
 import { parseAiQualityResult } from '../src/ai/parseAiQualityResult.js';
 import { sanitizeAiQualityText } from '../src/ai/sanitizeAiQualityInput.js';
 import type { AiQualityContext } from '../src/ai/aiQualityTypes.js';
@@ -57,9 +57,34 @@ const context: AiQualityContext = {
     metaErrorMessage: 'Template rejected',
     createdAt: new Date('2026-05-16T12:08:00.000Z'),
   }],
+  kbContext: [{
+    articleId: 10,
+    title: 'Procedimento <script>alert(1)</script>',
+    category: 'Suporte',
+    excerpt: 'Valide o cadastro e oriente o cliente. data:image/png;base64,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    internalUrl: '/front/knowbaseitem.form.php?id=10',
+  }],
 };
 
 describe('AI quality prompt and sanitization', () => {
+  it('limits native KB context before it reaches the prompt', () => {
+    const normalized = normalizeAiQualityKbContext(Array.from({ length: 8 }, (_, index) => ({
+      article_id: index + 1,
+      title: `Artigo ${index + 1}`,
+      category: 'Suporte',
+      excerpt: 'texto seguro '.repeat(120),
+      internal_url: `/front/knowbaseitem.form.php?id=${index + 1}`,
+      raw_html: '<script>alert(1)</script>',
+      creator_id: 99,
+    })));
+
+    expect(normalized.length).toBeLessThanOrEqual(5);
+    expect((normalized[0]?.excerpt ?? '').length).toBeLessThanOrEqual(800);
+    expect(normalized.map((article) => article.title + article.category + article.excerpt).join('').length).toBeLessThanOrEqual(3000);
+    expect(JSON.stringify(normalized)).not.toContain('creator_id');
+    expect(JSON.stringify(normalized)).not.toContain('raw_html');
+  });
+
   it('masks PII before building the prompt', () => {
     const sanitized = sanitizeAiQualityText(
       'Maria Cliente +55 41 99999-9999 maria@example.com CPF 123.456.789-10 contrato Premium Authorization: Bearer abcdefghijklmnop token=secret https://lookaside.fbsbx.com/file?access_token=abc data:image/png;base64,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -93,12 +118,16 @@ describe('AI quality prompt and sanitization', () => {
     expect(prompt).toContain('attachments');
     expect(prompt).toContain('recent_events');
     expect(prompt).toContain('templates');
+    expect(prompt).toContain('kb_articles');
+    expect(prompt).toContain('kb_alignment');
+    expect(prompt).toContain('procedure_followed');
     expect(prompt).toContain('aviso_atendimento_fora_janela');
     expect(prompt).toContain('[CLIENTE]');
     expect(prompt).toContain('[TELEFONE]');
     expect(prompt).toContain('[EMAIL]');
     expect(prompt).not.toContain('payload_json');
     expect(prompt).not.toContain('base64');
+    expect(prompt).not.toContain('<script>');
     expect(prompt).not.toContain('maria@example.com');
   });
 
@@ -116,6 +145,28 @@ describe('AI quality prompt and sanitization', () => {
       supervisor_notes: 'Sem ação automática.',
       confidence_score: 73,
       safety_notes: ['revisão humana obrigatória'],
+      related_kb_articles: [{
+        article_id: 10,
+        title: 'Procedimento GLPI',
+        category: 'Suporte',
+        relevance_score: 91,
+        why_relevant: 'Cobre o caso analisado.',
+        internal_url: '/front/knowbaseitem.form.php?id=10',
+      }],
+      kb_alignment: 'aligned',
+      procedure_followed: 'yes',
+      procedure_notes: 'Procedimento seguido com ressalvas menores.',
+      communication_quality: {
+        clarity: 8,
+        empathy: 7,
+        completeness: 8,
+        tone: 'professional',
+      },
+      client_satisfaction_risk: 'low',
+      key_insights: ['Atendimento consultivo.'],
+      suggested_improvements_for_technician: ['Registrar evidência da validação.'],
+      supervisor_recommendation: ['Acompanhar sem ação automática.'],
+      _allowed_kb_article_ids: [10],
     }))).toEqual({
       summary: 'Atendimento resolvido.',
       resolution: 'probably_resolved',
@@ -132,6 +183,27 @@ describe('AI quality prompt and sanitization', () => {
       safetyNotes: ['revisão humana obrigatória'],
       flags: ['supervisor_review_required'],
       recommendation: 'Técnico deve revisar o retorno antes de responder.',
+      relatedKbArticles: [{
+        articleId: 10,
+        title: 'Procedimento GLPI',
+        category: 'Suporte',
+        relevanceScore: 91,
+        whyRelevant: 'Cobre o caso analisado.',
+        internalUrl: '/front/knowbaseitem.form.php?id=10',
+      }],
+      kbAlignment: 'aligned',
+      procedureFollowed: 'yes',
+      procedureNotes: 'Procedimento seguido com ressalvas menores.',
+      communicationQuality: {
+        clarity: 8,
+        empathy: 7,
+        completeness: 8,
+        tone: 'professional',
+      },
+      clientSatisfactionRisk: 'low',
+      keyInsights: ['Atendimento consultivo.'],
+      suggestedImprovementsForTechnician: ['Registrar evidência da validação.'],
+      supervisorRecommendation: ['Acompanhar sem ação automática.'],
     });
 
     expect(() => parseAiQualityResult('isso nao e json')).toThrow('AI_QUALITY_INVALID_JSON');
@@ -193,12 +265,29 @@ describe('AI quality prompt and sanitization', () => {
       supervisor_notes: 'nota ao supervisor '.repeat(30),
       confidence_score: 140,
       safety_notes: ['cuidado operacional '.repeat(20)],
+      related_kb_articles: [],
+      kb_alignment: 'no_article_found',
+      procedure_followed: 'unknown',
+      procedure_notes: 'nota procedimento '.repeat(30),
+      communication_quality: {
+        clarity: 20,
+        empathy: 0,
+        completeness: 8,
+        tone: 'friendly',
+      },
+      client_satisfaction_risk: 'medium',
+      key_insights: ['insight '.repeat(30), 'x', 'y', 'z'],
+      suggested_improvements_for_technician: ['melhoria '.repeat(30), 'x', 'y', 'z'],
+      supervisor_recommendation: ['recomendação '.repeat(30), 'x', 'y', 'z'],
     }));
 
     expect(result.summary).toHaveLength(500);
     expect(result.recommendation).toHaveLength(200);
     expect(result.probableCause).toMatch(/^Hipótese:/);
     expect(result.confidenceScore).toBe(100);
+    expect(result.keyInsights).toHaveLength(3);
+    expect(result.communicationQuality.clarity).toBe(10);
+    expect(result.communicationQuality.empathy).toBe(1);
   });
 
   it('rejects unsafe executable suggestions', () => {
@@ -215,6 +304,59 @@ describe('AI quality prompt and sanitization', () => {
       supervisor_notes: '',
       confidence_score: 50,
       safety_notes: [],
+      related_kb_articles: [],
+      kb_alignment: 'no_article_found',
+      procedure_followed: 'unknown',
+      procedure_notes: '',
+      communication_quality: {
+        clarity: 5,
+        empathy: 5,
+        completeness: 5,
+        tone: 'professional',
+      },
+      client_satisfaction_risk: 'low',
+      key_insights: [],
+      suggested_improvements_for_technician: [],
+      supervisor_recommendation: [],
     }))).toThrow('AI_QUALITY_UNSAFE_ACTION');
+  });
+
+  it('rejects related KB articles not present in the supplied context list', () => {
+    expect(() => parseAiQualityResult(JSON.stringify({
+      summary: 'Resumo',
+      sentiment: 'neutral',
+      urgency: 'low',
+      risk_level: 'low',
+      risk_flags: [],
+      quality_flags: [],
+      missing_context: [],
+      probable_cause: 'Não identificado com segurança',
+      suggested_next_action: 'Revisar manualmente.',
+      supervisor_notes: '',
+      confidence_score: 50,
+      safety_notes: [],
+      related_kb_articles: [{
+        article_id: 999,
+        title: 'Não fornecido',
+        category: 'Suporte',
+        relevance_score: 80,
+        why_relevant: 'Inventado.',
+        internal_url: '/front/knowbaseitem.form.php?id=999',
+      }],
+      kb_alignment: 'aligned',
+      procedure_followed: 'yes',
+      procedure_notes: '',
+      communication_quality: {
+        clarity: 5,
+        empathy: 5,
+        completeness: 5,
+        tone: 'professional',
+      },
+      client_satisfaction_risk: 'low',
+      key_insights: [],
+      suggested_improvements_for_technician: [],
+      supervisor_recommendation: [],
+      _allowed_kb_article_ids: [10],
+    }))).toThrow('AI_QUALITY_UNKNOWN_KB_ARTICLE');
   });
 });

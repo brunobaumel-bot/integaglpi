@@ -83,6 +83,13 @@ function makeContext(overrides: Partial<AiQualityContext> = {}): AiQualityContex
       metaErrorMessage: 'OAuthException',
       createdAt: now,
     }],
+    kbContext: [{
+      articleId: 10,
+      title: 'Procedimento GLPI',
+      category: 'Suporte',
+      excerpt: 'Validar dados e registrar orientação no chamado.',
+      internalUrl: '/front/knowbaseitem.form.php?id=10',
+    }],
     ...overrides,
   };
 }
@@ -104,6 +111,27 @@ function makeAiResult(overrides: Partial<AiQualityResult> = {}): AiQualityResult
     safetyNotes: ['Nenhuma ação automática executada.'],
     flags: [],
     recommendation: 'Supervisor deve revisar a orientação registrada.',
+    relatedKbArticles: [{
+      articleId: 10,
+      title: 'Procedimento GLPI',
+      category: 'Suporte',
+      relevanceScore: 90,
+      whyRelevant: 'Cobre a orientação registrada.',
+      internalUrl: '/front/knowbaseitem.form.php?id=10',
+    }],
+    kbAlignment: 'aligned',
+    procedureFollowed: 'yes',
+    procedureNotes: 'Atendimento compatível com o procedimento fornecido.',
+    communicationQuality: {
+      clarity: 8,
+      empathy: 7,
+      completeness: 8,
+      tone: 'professional',
+    },
+    clientSatisfactionRisk: 'low',
+    keyInsights: ['Procedimento documentado foi considerado.'],
+    suggestedImprovementsForTechnician: ['Registrar evidência da validação no ticket.'],
+    supervisorRecommendation: ['Manter acompanhamento consultivo.'],
     ...overrides,
   };
 }
@@ -270,6 +298,8 @@ describe('AiSupervisorService', () => {
       urgency: 'low',
       riskLevel: 'low',
       flags: ['supervisor_review_required'],
+      kbAlignment: 'partially_aligned',
+      procedureFollowed: 'unknown',
     });
   });
 
@@ -315,6 +345,29 @@ describe('AiSupervisorService', () => {
 
     expect(result.status).toBe('failed');
     expect(repository.failedReasons).toEqual(['ollama offline [SEGREDO_REMOVIDO]']);
+  });
+
+  it('fails safely when provider references a KB article not sent in context', async () => {
+    const provider = { analyze: vi.fn().mockResolvedValue(makeAiResult({
+      relatedKbArticles: [{
+        articleId: 999,
+        title: 'Artigo inexistente',
+        category: 'Suporte',
+        relevanceScore: 90,
+        whyRelevant: 'Não deveria ser aceito.',
+        internalUrl: '/front/knowbaseitem.form.php?id=999',
+      }],
+    })) };
+    const { service, repository } = createService({ provider, dryRun: false });
+
+    const result = await service.requestAnalysis({
+      conversationId: 'conv-1',
+      glpiTicketId: 123,
+      createdBy: 7,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(repository.failedReasons).toEqual(['AI_QUALITY_UNKNOWN_KB_ARTICLE']);
   });
 
   it('records sanitized audit events for manual analysis lifecycle', async () => {

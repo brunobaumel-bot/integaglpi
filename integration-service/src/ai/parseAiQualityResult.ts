@@ -1,5 +1,9 @@
 import {
   AI_QUALITY_FLAGS,
+  AI_QUALITY_CLIENT_SATISFACTION_RISKS,
+  AI_QUALITY_COMMUNICATION_TONES,
+  AI_QUALITY_KB_ALIGNMENTS,
+  AI_QUALITY_PROCEDURE_FOLLOWED,
   AI_QUALITY_QUALITY_FLAGS,
   AI_QUALITY_RESOLUTIONS,
   AI_QUALITY_RISK_FLAGS,
@@ -7,7 +11,11 @@ import {
   AI_QUALITY_SENTIMENTS,
   AI_QUALITY_URGENCY_LEVELS,
   type AiQualityFlag,
+  type AiQualityClientSatisfactionRisk,
+  type AiQualityCommunicationTone,
+  type AiQualityKbAlignment,
   type AiQualityQualityFlag,
+  type AiQualityProcedureFollowed,
   type AiQualityResolution,
   type AiQualityResult,
   type AiQualityRiskFlag,
@@ -52,6 +60,22 @@ function isFlag(value: unknown): value is AiQualityFlag {
   return AI_QUALITY_FLAGS.includes(value as AiQualityFlag);
 }
 
+function isKbAlignment(value: unknown): value is AiQualityKbAlignment {
+  return AI_QUALITY_KB_ALIGNMENTS.includes(value as AiQualityKbAlignment);
+}
+
+function isProcedureFollowed(value: unknown): value is AiQualityProcedureFollowed {
+  return AI_QUALITY_PROCEDURE_FOLLOWED.includes(value as AiQualityProcedureFollowed);
+}
+
+function isCommunicationTone(value: unknown): value is AiQualityCommunicationTone {
+  return AI_QUALITY_COMMUNICATION_TONES.includes(value as AiQualityCommunicationTone);
+}
+
+function isClientSatisfactionRisk(value: unknown): value is AiQualityClientSatisfactionRisk {
+  return AI_QUALITY_CLIENT_SATISFACTION_RISKS.includes(value as AiQualityClientSatisfactionRisk);
+}
+
 function truncateStringArray(value: unknown, maxItems: number, maxChars: number): string[] {
   if (!Array.isArray(value)) {
     return [];
@@ -61,6 +85,65 @@ function truncateStringArray(value: unknown, maxItems: number, maxChars: number)
     .map((item) => truncate(item, maxChars))
     .filter((item) => item !== '')
     .slice(0, maxItems);
+}
+
+function clampScore(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function normalizeRelatedKbArticles(
+  value: unknown,
+  allowedKbArticleIds: Set<number> | null,
+): AiQualityResult['relatedKbArticles'] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.slice(0, 5).map((item) => {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error('AI_QUALITY_INVALID_KB_ARTICLE');
+    }
+
+    const record = item as Record<string, unknown>;
+    const articleId = Number(record.article_id ?? record.articleId ?? 0);
+    if (!Number.isInteger(articleId) || articleId <= 0) {
+      throw new Error('AI_QUALITY_INVALID_KB_ARTICLE');
+    }
+    if (allowedKbArticleIds !== null && !allowedKbArticleIds.has(articleId)) {
+      throw new Error('AI_QUALITY_UNKNOWN_KB_ARTICLE');
+    }
+
+    return {
+      articleId,
+      title: truncate(record.title, 180),
+      category: truncate(record.category, 120),
+      relevanceScore: clampScore(record.relevance_score ?? record.relevanceScore, 0, 100, 0),
+      whyRelevant: truncate(record.why_relevant ?? record.whyRelevant, 160),
+      internalUrl: truncate(record.internal_url ?? record.internalUrl, 300),
+    };
+  });
+}
+
+function normalizeCommunicationQuality(value: unknown): AiQualityResult['communicationQuality'] {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('AI_QUALITY_INVALID_COMMUNICATION_QUALITY');
+  }
+
+  const record = value as Record<string, unknown>;
+  if (!isCommunicationTone(record.tone)) {
+    throw new Error('AI_QUALITY_INVALID_COMMUNICATION_QUALITY');
+  }
+
+  return {
+    clarity: clampScore(record.clarity, 1, 10, 1),
+    empathy: clampScore(record.empathy, 1, 10, 1),
+    completeness: clampScore(record.completeness, 1, 10, 1),
+    tone: record.tone,
+  };
 }
 
 function normalizeProbableCause(value: unknown): string {
@@ -142,6 +225,14 @@ export function parseAiQualityResult(raw: string): AiQualityResult {
     throw new Error('AI_QUALITY_INVALID_CLASSIFICATION');
   }
 
+  if (
+    !isKbAlignment(record.kb_alignment)
+    || !isProcedureFollowed(record.procedure_followed)
+    || !isClientSatisfactionRisk(record.client_satisfaction_risk)
+  ) {
+    throw new Error('AI_QUALITY_INVALID_CLASSIFICATION');
+  }
+
   if (typeof record.confidence_score !== 'number' || !Number.isFinite(record.confidence_score)) {
     throw new Error('AI_QUALITY_INVALID_CONFIDENCE');
   }
@@ -155,6 +246,13 @@ export function parseAiQualityResult(raw: string): AiQualityResult {
     : [];
   const suggestedNextAction = truncate(record.suggested_next_action, 200);
   assertSafeSuggestion(suggestedNextAction);
+  const suggestedImprovementsForTechnician = truncateStringArray(record.suggested_improvements_for_technician, 3, 160);
+  const supervisorRecommendation = truncateStringArray(record.supervisor_recommendation, 3, 160);
+  [...suggestedImprovementsForTechnician, ...supervisorRecommendation].forEach(assertSafeSuggestion);
+  const allowedKbArticleIds = Array.isArray(record._allowed_kb_article_ids)
+    ? new Set(record._allowed_kb_article_ids.map(Number).filter((id) => Number.isInteger(id) && id > 0))
+    : null;
+  const relatedKbArticles = normalizeRelatedKbArticles(record.related_kb_articles, allowedKbArticleIds);
   const riskLevel = record.risk_level;
   const resolution = deriveLegacyResolution(record, riskLevel);
   const flags = deriveLegacyFlags(record, riskFlags, qualityFlags);
@@ -175,5 +273,14 @@ export function parseAiQualityResult(raw: string): AiQualityResult {
     safetyNotes: truncateStringArray(record.safety_notes, 8, 140),
     flags,
     recommendation: suggestedNextAction,
+    relatedKbArticles,
+    kbAlignment: record.kb_alignment,
+    procedureFollowed: record.procedure_followed,
+    procedureNotes: truncate(record.procedure_notes, 240),
+    communicationQuality: normalizeCommunicationQuality(record.communication_quality),
+    clientSatisfactionRisk: record.client_satisfaction_risk,
+    keyInsights: truncateStringArray(record.key_insights, 3, 160),
+    suggestedImprovementsForTechnician,
+    supervisorRecommendation,
   };
 }

@@ -360,6 +360,11 @@ $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
                 $aiQualityFlags = is_array($contextAiQuality['quality_flags'] ?? null) ? $contextAiQuality['quality_flags'] : [];
                 $aiMissingContext = is_array($contextAiQuality['missing_context'] ?? null) ? $contextAiQuality['missing_context'] : [];
                 $aiSafetyNotes = is_array($contextAiQuality['safety_notes'] ?? null) ? $contextAiQuality['safety_notes'] : [];
+                $aiRelatedKbArticles = is_array($contextAiQuality['related_kb_articles'] ?? null) ? $contextAiQuality['related_kb_articles'] : [];
+                $aiCommunicationQuality = is_array($contextAiQuality['communication_quality'] ?? null) ? $contextAiQuality['communication_quality'] : [];
+                $aiKeyInsights = is_array($contextAiQuality['key_insights'] ?? null) ? $contextAiQuality['key_insights'] : [];
+                $aiTechnicianImprovements = is_array($contextAiQuality['suggested_improvements_for_technician'] ?? null) ? $contextAiQuality['suggested_improvements_for_technician'] : [];
+                $aiSupervisorRecommendation = is_array($contextAiQuality['supervisor_recommendation'] ?? null) ? $contextAiQuality['supervisor_recommendation'] : [];
                 ?>
                 <div class="border rounded p-3 mt-3 mb-0">
                     <div class="d-flex align-items-center justify-content-between gap-2">
@@ -442,6 +447,61 @@ $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
                             <div class="col-md-12">
                                 <small class="text-muted d-block"><?= $this->escape(__('Notas ao supervisor', 'glpiintegaglpi')); ?></small>
                                 <?= $this->escape((string) ($contextAiQuality['supervisor_notes'] ?? '-')); ?>
+                            </div>
+                            <div class="col-md-4">
+                                <small class="text-muted d-block"><?= $this->escape(__('Aderência à KB GLPI', 'glpiintegaglpi')); ?></small>
+                                <?= $this->escape((string) ($contextAiQuality['kb_alignment'] ?? '-')); ?>
+                            </div>
+                            <div class="col-md-4">
+                                <small class="text-muted d-block"><?= $this->escape(__('Procedimento seguido', 'glpiintegaglpi')); ?></small>
+                                <?= $this->escape((string) ($contextAiQuality['procedure_followed'] ?? '-')); ?>
+                            </div>
+                            <div class="col-md-4">
+                                <small class="text-muted d-block"><?= $this->escape(__('Risco de satisfação', 'glpiintegaglpi')); ?></small>
+                                <?= $this->escape((string) ($contextAiQuality['client_satisfaction_risk'] ?? '-')); ?>
+                            </div>
+                            <div class="col-md-12">
+                                <small class="text-muted d-block"><?= $this->escape(__('Notas sobre procedimento', 'glpiintegaglpi')); ?></small>
+                                <?= $this->escape((string) ($contextAiQuality['procedure_notes'] ?? '-')); ?>
+                            </div>
+                            <div class="col-md-12">
+                                <small class="text-muted d-block"><?= $this->escape(__('Qualidade de comunicação', 'glpiintegaglpi')); ?></small>
+                                <?= $this->escape(__('Clareza', 'glpiintegaglpi')); ?>:
+                                <?= (int) ($aiCommunicationQuality['clarity'] ?? 0); ?>/10 ·
+                                <?= $this->escape(__('Empatia', 'glpiintegaglpi')); ?>:
+                                <?= (int) ($aiCommunicationQuality['empathy'] ?? 0); ?>/10 ·
+                                <?= $this->escape(__('Completude', 'glpiintegaglpi')); ?>:
+                                <?= (int) ($aiCommunicationQuality['completeness'] ?? 0); ?>/10 ·
+                                <?= $this->escape(__('Tom', 'glpiintegaglpi')); ?>:
+                                <?= $this->escape((string) ($aiCommunicationQuality['tone'] ?? '-')); ?>
+                            </div>
+                            <div class="col-md-12">
+                                <small class="text-muted d-block"><?= $this->escape(__('Artigos relacionados da Base GLPI', 'glpiintegaglpi')); ?></small>
+                                <?php if ($aiRelatedKbArticles === []) { ?>
+                                    <span class="text-muted"><?= $this->escape(__('Nenhum artigo relacionado informado pela análise.', 'glpiintegaglpi')); ?></span>
+                                <?php } ?>
+                                <?php foreach ($aiRelatedKbArticles as $article) { ?>
+                                    <div class="small">
+                                        <a href="<?= $this->escape((string) ($article['internal_url'] ?? '#')); ?>" target="_blank" rel="noopener noreferrer">
+                                            <?= $this->escape((string) ($article['title'] ?? '')); ?>
+                                        </a>
+                                        · <?= $this->escape((string) ($article['category'] ?? '-')); ?>
+                                        · <?= (int) ($article['relevance_score'] ?? 0); ?>%
+                                        <span class="text-muted"><?= $this->escape((string) ($article['why_relevant'] ?? '')); ?></span>
+                                    </div>
+                                <?php } ?>
+                            </div>
+                            <div class="col-md-4">
+                                <small class="text-muted d-block"><?= $this->escape(__('Insights principais', 'glpiintegaglpi')); ?></small>
+                                <?= $this->escape($aiKeyInsights === [] ? '-' : implode('; ', $aiKeyInsights)); ?>
+                            </div>
+                            <div class="col-md-4">
+                                <small class="text-muted d-block"><?= $this->escape(__('Melhorias sugeridas ao técnico', 'glpiintegaglpi')); ?></small>
+                                <?= $this->escape($aiTechnicianImprovements === [] ? '-' : implode('; ', $aiTechnicianImprovements)); ?>
+                            </div>
+                            <div class="col-md-4">
+                                <small class="text-muted d-block"><?= $this->escape(__('Recomendação ao supervisor', 'glpiintegaglpi')); ?></small>
+                                <?= $this->escape($aiSupervisorRecommendation === [] ? '-' : implode('; ', $aiSupervisorRecommendation)); ?>
                             </div>
                         </div>
 

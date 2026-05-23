@@ -237,6 +237,16 @@ $statusOptions = [
                                                 · <?= $this->escape(__('Urgência', 'glpiintegaglpi')); ?>:
                                                 <?= $this->escape((string) ($aiResult['urgency'] ?? '-')); ?>
                                             </div>
+                                            <div class="small">
+                                                <?= $this->escape(__('KB', 'glpiintegaglpi')); ?>:
+                                                <?= $this->escape((string) ($aiResult['kbAlignment'] ?? $aiResult['kb_alignment'] ?? '-')); ?>
+                                                · <?= $this->escape(__('Procedimento', 'glpiintegaglpi')); ?>:
+                                                <?= $this->escape((string) ($aiResult['procedureFollowed'] ?? $aiResult['procedure_followed'] ?? '-')); ?>
+                                            </div>
+                                            <div class="small">
+                                                <?= $this->escape(__('Risco satisfação', 'glpiintegaglpi')); ?>:
+                                                <?= $this->escape((string) ($aiResult['clientSatisfactionRisk'] ?? $aiResult['client_satisfaction_risk'] ?? '-')); ?>
+                                            </div>
                                             <div class="small text-muted">
                                                 <?= $this->escape(__('Próxima ação', 'glpiintegaglpi')); ?>:
                                                 <?= $this->escape((string) ($aiResult['suggestedNextAction'] ?? $aiResult['suggested_next_action'] ?? $aiQuality['recommendation'] ?? '-')); ?>

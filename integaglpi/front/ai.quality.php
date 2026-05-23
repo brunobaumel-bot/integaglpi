@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use GlpiPlugin\Integaglpi\Plugin;
+use GlpiPlugin\Integaglpi\Service\NativeKnowledgeBaseService;
 use GlpiPlugin\Integaglpi\Service\IntegrationServiceClient;
 
 include '../../../inc/includes.php';
@@ -40,10 +41,16 @@ try {
 
     $client = new IntegrationServiceClient();
     if ($action === 'analyze') {
+        $kbContext = (new NativeKnowledgeBaseService())->buildRelatedArticlesContext([
+            'ticket_name' => (string) ($ticket->fields['name'] ?? ''),
+            'summary' => (string) ($ticket->fields['content'] ?? ''),
+        ], 5);
+
         $response = $client->requestAiQualityAnalysis([
             'conversation_id' => $conversationId,
             'glpi_ticket_id' => $ticketId,
             'glpi_user_id' => Plugin::getCurrentUserId(),
+            'kb_context' => $kbContext,
         ]);
 
         if (!($response['success'] ?? false)) {

@@ -40,6 +40,8 @@ describe('PHP AI supervisor integration (static)', () => {
     expect(front).toContain('Plugin::requireSupervisorRead()');
     expect(front).toContain('Plugin::isCsrfValid($_POST)');
     expect(front).toContain('Plugin::isAiSupervisorEnabled()');
+    expect(front).toContain('NativeKnowledgeBaseService');
+    expect(front).toContain("'kb_context' => $kbContext");
     expect(front).toContain('requestAiQualityAnalysis');
     expect(front).toContain('submitAiQualityFeedback');
     expect(front).not.toContain('sendOutbound');
@@ -72,6 +74,9 @@ describe('PHP AI supervisor integration (static)', () => {
     const template = await readRel('integaglpi/templates/ticket_tab.php');
 
     expect(template).toContain('Análise IA — revisão humana obrigatória');
+    expect(template).toContain('Aderência à KB GLPI');
+    expect(template).toContain('Artigos relacionados da Base GLPI');
+    expect(template).toContain('Qualidade de comunicação');
     expect(template).toContain('Analisar conversa');
     expect(template).toContain('Salvar feedback');
     expect(template).toContain('name="feedback"');

@@ -1,5 +1,5 @@
-import { buildAiQualityPrompt } from '../../ai/aiQualityPrompt.js';
-import { AI_QUALITY_ANALYSIS_VERSION, type AiQualityResult } from '../../ai/aiQualityTypes.js';
+import { buildAiQualityPrompt, normalizeAiQualityKbContext } from '../../ai/aiQualityPrompt.js';
+import { AI_QUALITY_ANALYSIS_VERSION, type AiQualityKbArticle, type AiQualityResult } from '../../ai/aiQualityTypes.js';
 import { sanitizeAiQualityText } from '../../ai/sanitizeAiQualityInput.js';
 import type { AuditService } from './AuditService.js';
 import type {
@@ -25,6 +25,7 @@ export interface RequestAiQualityAnalysisInput {
   conversationId: string;
   glpiTicketId: number;
   createdBy: number | null;
+  kbContext?: AiQualityKbArticle[];
 }
 
 export class AiSupervisorService {
@@ -82,9 +83,11 @@ export class AiSupervisorService {
         return skipped;
       }
 
+      context.kbContext = normalizeAiQualityKbContext(input.kbContext ?? context.kbContext ?? []);
       const result = this.config.dryRun
-        ? this.createDryRunResult(context.messages.length)
+        ? this.createDryRunResult(context.messages.length, context.kbContext.length)
         : await this.provider.analyze(buildAiQualityPrompt(context, this.config.maxChars));
+      this.assertKbReferencesAllowed(result, context.kbContext);
 
       const completed = await this.repository.markCompleted(pending.id, result);
       await this.audit('AI_SUPERVISOR_ANALYSIS_COMPLETED', 'success', 'info', input, {
@@ -115,7 +118,7 @@ export class AiSupervisorService {
     return await this.repository.saveFeedback(analysisId, feedback, notes);
   }
 
-  private createDryRunResult(messageCount: number): AiQualityResult {
+  private createDryRunResult(messageCount: number, kbArticleCount: number): AiQualityResult {
     return {
       summary: `Analise sintética de ${messageCount} mensagem(ns).`,
       resolution: 'uncertain',
@@ -132,7 +135,39 @@ export class AiSupervisorService {
       safetyNotes: ['Nenhuma ação é executada automaticamente.'],
       flags: ['supervisor_review_required'],
       recommendation: 'Revisar manualmente o contexto antes de qualquer decisão.',
+      relatedKbArticles: [],
+      kbAlignment: kbArticleCount > 0 ? 'partially_aligned' : 'no_article_found',
+      procedureFollowed: 'unknown',
+      procedureNotes: kbArticleCount > 0
+        ? 'Modo dry-run: artigos da KB foram recebidos, mas não avaliados por modelo.'
+        : 'Nenhum artigo da KB foi fornecido ao modo dry-run.',
+      communicationQuality: {
+        clarity: 5,
+        empathy: 5,
+        completeness: 5,
+        tone: 'professional',
+      },
+      clientSatisfactionRisk: 'low',
+      keyInsights: ['Modo dry-run não executa inferência semântica.'],
+      suggestedImprovementsForTechnician: ['Revisar o atendimento com base nos procedimentos documentados disponíveis.'],
+      supervisorRecommendation: ['Validar manualmente antes de orientar o técnico.'],
     };
+  }
+
+  private assertKbReferencesAllowed(result: AiQualityResult, kbContext: AiQualityKbArticle[]): void {
+    const allowed = new Set(kbContext.map((article) => article.articleId));
+    if (allowed.size === 0) {
+      if (result.relatedKbArticles.length > 0 || result.kbAlignment !== 'no_article_found') {
+        throw new Error('AI_QUALITY_UNKNOWN_KB_ARTICLE');
+      }
+      return;
+    }
+
+    for (const article of result.relatedKbArticles) {
+      if (!allowed.has(article.articleId)) {
+        throw new Error('AI_QUALITY_UNKNOWN_KB_ARTICLE');
+      }
+    }
   }
 
   private async audit(
