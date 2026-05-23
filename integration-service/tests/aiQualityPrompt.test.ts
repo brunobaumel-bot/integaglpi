@@ -121,6 +121,8 @@ describe('AI quality prompt and sanitization', () => {
     expect(prompt).toContain('kb_articles');
     expect(prompt).toContain('kb_alignment');
     expect(prompt).toContain('procedure_followed');
+    expect(prompt).toContain('Regra de consistência obrigatória');
+    expect(prompt).toContain('related_kb_articles tiver qualquer artigo');
     expect(prompt).toContain('aviso_atendimento_fora_janela');
     expect(prompt).toContain('[CLIENTE]');
     expect(prompt).toContain('[TELEFONE]');
@@ -358,5 +360,121 @@ describe('AI quality prompt and sanitization', () => {
       supervisor_recommendation: [],
       _allowed_kb_article_ids: [10],
     }))).toThrow('AI_QUALITY_UNKNOWN_KB_ARTICLE');
+  });
+
+  it('rejects no_article_found when related KB articles are present', () => {
+    expect(() => parseAiQualityResult(JSON.stringify({
+      summary: 'Resumo',
+      sentiment: 'neutral',
+      urgency: 'low',
+      risk_level: 'low',
+      risk_flags: [],
+      quality_flags: [],
+      missing_context: [],
+      probable_cause: 'Não identificado com segurança',
+      suggested_next_action: 'Revisar manualmente.',
+      supervisor_notes: '',
+      confidence_score: 50,
+      safety_notes: [],
+      related_kb_articles: [{
+        article_id: 10,
+        title: 'Ativação Office',
+        category: 'Office',
+        relevance_score: 88,
+        why_relevant: 'Cobre ativação do Office.',
+        internal_url: '/front/knowbaseitem.form.php?id=10',
+      }],
+      kb_alignment: 'no_article_found',
+      procedure_followed: 'unknown',
+      procedure_notes: '',
+      communication_quality: {
+        clarity: 5,
+        empathy: 5,
+        completeness: 5,
+        tone: 'professional',
+      },
+      client_satisfaction_risk: 'low',
+      key_insights: [],
+      suggested_improvements_for_technician: [],
+      supervisor_recommendation: [],
+      _allowed_kb_article_ids: [10],
+    }))).toThrow('AI_QUALITY_KB_ALIGNMENT_CONFLICT');
+  });
+
+  it('allows no_article_found only when no related KB article is returned', () => {
+    const result = parseAiQualityResult(JSON.stringify({
+      summary: 'Resumo',
+      sentiment: 'neutral',
+      urgency: 'low',
+      risk_level: 'low',
+      risk_flags: [],
+      quality_flags: [],
+      missing_context: [],
+      probable_cause: 'Não identificado com segurança',
+      suggested_next_action: 'Revisar manualmente.',
+      supervisor_notes: '',
+      confidence_score: 50,
+      safety_notes: [],
+      related_kb_articles: [],
+      kb_alignment: 'no_article_found',
+      procedure_followed: 'unknown',
+      procedure_notes: '',
+      communication_quality: {
+        clarity: 5,
+        empathy: 5,
+        completeness: 5,
+        tone: 'professional',
+      },
+      client_satisfaction_risk: 'low',
+      key_insights: [],
+      suggested_improvements_for_technician: [],
+      supervisor_recommendation: [],
+      _allowed_kb_article_ids: [10],
+    }));
+
+    expect(result.kbAlignment).toBe('no_article_found');
+    expect(result.relatedKbArticles).toEqual([]);
+  });
+
+  it('allows related KB article with a concrete alignment', () => {
+    const result = parseAiQualityResult(JSON.stringify({
+      summary: 'Resumo',
+      sentiment: 'neutral',
+      urgency: 'low',
+      risk_level: 'low',
+      risk_flags: [],
+      quality_flags: [],
+      missing_context: [],
+      probable_cause: 'Não identificado com segurança',
+      suggested_next_action: 'Revisar manualmente.',
+      supervisor_notes: '',
+      confidence_score: 50,
+      safety_notes: [],
+      related_kb_articles: [{
+        article_id: 10,
+        title: 'Ativação Office',
+        category: 'Office',
+        relevance_score: 88,
+        why_relevant: 'Cobre ativação do Office.',
+        internal_url: '/front/knowbaseitem.form.php?id=10',
+      }],
+      kb_alignment: 'partially_aligned',
+      procedure_followed: 'partial',
+      procedure_notes: 'Houve referência parcial ao procedimento.',
+      communication_quality: {
+        clarity: 5,
+        empathy: 5,
+        completeness: 5,
+        tone: 'professional',
+      },
+      client_satisfaction_risk: 'low',
+      key_insights: [],
+      suggested_improvements_for_technician: [],
+      supervisor_recommendation: [],
+      _allowed_kb_article_ids: [10],
+    }));
+
+    expect(result.kbAlignment).toBe('partially_aligned');
+    expect(result.relatedKbArticles).toHaveLength(1);
   });
 });

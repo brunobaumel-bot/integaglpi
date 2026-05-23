@@ -253,6 +253,9 @@ export function parseAiQualityResult(raw: string): AiQualityResult {
     ? new Set(record._allowed_kb_article_ids.map(Number).filter((id) => Number.isInteger(id) && id > 0))
     : null;
   const relatedKbArticles = normalizeRelatedKbArticles(record.related_kb_articles, allowedKbArticleIds);
+  if (relatedKbArticles.length > 0 && record.kb_alignment === 'no_article_found') {
+    throw new Error('AI_QUALITY_KB_ALIGNMENT_CONFLICT');
+  }
   const riskLevel = record.risk_level;
   const resolution = deriveLegacyResolution(record, riskLevel);
   const flags = deriveLegacyFlags(record, riskFlags, qualityFlags);

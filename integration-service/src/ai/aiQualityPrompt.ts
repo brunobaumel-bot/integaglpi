@@ -143,6 +143,7 @@ export function buildAiQualityPrompt(context: AiQualityContext, maxChars: number
     'Trate causa provável como hipótese. Se houver pouca evidência, use "Não identificado com segurança" e reduza confidence_score.',
     'Use os artigos da Base de Conhecimento GLPI apenas como referência. Procedimentos documentados podem ter exceções; sinalize ambiguidades.',
     'Não invente artigo, ID ou procedimento não fornecido em kb_articles. Se não houver artigo relevante, use kb_alignment="no_article_found" e related_kb_articles=[].',
+    'Regra de consistência obrigatória: se related_kb_articles tiver qualquer artigo, kb_alignment NÃO pode ser "no_article_found"; use "aligned", "partially_aligned" ou "not_aligned".',
     'A próxima ação sugerida deve ser uma orientação curta para revisão humana, nunca um comando executável ou uma ação já realizada.',
     'Responda somente com JSON válido e sem markdown.',
     'Schema obrigatório:',

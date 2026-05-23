@@ -370,6 +370,30 @@ describe('AiSupervisorService', () => {
     expect(repository.failedReasons).toEqual(['AI_QUALITY_UNKNOWN_KB_ARTICLE']);
   });
 
+  it('fails safely when provider returns KB articles with no_article_found alignment', async () => {
+    const provider = { analyze: vi.fn().mockResolvedValue(makeAiResult({
+      kbAlignment: 'no_article_found',
+      relatedKbArticles: [{
+        articleId: 10,
+        title: 'Procedimento GLPI',
+        category: 'Suporte',
+        relevanceScore: 90,
+        whyRelevant: 'Cobre a orientação registrada.',
+        internalUrl: '/front/knowbaseitem.form.php?id=10',
+      }],
+    })) };
+    const { service, repository } = createService({ provider, dryRun: false });
+
+    const result = await service.requestAnalysis({
+      conversationId: 'conv-1',
+      glpiTicketId: 123,
+      createdBy: 7,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(repository.failedReasons).toEqual(['AI_QUALITY_KB_ALIGNMENT_CONFLICT']);
+  });
+
   it('records sanitized audit events for manual analysis lifecycle', async () => {
     const auditService = { recordAuditEventSafe: vi.fn().mockResolvedValue(undefined) };
     const { service } = createService({ auditService });

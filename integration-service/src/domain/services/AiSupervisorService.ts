@@ -155,6 +155,10 @@ export class AiSupervisorService {
   }
 
   private assertKbReferencesAllowed(result: AiQualityResult, kbContext: AiQualityKbArticle[]): void {
+    if (result.relatedKbArticles.length > 0 && result.kbAlignment === 'no_article_found') {
+      throw new Error('AI_QUALITY_KB_ALIGNMENT_CONFLICT');
+    }
+
     const allowed = new Set(kbContext.map((article) => article.articleId));
     if (allowed.size === 0) {
       if (result.relatedKbArticles.length > 0 || result.kbAlignment !== 'no_article_found') {
