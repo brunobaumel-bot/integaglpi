@@ -1040,6 +1040,8 @@ if ($auditPanelOk) {
     $replyConvId   = (string) ($runtime['conversation_id'] ?? '');
     $replyPostUrl  = rtrim($CFG_GLPI['root_doc'] ?? '', '/')
         . '/plugins/integaglpi/front/ticket.whatsapp.reply.php';
+    $copilotPostUrl = rtrim($CFG_GLPI['root_doc'] ?? '', '/')
+        . '/plugins/integaglpi/front/copilot.draft.php';
     $replyCsrfToken = \GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
     $replyDomId    = 'integaglpi-reply-' . $replyTicketId;
     // Phase 7.4C regression fix: previous version used window.location.href to a GET
@@ -1049,6 +1051,51 @@ if ($auditPanelOk) {
     <div class="card mt-3" id="<?= $this->escape($replyDomId); ?>" data-reply-card="1">
         <div class="card-header"><?= $this->escape(__('Responder cliente', 'glpiintegaglpi')); ?></div>
         <div class="card-body">
+            <div class="border rounded p-3 mb-3 bg-light js-integaglpi-copilot" data-draft-hash="">
+                <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap">
+                    <div>
+                        <strong><?= $this->escape(__('Copiloto interno', 'glpiintegaglpi')); ?></strong>
+                        <div class="text-muted small">
+                            <?= $this->escape(__('Rascunho gerado por IA. Revise antes de enviar. Nenhuma mensagem é enviada automaticamente.', 'glpiintegaglpi')); ?>
+                        </div>
+                    </div>
+                    <div class="btn-group btn-group-sm">
+                        <button type="button" class="btn btn-outline-primary js-integaglpi-copilot-generate" data-tone="neutral">
+                            <?= $this->escape(__('Sugerir resposta', 'glpiintegaglpi')); ?>
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary js-integaglpi-copilot-generate" data-tone="friendly">
+                            <?= $this->escape(__('Mais amigável', 'glpiintegaglpi')); ?>
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary js-integaglpi-copilot-generate" data-tone="technical">
+                            <?= $this->escape(__('Mais técnico', 'glpiintegaglpi')); ?>
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary js-integaglpi-copilot-generate" data-tone="concise">
+                            <?= $this->escape(__('Mais curta', 'glpiintegaglpi')); ?>
+                        </button>
+                    </div>
+                </div>
+                <textarea class="form-control mt-2 js-integaglpi-copilot-draft" rows="4" maxlength="2000" placeholder="<?= $this->escape(__('O rascunho aparecerá aqui para revisão.', 'glpiintegaglpi')); ?>"></textarea>
+                <div class="mt-2 small js-integaglpi-copilot-meta text-muted"></div>
+                <div class="d-flex gap-2 align-items-center mt-2 flex-wrap">
+                    <button type="button" class="btn btn-sm btn-outline-secondary js-integaglpi-copilot-copy">
+                        <?= $this->escape(__('Copiar rascunho', 'glpiintegaglpi')); ?>
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-success js-integaglpi-copilot-use">
+                        <?= $this->escape(__('Usar rascunho', 'glpiintegaglpi')); ?>
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-danger js-integaglpi-copilot-discard">
+                        <?= $this->escape(__('Descartar sugestão', 'glpiintegaglpi')); ?>
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary js-integaglpi-copilot-feedback" data-feedback="useful">
+                        <?= $this->escape(__('Útil', 'glpiintegaglpi')); ?>
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary js-integaglpi-copilot-feedback" data-feedback="not_useful">
+                        <?= $this->escape(__('Não útil', 'glpiintegaglpi')); ?>
+                    </button>
+                    <input type="text" class="form-control form-control-sm js-integaglpi-copilot-notes" style="max-width: 260px;" placeholder="<?= $this->escape(__('Comentário opcional', 'glpiintegaglpi')); ?>">
+                    <small class="js-integaglpi-copilot-status text-muted"></small>
+                </div>
+            </div>
             <textarea
                 class="form-control mb-2 js-integaglpi-tab-reply-text"
                 rows="3"
@@ -1089,6 +1136,7 @@ if ($auditPanelOk) {
         card.dataset.integaglpiBound = '1';
 
         var endpoint  = <?= json_encode($replyPostUrl, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
+        var copilotEndpoint = <?= json_encode($copilotPostUrl, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
         var csrfToken = <?= json_encode($replyCsrfToken, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
         var emptyMsg  = <?= json_encode(__('Informe uma mensagem ou anexe um arquivo.', 'glpiintegaglpi'), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
         var sendingMsg = <?= json_encode(__('Enviando...', 'glpiintegaglpi'), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
@@ -1100,6 +1148,11 @@ if ($auditPanelOk) {
         var textarea = card.querySelector('.js-integaglpi-tab-reply-text');
         var fileInput = card.querySelector('.js-integaglpi-tab-reply-file');
         var feedback = card.querySelector('.js-integaglpi-tab-reply-feedback');
+        var copilotBox = card.querySelector('.js-integaglpi-copilot');
+        var copilotDraft = card.querySelector('.js-integaglpi-copilot-draft');
+        var copilotMeta = card.querySelector('.js-integaglpi-copilot-meta');
+        var copilotStatus = card.querySelector('.js-integaglpi-copilot-status');
+        var copilotNotes = card.querySelector('.js-integaglpi-copilot-notes');
 
         if (!button || !textarea) {
             return;
@@ -1124,6 +1177,110 @@ if ($auditPanelOk) {
                 return { status: response.status, body: body };
             });
         }
+
+        function setCopilotStatus(message, kind) {
+            if (!copilotStatus) { return; }
+            copilotStatus.textContent = message || '';
+            copilotStatus.className = 'js-integaglpi-copilot-status small ' + (
+                kind === 'error' ? 'text-danger'
+                : kind === 'success' ? 'text-success'
+                : 'text-muted'
+            );
+        }
+
+        function postCopilot(payload) {
+            payload.set('_glpi_csrf_token', csrfToken);
+            payload.set('ticket_id', String(button.dataset.ticketId || ''));
+            payload.set('conversation_id', String(button.dataset.conversationId || ''));
+            return fetch(copilotEndpoint, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Accept': 'application/json' },
+                body: payload
+            }).then(parseJsonResponse);
+        }
+
+        card.querySelectorAll('.js-integaglpi-copilot-generate').forEach(function (copilotButton) {
+            copilotButton.addEventListener('click', function () {
+                if (!copilotDraft || !copilotBox) { return; }
+                var payload = new FormData();
+                payload.set('copilot_action', 'generate');
+                payload.set('tone', String(copilotButton.dataset.tone || 'neutral'));
+                copilotButton.disabled = true;
+                setCopilotStatus(<?= json_encode(__('Gerando rascunho...', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'muted');
+                postCopilot(payload).then(function (result) {
+                    copilotButton.disabled = false;
+                    if (!result.body || result.body.success !== true || !result.body.body || !result.body.body.draft) {
+                        setCopilotStatus((result.body && result.body.message) || <?= json_encode(__('Não foi possível gerar o rascunho.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
+                        return;
+                    }
+                    var draft = result.body.body.draft;
+                    copilotDraft.value = draft.draftResponse || draft.draft_response || '';
+                    copilotBox.dataset.draftHash = draft.draftHash || draft.draft_hash || '';
+                    if (copilotMeta) {
+                        var notices = [];
+                        if (draft.templateNotice || draft.template_notice) { notices.push(draft.templateNotice || draft.template_notice); }
+                        if (draft.confidenceScore || draft.confidence_score) { notices.push('confiança ' + String(draft.confidenceScore || draft.confidence_score) + '%'); }
+                        copilotMeta.textContent = notices.join(' · ');
+                    }
+                    setCopilotStatus(<?= json_encode(__('Rascunho pronto para revisão.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'success');
+                }).catch(function () {
+                    copilotButton.disabled = false;
+                    setCopilotStatus(<?= json_encode(__('Erro de rede ao chamar o Copiloto.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
+                });
+            });
+        });
+
+        var copyButton = card.querySelector('.js-integaglpi-copilot-copy');
+        if (copyButton) {
+            copyButton.addEventListener('click', function () {
+                if (!copilotDraft || !copilotDraft.value.trim()) { return; }
+                navigator.clipboard && navigator.clipboard.writeText(copilotDraft.value);
+                setCopilotStatus(<?= json_encode(__('Rascunho copiado.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'success');
+            });
+        }
+
+        var useButton = card.querySelector('.js-integaglpi-copilot-use');
+        if (useButton) {
+            useButton.addEventListener('click', function () {
+                if (!copilotDraft || !textarea || !copilotDraft.value.trim()) { return; }
+                textarea.value = copilotDraft.value;
+                var payload = new FormData();
+                payload.set('copilot_action', 'use');
+                payload.set('draft_hash', copilotBox ? (copilotBox.dataset.draftHash || '') : '');
+                postCopilot(payload);
+                button.disabled = true;
+                window.setTimeout(function () { button.disabled = false; }, 2500);
+                setCopilotStatus(<?= json_encode(__('Rascunho aplicado. Revise antes de enviar manualmente.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'success');
+            });
+        }
+
+        var discardButton = card.querySelector('.js-integaglpi-copilot-discard');
+        if (discardButton) {
+            discardButton.addEventListener('click', function () {
+                if (copilotDraft) { copilotDraft.value = ''; }
+                var payload = new FormData();
+                payload.set('copilot_action', 'discard');
+                payload.set('draft_hash', copilotBox ? (copilotBox.dataset.draftHash || '') : '');
+                postCopilot(payload);
+                if (copilotBox) { copilotBox.dataset.draftHash = ''; }
+                setCopilotStatus(<?= json_encode(__('Sugestão descartada.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'muted');
+            });
+        }
+
+        card.querySelectorAll('.js-integaglpi-copilot-feedback').forEach(function (feedbackButton) {
+            if (!feedbackButton.dataset || !feedbackButton.dataset.feedback) { return; }
+            feedbackButton.addEventListener('click', function () {
+                var payload = new FormData();
+                payload.set('copilot_action', 'feedback');
+                payload.set('draft_hash', copilotBox ? (copilotBox.dataset.draftHash || '') : '');
+                payload.set('feedback', String(feedbackButton.dataset.feedback || 'useful'));
+                payload.set('notes', copilotNotes ? copilotNotes.value : '');
+                postCopilot(payload).then(function () {
+                    setCopilotStatus(<?= json_encode(__('Feedback registrado.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'success');
+                });
+            });
+        });
 
         button.addEventListener('click', function () {
             var msg = (textarea.value || '').trim();

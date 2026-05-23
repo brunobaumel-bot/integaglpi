@@ -7,6 +7,7 @@ import type { EntitySelectionService } from './domain/services/EntitySelectionSe
 import type { ConversationSoftCloseService } from './domain/services/ConversationSoftCloseService.js';
 import type { AuditService } from './domain/services/AuditService.js';
 import type { AiSupervisorService } from './domain/services/AiSupervisorService.js';
+import type { CopilotDraftService } from './domain/services/CopilotDraftService.js';
 import type { ContactAgendaImportService } from './domain/services/ContactAgendaImportService.js';
 import type { ManualTicketWhatsappLinkService } from './domain/services/ManualTicketWhatsappLinkService.js';
 import type { GlpiClient } from './adapters/glpi/GlpiClient.js';
@@ -15,6 +16,7 @@ import type { ObservabilityService } from './services/ObservabilityService.js';
 import { createOpsDiagnosticsController, healthController } from './controllers/healthController.js';
 import { createAiQualityAnalysisController } from './controllers/createAiQualityAnalysisController.js';
 import { createAiQualityFeedbackController } from './controllers/createAiQualityFeedbackController.js';
+import { createCopilotDraftController } from './controllers/createCopilotDraftController.js';
 import { createQualityDashboardController } from './controllers/createQualityDashboardController.js';
 import { createObservabilityController } from './controllers/createObservabilityController.js';
 import { createGlpiOutboundMessageController } from './controllers/createGlpiOutboundMessageController.js';
@@ -55,6 +57,7 @@ export interface AppDependencies {
   glpiClient?: GlpiClient;
   auditService?: AuditService;
   aiSupervisorService?: AiSupervisorService;
+  copilotDraftService?: CopilotDraftService;
   qualityDashboardService?: QualityDashboardService;
   observabilityService?: ObservabilityService;
   contactAgendaImportService?: ContactAgendaImportService;
@@ -203,6 +206,13 @@ export function createApp(dependencies: AppDependencies) {
       '/internal/glpi/ai-quality/feedback',
       createInternalBearerMiddleware(dependencies.integrationServiceApiKey),
       createAiQualityFeedbackController(dependencies.aiSupervisorService),
+    );
+  }
+  if (dependencies.copilotDraftService) {
+    app.post(
+      '/internal/glpi/copilot/draft',
+      createInternalBearerMiddleware(dependencies.integrationServiceApiKey),
+      createCopilotDraftController(dependencies.copilotDraftService),
     );
   }
 

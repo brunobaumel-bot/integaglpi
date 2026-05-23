@@ -134,6 +134,58 @@ final class TicketContextService
     }
 
     /**
+     * @return array<string, mixed>
+     */
+    public function buildCopilotContext(\Ticket $ticket, string $conversationId): array
+    {
+        $ticketId = (int) $ticket->getID();
+        $conversationId = trim($conversationId);
+        if ($ticketId <= 0 || $conversationId === '') {
+            throw new \RuntimeException('COPILOT_CONTEXT_INVALID');
+        }
+
+        $ticketContext = $this->getTicketContext($ticket);
+        $conversation = is_array($ticketContext['conversation'] ?? null) ? $ticketContext['conversation'] : [];
+        $whatsappWindow = is_array($ticketContext['whatsapp_window'] ?? null) ? $ticketContext['whatsapp_window'] : [];
+        $windowNotice = 'unknown';
+        if ($whatsappWindow !== []) {
+            $windowNotice = !empty($whatsappWindow['is_open']) ? 'open_24h' : 'closed_24h';
+        }
+
+        $kbService = new NativeKnowledgeBaseService();
+        $kbArticles = $kbService->buildRelatedArticlesContext([
+            'ticket_name' => (string) ($ticket->fields['name'] ?? ''),
+            'summary' => (string) ($ticket->fields['content'] ?? ''),
+            'last_message' => $this->latestMessageText($conversationId),
+            'queue_name' => (string) ($conversation['queue_name'] ?? ''),
+        ], 5);
+
+        return [
+            'conversation_id' => $conversationId,
+            'glpi_ticket_id' => $ticketId,
+            'ticket_title' => $this->sanitizeCopilotText((string) ($ticket->fields['name'] ?? '')),
+            'ticket_status' => (string) ($ticket->fields['status'] ?? ''),
+            'queue_name' => $this->sanitizeCopilotText((string) ($conversation['queue_name'] ?? '')),
+            'sla_label' => $this->sanitizeCopilotText((string) ($ticketContext['risk']['level'] ?? '')),
+            'window_notice' => $windowNotice,
+            'messages' => $this->loadCopilotMessages($conversationId),
+            'kb_articles' => array_map(
+                fn (array $article): array => [
+                    'article_id' => (int) ($article['article_id'] ?? 0),
+                    'title' => $this->sanitizeCopilotText((string) ($article['title'] ?? ''), 180),
+                    'category' => $this->sanitizeCopilotText((string) ($article['category'] ?? ''), 120),
+                    'excerpt' => $this->sanitizeCopilotText((string) ($article['excerpt'] ?? ''), 800),
+                    'internal_url' => $this->sanitizeCopilotUrl((string) ($article['internal_url'] ?? '')),
+                ],
+                $kbArticles
+            ),
+            'ai_quality' => $this->sanitizeCopilotArray(is_array($ticketContext['ai_quality'] ?? null) ? $ticketContext['ai_quality'] : []),
+            'kb_candidates' => $this->loadCopilotKbCandidates(),
+            'historical_insights' => $this->loadCopilotHistoricalInsights(),
+        ];
+    }
+
+    /**
      * @param array<string, mixed> $conversation
      * @return array<string, mixed>
      */
@@ -437,6 +489,169 @@ final class TicketContextService
         }
 
         return $warnings;
+    }
+
+    /**
+     * @return list<array<string, string>>
+     */
+    private function loadCopilotMessages(string $conversationId): array
+    {
+        $statement = $this->getPdo()->prepare(
+            <<<SQL
+            SELECT direction, message_type, message_text, created_at
+            FROM (
+                SELECT direction, message_type, message_text, created_at, id
+                FROM glpi_plugin_integaglpi_messages
+                WHERE conversation_id = :conversation_id
+                  AND message_text IS NOT NULL
+                  AND trim(message_text) <> ''
+                ORDER BY created_at DESC, id DESC
+                LIMIT 12
+            ) recent
+            ORDER BY created_at ASC, id ASC
+            SQL
+        );
+        $statement->bindValue(':conversation_id', $conversationId);
+        $statement->execute();
+
+        $rows = $statement->fetchAll();
+        if (!is_array($rows)) {
+            return [];
+        }
+
+        return array_map(fn (array $row): array => [
+            'direction' => $this->sanitizeCopilotText((string) ($row['direction'] ?? ''), 20),
+            'message_type' => $this->sanitizeCopilotText((string) ($row['message_type'] ?? ''), 40),
+            'text' => $this->sanitizeCopilotText((string) ($row['message_text'] ?? ''), 600),
+            'created_at' => $this->sanitizeCopilotText((string) ($row['created_at'] ?? ''), 40),
+        ], $rows);
+    }
+
+    private function latestMessageText(string $conversationId): string
+    {
+        $messages = $this->loadCopilotMessages($conversationId);
+        $last = end($messages);
+
+        return is_array($last) ? (string) ($last['text'] ?? '') : '';
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function loadCopilotKbCandidates(): array
+    {
+        if (!$this->tableExists('glpi_plugin_integaglpi_kb_candidates')) {
+            return [];
+        }
+
+        $statement = $this->getPdo()->prepare(
+            <<<SQL
+            SELECT id, title, article_type, confidence_score, status
+            FROM glpi_plugin_integaglpi_kb_candidates
+            WHERE status IN ('approved', 'in_review')
+            ORDER BY confidence_score DESC, updated_at DESC
+            LIMIT 5
+            SQL
+        );
+        $statement->execute();
+        $rows = $statement->fetchAll();
+        if (!is_array($rows)) {
+            return [];
+        }
+
+        return array_map(fn (array $row): array => $this->sanitizeCopilotArray([
+            'id' => (int) ($row['id'] ?? 0),
+            'title' => (string) ($row['title'] ?? ''),
+            'article_type' => (string) ($row['article_type'] ?? ''),
+            'confidence_score' => (int) ($row['confidence_score'] ?? 0),
+            'status' => (string) ($row['status'] ?? ''),
+        ]), $rows);
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function loadCopilotHistoricalInsights(): array
+    {
+        if (!$this->tableExists('glpi_plugin_integaglpi_hist_insights')) {
+            return [];
+        }
+
+        $statement = $this->getPdo()->prepare(
+            <<<SQL
+            SELECT insight_type, priority, title, confidence_score
+            FROM glpi_plugin_integaglpi_hist_insights
+            ORDER BY created_at DESC
+            LIMIT 5
+            SQL
+        );
+        $statement->execute();
+        $rows = $statement->fetchAll();
+        if (!is_array($rows)) {
+            return [];
+        }
+
+        return array_map(fn (array $row): array => $this->sanitizeCopilotArray([
+            'insight_type' => (string) ($row['insight_type'] ?? ''),
+            'priority' => (string) ($row['priority'] ?? ''),
+            'title' => (string) ($row['title'] ?? ''),
+            'confidence_score' => (int) ($row['confidence_score'] ?? 0),
+        ]), $rows);
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     * @return array<string, mixed>
+     */
+    private function sanitizeCopilotArray(array $value): array
+    {
+        $sanitized = [];
+        foreach ($value as $key => $item) {
+            if (is_array($item)) {
+                $sanitized[(string) $key] = $this->sanitizeCopilotArray($item);
+                continue;
+            }
+            if (is_bool($item) || is_int($item) || is_float($item) || $item === null) {
+                $sanitized[(string) $key] = $item;
+                continue;
+            }
+
+            $sanitized[(string) $key] = $this->sanitizeCopilotText((string) $item, 300);
+        }
+
+        return $sanitized;
+    }
+
+    private function sanitizeCopilotText(string $value, int $limit = 300): string
+    {
+        $value = html_entity_decode(strip_tags($value), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $value = preg_replace('/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/i', '[email]', $value) ?? $value;
+        $value = preg_replace('/\+?\d[\d\s().-]{7,}\d/', '[telefone]', $value) ?? $value;
+        $value = preg_replace('/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b|\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/', '[documento]', $value) ?? $value;
+        $value = preg_replace('/(password|token|bearer|api_key|app_secret|secret)\s*[:=]\s*\S+/i', '$1=[redacted]', $value) ?? $value;
+        $value = preg_replace('/\s+/u', ' ', $value) ?? $value;
+        $value = trim($value);
+
+        return mb_substr($value, 0, max(1, $limit), 'UTF-8');
+    }
+
+    private function sanitizeCopilotUrl(string $value): string
+    {
+        $value = $this->sanitizeCopilotText($value, 300);
+        if ($value === '' || preg_match('/(?:access_token|token|bearer|signature|app_secret)/i', $value)) {
+            return '';
+        }
+
+        return str_contains($value, '/front/knowbaseitem.form.php') ? $value : '';
+    }
+
+    private function tableExists(string $table): bool
+    {
+        $statement = $this->getPdo()->prepare("SELECT to_regclass(:table_name) IS NOT NULL");
+        $statement->bindValue(':table_name', 'public.' . $table);
+        $statement->execute();
+
+        return (bool) $statement->fetchColumn();
     }
 
     private function getRepository(): TicketContextRepository

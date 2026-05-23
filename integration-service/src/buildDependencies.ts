@@ -23,6 +23,8 @@ import { ManualTicketWhatsappLinkService } from './domain/services/ManualTicketW
 import { EntitySelectionService } from './domain/services/EntitySelectionService.js';
 import { ConversationSoftCloseService } from './domain/services/ConversationSoftCloseService.js';
 import { AiSupervisorService } from './domain/services/AiSupervisorService.js';
+import { CopilotDraftService } from './domain/services/CopilotDraftService.js';
+import { OllamaCopilotProvider } from './copilot/OllamaCopilotProvider.js';
 import { postgresPool } from './infra/db/postgres.js';
 import { ResilientHttpClient } from './infra/http/ResilientHttpClient.js';
 import { PostgresContactEntityMemoryRepository } from './repositories/postgres/PostgresContactEntityMemoryRepository.js';
@@ -159,6 +161,22 @@ export function buildDependencies() {
     },
     auditService,
   );
+  const copilotDraftProvider = new OllamaCopilotProvider(
+    env.AI_SUPERVISOR_BASE_URL,
+    env.AI_SUPERVISOR_MODEL,
+    env.AI_SUPERVISOR_TIMEOUT_SECONDS * 1000,
+  );
+  const copilotDraftService = new CopilotDraftService(
+    copilotDraftProvider,
+    {
+      enabled: env.AI_SUPERVISOR_ENABLED,
+      provider: env.AI_SUPERVISOR_PROVIDER,
+      model: env.AI_SUPERVISOR_MODEL,
+      dryRun: env.AI_SUPERVISOR_DRY_RUN,
+      maxChars: env.AI_SUPERVISOR_MAX_CHARS,
+    },
+    auditService,
+  );
   const inboundWebhookService = new InboundWebhookService(
     webhookEventRepository,
     messageRepository,
@@ -188,6 +206,7 @@ export function buildDependencies() {
     operationalIntegrityAuditService,
     inactivityAutomationService,
     aiSupervisorService,
+    copilotDraftService,
     qualityDashboardService,
     observabilityService,
     contactAgendaImportService,
