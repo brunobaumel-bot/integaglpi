@@ -37,6 +37,10 @@ export function parseAiQualityResult(raw: string): AiQualityResult {
   }
 
   const record = parsed as Record<string, unknown>;
+  if (typeof record.summary !== 'string' || typeof record.recommendation !== 'string') {
+    throw new Error('AI_QUALITY_INVALID_SHAPE');
+  }
+
   if (!isResolution(record.resolution) || !isSentiment(record.sentiment)) {
     throw new Error('AI_QUALITY_INVALID_CLASSIFICATION');
   }

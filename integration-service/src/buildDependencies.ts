@@ -157,6 +157,7 @@ export function buildDependencies() {
       maxChars: env.AI_SUPERVISOR_MAX_CHARS,
       dryRun: env.AI_SUPERVISOR_DRY_RUN,
     },
+    auditService,
   );
   const inboundWebhookService = new InboundWebhookService(
     webhookEventRepository,

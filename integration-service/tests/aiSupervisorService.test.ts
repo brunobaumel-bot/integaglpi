@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { AiSupervisorService, type AiQualityProvider } from '../src/domain/services/AiSupervisorService.js';
+import type { AuditService } from '../src/domain/services/AuditService.js';
 import type {
   AiQualityAnalysisRecord,
   AiQualityAnalysisRepository,
@@ -114,9 +115,11 @@ class FakeRepository implements AiQualityAnalysisRepository {
 
 function createService(overrides: {
   enabled?: boolean;
+  providerName?: 'disabled' | 'ollama';
   dryRun?: boolean;
   repository?: FakeRepository;
   provider?: AiQualityProvider;
+  auditService?: Pick<AuditService, 'recordAuditEventSafe'>;
 } = {}) {
   const repository = overrides.repository ?? new FakeRepository();
   const provider = overrides.provider ?? {
@@ -128,21 +131,25 @@ function createService(overrides: {
       recommendation: 'Sem ação automática.',
     } satisfies AiQualityResult),
   };
+  const auditService = overrides.auditService ?? {
+    recordAuditEventSafe: vi.fn().mockResolvedValue(undefined),
+  };
   const service = new AiSupervisorService(repository, provider, {
     enabled: overrides.enabled ?? true,
-    provider: 'ollama',
+    provider: overrides.providerName ?? 'ollama',
     model: 'llama3.1',
     maxMessages: 30,
     maxChars: 12000,
     dryRun: overrides.dryRun ?? true,
-  });
+  }, auditService as AuditService);
 
-  return { service, repository, provider };
+  return { service, repository, provider, auditService };
 }
 
 describe('AiSupervisorService', () => {
   it('blocks analysis when feature flag is disabled', async () => {
-    const { service, repository } = createService({ enabled: false });
+    const provider = { analyze: vi.fn() };
+    const { service, repository } = createService({ enabled: false, provider });
 
     await expect(service.requestAnalysis({
       conversationId: 'conv-1',
@@ -151,6 +158,38 @@ describe('AiSupervisorService', () => {
     })).rejects.toThrow('AI_SUPERVISOR_DISABLED');
 
     expect(repository.pendingInputs).toHaveLength(0);
+    expect(provider.analyze).not.toHaveBeenCalled();
+  });
+
+  it('blocks analysis when provider is disabled even if feature flag is enabled', async () => {
+    const provider = { analyze: vi.fn() };
+    const { service, repository } = createService({ enabled: true, providerName: 'disabled', provider });
+
+    await expect(service.requestAnalysis({
+      conversationId: 'conv-1',
+      glpiTicketId: 123,
+      createdBy: 7,
+    })).rejects.toThrow('AI_SUPERVISOR_DISABLED');
+
+    expect(repository.pendingInputs).toHaveLength(0);
+    expect(provider.analyze).not.toHaveBeenCalled();
+  });
+
+  it('skips missing context without calling the provider', async () => {
+    const repository = new FakeRepository();
+    repository.context = null;
+    const provider = { analyze: vi.fn() };
+    const { service } = createService({ repository, provider, dryRun: false });
+
+    const result = await service.requestAnalysis({
+      conversationId: 'conv-1',
+      glpiTicketId: 123,
+      createdBy: 7,
+    });
+
+    expect(result.status).toBe('skipped');
+    expect(repository.skippedReasons).toEqual(['conversation_not_found']);
+    expect(provider.analyze).not.toHaveBeenCalled();
   });
 
   it('skips conversations without text messages', async () => {
@@ -187,8 +226,35 @@ describe('AiSupervisorService', () => {
     });
   });
 
+  it('calls the provider only in explicit non-dry-run mode and persists the insight', async () => {
+    const provider = {
+      analyze: vi.fn().mockResolvedValue({
+        summary: 'Cliente atendido.',
+        resolution: 'resolved',
+        sentiment: 'satisfied',
+        flags: ['needs_training'],
+        recommendation: 'Supervisor deve revisar a orientação registrada.',
+      } satisfies AiQualityResult),
+    };
+    const { service, repository } = createService({ provider, dryRun: false });
+
+    const result = await service.requestAnalysis({
+      conversationId: 'conv-1',
+      glpiTicketId: 123,
+      createdBy: 7,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(provider.analyze).toHaveBeenCalledTimes(1);
+    expect(repository.completedResults[0]).toMatchObject({
+      resolution: 'resolved',
+      sentiment: 'satisfied',
+      flags: ['needs_training'],
+    });
+  });
+
   it('marks provider errors as failed without throwing', async () => {
-    const provider = { analyze: vi.fn().mockRejectedValue(new Error('ollama offline')) };
+    const provider = { analyze: vi.fn().mockRejectedValue(new Error('ollama offline token=secret123')) };
     const { service, repository } = createService({ provider, dryRun: false });
 
     const result = await service.requestAnalysis({
@@ -198,7 +264,29 @@ describe('AiSupervisorService', () => {
     });
 
     expect(result.status).toBe('failed');
-    expect(repository.failedReasons).toEqual(['ollama offline']);
+    expect(repository.failedReasons).toEqual(['ollama offline [SEGREDO_REMOVIDO]']);
+  });
+
+  it('records sanitized audit events for manual analysis lifecycle', async () => {
+    const auditService = { recordAuditEventSafe: vi.fn().mockResolvedValue(undefined) };
+    const { service } = createService({ auditService });
+
+    await service.requestAnalysis({
+      conversationId: 'conv-1',
+      glpiTicketId: 123,
+      createdBy: 7,
+    });
+
+    expect(auditService.recordAuditEventSafe).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'AI_SUPERVISOR_ANALYSIS_REQUESTED',
+      source: 'AiSupervisorService',
+      ticketId: 123,
+      conversationId: 'conv-1',
+    }));
+    expect(auditService.recordAuditEventSafe).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'AI_SUPERVISOR_ANALYSIS_COMPLETED',
+      status: 'success',
+    }));
   });
 
   it('persists supervisor feedback only when enabled', async () => {

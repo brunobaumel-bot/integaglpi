@@ -57,7 +57,7 @@ const envSchema = z.object({
     .union([z.literal('true'), z.literal('false')])
     .default('false')
     .transform((value) => value === 'true'),
-  AI_SUPERVISOR_PROVIDER: z.literal('ollama').default('ollama'),
+  AI_SUPERVISOR_PROVIDER: z.enum(['disabled', 'ollama']).default('disabled'),
   AI_SUPERVISOR_MODEL: z.string().min(1).default('llama3.1'),
   AI_SUPERVISOR_BASE_URL: z.string().url().default('http://127.0.0.1:11434'),
   AI_SUPERVISOR_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(30),

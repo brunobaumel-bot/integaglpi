@@ -26,7 +26,7 @@ const context: AiQualityContext = {
 describe('AI quality prompt and sanitization', () => {
   it('masks PII before building the prompt', () => {
     const sanitized = sanitizeAiQualityText(
-      'Maria Cliente +55 41 99999-9999 maria@example.com CPF 123.456.789-10 contrato Premium',
+      'Maria Cliente +55 41 99999-9999 maria@example.com CPF 123.456.789-10 contrato Premium Authorization: Bearer abcdefghijklmnop token=secret https://lookaside.fbsbx.com/file?access_token=abc data:image/png;base64,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       ['Maria Cliente'],
     );
 
@@ -35,8 +35,13 @@ describe('AI quality prompt and sanitization', () => {
     expect(sanitized).toContain('[EMAIL]');
     expect(sanitized).toContain('[DADO_REMOVIDO]');
     expect(sanitized).toContain('[CONTRATO]');
+    expect(sanitized).toContain('[SEGREDO_REMOVIDO]');
+    expect(sanitized).toContain('[URL_REMOVIDA]');
+    expect(sanitized).toContain('[BINARIO_REMOVIDO]');
     expect(sanitized).not.toContain('99999-9999');
     expect(sanitized).not.toContain('maria@example.com');
+    expect(sanitized).not.toContain('lookaside.fbsbx.com');
+    expect(sanitized).not.toContain('abcdefghijklmnop');
   });
 
   it('builds a read-only JSON prompt without raw Meta payloads or attachments', () => {
@@ -70,5 +75,43 @@ describe('AI quality prompt and sanitization', () => {
     });
 
     expect(() => parseAiQualityResult('isso nao e json')).toThrow('AI_QUALITY_INVALID_JSON');
+  });
+
+  it('rejects invalid shape and invalid enum values', () => {
+    expect(() => parseAiQualityResult(JSON.stringify({
+      summary: 'Sem classificação.',
+      sentiment: 'neutral',
+      flags: [],
+      recommendation: 'Revisar.',
+    }))).toThrow('AI_QUALITY_INVALID_CLASSIFICATION');
+
+    expect(() => parseAiQualityResult(JSON.stringify({
+      summary: 'Resumo',
+      resolution: 'send_whatsapp',
+      sentiment: 'neutral',
+      flags: [],
+      recommendation: 'Revisar.',
+    }))).toThrow('AI_QUALITY_INVALID_CLASSIFICATION');
+
+    expect(() => parseAiQualityResult(JSON.stringify({
+      summary: null,
+      resolution: 'uncertain',
+      sentiment: 'neutral',
+      flags: [],
+      recommendation: 'Revisar.',
+    }))).toThrow('AI_QUALITY_INVALID_SHAPE');
+  });
+
+  it('truncates long model fields', () => {
+    const result = parseAiQualityResult(JSON.stringify({
+      summary: 'S'.repeat(180),
+      resolution: 'uncertain',
+      sentiment: 'neutral',
+      flags: ['supervisor_review_required'],
+      recommendation: 'R'.repeat(260),
+    }));
+
+    expect(result.summary).toHaveLength(100);
+    expect(result.recommendation).toHaveLength(200);
   });
 });
