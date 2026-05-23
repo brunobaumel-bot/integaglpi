@@ -26,6 +26,28 @@ describe('native GLPI knowledge base read-only adapter static safety', () => {
     expect(service).toContain('FINAL_LIMIT = 5');
   });
 
+  it('uses tokenized native KB search for Office activation context without weakening visibility filters', async () => {
+    const service = await readProjectFile('integaglpi/src/Service/NativeKnowledgeBaseService.php');
+    const aiFront = await readProjectFile('integaglpi/front/ai.quality.php');
+
+    expect(service).toContain('buildRelatedSearchQueries');
+    expect(service).toContain('extractSearchTokens');
+    expect(service).toContain('normalizeForMatching');
+    expect(service).toContain('iconv');
+    expect(service).toContain("'ativando' => ['ativacao', 'ativar', 'ativo']");
+    expect(service).toContain("['office', 'ativacao']");
+    expect(service).toContain('STOPWORDS');
+    expect(service).toContain('canViewArticle($id, $row)');
+    expect(service).toContain('Session::haveAccessToEntity');
+    expect(service).toContain('CANDIDATE_LIMIT = 50');
+    expect(service).toContain('FINAL_LIMIT = 5');
+    expect(service).toContain('EXCERPT_LIMIT = 800');
+    expect(aiFront).toContain('[integaglpi][ai_quality][kb_context]');
+    expect(aiFront).toContain('kb_context_count=');
+    expect(aiFront).toContain('kb_context_query_terms_count=');
+    expect(aiFront).toContain('kb_context_article_ids=');
+  });
+
   it('keeps the adapter read-only and away from operational actions', async () => {
     const service = await readProjectFile('integaglpi/src/Service/NativeKnowledgeBaseService.php');
     const front = await readProjectFile('integaglpi/front/kb.native.php');

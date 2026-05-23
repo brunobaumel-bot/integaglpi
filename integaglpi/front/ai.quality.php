@@ -41,10 +41,15 @@ try {
 
     $client = new IntegrationServiceClient();
     if ($action === 'analyze') {
-        $kbContext = (new NativeKnowledgeBaseService())->buildRelatedArticlesContext([
+        $kbSourceTerms = [
             'ticket_name' => (string) ($ticket->fields['name'] ?? ''),
             'summary' => (string) ($ticket->fields['content'] ?? ''),
-        ], 5);
+        ];
+        $kbContext = (new NativeKnowledgeBaseService())->buildRelatedArticlesContext($kbSourceTerms, 5);
+        error_log('[integaglpi][ai_quality][kb_context] ticket_id=' . $ticketId
+            . ' kb_context_count=' . count($kbContext)
+            . ' kb_context_query_terms_count=' . count(array_filter($kbSourceTerms, static fn (string $term): bool => trim($term) !== ''))
+            . ' kb_context_article_ids=' . implode(',', array_map(static fn (array $article): int => (int) ($article['article_id'] ?? 0), $kbContext)));
 
         $response = $client->requestAiQualityAnalysis([
             'conversation_id' => $conversationId,

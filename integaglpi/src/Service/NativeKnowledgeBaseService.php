@@ -12,6 +12,18 @@ final class NativeKnowledgeBaseService
     private const FINAL_LIMIT = 5;
     private const CANDIDATE_LIMIT = 50;
     private const EXCERPT_LIMIT = 800;
+    private const STOPWORDS = [
+        'a', 'ao', 'aos', 'as', 'com', 'da', 'das', 'de', 'do', 'dos', 'e', 'em', 'esta', 'estao', 'eu',
+        'me', 'meu', 'minha', 'nao', 'no', 'nos', 'o', 'os', 'para', 'por', 'que', 'sem', 'um', 'uma',
+    ];
+    private const TERM_EQUIVALENCES = [
+        'ativando' => ['ativacao', 'ativar', 'ativo'],
+        'ativado' => ['ativacao', 'ativar', 'ativo'],
+        'ativa' => ['ativacao', 'ativar', 'ativo'],
+        'ativar' => ['ativacao', 'ativando', 'ativado'],
+        'office' => ['microsoft', 'microsoftoffice'],
+        'microsoft' => ['office', 'microsoftoffice'],
+    ];
 
     /**
      * @return array<int, array<string, mixed>>
@@ -78,7 +90,23 @@ final class NativeKnowledgeBaseService
             }
         }
 
-        return $this->searchVisibleArticles(implode(' ', $terms), $limit);
+        $articles = [];
+        $limit = max(1, min(self::FINAL_LIMIT, $limit));
+        foreach ($this->buildRelatedSearchQueries($terms) as $query) {
+            foreach ($this->searchVisibleArticles($query, $limit) as $article) {
+                $articleId = (int) ($article['article_id'] ?? 0);
+                if ($articleId <= 0 || array_key_exists($articleId, $articles)) {
+                    continue;
+                }
+
+                $articles[$articleId] = $article;
+                if (count($articles) >= $limit) {
+                    break 2;
+                }
+            }
+        }
+
+        return array_values($articles);
     }
 
     public function sanitizeArticleHtml(string $html): string
@@ -248,14 +276,93 @@ final class NativeKnowledgeBaseService
             return true;
         }
 
-        $normalizedQuery = mb_strtolower($query, 'UTF-8');
-        foreach ($haystacks as $haystack) {
-            if (str_contains(mb_strtolower($haystack, 'UTF-8'), $normalizedQuery)) {
-                return true;
+        $queryTokens = $this->extractSearchTokens($query);
+        if ($queryTokens === []) {
+            return true;
+        }
+
+        $normalizedHaystack = $this->normalizeForMatching(implode(' ', $haystacks));
+        $matched = 0;
+        foreach ($queryTokens as $token) {
+            if (str_contains($normalizedHaystack, $token)) {
+                $matched++;
             }
         }
 
-        return false;
+        if ($matched >= min(2, count($queryTokens))) {
+            return true;
+        }
+
+        return count($queryTokens) === 1 && $matched === 1;
+    }
+
+    /**
+     * @param array<int, string> $rawTerms
+     * @return array<int, string>
+     */
+    private function buildRelatedSearchQueries(array $rawTerms): array
+    {
+        $tokens = [];
+        foreach ($rawTerms as $rawTerm) {
+            foreach ($this->extractSearchTokens($rawTerm) as $token) {
+                $tokens[$token] = true;
+            }
+        }
+
+        $orderedTokens = array_keys($tokens);
+        $queries = [];
+        if ($orderedTokens !== []) {
+            $queries[] = implode(' ', array_slice($orderedTokens, 0, 6));
+        }
+
+        foreach ([['office', 'ativacao'], ['microsoft', 'ativacao'], ['office', 'ativar']] as $pair) {
+            if (isset($tokens[$pair[0]], $tokens[$pair[1]])) {
+                $queries[] = implode(' ', $pair);
+            }
+        }
+
+        foreach ($orderedTokens as $token) {
+            $queries[] = $token;
+        }
+
+        return array_values(array_unique(array_filter($queries, static fn (string $query): bool => trim($query) !== '')));
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function extractSearchTokens(string $value): array
+    {
+        $normalized = $this->normalizeForMatching($value);
+        $rawTokens = preg_split('/\s+/u', $normalized) ?: [];
+        $tokens = [];
+        foreach ($rawTokens as $token) {
+            $token = trim($token);
+            if (mb_strlen($token, 'UTF-8') < 3 || in_array($token, self::STOPWORDS, true)) {
+                continue;
+            }
+
+            $tokens[$token] = true;
+            foreach (self::TERM_EQUIVALENCES[$token] ?? [] as $equivalent) {
+                $tokens[$equivalent] = true;
+            }
+        }
+
+        return array_keys($tokens);
+    }
+
+    private function normalizeForMatching(string $value): string
+    {
+        $value = $this->sanitizeArticleHtml($value);
+        $value = mb_strtolower($value, 'UTF-8');
+        $ascii = function_exists('iconv') ? iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $value) : false;
+        if (is_string($ascii)) {
+            $value = $ascii;
+        }
+        $value = preg_replace('/[^a-z0-9]+/i', ' ', $value) ?? $value;
+        $value = preg_replace('/\s+/u', ' ', $value) ?? $value;
+
+        return trim($value);
     }
 
     private function normalizeSearchText(string $value): string
