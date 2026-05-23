@@ -12,12 +12,12 @@ final class KnowledgeBaseMenu extends CommonDBTM
 
     public static function getTypeName($nb = 0): string
     {
-        return __('Base de Conhecimento', 'glpiintegaglpi');
+        return __('Base de Conhecimento GLPI', 'glpiintegaglpi');
     }
 
     public static function getMenuName($nb = 0): string
     {
-        return __('Base de Conhecimento', 'glpiintegaglpi');
+        return __('Base de Conhecimento GLPI', 'glpiintegaglpi');
     }
 
     /**
@@ -27,7 +27,7 @@ final class KnowledgeBaseMenu extends CommonDBTM
     {
         return [
             'title' => self::getMenuName(),
-            'page' => Plugin::getKnowledgeBaseUrl(),
+            'page' => Plugin::getNativeKnowledgeBaseUrl(),
             'icon' => 'ti ti-book',
         ];
     }

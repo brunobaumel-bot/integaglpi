@@ -174,6 +174,7 @@ function plugin_init_integaglpi(): void
             OperationalDiagnosticsMenu::class,
             ContractsHoursMenu::class,
             ServiceCatalogMenu::class,
+            KnowledgeBaseMenu::class,
         ],
     ];
     $PLUGIN_HOOKS['config_page'][PLUGIN_INTEGAGLPI_NAME] = 'front/config.form.php';

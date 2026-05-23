@@ -52,12 +52,16 @@ describe('native GLPI knowledge base read-only adapter static safety', () => {
     expect(template).not.toMatch(/Enviar WhatsApp|Acionar template|Aplicar sugest/i);
   });
 
-  it('freezes the custom KB menu while preserving files and migration 028', async () => {
+  it('adds the native KB menu while preserving custom files and migration 028', async () => {
     const setup = await readProjectFile('integaglpi/setup.php');
+    const menu = await readProjectFile('integaglpi/src/KnowledgeBaseMenu.php');
     const migration = await readProjectFile('integration-service/schema-migrations/028_knowledge_base_foundation.sql');
 
     const menuBlock = setup.match(/\$PLUGIN_HOOKS\[Hooks::MENU_TOADD\][\s\S]+?\];/)?.[0] ?? '';
-    expect(menuBlock).not.toContain('KnowledgeBaseMenu::class');
+    expect(menuBlock).toContain('KnowledgeBaseMenu::class');
+    expect(menu).toContain('Base de Conhecimento GLPI');
+    expect(menu).toContain('Plugin::getNativeKnowledgeBaseUrl()');
+    expect(menu).not.toContain('Plugin::getKnowledgeBaseUrl()');
     expect(setup).toContain('\\Plugin::registerClass(KnowledgeBaseMenu::class);');
     expect(migration).toContain('glpi_plugin_integaglpi_kb_articles');
     expect(migration).not.toMatch(/DROP\s+|TRUNCATE\s+|DELETE\s+FROM/i);

@@ -56,7 +56,7 @@ describe('plugin knowledge base foundation static safety', () => {
     expect(template).not.toMatch(/Enviar WhatsApp|Acionar template|Ollama|Copiloto/i);
   });
 
-  it('keeps custom KB code permissioned but hidden from the plugin menu', async () => {
+  it('keeps custom KB code permissioned while the plugin menu points to native KB', async () => {
     const plugin = await readProjectFile('integaglpi/src/Plugin.php');
     const setup = await readProjectFile('integaglpi/setup.php');
     const menu = await readProjectFile('integaglpi/src/KnowledgeBaseMenu.php');
@@ -66,8 +66,11 @@ describe('plugin knowledge base foundation static safety', () => {
     expect(plugin).toContain('canKnowledgeBaseRead');
     expect(plugin).toContain('requireKnowledgeBaseUpdate');
     const menuBlock = setup.match(/\$PLUGIN_HOOKS\[Hooks::MENU_TOADD\][\s\S]+?\];/)?.[0] ?? '';
-    expect(menuBlock).not.toContain('KnowledgeBaseMenu::class');
+    expect(menuBlock).toContain('KnowledgeBaseMenu::class');
     expect(setup).toContain('\\Plugin::registerClass(KnowledgeBaseMenu::class);');
+    expect(menu).toContain('Base de Conhecimento GLPI');
+    expect(menu).toContain('Plugin::getNativeKnowledgeBaseUrl()');
+    expect(menu).not.toContain('Plugin::getKnowledgeBaseUrl()');
     expect(menu).toContain('Plugin::canKnowledgeBaseRead()');
   });
 });
