@@ -73,4 +73,25 @@ describe('plugin knowledge base foundation static safety', () => {
     expect(menu).not.toContain('Plugin::getKnowledgeBaseUrl()');
     expect(menu).toContain('Plugin::canKnowledgeBaseRead()');
   });
+
+  it('adds a supervisor-only menu entry for AI KB candidates without reactivating custom KB CRUD', async () => {
+    const setup = await readProjectFile('integaglpi/setup.php');
+    const menu = await readProjectFile('integaglpi/src/KbCandidatesMenu.php');
+    const front = await readProjectFile('integaglpi/front/kb.candidates.php');
+
+    const menuBlock = setup.match(/\$PLUGIN_HOOKS\[Hooks::MENU_TOADD\][\s\S]+?\];/)?.[0] ?? '';
+    expect(setup).toContain('use GlpiPlugin\\Integaglpi\\KbCandidatesMenu;');
+    expect(menuBlock).toMatch(/KnowledgeBaseMenu::class,\s*KbCandidatesMenu::class/);
+    expect(setup).toContain('\\Plugin::registerClass(KbCandidatesMenu::class);');
+    expect(menu).toContain('final class KbCandidatesMenu');
+    expect(menu).toContain('Candidatos de KB por IA');
+    expect(menu).toContain('Plugin::getKbCandidatesUrl()');
+    expect(menu).toContain('Plugin::canSupervisorRead()');
+    expect(menu).not.toContain('Plugin::canRead()');
+    expect(menu).not.toContain('Plugin::canKnowledgeBaseRead()');
+    expect(menu).not.toContain('Plugin::getKnowledgeBaseUrl()');
+    expect(menu).not.toContain('/front/kb.php');
+    expect(front).toContain('Plugin::requireSupervisorRead();');
+    expect(menu).not.toMatch(/sendOutbound|MetaClient|Ollama|Publicar automaticamente|KnowbaseItem::add/i);
+  });
 });

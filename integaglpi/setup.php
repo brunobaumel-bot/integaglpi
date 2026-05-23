@@ -8,6 +8,7 @@ use GlpiPlugin\Integaglpi\ContactAgendaImportMenu;
 use GlpiPlugin\Integaglpi\ContractsHoursMenu;
 use GlpiPlugin\Integaglpi\Install\Installer;
 use GlpiPlugin\Integaglpi\KnowledgeBaseMenu;
+use GlpiPlugin\Integaglpi\KbCandidatesMenu;
 use GlpiPlugin\Integaglpi\OperationLogMenu;
 use GlpiPlugin\Integaglpi\OperationalDiagnosticsMenu;
 use GlpiPlugin\Integaglpi\ObservabilityMenu;
@@ -175,6 +176,7 @@ function plugin_init_integaglpi(): void
             ContractsHoursMenu::class,
             ServiceCatalogMenu::class,
             KnowledgeBaseMenu::class,
+            KbCandidatesMenu::class,
         ],
     ];
     $PLUGIN_HOOKS['config_page'][PLUGIN_INTEGAGLPI_NAME] = 'front/config.form.php';
@@ -220,6 +222,7 @@ function plugin_init_integaglpi(): void
     \Plugin::registerClass(ContractsHoursMenu::class);
     \Plugin::registerClass(ServiceCatalogMenu::class);
     \Plugin::registerClass(KnowledgeBaseMenu::class);
+    \Plugin::registerClass(KbCandidatesMenu::class);
 }
 
 function plugin_integaglpi_install(): bool
