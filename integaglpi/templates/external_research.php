@@ -15,6 +15,7 @@ $recentRequests = is_array($data['recent_requests'] ?? null) ? $data['recent_req
 $recentCandidates = is_array($data['recent_candidates'] ?? null) ? $data['recent_candidates'] : [];
 $error = trim((string) ($data['error'] ?? ''));
 $csrf = GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
+$previewToken = is_array($preview) ? (string) ($preview['preview_token'] ?? '') : '';
 ?>
 
 <div class="container-fluid plugin-integaglpi-external-research">
@@ -48,6 +49,9 @@ $csrf = GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
                 <div class="card-header"><?php echo $this->escape(__('Solicitação manual', 'glpiintegaglpi')); ?></div>
                 <div class="card-body">
                     <input type="hidden" name="_glpi_csrf_token" value="<?php echo $this->escape($csrf); ?>">
+                    <?php if ($previewToken !== '') { ?>
+                        <input type="hidden" name="preview_token" value="<?php echo $this->escape($previewToken); ?>">
+                    <?php } ?>
                     <label class="form-label" for="technical_summary"><?php echo $this->escape(__('Resumo técnico sem dados pessoais', 'glpiintegaglpi')); ?></label>
                     <textarea class="form-control" id="technical_summary" name="technical_summary" rows="6" maxlength="4000"><?php echo $this->escape((string) ($_POST['technical_summary'] ?? '')); ?></textarea>
                     <div class="form-text">

@@ -573,4 +573,21 @@ describe('database bootstrap hardening', () => {
     expect(migration).not.toContain('glpi_tickets');
     expect(migration).not.toContain('glpi_knowbaseitems');
   });
+
+  it('keeps AI V4.1 hardening indexes additive and non-destructive', async () => {
+    const migration = compactSql(await readProjectFile('schema-migrations/037_ai_v4_1_hardening_indexes.sql'));
+
+    expect(migration).toContain('CREATE INDEX IF NOT EXISTS glpi_integaglpi_ai_quality_created_at_idx');
+    expect(migration).toContain('CREATE INDEX IF NOT EXISTS glpi_integaglpi_hist_mining_runs_created_at_idx');
+    expect(migration).toContain('CREATE INDEX IF NOT EXISTS glpi_integaglpi_kb_candidates_created_at_idx');
+    expect(migration).toContain('CREATE INDEX IF NOT EXISTS glpi_integaglpi_risk_scores_created_at_idx');
+    expect(migration).toContain('CREATE INDEX IF NOT EXISTS glpi_integaglpi_ai_pilot_usage_hardening_created_at_idx');
+    expect(migration).toContain('CREATE INDEX IF NOT EXISTS glpi_integaglpi_coaching_recommendations_created_at_idx');
+    expect(migration).toContain('CREATE INDEX IF NOT EXISTS glpi_integaglpi_external_research_requests_created_at_idx');
+    expect(migration).toContain('CREATE INDEX IF NOT EXISTS glpi_intega_audit_created_at_idx');
+    expect(migration).not.toContain('DROP');
+    expect(migration).not.toContain('TRUNCATE');
+    expect(migration).not.toContain('DELETE');
+    expect(migration).not.toContain('ALTER TABLE');
+  });
 });

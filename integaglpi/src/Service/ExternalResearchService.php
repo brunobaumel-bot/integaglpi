@@ -123,6 +123,19 @@ final class ExternalResearchService
             return ['type' => 'danger', 'message' => __('Informe um resumo técnico para pesquisa.', 'glpiintegaglpi')];
         }
 
+        if (!$this->hasValidPreviewToken($post, $context)) {
+            $this->audit('EXTERNAL_RESEARCH_PREVIEW_REQUIRED', null, $userId, [
+                'source_count' => count($context['source_urls']),
+                'anonymized_payload_hash' => $context['sanitized']['anonymized_payload_hash'],
+            ]);
+
+            return [
+                'type' => 'danger',
+                'message' => __('EXTERNAL_RESEARCH_PREVIEW_REQUIRED: gere e confirme o preview anonimizado antes da pesquisa.', 'glpiintegaglpi'),
+                'preview' => $context,
+            ];
+        }
+
         if ($context['sanitized']['blocked']) {
             $this->audit('EXTERNAL_RESEARCH_BLOCKED_PII', null, $userId, [
                 'detected_kinds' => $context['sanitized']['detected_kinds'],
@@ -275,7 +288,7 @@ final class ExternalResearchService
             ];
         }
 
-        return [
+        $context = [
             'sanitized' => $sanitized,
             'catalog' => $catalog,
             'source_urls' => $urls,
@@ -283,6 +296,41 @@ final class ExternalResearchService
             'source_errors' => $errors,
             'source_conflicts' => $this->detectConflicts($validated),
         ];
+
+        return [
+            ...$context,
+            'preview_token' => $this->previewToken($context),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $post
+     * @param array<string, mixed> $context
+     */
+    private function hasValidPreviewToken(array $post, array $context): bool
+    {
+        $provided = trim((string) ($post['preview_token'] ?? ''));
+        if ($provided === '') {
+            return false;
+        }
+
+        return hash_equals($this->previewToken($context), $provided);
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     */
+    private function previewToken(array $context): string
+    {
+        $sourceUrls = array_map('strval', is_array($context['source_urls'] ?? null) ? $context['source_urls'] : []);
+        sort($sourceUrls);
+
+        return hash('sha256', implode('|', [
+            'external_research_preview_v1',
+            (string) ($context['sanitized']['input_hash'] ?? ''),
+            (string) ($context['sanitized']['anonymized_payload_hash'] ?? ''),
+            implode("\n", $sourceUrls),
+        ]));
     }
 
     /**
@@ -698,7 +746,7 @@ final class ExternalResearchService
             );
             $stmt->bindValue(':correlation_id', $requestId !== null ? 'external_research:' . $requestId : 'external_research:blocked');
             $stmt->bindValue(':event_type', $eventType);
-            $stmt->bindValue(':status', str_contains($eventType, 'BLOCKED') ? 'blocked' : 'success');
+            $stmt->bindValue(':status', str_contains($eventType, 'BLOCKED') || str_contains($eventType, 'PREVIEW_REQUIRED') ? 'blocked' : 'success');
             $stmt->bindValue(':severity', str_contains($eventType, 'INCIDENT') ? 'warning' : 'info');
             $stmt->bindValue(':source', 'ExternalResearchService');
             $stmt->bindValue(':payload', $this->json([

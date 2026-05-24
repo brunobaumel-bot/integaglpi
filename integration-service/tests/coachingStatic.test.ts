@@ -38,6 +38,10 @@ describe('coaching onboarding static safety', () => {
     expect(template).toContain('Sem ranking');
     expect(service).toContain('glpi_plugin_integaglpi_coaching_feedback');
     expect(service).toContain("status = 'dismissed'");
+    expect(service).toContain('sanitizeInternalUrl');
+    expect(service).toContain('javascript|data|vbscript');
+    expect(service).toContain('/front/knowbaseitem.form.php');
+    expect(service).toContain('/plugins/integaglpi/');
     expect(`${front}\n${template}\n${service}`).not.toMatch(/sendOutbound|ticket\.whatsapp|MetaClient|KnowbaseItem::add|Ticket::update|mail\(/i);
   });
 

@@ -38,9 +38,14 @@ describe('external research KB enrichment static safety', () => {
     expect(front).toContain('Plugin::requireExternalResearchRead()');
     expect(front).toContain('Plugin::isCsrfValid($_POST)');
     expect(template).toContain('Preview anonimizado');
+    expect(template).toContain('name="preview_token"');
     expect(template).toContain('Publicação manual');
     expect(template).toContain('Não execute comandos/scripts sem validação técnica humana');
     expect(service).toContain('EXTERNAL_RESEARCH_BLOCKED_SOURCE');
+    expect(service).toContain('EXTERNAL_RESEARCH_PREVIEW_REQUIRED');
+    expect(service).toContain('hasValidPreviewToken');
+    expect(service).toContain('previewToken');
+    expect(service).toContain('hash_equals');
     expect(`${front}\n${template}\n${service}`).not.toMatch(/sendOutbound|MetaClient|Ticket::update|KnowbaseItem::add|curl_exec|shell_exec|exec\(|proc_open|mail\(/i);
   });
 

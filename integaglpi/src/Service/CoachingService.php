@@ -335,7 +335,7 @@ final class CoachingService
             $items[] = [
                 'title' => $this->sanitizeText((string) ($article['title'] ?? ''), 160),
                 'category' => $this->sanitizeText((string) ($article['category'] ?? ''), 100),
-                'internal_url' => $this->sanitizeText((string) ($article['internalUrl'] ?? $article['internal_url'] ?? ''), 260),
+                'internal_url' => $this->sanitizeInternalUrl((string) ($article['internalUrl'] ?? $article['internal_url'] ?? '')),
             ];
         }
 
@@ -384,6 +384,33 @@ final class CoachingService
         $value = trim(preg_replace('/\s+/', ' ', $value) ?? '');
 
         return mb_substr($value, 0, $limit);
+    }
+
+    private function sanitizeInternalUrl(string $value): string
+    {
+        $value = trim(html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        if ($value === '' || preg_match('/[\x00-\x1F\x7F]/', $value)) {
+            return '';
+        }
+        if (preg_match('#^(?:javascript|data|vbscript):#i', $value) || preg_match('#^https?://#i', $value)) {
+            return '';
+        }
+        if (!str_starts_with($value, '/')) {
+            return '';
+        }
+
+        $path = parse_url($value, PHP_URL_PATH);
+        if (!is_string($path)) {
+            return '';
+        }
+
+        foreach (['/front/knowbaseitem.form.php', '/plugins/integaglpi/'] as $prefix) {
+            if ($path === $prefix || str_starts_with($path, $prefix)) {
+                return $this->sanitizeText($value, 260);
+            }
+        }
+
+        return '';
     }
 
     /**
