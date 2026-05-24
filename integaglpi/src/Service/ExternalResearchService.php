@@ -85,14 +85,25 @@ final class ExternalResearchService
 
         $action = trim((string) ($post['action'] ?? ''));
         try {
-            return match ($action) {
-                'preview' => $this->preview($post),
-                'confirm_research' => $this->confirmResearch($post, $userId),
-                'create_candidate' => $this->createCandidateFromConfirmedRequest($post, $userId),
-                'copy_markdown' => $this->recordReviewAction($post, $userId, 'markdown_copied'),
-                'report_incident' => $this->reportIncident($post, $userId),
-                default => ['type' => 'danger', 'message' => __('Ação inválida.', 'glpiintegaglpi')],
-            };
+            switch ($action) {
+                case 'preview':
+                    return $this->preview($post);
+
+                case 'confirm_research':
+                    return $this->confirmResearch($post, $userId);
+
+                case 'create_candidate':
+                    return $this->createCandidateFromConfirmedRequest($post, $userId);
+
+                case 'copy_markdown':
+                    return $this->recordReviewAction($post, $userId, 'markdown_copied');
+
+                case 'report_incident':
+                    return $this->reportIncident($post, $userId);
+
+                default:
+                    return ['type' => 'danger', 'message' => __('Ação inválida.', 'glpiintegaglpi')];
+            }
         } catch (Throwable $exception) {
             error_log('[integaglpi][external_research][post] ' . $this->sanitizeText($exception->getMessage(), 180));
 
@@ -590,9 +601,9 @@ final class ExternalResearchService
         $host = strtolower($host);
         foreach ($catalog as $source) {
             $pattern = strtolower(trim((string) ($source['url_pattern'] ?? '')));
-            if (str_starts_with($pattern, '*.')) {
+            if ($this->startsWith($pattern, '*.')) {
                 $suffix = substr($pattern, 2);
-                if ($host === $suffix || str_ends_with($host, '.' . $suffix)) {
+                if ($host === $suffix || $this->endsWith($host, '.' . $suffix)) {
                     return $source;
                 }
                 continue;
@@ -1005,11 +1016,11 @@ final class ExternalResearchService
             $stmt->bindValue(':event_type', $eventType);
             $stmt->bindValue(
                 ':status',
-                str_contains($eventType, 'BLOCKED')
-                || str_contains($eventType, 'PREVIEW_REQUIRED')
-                || str_contains($eventType, 'REQUEST_REQUIRED') ? 'blocked' : 'success'
+                $this->contains($eventType, 'BLOCKED')
+                || $this->contains($eventType, 'PREVIEW_REQUIRED')
+                || $this->contains($eventType, 'REQUEST_REQUIRED') ? 'blocked' : 'success'
             );
-            $stmt->bindValue(':severity', str_contains($eventType, 'INCIDENT') ? 'warning' : 'info');
+            $stmt->bindValue(':severity', $this->contains($eventType, 'INCIDENT') ? 'warning' : 'info');
             $stmt->bindValue(':source', 'ExternalResearchService');
             $stmt->bindValue(':payload', $this->json([
                 'request_id' => $requestId,
@@ -1048,7 +1059,7 @@ final class ExternalResearchService
         if (preg_match('#^(?:javascript|data|vbscript):#i', $value) || preg_match('#^https?://#i', $value)) {
             return '';
         }
-        if (!str_starts_with($value, '/')) {
+        if (!$this->startsWith($value, '/')) {
             return '';
         }
 
@@ -1058,12 +1069,31 @@ final class ExternalResearchService
         }
 
         foreach (['/front/knowbaseitem.form.php', '/plugins/integaglpi/'] as $prefix) {
-            if ($path === $prefix || str_starts_with($path, $prefix)) {
+            if ($path === $prefix || $this->startsWith($path, $prefix)) {
                 return $this->sanitizeText($value, 260);
             }
         }
 
         return '';
+    }
+
+    private function startsWith(string $value, string $prefix): bool
+    {
+        return $prefix === '' || substr($value, 0, strlen($prefix)) === $prefix;
+    }
+
+    private function endsWith(string $value, string $suffix): bool
+    {
+        if ($suffix === '') {
+            return true;
+        }
+
+        return substr($value, -strlen($suffix)) === $suffix;
+    }
+
+    private function contains(string $value, string $needle): bool
+    {
+        return $needle === '' || strpos($value, $needle) !== false;
     }
 
     /**

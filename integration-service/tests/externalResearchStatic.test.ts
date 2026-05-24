@@ -54,9 +54,11 @@ describe('external research KB enrichment static safety', () => {
     expect(service).toContain('EXTERNAL_RESEARCH_PREVIEW_REQUIRED');
     expect(service).toContain('EXTERNAL_RESEARCH_REQUEST_REQUIRED');
     expect(service).toContain('Informe um resumo técnico sem dados pessoais.');
+    expect(service).toContain('switch ($action)');
     expect(service).toContain('createCandidateFromConfirmedRequest');
-    expect(service).toContain("'create_candidate' => $this->createCandidateFromConfirmedRequest");
-    expect(service).not.toContain("'create_candidate' => $this->confirmResearch");
+    expect(service).toContain("case 'create_candidate':");
+    expect(service).toContain('return $this->createCandidateFromConfirmedRequest($post, $userId);');
+    expect(service).not.toContain("case 'create_candidate':\n                    return $this->confirmResearch");
     expect(service).toContain('requestExists');
     expect(service).toContain('loadInternalKnowledgeContext');
     expect(service).toContain('NativeKnowledgeBaseService');
@@ -65,6 +67,8 @@ describe('external research KB enrichment static safety', () => {
     expect(service).toContain('hasValidPreviewToken');
     expect(service).toContain('previewToken');
     expect(service).toContain('hash_equals');
+    expect(service).not.toMatch(/\bmatch\s*\(/);
+    expect(service).not.toMatch(/\bstr_(?:contains|starts_with|ends_with)\s*\(/);
     expect(service).not.toMatch(/__construct\s*\(\s*(?:public|protected|private)\s/i);
     expect(service).not.toMatch(/\breadonly\b/i);
     expect(`${front}\n${template}\n${service}`).not.toMatch(/sendOutbound|MetaClient|Ticket::update|KnowbaseItem::add|curl_exec|shell_exec|exec\(|proc_open|mail\(/i);
