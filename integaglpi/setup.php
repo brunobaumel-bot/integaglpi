@@ -6,6 +6,8 @@ use Glpi\Plugin\Hooks;
 use GlpiPlugin\Integaglpi\AttendanceCenterMenu;
 use GlpiPlugin\Integaglpi\ContactAgendaImportMenu;
 use GlpiPlugin\Integaglpi\ContractsHoursMenu;
+use GlpiPlugin\Integaglpi\CoachingMenu;
+use GlpiPlugin\Integaglpi\ExternalResearchMenu;
 use GlpiPlugin\Integaglpi\Install\Installer;
 use GlpiPlugin\Integaglpi\KnowledgeBaseMenu;
 use GlpiPlugin\Integaglpi\KbCandidatesMenu;
@@ -171,6 +173,8 @@ function plugin_init_integaglpi(): void
             AttendanceCenterMenu::class,
             SupervisorBackofficeMenu::class,
             QualityDashboardMenu::class,
+            CoachingMenu::class,
+            ExternalResearchMenu::class,
             ObservabilityMenu::class,
             OperationalDiagnosticsMenu::class,
             ContractsHoursMenu::class,
@@ -217,6 +221,8 @@ function plugin_init_integaglpi(): void
     \Plugin::registerClass(AttendanceCenterMenu::class);
     \Plugin::registerClass(SupervisorBackofficeMenu::class);
     \Plugin::registerClass(QualityDashboardMenu::class);
+    \Plugin::registerClass(CoachingMenu::class);
+    \Plugin::registerClass(ExternalResearchMenu::class);
     \Plugin::registerClass(ObservabilityMenu::class);
     \Plugin::registerClass(OperationalDiagnosticsMenu::class);
     \Plugin::registerClass(ContractsHoursMenu::class);

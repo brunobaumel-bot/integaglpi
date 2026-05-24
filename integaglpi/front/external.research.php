@@ -5,7 +5,7 @@ declare(strict_types=1);
 include '../../../inc/includes.php';
 
 use GlpiPlugin\Integaglpi\Plugin;
-use GlpiPlugin\Integaglpi\QualityDashboardMenu;
+use GlpiPlugin\Integaglpi\ExternalResearchMenu;
 use GlpiPlugin\Integaglpi\Renderer\ExternalResearchRenderer;
 use GlpiPlugin\Integaglpi\Service\ExternalResearchService;
 use GlpiPlugin\Integaglpi\Service\PluginConfigService;
@@ -31,7 +31,7 @@ Html::header(
     __('Pesquisa externa controlada', 'glpiintegaglpi'),
     $_SERVER['PHP_SELF'],
     'plugins',
-    QualityDashboardMenu::class
+    ExternalResearchMenu::class
 );
 
 $renderer = new ExternalResearchRenderer();

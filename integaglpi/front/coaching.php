@@ -8,7 +8,7 @@ use GlpiPlugin\Integaglpi\Plugin;
 use GlpiPlugin\Integaglpi\Renderer\CoachingRenderer;
 use GlpiPlugin\Integaglpi\Service\CoachingService;
 use GlpiPlugin\Integaglpi\Service\PluginConfigService;
-use GlpiPlugin\Integaglpi\QualityDashboardMenu;
+use GlpiPlugin\Integaglpi\CoachingMenu;
 
 Session::checkLoginUser();
 Session::checkRight(Plugin::RIGHT_NAME, READ);
@@ -32,7 +32,7 @@ Html::header(
     __('Coaching e Onboarding IA', 'glpiintegaglpi'),
     $_SERVER['PHP_SELF'],
     'plugins',
-    QualityDashboardMenu::class
+    CoachingMenu::class
 );
 
 $renderer = new CoachingRenderer();

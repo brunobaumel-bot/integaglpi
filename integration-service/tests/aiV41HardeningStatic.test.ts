@@ -95,4 +95,30 @@ describe('AI V4.1 final hardening static closure', () => {
     expect(content).not.toMatch(/sendOutbound|MetaClient|Ticket::update|KnowbaseItem::add|curl_exec|shell_exec|proc_open|mail\(/i);
     expect(content).not.toMatch(/DROP\s+|TRUNCATE\s+|DELETE\s+FROM/i);
   });
+
+  it('registers P8 and P9 plugin menu classes with matching read guards', async () => {
+    const setup = await readProjectFile('../integaglpi/setup.php');
+    const coachingMenu = await readProjectFile('../integaglpi/src/CoachingMenu.php');
+    const externalResearchMenu = await readProjectFile('../integaglpi/src/ExternalResearchMenu.php');
+    const coachingFront = await readProjectFile('../integaglpi/front/coaching.php');
+    const externalResearchFront = await readProjectFile('../integaglpi/front/external.research.php');
+
+    expect(setup).toContain('use GlpiPlugin\\Integaglpi\\CoachingMenu;');
+    expect(setup).toContain('use GlpiPlugin\\Integaglpi\\ExternalResearchMenu;');
+    expect(setup).toContain('CoachingMenu::class');
+    expect(setup).toContain('ExternalResearchMenu::class');
+    expect(setup).toContain('\\Plugin::registerClass(CoachingMenu::class);');
+    expect(setup).toContain('\\Plugin::registerClass(ExternalResearchMenu::class);');
+    expect(coachingMenu).toContain('Coaching e Onboarding IA');
+    expect(coachingMenu).toContain('Plugin::getCoachingUrl()');
+    expect(coachingMenu).toContain('Plugin::canCoachingRead()');
+    expect(externalResearchMenu).toContain('Pesquisa Externa Controlada');
+    expect(externalResearchMenu).toContain('Plugin::getExternalResearchUrl()');
+    expect(externalResearchMenu).toContain('Plugin::canExternalResearchRead()');
+    expect(coachingFront).toContain('Plugin::requireCoachingRead()');
+    expect(coachingFront).toContain('CoachingMenu::class');
+    expect(externalResearchFront).toContain('Plugin::requireExternalResearchRead()');
+    expect(externalResearchFront).toContain('ExternalResearchMenu::class');
+    expect(`${coachingFront}\n${externalResearchFront}`).not.toMatch(/sendOutbound|MetaClient|Ticket::update|KnowbaseItem::add/i);
+  });
 });
