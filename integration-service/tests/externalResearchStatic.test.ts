@@ -46,6 +46,8 @@ describe('external research KB enrichment static safety', () => {
     expect(service).toContain('hasValidPreviewToken');
     expect(service).toContain('previewToken');
     expect(service).toContain('hash_equals');
+    expect(service).not.toMatch(/__construct\s*\(\s*(?:public|protected|private)\s/i);
+    expect(service).not.toMatch(/\breadonly\b/i);
     expect(`${front}\n${template}\n${service}`).not.toMatch(/sendOutbound|MetaClient|Ticket::update|KnowbaseItem::add|curl_exec|shell_exec|exec\(|proc_open|mail\(/i);
   });
 

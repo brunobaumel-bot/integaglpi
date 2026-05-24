@@ -42,6 +42,8 @@ describe('coaching onboarding static safety', () => {
     expect(service).toContain('javascript|data|vbscript');
     expect(service).toContain('/front/knowbaseitem.form.php');
     expect(service).toContain('/plugins/integaglpi/');
+    expect(service).not.toMatch(/__construct\s*\(\s*(?:public|protected|private)\s/i);
+    expect(service).not.toMatch(/\breadonly\b/i);
     expect(`${front}\n${template}\n${service}`).not.toMatch(/sendOutbound|ticket\.whatsapp|MetaClient|KnowbaseItem::add|Ticket::update|mail\(/i);
   });
 

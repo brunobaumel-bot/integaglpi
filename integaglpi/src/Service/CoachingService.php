@@ -16,10 +16,12 @@ final class CoachingService
     private const DEFAULT_LIMIT = 20;
     private const MAX_RANGE_DAYS = 90;
 
+    private PluginConfigService $pluginConfigService;
     private ?PDO $pdo = null;
 
-    public function __construct(private readonly PluginConfigService $pluginConfigService)
+    public function __construct(PluginConfigService $pluginConfigService)
     {
+        $this->pluginConfigService = $pluginConfigService;
     }
 
     /**

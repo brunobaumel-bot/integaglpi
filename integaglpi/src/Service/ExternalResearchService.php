@@ -22,10 +22,12 @@ final class ExternalResearchService
     private const MAX_SOURCES = 5;
     private const CONFIDENCE_THRESHOLD = 70;
 
+    private PluginConfigService $pluginConfigService;
     private ?PDO $pdo = null;
 
-    public function __construct(private readonly PluginConfigService $pluginConfigService)
+    public function __construct(PluginConfigService $pluginConfigService)
     {
+        $this->pluginConfigService = $pluginConfigService;
     }
 
     /**
