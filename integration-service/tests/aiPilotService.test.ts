@@ -18,6 +18,7 @@ const baseConfig: AiPilotConfig = {
   monthlyBudgetLimit: 0,
   hardBudgetBlock: true,
   dpoApproved: false,
+  directorApproved: false,
   adminOptIn: false,
   incidentAck: false,
   testEnvironmentOnly: true,
@@ -66,11 +67,28 @@ describe('AI cloud and embeddings pilot service', () => {
     expect(audit.recordAuditEventSafe).toHaveBeenCalledWith(expect.objectContaining({ source: 'AiPilotService' }));
   });
 
-  it('requires admin opt-in, DPO approval and incident acknowledgement', async () => {
+  it('requires admin opt-in before any cloud execution', async () => {
     const { service } = createService({ cloudEnabled: true, provider: 'cloud', monthlyBudgetLimit: 10 });
     const result = await service.runSyntheticTest({ payload: 'payload sintetico' });
 
     expect(result.blockedReason).toBe('AI_PILOT_ADMIN_OPT_IN_REQUIRED');
+  });
+
+  it('requires director approval after admin opt-in and DPO approval', async () => {
+    const { service, provider } = createService({
+      cloudEnabled: true,
+      provider: 'cloud',
+      adminOptIn: true,
+      dpoApproved: true,
+      incidentAck: true,
+      monthlyBudgetLimit: 10,
+    });
+
+    const result = await service.runSyntheticTest({ payload: 'payload sintetico' });
+
+    expect(result.ok).toBe(false);
+    expect(result.blockedReason).toBe('AI_PILOT_DIRECTOR_APPROVAL_REQUIRED');
+    expect(provider.complete).not.toHaveBeenCalled();
   });
 
   it('hard-blocks when monthly budget would be exceeded', async () => {
@@ -79,6 +97,7 @@ describe('AI cloud and embeddings pilot service', () => {
       provider: 'cloud',
       adminOptIn: true,
       dpoApproved: true,
+      directorApproved: true,
       incidentAck: true,
       monthlyBudgetLimit: 0,
     });
@@ -94,6 +113,7 @@ describe('AI cloud and embeddings pilot service', () => {
       provider: 'cloud',
       adminOptIn: true,
       dpoApproved: true,
+      directorApproved: true,
       incidentAck: true,
       monthlyBudgetLimit: 10,
     }, { provider: { complete: vi.fn(async () => { throw new Error('cloud down'); }) } });

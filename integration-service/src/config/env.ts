@@ -86,6 +86,10 @@ const envSchema = z.object({
     .union([z.literal('true'), z.literal('false')])
     .default('false')
     .transform((value) => value === 'true'),
+  AI_PILOT_DIRECTOR_APPROVED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
   AI_PILOT_ADMIN_OPT_IN: z
     .union([z.literal('true'), z.literal('false')])
     .default('false')

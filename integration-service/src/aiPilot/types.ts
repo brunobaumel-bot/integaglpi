@@ -10,6 +10,7 @@ export interface AiPilotConfig {
   monthlyBudgetLimit: number;
   hardBudgetBlock: boolean;
   dpoApproved: boolean;
+  directorApproved: boolean;
   adminOptIn: boolean;
   incidentAck: boolean;
   testEnvironmentOnly: boolean;

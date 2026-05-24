@@ -191,6 +191,7 @@ export function buildDependencies() {
       monthlyBudgetLimit: env.AI_PILOT_MONTHLY_BUDGET_LIMIT,
       hardBudgetBlock: env.AI_PILOT_HARD_BUDGET_BLOCK,
       dpoApproved: env.AI_PILOT_DPO_APPROVED,
+      directorApproved: env.AI_PILOT_DIRECTOR_APPROVED,
       adminOptIn: env.AI_PILOT_ADMIN_OPT_IN,
       incidentAck: env.AI_PILOT_INCIDENT_ACK,
       testEnvironmentOnly: env.AI_PILOT_TEST_ENVIRONMENT_ONLY,

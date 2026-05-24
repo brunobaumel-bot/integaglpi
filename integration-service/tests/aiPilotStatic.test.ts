@@ -28,6 +28,7 @@ describe('AI pilot static safety', () => {
     expect(envExample).toContain('AI_PILOT_EMBEDDINGS_ENABLED=false');
     expect(envExample).toContain('AI_PILOT_PROVIDER=disabled');
     expect(envExample).toContain('AI_PILOT_DPO_APPROVED=false');
+    expect(envExample).toContain('AI_PILOT_DIRECTOR_APPROVED=false');
     expect(envExample).not.toMatch(/OPENAI_API_KEY=sk-|ANTHROPIC_API_KEY|GOOGLE_API_KEY/);
   });
 

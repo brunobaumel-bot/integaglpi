@@ -30,6 +30,7 @@ export class AiPilotService {
       monthlyBudgetLimit: this.config.monthlyBudgetLimit,
       hardBudgetBlock: this.config.hardBudgetBlock,
       dpoApproved: this.config.dpoApproved,
+      directorApproved: this.config.directorApproved,
       adminOptIn: this.config.adminOptIn,
       incidentAck: this.config.incidentAck,
       testEnvironmentOnly: this.config.testEnvironmentOnly,
@@ -162,6 +163,9 @@ export class AiPilotService {
     }
     if (!this.config.dpoApproved) {
       return 'AI_PILOT_DPO_LGPD_APPROVAL_REQUIRED';
+    }
+    if (!this.config.directorApproved) {
+      return 'AI_PILOT_DIRECTOR_APPROVAL_REQUIRED';
     }
     if (!this.config.incidentAck) {
       return 'AI_PILOT_INCIDENT_RESPONSE_ACK_REQUIRED';
