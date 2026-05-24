@@ -11,6 +11,7 @@ use Session;
 final class Plugin
 {
     public const RIGHT_NAME = 'plugin_integaglpi';
+    public const EXTERNAL_RESEARCH_RIGHT_NAME = 'plugin_integaglpi_external_research';
     private const LEGACY_RIGHT_NAMES = ['PluginIntegaglpi', 'PluginWhatsapp'];
 
     /**
@@ -169,6 +170,11 @@ final class Plugin
         return self::getWebBasePath() . '/front/coaching.php';
     }
 
+    public static function getExternalResearchUrl(): string
+    {
+        return self::getWebBasePath() . '/front/external.research.php';
+    }
+
     public static function getAiPilotUrl(): string
     {
         return self::getWebBasePath() . '/front/ai.pilot.php';
@@ -277,6 +283,21 @@ final class Plugin
     public static function requireCoachingRead(): void
     {
         self::requireSupervisorRead();
+    }
+
+    public static function canExternalResearchRead(): bool
+    {
+        return self::hasRightBool(self::EXTERNAL_RESEARCH_RIGHT_NAME, READ)
+            || self::canSupervisorRead();
+    }
+
+    public static function requireExternalResearchRead(): void
+    {
+        if (self::canExternalResearchRead()) {
+            return;
+        }
+
+        Session::checkRight(self::EXTERNAL_RESEARCH_RIGHT_NAME, READ);
     }
 
     public static function canAiPilotRead(): bool

@@ -552,4 +552,25 @@ describe('database bootstrap hardening', () => {
     expect(migration).not.toContain('glpi_knowbaseitems');
     expect(migration).not.toContain('ranking');
   });
+
+  it('keeps external research schema isolated, additive, cited and manual-only', async () => {
+    const migration = compactSql(await readProjectFile('schema-migrations/036_external_research_kb_enrichment.sql'));
+
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_external_source_catalog');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_external_research_requests');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_external_research_results');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_external_research_candidates');
+    expect(migration).toContain('source_url TEXT NOT NULL');
+    expect(migration).toContain('last_verified_date DATE NOT NULL');
+    expect(migration).toContain('next_review_due DATE NOT NULL');
+    expect(migration).toContain('auto_publish BOOLEAN NOT NULL DEFAULT false');
+    expect(migration).toContain('auto_publish = false');
+    expect(migration).toContain('Microsoft Learn');
+    expect(migration).toContain('GLPI Docs');
+    expect(migration).not.toContain('DROP TABLE');
+    expect(migration).not.toContain('TRUNCATE');
+    expect(migration).not.toContain('DELETE FROM');
+    expect(migration).not.toContain('glpi_tickets');
+    expect(migration).not.toContain('glpi_knowbaseitems');
+  });
 });
