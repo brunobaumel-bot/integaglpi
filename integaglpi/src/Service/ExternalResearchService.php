@@ -18,9 +18,12 @@ final class ExternalResearchService
     private const CANDIDATE_TABLE = 'glpi_plugin_integaglpi_external_research_candidates';
     private const REVIEW_TABLE = 'glpi_plugin_integaglpi_external_research_reviews';
     private const AUDIT_TABLE = 'glpi_plugin_integaglpi_audit_events';
+    private const KB_CANDIDATES_TABLE = 'glpi_plugin_integaglpi_kb_candidates';
+    private const HIST_INSIGHTS_TABLE = 'glpi_plugin_integaglpi_hist_insights';
     private const MAX_PROMPT_CHARS = 4000;
     private const MAX_SOURCES = 5;
     private const CONFIDENCE_THRESHOLD = 70;
+    private const INTERNAL_KNOWLEDGE_LIMIT = 9;
 
     private PluginConfigService $pluginConfigService;
     private ?PDO $pdo = null;
@@ -37,15 +40,18 @@ final class ExternalResearchService
      */
     public function getPageData(array $query, ?array $flash = null): array
     {
+        $configured = $this->pluginConfigService->isConfigured();
+        $internalQuery = $this->extractInternalKnowledgeQuery($query, $flash);
         $data = [
             'flash' => $flash,
             'catalog' => [],
             'recent_requests' => [],
             'recent_candidates' => [],
+            'internal_context' => $this->loadInternalKnowledgeContext($internalQuery, $configured),
             'error' => '',
         ];
 
-        if (!$this->pluginConfigService->isConfigured()) {
+        if (!$configured) {
             $data['error'] = __('PostgreSQL externo ainda não está configurado.', 'glpiintegaglpi');
             return $data;
         }
@@ -81,8 +87,8 @@ final class ExternalResearchService
         try {
             return match ($action) {
                 'preview' => $this->preview($post),
-                'confirm_research' => $this->confirmResearch($post, $userId, false),
-                'create_candidate' => $this->confirmResearch($post, $userId, true),
+                'confirm_research' => $this->confirmResearch($post, $userId),
+                'create_candidate' => $this->createCandidateFromConfirmedRequest($post, $userId),
                 'copy_markdown' => $this->recordReviewAction($post, $userId, 'markdown_copied'),
                 'report_incident' => $this->reportIncident($post, $userId),
                 default => ['type' => 'danger', 'message' => __('Ação inválida.', 'glpiintegaglpi')],
@@ -102,7 +108,7 @@ final class ExternalResearchService
     {
         $context = $this->buildContext($post);
         if ($context['sanitized']['text'] === '') {
-            return ['type' => 'danger', 'message' => __('Informe um resumo técnico para pesquisa.', 'glpiintegaglpi')];
+            return ['type' => 'danger', 'message' => __('Informe um resumo técnico sem dados pessoais.', 'glpiintegaglpi')];
         }
 
         return [
@@ -118,11 +124,11 @@ final class ExternalResearchService
      * @param array<string, mixed> $post
      * @return array<string, mixed>
      */
-    private function confirmResearch(array $post, int $userId, bool $createCandidate): array
+    private function confirmResearch(array $post, int $userId): array
     {
         $context = $this->buildContext($post);
         if ($context['sanitized']['text'] === '') {
-            return ['type' => 'danger', 'message' => __('Informe um resumo técnico para pesquisa.', 'glpiintegaglpi')];
+            return ['type' => 'danger', 'message' => __('Informe um resumo técnico sem dados pessoais.', 'glpiintegaglpi')];
         }
 
         if (!$this->hasValidPreviewToken($post, $context)) {
@@ -173,18 +179,8 @@ final class ExternalResearchService
         $pdo = $this->getPdo();
         $pdo->beginTransaction();
         try {
-            $this->insertRequest($requestId, $userId, $context, $createCandidate ? 'candidate_created' : 'completed', $candidate['confidence_score']);
+            $this->insertRequest($requestId, $userId, $context, 'completed', $candidate['confidence_score']);
             $this->insertResults($requestId, $context, $candidate);
-            if ($createCandidate) {
-                $this->insertCandidate($requestId, $userId, $context, $candidate);
-                $this->audit('EXTERNAL_RESEARCH_CANDIDATE_CREATED', $requestId, $userId, [
-                    'candidate_id' => $candidate['candidate_id'],
-                    'confidence_score' => $candidate['confidence_score'],
-                    'status' => $candidate['status'],
-                    'source_catalog_ids' => $candidate['source_catalog_ids'],
-                    'anonymized_payload_hash' => $context['sanitized']['anonymized_payload_hash'],
-                ]);
-            }
             $pdo->commit();
         } catch (Throwable $exception) {
             $pdo->rollBack();
@@ -204,9 +200,102 @@ final class ExternalResearchService
 
         return [
             'type' => 'success',
-            'message' => $createCandidate
-                ? __('Candidato de KB externo criado para revisão humana. Publicação continua manual.', 'glpiintegaglpi')
-                : __('Pesquisa externa controlada registrada com fontes citadas.', 'glpiintegaglpi'),
+            'message' => __('Pesquisa externa controlada registrada com fontes citadas. Agora você pode gerar um candidato revisável.', 'glpiintegaglpi'),
+            'preview' => $context,
+            'research_result' => [
+                'status' => 'completed',
+                'confidence_score' => $candidate['confidence_score'],
+                'source_catalog_ids' => $candidate['source_catalog_ids'],
+            ],
+            'request_id' => $requestId,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $post
+     * @return array<string, mixed>
+     */
+    private function createCandidateFromConfirmedRequest(array $post, int $userId): array
+    {
+        $context = $this->buildContext($post);
+        if ($context['sanitized']['text'] === '') {
+            return ['type' => 'danger', 'message' => __('Informe um resumo técnico sem dados pessoais.', 'glpiintegaglpi')];
+        }
+
+        if (!$this->hasValidPreviewToken($post, $context)) {
+            $this->audit('EXTERNAL_RESEARCH_PREVIEW_REQUIRED', null, $userId, [
+                'source_count' => count($context['source_urls']),
+                'anonymized_payload_hash' => $context['sanitized']['anonymized_payload_hash'],
+            ]);
+
+            return [
+                'type' => 'danger',
+                'message' => __('EXTERNAL_RESEARCH_PREVIEW_REQUIRED: gere e confirme o preview anonimizado antes de criar candidato.', 'glpiintegaglpi'),
+                'preview' => $context,
+            ];
+        }
+
+        $requestId = $this->sanitizeIdentifier((string) ($post['request_id'] ?? ''));
+        if ($requestId === '' || !$this->requestExists($requestId)) {
+            $this->audit('EXTERNAL_RESEARCH_REQUEST_REQUIRED', null, $userId, [
+                'anonymized_payload_hash' => $context['sanitized']['anonymized_payload_hash'],
+            ]);
+
+            return [
+                'type' => 'danger',
+                'message' => __('Confirme a pesquisa antes de gerar candidato revisável.', 'glpiintegaglpi'),
+                'preview' => $context,
+            ];
+        }
+
+        if ($context['sanitized']['blocked']) {
+            $this->audit('EXTERNAL_RESEARCH_BLOCKED_PII', $requestId, $userId, [
+                'detected_kinds' => $context['sanitized']['detected_kinds'],
+                'anonymized_payload_hash' => $context['sanitized']['anonymized_payload_hash'],
+            ]);
+
+            return [
+                'type' => 'danger',
+                'message' => __('Candidato bloqueado: PII/segredo detectado. Revise o resumo antes de continuar.', 'glpiintegaglpi'),
+                'preview' => $context,
+            ];
+        }
+
+        if ($context['source_errors'] !== []) {
+            return [
+                'type' => 'danger',
+                'message' => __('Candidato bloqueado: uma ou mais fontes estão fora da allowlist.', 'glpiintegaglpi'),
+                'preview' => $context,
+            ];
+        }
+
+        if ($context['validated_sources'] === []) {
+            return ['type' => 'danger', 'message' => __('Informe ao menos uma fonte oficial cadastrada.', 'glpiintegaglpi'), 'preview' => $context];
+        }
+
+        $candidate = $this->buildCandidate($context, $requestId);
+        $pdo = $this->getPdo();
+        $pdo->beginTransaction();
+        try {
+            $this->insertCandidate($requestId, $userId, $context, $candidate);
+            $this->updateRequestStatus($requestId, 'candidate_created', $candidate['confidence_score']);
+            $pdo->commit();
+        } catch (Throwable $exception) {
+            $pdo->rollBack();
+            throw $exception;
+        }
+
+        $this->audit('EXTERNAL_RESEARCH_CANDIDATE_CREATED', $requestId, $userId, [
+            'candidate_id' => $candidate['candidate_id'],
+            'confidence_score' => $candidate['confidence_score'],
+            'status' => $candidate['status'],
+            'source_catalog_ids' => $candidate['source_catalog_ids'],
+            'anonymized_payload_hash' => $context['sanitized']['anonymized_payload_hash'],
+        ]);
+
+        return [
+            'type' => 'success',
+            'message' => __('Candidato de KB externo criado para revisão humana. Publicação continua manual.', 'glpiintegaglpi'),
             'preview' => $context,
             'candidate' => $candidate,
             'request_id' => $requestId,
@@ -708,6 +797,172 @@ final class ExternalResearchService
         ], $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
     }
 
+    /**
+     * @param array<string, mixed> $query
+     * @param array<string, mixed>|null $flash
+     */
+    private function extractInternalKnowledgeQuery(array $query, ?array $flash): string
+    {
+        $preview = is_array($flash['preview'] ?? null) ? $flash['preview'] : null;
+        $sanitized = is_array($preview['sanitized'] ?? null) ? $preview['sanitized'] : null;
+        if (is_array($sanitized) && trim((string) ($sanitized['text'] ?? '')) !== '') {
+            return $this->sanitizeText((string) $sanitized['text'], 240);
+        }
+
+        return $this->sanitizeText((string) ($query['q'] ?? ''), 240);
+    }
+
+    /**
+     * @return array{query: string, items: list<array<string, mixed>>, message: string}
+     */
+    private function loadInternalKnowledgeContext(string $query, bool $includeExternalTables): array
+    {
+        $query = $this->sanitizeText($query, 240);
+        if ($query === '') {
+            return [
+                'query' => '',
+                'items' => [],
+                'message' => __('Gere o preview anonimizado para buscar conhecimento interno relacionado.', 'glpiintegaglpi'),
+            ];
+        }
+
+        $items = [];
+        try {
+            $nativeKnowledgeBase = new NativeKnowledgeBaseService();
+            foreach ($nativeKnowledgeBase->buildRelatedArticlesContext(['summary' => $query], 3) as $article) {
+                if (!is_array($article)) {
+                    continue;
+                }
+                $items[] = [
+                    'title' => $this->sanitizeText((string) ($article['title'] ?? ''), 180),
+                    'type' => $this->sanitizeText((string) ($article['category'] ?? 'Artigo KB'), 80),
+                    'origin' => 'KB nativa',
+                    'confidence' => 80,
+                    'internal_url' => $this->sanitizeInternalUrl((string) ($article['internal_url'] ?? '')),
+                ];
+            }
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][external_research][internal_kb] ' . $this->sanitizeText($exception->getMessage(), 180));
+        }
+
+        if ($includeExternalTables) {
+            try {
+                $items = array_merge(
+                    $items,
+                    $this->loadRelatedKbCandidates($query),
+                    $this->loadRelatedHistoricalInsights($query)
+                );
+            } catch (Throwable $exception) {
+                error_log('[integaglpi][external_research][internal_context] ' . $this->sanitizeText($exception->getMessage(), 180));
+            }
+        }
+
+        $items = array_slice($items, 0, self::INTERNAL_KNOWLEDGE_LIMIT);
+
+        return [
+            'query' => $query,
+            'items' => $items,
+            'message' => $items === []
+                ? __('Nenhum conhecimento interno relacionado encontrado para o preview.', 'glpiintegaglpi')
+                : '',
+        ];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function loadRelatedKbCandidates(string $query): array
+    {
+        if (!$this->tableExists(self::KB_CANDIDATES_TABLE)) {
+            return [];
+        }
+
+        $stmt = $this->getPdo()->prepare(
+            'SELECT title, article_type, status, confidence_score, category_suggestion, created_at
+               FROM public.' . self::KB_CANDIDATES_TABLE . "
+              WHERE status IN ('approved', 'in_review', 'suggested')
+                AND (
+                    title ILIKE :term
+                    OR COALESCE(problem_pattern, '') ILIKE :term
+                    OR COALESCE(category_suggestion, '') ILIKE :term
+                    OR COALESCE(content_markdown, '') ILIKE :term
+                )
+              ORDER BY confidence_score DESC, created_at DESC
+              LIMIT 3"
+        );
+        $stmt->bindValue(':term', '%' . $query . '%');
+        $stmt->execute();
+
+        return array_map(fn (array $row): array => [
+            'title' => $this->sanitizeText((string) ($row['title'] ?? ''), 180),
+            'type' => $this->sanitizeText((string) ($row['article_type'] ?? 'candidato'), 80),
+            'origin' => 'candidato KB',
+            'confidence' => (int) ($row['confidence_score'] ?? 0),
+            'internal_url' => '',
+            'status' => $this->sanitizeText((string) ($row['status'] ?? ''), 40),
+        ], $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function loadRelatedHistoricalInsights(string $query): array
+    {
+        if (!$this->tableExists(self::HIST_INSIGHTS_TABLE)) {
+            return [];
+        }
+
+        $stmt = $this->getPdo()->prepare(
+            'SELECT title, insight_type, priority, confidence_score, created_at
+               FROM public.' . self::HIST_INSIGHTS_TABLE . '
+              WHERE title ILIKE :term
+                 OR summary_sanitized ILIKE :term
+                 OR recommendation_sanitized ILIKE :term
+              ORDER BY confidence_score DESC, created_at DESC
+              LIMIT 3'
+        );
+        $stmt->bindValue(':term', '%' . $query . '%');
+        $stmt->execute();
+
+        return array_map(fn (array $row): array => [
+            'title' => $this->sanitizeText((string) ($row['title'] ?? ''), 180),
+            'type' => $this->sanitizeText((string) ($row['insight_type'] ?? 'insight'), 80),
+            'origin' => 'insight histórico',
+            'confidence' => (int) ($row['confidence_score'] ?? 0),
+            'internal_url' => '',
+            'priority' => $this->sanitizeText((string) ($row['priority'] ?? ''), 40),
+        ], $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
+    }
+
+    private function requestExists(string $requestId): bool
+    {
+        $stmt = $this->getPdo()->prepare(
+            "SELECT 1 FROM public." . self::REQUEST_TABLE . "
+              WHERE request_id = :request_id
+                AND status IN ('completed', 'candidate_created')
+              LIMIT 1"
+        );
+        $stmt->bindValue(':request_id', $requestId);
+        $stmt->execute();
+
+        return (bool) $stmt->fetchColumn();
+    }
+
+    private function updateRequestStatus(string $requestId, string $status, int $confidenceScore): void
+    {
+        $stmt = $this->getPdo()->prepare(
+            'UPDATE public.' . self::REQUEST_TABLE . '
+                SET status = :status,
+                    confidence_score = :confidence_score,
+                    updated_at = NOW()
+              WHERE request_id = :request_id'
+        );
+        $stmt->bindValue(':status', $status);
+        $stmt->bindValue(':confidence_score', $confidenceScore, PDO::PARAM_INT);
+        $stmt->bindValue(':request_id', $requestId);
+        $stmt->execute();
+    }
+
     private function tablesReady(): bool
     {
         foreach ([self::SOURCE_TABLE, self::REQUEST_TABLE, self::RESULT_TABLE, self::CANDIDATE_TABLE, self::REVIEW_TABLE] as $table) {
@@ -748,7 +1003,12 @@ final class ExternalResearchService
             );
             $stmt->bindValue(':correlation_id', $requestId !== null ? 'external_research:' . $requestId : 'external_research:blocked');
             $stmt->bindValue(':event_type', $eventType);
-            $stmt->bindValue(':status', str_contains($eventType, 'BLOCKED') || str_contains($eventType, 'PREVIEW_REQUIRED') ? 'blocked' : 'success');
+            $stmt->bindValue(
+                ':status',
+                str_contains($eventType, 'BLOCKED')
+                || str_contains($eventType, 'PREVIEW_REQUIRED')
+                || str_contains($eventType, 'REQUEST_REQUIRED') ? 'blocked' : 'success'
+            );
             $stmt->bindValue(':severity', str_contains($eventType, 'INCIDENT') ? 'warning' : 'info');
             $stmt->bindValue(':source', 'ExternalResearchService');
             $stmt->bindValue(':payload', $this->json([
@@ -777,6 +1037,33 @@ final class ExternalResearchService
         $value = trim(preg_replace('/\s+/', ' ', $value) ?? '');
 
         return mb_substr($value, 0, $limit);
+    }
+
+    private function sanitizeInternalUrl(string $value): string
+    {
+        $value = trim(html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        if ($value === '' || preg_match('/[\x00-\x1F\x7F]/', $value)) {
+            return '';
+        }
+        if (preg_match('#^(?:javascript|data|vbscript):#i', $value) || preg_match('#^https?://#i', $value)) {
+            return '';
+        }
+        if (!str_starts_with($value, '/')) {
+            return '';
+        }
+
+        $path = parse_url($value, PHP_URL_PATH);
+        if (!is_string($path)) {
+            return '';
+        }
+
+        foreach (['/front/knowbaseitem.form.php', '/plugins/integaglpi/'] as $prefix) {
+            if ($path === $prefix || str_starts_with($path, $prefix)) {
+                return $this->sanitizeText($value, 260);
+            }
+        }
+
+        return '';
     }
 
     /**

@@ -10,12 +10,15 @@ declare(strict_types=1);
 $flash = is_array($data['flash'] ?? null) ? $data['flash'] : null;
 $preview = is_array($flash['preview'] ?? null) ? $flash['preview'] : null;
 $candidate = is_array($flash['candidate'] ?? null) ? $flash['candidate'] : null;
+$researchResult = is_array($flash['research_result'] ?? null) ? $flash['research_result'] : null;
 $catalog = is_array($data['catalog'] ?? null) ? $data['catalog'] : [];
 $recentRequests = is_array($data['recent_requests'] ?? null) ? $data['recent_requests'] : [];
 $recentCandidates = is_array($data['recent_candidates'] ?? null) ? $data['recent_candidates'] : [];
+$internalContext = is_array($data['internal_context'] ?? null) ? $data['internal_context'] : ['query' => '', 'items' => [], 'message' => ''];
 $error = trim((string) ($data['error'] ?? ''));
 $csrf = GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
 $previewToken = is_array($preview) ? (string) ($preview['preview_token'] ?? '') : '';
+$requestId = trim((string) ($flash['request_id'] ?? $candidate['request_id'] ?? $_POST['request_id'] ?? ''));
 ?>
 
 <div class="container-fluid plugin-integaglpi-external-research">
@@ -41,6 +44,51 @@ $previewToken = is_array($preview) ? (string) ($preview['preview_token'] ?? '') 
         <div class="alert alert-<?php echo $this->escape((string) ($flash['type'] ?? 'info')); ?>">
             <?php echo $this->escape((string) ($flash['message'] ?? '')); ?>
         </div>
+
+        <?php
+        $previewSources = is_array($preview['validated_sources'] ?? null) ? $preview['validated_sources'] : [];
+        $previewErrors = is_array($preview['source_errors'] ?? null) ? $preview['source_errors'] : [];
+        $previewSanitized = is_array($preview['sanitized'] ?? null) ? $preview['sanitized'] : [];
+        ?>
+        <div class="card border-<?php echo $this->escape((string) ($flash['type'] ?? 'info')); ?> mb-3">
+            <div class="card-header"><?php echo $this->escape(__('Resultado da ação', 'glpiintegaglpi')); ?></div>
+            <div class="card-body">
+                <dl class="row mb-0">
+                    <dt class="col-sm-4"><?php echo $this->escape(__('Status', 'glpiintegaglpi')); ?></dt>
+                    <dd class="col-sm-8"><?php echo $this->escape((string) ($flash['type'] ?? 'info')); ?></dd>
+                    <dt class="col-sm-4"><?php echo $this->escape(__('Motivo / retorno', 'glpiintegaglpi')); ?></dt>
+                    <dd class="col-sm-8"><?php echo $this->escape((string) ($flash['message'] ?? '')); ?></dd>
+                    <?php if ($requestId !== '') { ?>
+                        <dt class="col-sm-4"><?php echo $this->escape(__('Pesquisa', 'glpiintegaglpi')); ?></dt>
+                        <dd class="col-sm-8"><code><?php echo $this->escape($requestId); ?></code></dd>
+                    <?php } ?>
+                    <?php if ($preview !== null) { ?>
+                        <dt class="col-sm-4"><?php echo $this->escape(__('Fontes aceitas', 'glpiintegaglpi')); ?></dt>
+                        <dd class="col-sm-8"><?php echo $this->escape((string) count($previewSources)); ?></dd>
+                        <dt class="col-sm-4"><?php echo $this->escape(__('Fontes bloqueadas', 'glpiintegaglpi')); ?></dt>
+                        <dd class="col-sm-8"><?php echo $this->escape((string) count($previewErrors)); ?></dd>
+                        <dt class="col-sm-4"><?php echo $this->escape(__('PII/segredo detectado', 'glpiintegaglpi')); ?></dt>
+                        <dd class="col-sm-8"><?php echo $this->escape(($previewSanitized['blocked'] ?? false) ? 'sim' : 'não'); ?></dd>
+                    <?php } ?>
+                    <?php if ($researchResult !== null) { ?>
+                        <dt class="col-sm-4"><?php echo $this->escape(__('Confiança estimada', 'glpiintegaglpi')); ?></dt>
+                        <dd class="col-sm-8"><?php echo $this->escape((string) ($researchResult['confidence_score'] ?? 0)); ?></dd>
+                    <?php } ?>
+                    <dt class="col-sm-4"><?php echo $this->escape(__('Próximos passos', 'glpiintegaglpi')); ?></dt>
+                    <dd class="col-sm-8">
+                        <?php if ($preview === null) { ?>
+                            <?php echo $this->escape(__('Preencha resumo e fontes permitidas, gere o preview e confirme manualmente.', 'glpiintegaglpi')); ?>
+                        <?php } elseif (($flash['type'] ?? '') === 'success' && $requestId !== '' && $candidate === null) { ?>
+                            <?php echo $this->escape(__('Pesquisa confirmada. Use “Gerar candidato revisável” se quiser criar um rascunho para revisão humana.', 'glpiintegaglpi')); ?>
+                        <?php } elseif ($candidate !== null) { ?>
+                            <?php echo $this->escape(__('Revise o Markdown e publique manualmente na KB nativa apenas se aprovado.', 'glpiintegaglpi')); ?>
+                        <?php } else { ?>
+                            <?php echo $this->escape(__('Corrija o resumo ou as fontes bloqueadas antes de confirmar.', 'glpiintegaglpi')); ?>
+                        <?php } ?>
+                    </dd>
+                </dl>
+            </div>
+        </div>
     <?php } ?>
 
     <div class="row g-3">
@@ -51,6 +99,9 @@ $previewToken = is_array($preview) ? (string) ($preview['preview_token'] ?? '') 
                     <input type="hidden" name="_glpi_csrf_token" value="<?php echo $this->escape($csrf); ?>">
                     <?php if ($previewToken !== '') { ?>
                         <input type="hidden" name="preview_token" value="<?php echo $this->escape($previewToken); ?>">
+                    <?php } ?>
+                    <?php if ($requestId !== '') { ?>
+                        <input type="hidden" name="request_id" value="<?php echo $this->escape($requestId); ?>">
                     <?php } ?>
                     <label class="form-label" for="technical_summary"><?php echo $this->escape(__('Resumo técnico sem dados pessoais', 'glpiintegaglpi')); ?></label>
                     <textarea class="form-control" id="technical_summary" name="technical_summary" rows="6" maxlength="4000"><?php echo $this->escape((string) ($_POST['technical_summary'] ?? '')); ?></textarea>
@@ -199,10 +250,47 @@ $previewToken = is_array($preview) ? (string) ($preview['preview_token'] ?? '') 
             </div>
 
             <div class="card mb-3">
+                <div class="card-header"><?php echo $this->escape(__('Conhecimento interno relacionado', 'glpiintegaglpi')); ?></div>
+                <div class="card-body">
+                    <?php
+                    $internalItems = is_array($internalContext['items'] ?? null) ? $internalContext['items'] : [];
+                    $internalMessage = trim((string) ($internalContext['message'] ?? ''));
+                    ?>
+                    <?php if ($internalMessage !== '') { ?>
+                        <p class="text-muted mb-0"><?php echo $this->escape($internalMessage); ?></p>
+                    <?php } else { ?>
+                        <ul class="mb-0">
+                            <?php foreach ($internalItems as $item) {
+                                if (!is_array($item)) {
+                                    continue;
+                                }
+                                $url = (string) ($item['internal_url'] ?? '');
+                                ?>
+                                <li class="mb-2">
+                                    <strong><?php echo $this->escape((string) ($item['title'] ?? '')); ?></strong>
+                                    <div class="text-muted small">
+                                        <?php echo $this->escape((string) ($item['origin'] ?? '')); ?>
+                                        · <?php echo $this->escape((string) ($item['type'] ?? '')); ?>
+                                        · <?php echo $this->escape(__('confiança', 'glpiintegaglpi')); ?> <?php echo $this->escape((string) ($item['confidence'] ?? 0)); ?>
+                                        <?php if ((string) ($item['status'] ?? '') !== '') { ?>
+                                            · <?php echo $this->escape((string) $item['status']); ?>
+                                        <?php } ?>
+                                    </div>
+                                    <?php if ($url !== '') { ?>
+                                        <a class="small" href="<?php echo $this->escape($url); ?>"><?php echo $this->escape(__('Abrir referência interna', 'glpiintegaglpi')); ?></a>
+                                    <?php } ?>
+                                </li>
+                            <?php } ?>
+                        </ul>
+                    <?php } ?>
+                </div>
+            </div>
+
+            <div class="card mb-3">
                 <div class="card-header"><?php echo $this->escape(__('Pesquisas recentes', 'glpiintegaglpi')); ?></div>
                 <div class="card-body">
                     <?php if ($recentRequests === []) { ?>
-                        <p class="text-muted mb-0"><?php echo $this->escape(__('Nenhuma pesquisa registrada.', 'glpiintegaglpi')); ?></p>
+                        <p class="text-muted mb-0"><?php echo $this->escape(__('Nenhuma pesquisa registrada ainda. Preencha resumo e fontes permitidas, gere preview e confirme a pesquisa.', 'glpiintegaglpi')); ?></p>
                     <?php } else { ?>
                         <ul class="mb-0">
                             <?php foreach ($recentRequests as $request) {
@@ -225,7 +313,7 @@ $previewToken = is_array($preview) ? (string) ($preview['preview_token'] ?? '') 
                 <div class="card-header"><?php echo $this->escape(__('Candidatos recentes', 'glpiintegaglpi')); ?></div>
                 <div class="card-body">
                     <?php if ($recentCandidates === []) { ?>
-                        <p class="text-muted mb-0"><?php echo $this->escape(__('Nenhum candidato externo criado.', 'glpiintegaglpi')); ?></p>
+                        <p class="text-muted mb-0"><?php echo $this->escape(__('Nenhum candidato externo criado ainda. Confirme uma pesquisa antes de gerar candidato revisável.', 'glpiintegaglpi')); ?></p>
                     <?php } else { ?>
                         <?php foreach ($recentCandidates as $recent) {
                             if (!is_array($recent)) {
