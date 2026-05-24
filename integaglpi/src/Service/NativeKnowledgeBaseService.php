@@ -84,8 +84,8 @@ final class NativeKnowledgeBaseService
     {
         $terms = [];
         foreach (['ticket_name', 'ticket_title', 'summary', 'last_message', 'queue_name', 'service_name'] as $key) {
-            $value = trim((string) ($context[$key] ?? ''));
-            if ($value !== '') {
+            $value = $this->normalizeSearchTerm($context[$key] ?? null);
+            if ($value !== null) {
                 $terms[] = $value;
             }
         }
@@ -93,6 +93,10 @@ final class NativeKnowledgeBaseService
         $articles = [];
         $limit = max(1, min(self::FINAL_LIMIT, $limit));
         foreach ($this->buildRelatedSearchQueries($terms) as $query) {
+            $query = $this->normalizeSearchTerm($query);
+            if (!is_string($query) || $query === '') {
+                continue;
+            }
             foreach ($this->searchVisibleArticles($query, $limit) as $article) {
                 $articleId = (int) ($article['article_id'] ?? 0);
                 if ($articleId <= 0 || array_key_exists($articleId, $articles)) {
@@ -297,13 +301,17 @@ final class NativeKnowledgeBaseService
     }
 
     /**
-     * @param array<int, string> $rawTerms
+     * @param array<int, mixed> $rawTerms
      * @return array<int, string>
      */
     private function buildRelatedSearchQueries(array $rawTerms): array
     {
         $tokens = [];
         foreach ($rawTerms as $rawTerm) {
+            $rawTerm = $this->normalizeSearchTerm($rawTerm);
+            if ($rawTerm === null) {
+                continue;
+            }
             foreach ($this->extractSearchTokens($rawTerm) as $token) {
                 $tokens[$token] = true;
             }
@@ -325,7 +333,15 @@ final class NativeKnowledgeBaseService
             $queries[] = $token;
         }
 
-        return array_values(array_unique(array_filter($queries, static fn (string $query): bool => trim($query) !== '')));
+        $normalizedQueries = [];
+        foreach ($queries as $query) {
+            $query = $this->normalizeSearchTerm($query);
+            if ($query !== null) {
+                $normalizedQueries[] = $query;
+            }
+        }
+
+        return array_values(array_unique($normalizedQueries));
     }
 
     /**
@@ -370,6 +386,21 @@ final class NativeKnowledgeBaseService
         $value = $this->sanitizeArticleHtml($value);
 
         return $this->truncate($value, 120);
+    }
+
+    private function normalizeSearchTerm(mixed $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $value = preg_replace('/[\x00-\x1F\x7F]/u', ' ', $value) ?? '';
+        $value = trim(preg_replace('/\s+/u', ' ', $value) ?? '');
+        if ($value === '' || preg_match('/^\d+(?:\.\d+)?$/', $value)) {
+            return null;
+        }
+
+        return $this->truncate($value, 240);
     }
 
     private function truncate(string $value, int $limit): string

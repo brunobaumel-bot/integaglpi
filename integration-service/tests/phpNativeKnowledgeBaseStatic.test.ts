@@ -48,6 +48,19 @@ describe('native GLPI knowledge base read-only adapter static safety', () => {
     expect(aiFront).toContain('kb_context_article_ids=');
   });
 
+  it('normalizes AI related KB search terms before calling the typed native search method', async () => {
+    const service = await readProjectFile('integaglpi/src/Service/NativeKnowledgeBaseService.php');
+
+    expect(service).toContain('private function normalizeSearchTerm(mixed $value): ?string');
+    expect(service).toContain('if (!is_string($value))');
+    expect(service).toContain("preg_match('/^\\d+(?:\\.\\d+)?$/', $value)");
+    expect(service).toContain('$value = $this->normalizeSearchTerm($context[$key] ?? null);');
+    expect(service).toContain('$query = $this->normalizeSearchTerm($query);');
+    expect(service).toContain('foreach ($this->searchVisibleArticles($query, $limit) as $article)');
+    expect(service).not.toContain('searchVisibleArticles($context');
+    expect(service).not.toContain('searchVisibleArticles($rawTerm');
+  });
+
   it('keeps the adapter read-only and away from operational actions', async () => {
     const service = await readProjectFile('integaglpi/src/Service/NativeKnowledgeBaseService.php');
     const front = await readProjectFile('integaglpi/front/kb.native.php');
