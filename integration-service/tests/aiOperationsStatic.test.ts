@@ -52,6 +52,7 @@ describe('AI operations console static safety', () => {
   });
 
   it('uses controlled internal endpoints for P2/P3 UI without shell or arbitrary paths', async () => {
+    const front = await readProjectFile('integaglpi/front/historical.mining.php');
     const phpService = await readProjectFile('integaglpi/src/Service/HistoricalMiningUiService.php');
     const client = await readProjectFile('integaglpi/src/Service/IntegrationServiceClient.php');
     const nodeService = await readProjectFile('integration-service/src/domain/services/AiOperationsService.ts');
@@ -67,6 +68,8 @@ describe('AI operations console static safety', () => {
     expect(phpService).toContain('preview_glpi_export');
     expect(phpService).toContain('generate_glpi_jsonl');
     expect(phpService).toContain('validate_generated');
+    expect(phpService).toContain('downloadGeneratedJsonl');
+    expect(front).toContain('download_generated');
     expect(phpService).toContain('jsonl_base64');
     expect(phpService).toContain('dry_run_token');
     expect(phpService).toContain('withFileLock');
@@ -108,6 +111,9 @@ describe('AI operations console static safety', () => {
     expect(phpService).toContain('HISTORICAL_JSONL_PREVIEWED');
     expect(phpService).toContain('HISTORICAL_JSONL_GENERATED');
     expect(phpService).toContain('HISTORICAL_JSONL_BLOCKED_PII');
+    expect(phpService).toContain('HISTORICAL_JSONL_DOWNLOADED');
+    expect(phpService).toContain('HISTORICAL_JSONL_SELECTED_FOR_DRY_RUN');
+    expect(phpService).toContain('HISTORICAL_JSONL_EXPIRED_OR_NOT_FOUND');
     expect(phpService).toContain('HISTORICAL_MINING_DRY_RUN_REQUESTED');
     expect(phpService).toContain('glpi_itilfollowups');
     expect(phpService).toContain('glpi_itilsolutions');
@@ -115,8 +121,15 @@ describe('AI operations console static safety', () => {
     expect(template).toContain('Gerar JSONL a partir do GLPI');
     expect(template).toContain('Pré-visualizar exportação');
     expect(template).toContain('Gerar arquivo JSONL sanitizado');
-    expect(template).toContain('Usar arquivo gerado no dry-run P2');
+    expect(template).toContain('Arquivo JSONL gerado');
+    expect(template).toContain('Baixar JSONL sanitizado');
+    expect(template).toContain('Executar dry-run P2 com este arquivo');
+    expect(template).toContain('file_id');
+    expect(template).toContain('sha256');
+    expect(template).toContain('expires_at');
     expect(template).toContain('área temporária controlada');
+    expect(template).not.toContain("$exportUpload['path']");
+    expect(template).not.toContain('name="path"');
   });
 
   it('keeps operations pages away from WhatsApp, ticket mutation and KB publishing', async () => {

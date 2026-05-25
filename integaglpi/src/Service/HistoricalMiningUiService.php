@@ -87,6 +87,48 @@ final class HistoricalMiningUiService
 
     /**
      * @param array<string, mixed> $post
+     */
+    public function downloadGeneratedJsonl(array $post, int $userId): void
+    {
+        if (!$this->pluginConfigService->isConfigured()) {
+            throw new RuntimeException(__('PostgreSQL externo ainda não está configurado.', 'glpiintegaglpi'));
+        }
+
+        $this->cleanupExpiredUploads();
+        $uploadId = (string) ($post['upload_id'] ?? '');
+        $upload = $this->loadGeneratedUploadForAction($uploadId, $userId, 'download');
+        $path = (string) ($upload['path'] ?? '');
+        if ($path === '' || !is_file($path) || !$this->isPathInside($path, $this->uploadDir())) {
+            $this->auditExpiredOrNotFound($uploadId, $userId, 'download');
+            throw new RuntimeException(__('Arquivo JSONL expirado ou indisponível. Gere o arquivo novamente.', 'glpiintegaglpi'));
+        }
+
+        $filename = $this->safeDownloadFilename((string) ($upload['filename'] ?? 'glpi-history.jsonl'));
+        $filesize = filesize($path);
+        $this->audit('HISTORICAL_JSONL_DOWNLOADED', [
+            'glpi_user_id' => $userId,
+            'upload_id_hash' => hash('sha256', (string) $upload['upload_id']),
+            'content_hash' => (string) ($upload['content_hash'] ?? ''),
+            'total_exported' => (int) ($upload['line_count'] ?? 0),
+            'expires_at' => (int) ($upload['expires_at'] ?? 0),
+            'source' => 'glpi_export',
+        ]);
+
+        while (ob_get_level() > 0) {
+            @ob_end_clean();
+        }
+        header('Content-Type: application/jsonl; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="' . $filename . '"');
+        header('X-Content-Type-Options: nosniff');
+        header('Cache-Control: no-store, no-cache, must-revalidate');
+        if ($filesize !== false) {
+            header('Content-Length: ' . (string) $filesize);
+        }
+        readfile($path);
+    }
+
+    /**
+     * @param array<string, mixed> $post
      * @param array<string, mixed> $files
      * @return array<string, mixed>
      */
@@ -257,7 +299,7 @@ final class HistoricalMiningUiService
                 throw new RuntimeException(__('Nenhuma linha exportável para gerar JSONL.', 'glpiintegaglpi'));
             }
 
-            $upload = $this->storeGeneratedJsonl((string) $export['jsonl_content']);
+            $upload = $this->storeGeneratedJsonl((string) $export['jsonl_content'], (int) $export['total_exportable']);
             $this->rememberUpload($upload);
             $this->audit('HISTORICAL_JSONL_GENERATED', [
                 'glpi_user_id' => $userId,
@@ -265,7 +307,9 @@ final class HistoricalMiningUiService
                 'content_hash' => (string) ($upload['content_hash'] ?? ''),
                 'filters_hash' => hash('sha256', json_encode($filters, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: ''),
                 'total_exportable' => $export['total_exportable'],
+                'total_exported' => (int) ($upload['line_count'] ?? $export['total_exportable']),
                 'rows_rejected' => $export['rows_rejected'],
+                'expires_at' => (int) ($upload['expires_at'] ?? 0),
                 'retention_seconds' => self::JSONL_RETENTION_SECONDS,
             ]);
 
@@ -287,13 +331,22 @@ final class HistoricalMiningUiService
      */
     private function validateGeneratedJsonl(array $post, int $userId): array
     {
-        $upload = $this->loadRememberedUpload((string) ($post['upload_id'] ?? ''));
+        $uploadId = (string) ($post['upload_id'] ?? '');
+        $upload = $this->loadGeneratedUploadForAction($uploadId, $userId, 'dry_run');
         if (($upload['source'] ?? '') !== 'glpi_export') {
             throw new RuntimeException(__('Arquivo gerado inválido. Gere novamente o JSONL a partir do GLPI.', 'glpiintegaglpi'));
         }
 
         return $this->withFileLock('p2_dry_run:' . (string) $upload['upload_id'], function () use ($upload, $post, $userId): array {
             $payload = $this->payloadForUpload($upload, $post, $userId);
+            $this->audit('HISTORICAL_JSONL_SELECTED_FOR_DRY_RUN', [
+                'glpi_user_id' => $userId,
+                'upload_id_hash' => hash('sha256', (string) $upload['upload_id']),
+                'content_hash' => (string) ($upload['content_hash'] ?? ''),
+                'total_exported' => (int) ($upload['line_count'] ?? 0),
+                'expires_at' => (int) ($upload['expires_at'] ?? 0),
+                'source' => 'glpi_export',
+            ]);
             $this->audit('HISTORICAL_MINING_DRY_RUN_REQUESTED', [
                 'glpi_user_id' => $userId,
                 'upload_id_hash' => hash('sha256', (string) $upload['upload_id']),
@@ -315,6 +368,7 @@ final class HistoricalMiningUiService
                 'type' => 'success',
                 'message' => __('Dry-run do JSONL gerado concluído. Revise o preview antes da execução real.', 'glpiintegaglpi'),
                 'upload' => $upload,
+                'export_upload' => $upload,
                 'mining_result' => $body,
             ];
         });
@@ -861,7 +915,7 @@ final class HistoricalMiningUiService
         return $value !== '' ? $value : null;
     }
 
-    private function storeGeneratedJsonl(string $content): array
+    private function storeGeneratedJsonl(string $content, int $lineCount = 0): array
     {
         if (trim($content) === '') {
             throw new RuntimeException(__('JSONL gerado vazio.', 'glpiintegaglpi'));
@@ -881,12 +935,14 @@ final class HistoricalMiningUiService
 
         return [
             'upload_id' => $uploadId,
+            'file_id' => $uploadId,
             'path' => $path,
             'filename' => 'glpi-history-' . date('Ymd-His') . '.jsonl',
             'created_at' => time(),
             'expires_at' => time() + self::JSONL_RETENTION_SECONDS,
             'retention_seconds' => self::JSONL_RETENTION_SECONDS,
             'content_hash' => hash('sha256', $content),
+            'line_count' => max(0, $lineCount),
             'source' => 'glpi_export',
         ];
     }
@@ -994,6 +1050,52 @@ final class HistoricalMiningUiService
         }
 
         return $upload;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function loadGeneratedUploadForAction(string $uploadId, int $userId, string $action): array
+    {
+        try {
+            $upload = $this->loadRememberedUpload($uploadId);
+        } catch (RuntimeException $exception) {
+            $this->auditExpiredOrNotFound($uploadId, $userId, $action);
+            throw $exception;
+        }
+
+        if (($upload['source'] ?? '') !== 'glpi_export') {
+            $this->auditExpiredOrNotFound($uploadId, $userId, $action);
+            throw new RuntimeException(__('Arquivo gerado inválido. Gere novamente o JSONL a partir do GLPI.', 'glpiintegaglpi'));
+        }
+
+        return $upload;
+    }
+
+    private function auditExpiredOrNotFound(string $uploadId, int $userId, string $action): void
+    {
+        $uploadId = $this->cleanIdentifier($uploadId);
+        $this->audit('HISTORICAL_JSONL_EXPIRED_OR_NOT_FOUND', [
+            'glpi_user_id' => $userId,
+            'upload_id_hash' => $uploadId !== '' ? hash('sha256', $uploadId) : '',
+            'action' => $this->sanitizeLog($action),
+            'source' => 'glpi_export',
+        ]);
+    }
+
+    private function safeDownloadFilename(string $filename): string
+    {
+        $filename = basename($filename);
+        $filename = preg_replace('/[^A-Za-z0-9._-]+/', '-', $filename) ?? 'glpi-history.jsonl';
+        $filename = trim($filename, '.-');
+        if ($filename === '') {
+            $filename = 'glpi-history.jsonl';
+        }
+        if (!preg_match('/\.jsonl$/i', $filename)) {
+            $filename .= '.jsonl';
+        }
+
+        return $filename;
     }
 
     /**

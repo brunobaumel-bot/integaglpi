@@ -27,6 +27,17 @@ $previewRows = is_array($miningResult['preview_rows'] ?? null) ? $miningResult['
 $csrf = GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
 $runId = trim((string) ($summary['run_id'] ?? $candidateResult['run_id'] ?? $data['selected_run_id'] ?? ''));
 $retentionHours = max(1, (int) ceil(((int) ($data['jsonl_retention_seconds'] ?? 86400)) / 3600));
+$exportFilters = is_array($exportPreview['filters'] ?? null) ? $exportPreview['filters'] : [];
+$exportDateStart = (string) ($exportFilters['date_start'] ?? '');
+$exportDateEnd = (string) ($exportFilters['date_end'] ?? '');
+$selectedEntityId = (int) ($exportFilters['entities_id'] ?? 0);
+$selectedGroupId = (int) ($exportFilters['groups_id'] ?? 0);
+$selectedCategoryId = (int) ($exportFilters['itilcategories_id'] ?? 0);
+$selectedStatus = (string) ($exportFilters['status'] ?? '');
+$selectedLimit = (int) ($exportFilters['limit'] ?? 100);
+$selectedClosedOnly = $exportFilters === [] ? true : (bool) ($exportFilters['closed_only'] ?? false);
+$selectedIncludeFollowups = (bool) ($exportFilters['include_followups'] ?? false);
+$selectedIncludeSolution = $exportFilters === [] ? true : (bool) ($exportFilters['include_solution'] ?? false);
 ?>
 
 <div class="container-fluid plugin-integaglpi-historical-mining">
@@ -66,11 +77,11 @@ $retentionHours = max(1, (int) ceil(((int) ($data['jsonl_retention_seconds'] ?? 
                     <div class="row g-2">
                         <div class="col-md-6">
                             <label class="form-label" for="export_date_start"><?= $this->escape(__('Período início', 'glpiintegaglpi')); ?></label>
-                            <input class="form-control" type="date" id="export_date_start" name="export_date_start">
+                            <input class="form-control" type="date" id="export_date_start" name="export_date_start" value="<?= $this->escape($exportDateStart); ?>">
                         </div>
                         <div class="col-md-6">
                             <label class="form-label" for="export_date_end"><?= $this->escape(__('Período fim', 'glpiintegaglpi')); ?></label>
-                            <input class="form-control" type="date" id="export_date_end" name="export_date_end">
+                            <input class="form-control" type="date" id="export_date_end" name="export_date_end" value="<?= $this->escape($exportDateEnd); ?>">
                         </div>
                         <div class="col-md-6">
                             <label class="form-label" for="entities_id"><?= $this->escape(__('Entidade', 'glpiintegaglpi')); ?></label>
@@ -79,7 +90,8 @@ $retentionHours = max(1, (int) ceil(((int) ($data['jsonl_retention_seconds'] ?? 
                                 <?php foreach ($entities as $entity) {
                                     if (!is_array($entity)) { continue; }
                                     ?>
-                                    <option value="<?= (int) ($entity['id'] ?? 0); ?>"><?= $this->escape((string) ($entity['name'] ?? '')); ?></option>
+                                    <?php $entityId = (int) ($entity['id'] ?? 0); ?>
+                                    <option value="<?= $entityId; ?>"<?= $entityId === $selectedEntityId ? ' selected' : ''; ?>><?= $this->escape((string) ($entity['name'] ?? '')); ?></option>
                                 <?php } ?>
                             </select>
                         </div>
@@ -90,7 +102,8 @@ $retentionHours = max(1, (int) ceil(((int) ($data['jsonl_retention_seconds'] ?? 
                                 <?php foreach ($groups as $group) {
                                     if (!is_array($group)) { continue; }
                                     ?>
-                                    <option value="<?= (int) ($group['id'] ?? 0); ?>"><?= $this->escape((string) ($group['name'] ?? '')); ?></option>
+                                    <?php $groupId = (int) ($group['id'] ?? 0); ?>
+                                    <option value="<?= $groupId; ?>"<?= $groupId === $selectedGroupId ? ' selected' : ''; ?>><?= $this->escape((string) ($group['name'] ?? '')); ?></option>
                                 <?php } ?>
                             </select>
                         </div>
@@ -101,7 +114,8 @@ $retentionHours = max(1, (int) ceil(((int) ($data['jsonl_retention_seconds'] ?? 
                                 <?php foreach ($categories as $category) {
                                     if (!is_array($category)) { continue; }
                                     ?>
-                                    <option value="<?= (int) ($category['id'] ?? 0); ?>"><?= $this->escape((string) ($category['name'] ?? '')); ?></option>
+                                    <?php $categoryId = (int) ($category['id'] ?? 0); ?>
+                                    <option value="<?= $categoryId; ?>"<?= $categoryId === $selectedCategoryId ? ' selected' : ''; ?>><?= $this->escape((string) ($category['name'] ?? '')); ?></option>
                                 <?php } ?>
                             </select>
                         </div>
@@ -112,25 +126,26 @@ $retentionHours = max(1, (int) ceil(((int) ($data['jsonl_retention_seconds'] ?? 
                                 <?php foreach ($statuses as $status) {
                                     if (!is_array($status)) { continue; }
                                     ?>
-                                    <option value="<?= (int) ($status['id'] ?? 0); ?>"><?= $this->escape((string) ($status['name'] ?? '')); ?></option>
+                                    <?php $statusId = (string) ((int) ($status['id'] ?? 0)); ?>
+                                    <option value="<?= $this->escape($statusId); ?>"<?= $statusId === $selectedStatus ? ' selected' : ''; ?>><?= $this->escape((string) ($status['name'] ?? '')); ?></option>
                                 <?php } ?>
                             </select>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label" for="export_limit"><?= $this->escape(__('Limite de chamados', 'glpiintegaglpi')); ?></label>
-                            <input class="form-control" type="number" id="export_limit" name="export_limit" min="1" max="1000" value="100">
+                            <input class="form-control" type="number" id="export_limit" name="export_limit" min="1" max="1000" value="<?= max(1, min(1000, $selectedLimit)); ?>">
                         </div>
                     </div>
                     <div class="form-check mt-3">
-                        <input class="form-check-input" type="checkbox" id="closed_only" name="closed_only" value="1" checked>
+                        <input class="form-check-input" type="checkbox" id="closed_only" name="closed_only" value="1"<?= $selectedClosedOnly ? ' checked' : ''; ?>>
                         <label class="form-check-label" for="closed_only"><?= $this->escape(__('Somente solucionados/fechados', 'glpiintegaglpi')); ?></label>
                     </div>
                     <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="include_followups" name="include_followups" value="1">
+                        <input class="form-check-input" type="checkbox" id="include_followups" name="include_followups" value="1"<?= $selectedIncludeFollowups ? ' checked' : ''; ?>>
                         <label class="form-check-label" for="include_followups"><?= $this->escape(__('Incluir followups sanitizados', 'glpiintegaglpi')); ?></label>
                     </div>
                     <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="include_solution" name="include_solution" value="1" checked>
+                        <input class="form-check-input" type="checkbox" id="include_solution" name="include_solution" value="1"<?= $selectedIncludeSolution ? ' checked' : ''; ?>>
                         <label class="form-check-label" for="include_solution"><?= $this->escape(__('Incluir solução sanitizada', 'glpiintegaglpi')); ?></label>
                     </div>
                     <div class="d-flex flex-wrap gap-2 mt-3">
@@ -155,21 +170,52 @@ $retentionHours = max(1, (int) ceil(((int) ($data['jsonl_retention_seconds'] ?? 
             </form>
 
             <?php if ($exportUpload !== null) { ?>
-                <form method="post" action="<?= $this->escape($this->getHistoricalMiningUrl()); ?>" class="card mb-3">
-                    <div class="card-header"><?= $this->escape(__('Dry-run com JSONL gerado', 'glpiintegaglpi')); ?></div>
+                <?php
+                $fileId = (string) ($exportUpload['file_id'] ?? $exportUpload['upload_id'] ?? '');
+                $expiresAt = (int) ($exportUpload['expires_at'] ?? 0);
+                $expiresLabel = $expiresAt > 0 ? date('Y-m-d H:i:s', $expiresAt) : __('não informado', 'glpiintegaglpi');
+                ?>
+                <div class="card mb-3">
+                    <div class="card-header"><?= $this->escape(__('Arquivo JSONL gerado', 'glpiintegaglpi')); ?></div>
                     <div class="card-body">
-                        <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
-                        <input type="hidden" name="action" value="validate_generated">
-                        <input type="hidden" name="upload_id" value="<?= $this->escape((string) ($exportUpload['upload_id'] ?? '')); ?>">
-                        <input type="hidden" name="max_rows" value="1000">
                         <p class="text-muted">
-                            <?= $this->escape(__('O arquivo foi gerado em área temporária controlada e pode seguir para o dry-run P2.', 'glpiintegaglpi')); ?>
+                            <?= $this->escape(__('Arquivo salvo em área temporária protegida; não fica público.', 'glpiintegaglpi')); ?>
                         </p>
-                        <button class="btn btn-outline-primary" type="submit">
-                            <?= $this->escape(__('Usar arquivo gerado no dry-run P2', 'glpiintegaglpi')); ?>
-                        </button>
+                        <dl class="row small mb-3">
+                            <dt class="col-sm-4"><?= $this->escape(__('Status', 'glpiintegaglpi')); ?></dt>
+                            <dd class="col-sm-8"><?= $this->escape(__('Pronto para download manual e dry-run P2', 'glpiintegaglpi')); ?></dd>
+                            <dt class="col-sm-4"><?= $this->escape(__('file_id', 'glpiintegaglpi')); ?></dt>
+                            <dd class="col-sm-8"><code><?= $this->escape($fileId); ?></code></dd>
+                            <dt class="col-sm-4"><?= $this->escape(__('Nome lógico', 'glpiintegaglpi')); ?></dt>
+                            <dd class="col-sm-8"><?= $this->escape((string) ($exportUpload['filename'] ?? 'glpi-history.jsonl')); ?></dd>
+                            <dt class="col-sm-4"><?= $this->escape(__('Linhas exportadas', 'glpiintegaglpi')); ?></dt>
+                            <dd class="col-sm-8"><?= (int) ($exportUpload['line_count'] ?? 0); ?></dd>
+                            <dt class="col-sm-4"><?= $this->escape(__('sha256', 'glpiintegaglpi')); ?></dt>
+                            <dd class="col-sm-8"><code><?= $this->escape((string) ($exportUpload['content_hash'] ?? '')); ?></code></dd>
+                            <dt class="col-sm-4"><?= $this->escape(__('expires_at', 'glpiintegaglpi')); ?></dt>
+                            <dd class="col-sm-8"><?= $this->escape((string) $expiresLabel); ?></dd>
+                        </dl>
+                        <div class="d-flex flex-wrap gap-2">
+                            <form method="post" action="<?= $this->escape($this->getHistoricalMiningUrl()); ?>">
+                                <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
+                                <input type="hidden" name="action" value="download_generated">
+                                <input type="hidden" name="upload_id" value="<?= $this->escape((string) ($exportUpload['upload_id'] ?? '')); ?>">
+                                <button class="btn btn-outline-secondary" type="submit">
+                                    <?= $this->escape(__('Baixar JSONL sanitizado', 'glpiintegaglpi')); ?>
+                                </button>
+                            </form>
+                            <form method="post" action="<?= $this->escape($this->getHistoricalMiningUrl()); ?>">
+                                <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
+                                <input type="hidden" name="action" value="validate_generated">
+                                <input type="hidden" name="upload_id" value="<?= $this->escape((string) ($exportUpload['upload_id'] ?? '')); ?>">
+                                <input type="hidden" name="max_rows" value="1000">
+                                <button class="btn btn-outline-primary" type="submit">
+                                    <?= $this->escape(__('Executar dry-run P2 com este arquivo', 'glpiintegaglpi')); ?>
+                                </button>
+                            </form>
+                        </div>
                     </div>
-                </form>
+                </div>
             <?php } ?>
 
             <form method="post" enctype="multipart/form-data" action="<?= $this->escape($this->getHistoricalMiningUrl()); ?>" class="card mb-3">
