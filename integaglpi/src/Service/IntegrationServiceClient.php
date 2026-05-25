@@ -26,6 +26,7 @@ final class IntegrationServiceClient
     private const PATH_AI_QUALITY_FEEDBACK = '/internal/glpi/ai-quality/feedback';
     private const TIMEOUT_SECONDS   = 5;
     private const ENTITY_SELECTION_TIMEOUT_SECONDS = 8;
+    private const AI_QUALITY_ANALYZE_TIMEOUT_SECONDS = 75;
 
     public function __construct(private readonly ?PluginConfigService $pluginConfigService = null)
     {
@@ -98,7 +99,12 @@ final class IntegrationServiceClient
      */
     public function requestAiQualityAnalysis(array $payload): array
     {
-        return $this->postJson($this->endpoint(self::PATH_AI_QUALITY_ANALYZE), $payload, 'ai_quality][analyze', 35);
+        return $this->postJson(
+            $this->endpoint(self::PATH_AI_QUALITY_ANALYZE),
+            $payload,
+            'ai_quality][analyze',
+            self::AI_QUALITY_ANALYZE_TIMEOUT_SECONDS
+        );
     }
 
     /**
@@ -258,6 +264,10 @@ final class IntegrationServiceClient
 
         if ($raw === false || $curlError !== '') {
             error_log('[integaglpi][' . $logContext . '][ERROR] curl_error=' . $curlError);
+            if ($logContext === 'ai_quality][analyze' && $this->isTimeoutMessage($curlError)) {
+                throw new RuntimeException(__('A análise IA demorou mais que o esperado. Tente novamente ou reduza o contexto.', 'glpiintegaglpi'));
+            }
+
             throw new RuntimeException('[integaglpi][' . $logContext . '] curl error: ' . $curlError);
         }
 
@@ -390,10 +400,15 @@ final class IntegrationServiceClient
 
     private function isCurlTimeout(RuntimeException $exception): bool
     {
-        $message = strtolower($exception->getMessage());
+        return $this->isTimeoutMessage($exception->getMessage());
+    }
 
-        return str_contains($message, 'timed out')
-            || str_contains($message, 'timeout')
-            || str_contains($message, 'operation timed out');
+    private function isTimeoutMessage(string $message): bool
+    {
+        $message = strtolower($message);
+
+        return strpos($message, 'timed out') !== false
+            || strpos($message, 'timeout') !== false
+            || strpos($message, 'operation timed out') !== false;
     }
 }

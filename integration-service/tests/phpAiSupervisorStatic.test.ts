@@ -58,6 +58,17 @@ describe('PHP AI supervisor integration (static)', () => {
     expect(client).not.toContain('error_log($this->getAuthKey');
   });
 
+  it('keeps the PHP AI quality analysis timeout aligned with the local supervisor runtime', async () => {
+    const client = await readRel('integaglpi/src/Service/IntegrationServiceClient.php');
+    const timeoutMatch = client.match(/AI_QUALITY_ANALYZE_TIMEOUT_SECONDS\s*=\s*(\d+)/);
+
+    expect(timeoutMatch).not.toBeNull();
+    expect(Number(timeoutMatch?.[1])).toBeGreaterThanOrEqual(60);
+    expect(client).toContain('self::AI_QUALITY_ANALYZE_TIMEOUT_SECONDS');
+    expect(client).not.toContain("'ai_quality][analyze', 35");
+    expect(client).toContain('A análise IA demorou mais que o esperado. Tente novamente ou reduza o contexto.');
+  });
+
   it('renders plugin AI config without exposing the stored integration key', async () => {
     const template = await readRel('integaglpi/templates/config.php');
 
