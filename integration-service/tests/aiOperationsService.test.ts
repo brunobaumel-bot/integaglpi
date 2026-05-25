@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { AiOperationsError, AiOperationsService } from '../src/domain/services/AiOperationsService.js';
 import type { SqlExecutor } from '../src/infra/db/postgres.js';
+import type { KeyLock } from '../src/domain/contracts/KeyLock.js';
 
 const executor: SqlExecutor = {
   async query() {
@@ -14,6 +15,16 @@ const executor: SqlExecutor = {
     };
   },
 };
+
+const noOpLock: KeyLock = {
+  async withLock(_key, work) {
+    return work();
+  },
+};
+
+function createService(exec: SqlExecutor = executor, lock: KeyLock = noOpLock): AiOperationsService {
+  return new AiOperationsService(exec, lock);
+}
 
 function validJsonl(): string {
   const rows = [{
@@ -49,7 +60,7 @@ function validJsonl(): string {
 
 describe('AiOperationsService', () => {
   it('previews sanitized JSONL and returns a dry-run token without persistence', async () => {
-    const service = new AiOperationsService(executor);
+    const service = createService();
 
     const result = await service.previewHistoricalMining({
       filename: 'history.jsonl',
@@ -65,7 +76,7 @@ describe('AiOperationsService', () => {
   });
 
   it('blocks execution until the matching dry-run token is provided', async () => {
-    const service = new AiOperationsService(executor);
+    const service = createService();
 
     await expect(service.executeHistoricalMining({
       filename: 'history.jsonl',
@@ -78,12 +89,39 @@ describe('AiOperationsService', () => {
   });
 
   it('rejects invalid JSONL with a controlled error', async () => {
-    const service = new AiOperationsService(executor);
+    const service = createService();
 
     await expect(service.previewHistoricalMining({
       filename: 'history.jsonl',
       jsonlContent: '{"invalid"\n',
       maxRows: 10,
     })).rejects.toBeInstanceOf(AiOperationsError);
+  });
+
+  it('uses a lock for real mining execution', async () => {
+    const calls: string[] = [];
+    const lock: KeyLock = {
+      async withLock(key, work) {
+        calls.push(key);
+        return work();
+      },
+    };
+    const service = createService(executor, lock);
+    const preview = await service.previewHistoricalMining({
+      filename: 'history.jsonl',
+      jsonlContent: validJsonl(),
+      maxRows: 10,
+      requestedBy: 7,
+    });
+
+    await service.executeHistoricalMining({
+      filename: 'history.jsonl',
+      jsonlContent: validJsonl(),
+      maxRows: 10,
+      dryRunToken: preview.dry_run_token,
+      requestedBy: 7,
+    });
+
+    expect(calls[0]).toMatch(/^ai_operations:historical_mining:/);
   });
 });

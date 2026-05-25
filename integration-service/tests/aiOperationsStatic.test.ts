@@ -37,6 +37,10 @@ describe('AI operations console static safety', () => {
     expect(service).toContain('missingCloudGates');
     expect(service).toContain('AI_PILOT_DIRECTOR_APPROVED');
     expect(service).toContain('AI_PILOT_MONTHLY_BUDGET_LIMIT');
+    expect(service).toContain('AI_PILOT_SYNTHETIC_TEST_OK');
+    expect(service).toContain('AI_CONFIG_VIEWED');
+    expect(service).toContain('AI_CONFIG_UPDATED');
+    expect(service).toContain('AI_CLOUD_GATE_UPDATED');
     expect(template).toContain('auth_key_visible');
     expect(template).toContain('Validar gates para habilitar cloud');
     expect(template).toContain('Habilitar IA Supervisora no plugin');
@@ -65,7 +69,12 @@ describe('AI operations console static safety', () => {
     expect(phpService).toContain('validate_generated');
     expect(phpService).toContain('jsonl_base64');
     expect(phpService).toContain('dry_run_token');
+    expect(phpService).toContain('withFileLock');
+    expect(phpService).toContain('JSONL_RETENTION_SECONDS');
     expect(nodeService).toContain('mkdtemp');
+    expect(nodeService).toContain('RedisKeyLock');
+    expect(nodeService).toContain('withOperationLock');
+    expect(nodeService).toContain('AI_OPERATIONS_LOCK_UNAVAILABLE');
     expect(nodeService).toContain('HISTORICAL_MINING_DRY_RUN_REQUIRED');
     expect(`${phpService}\n${nodeService}`).not.toMatch(/shell_exec|exec\s*\(|passthru|proc_open|spawn\(|child_process|inputPath|path_arbitrary/i);
   });
@@ -96,6 +105,10 @@ describe('AI operations console static safety', () => {
 
     expect(phpService).toContain('sanitizeExportText');
     expect(phpService).toContain('containsSensitiveData');
+    expect(phpService).toContain('HISTORICAL_JSONL_PREVIEWED');
+    expect(phpService).toContain('HISTORICAL_JSONL_GENERATED');
+    expect(phpService).toContain('HISTORICAL_JSONL_BLOCKED_PII');
+    expect(phpService).toContain('HISTORICAL_MINING_DRY_RUN_REQUESTED');
     expect(phpService).toContain('glpi_itilfollowups');
     expect(phpService).toContain('glpi_itilsolutions');
     expect(phpService).not.toMatch(/glpi_documents|glpi_documents_items|Document_Item/i);
@@ -103,6 +116,7 @@ describe('AI operations console static safety', () => {
     expect(template).toContain('Pré-visualizar exportação');
     expect(template).toContain('Gerar arquivo JSONL sanitizado');
     expect(template).toContain('Usar arquivo gerado no dry-run P2');
+    expect(template).toContain('área temporária controlada');
   });
 
   it('keeps operations pages away from WhatsApp, ticket mutation and KB publishing', async () => {

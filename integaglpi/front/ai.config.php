@@ -30,6 +30,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 Html::header(__('Configuração IA', 'glpiintegaglpi'), $_SERVER['PHP_SELF'], 'plugins', AiOperationsMenu::class);
 
 $renderer = new AiOperationsRenderer();
-$renderer->renderAiConfig($service->getPageData($flash));
+$renderer->renderAiConfig($service->getPageData($flash, Plugin::getCurrentUserId()));
 
 Html::footer();

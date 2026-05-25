@@ -26,6 +26,7 @@ $evidence = is_array($miningResult['evidence'] ?? null) ? $miningResult['evidenc
 $previewRows = is_array($miningResult['preview_rows'] ?? null) ? $miningResult['preview_rows'] : [];
 $csrf = GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
 $runId = trim((string) ($summary['run_id'] ?? $candidateResult['run_id'] ?? $data['selected_run_id'] ?? ''));
+$retentionHours = max(1, (int) ceil(((int) ($data['jsonl_retention_seconds'] ?? 86400)) / 3600));
 ?>
 
 <div class="container-fluid plugin-integaglpi-historical-mining">
@@ -41,6 +42,7 @@ $runId = trim((string) ($summary['run_id'] ?? $candidateResult['run_id'] ?? $dat
 
     <div class="alert alert-warning">
         <?= $this->escape(__('Não envie histórico bruto, anexos, mídia, tokens, senhas, telefones, e-mails ou CPF/CNPJ. A KB nativa não é publicada automaticamente.', 'glpiintegaglpi')); ?>
+        <?= $this->escape(sprintf(__('JSONL gerado fica em área temporária controlada por até %d horas.', 'glpiintegaglpi'), $retentionHours)); ?>
     </div>
 
     <?php if (!$configured) { ?>

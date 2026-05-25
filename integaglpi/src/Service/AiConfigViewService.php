@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace GlpiPlugin\Integaglpi\Service;
 
+use GlpiPlugin\Integaglpi\External\ExternalDatabase;
 use GlpiPlugin\Integaglpi\Plugin;
 use RuntimeException;
 use Throwable;
@@ -20,7 +21,7 @@ final class AiConfigViewService
     /**
      * @return array<string, mixed>
      */
-    public function getPageData(?array $flash = null): array
+    public function getPageData(?array $flash = null, ?int $viewerUserId = null): array
     {
         $diagnostics = null;
         $diagnosticsError = '';
@@ -47,6 +48,7 @@ final class AiConfigViewService
             'director_approved' => $this->runtimeValue('AI_PILOT_DIRECTOR_APPROVED', 'false'),
             'admin_opt_in' => $this->runtimeValue('AI_PILOT_ADMIN_OPT_IN', 'false'),
             'incident_ack' => $this->runtimeValue('AI_PILOT_INCIDENT_ACK', 'false'),
+            'synthetic_test_ok' => $this->runtimeValue('AI_PILOT_SYNTHETIC_TEST_OK', 'false'),
             'monthly_budget_limit' => $this->runtimeValue('AI_PILOT_MONTHLY_BUDGET_LIMIT', '0'),
             'environment' => $this->runtimeValue('AI_PILOT_ENVIRONMENT', $this->runtimeValue('APP_ENV', 'unknown')),
         ];
@@ -63,7 +65,7 @@ final class AiConfigViewService
             'base_url_configured' => $aiSupervisor['base_url_configured'] ?? null,
         ];
 
-        return [
+        $pageData = [
             'flash' => $flash,
             'diagnostics_error' => $diagnosticsError,
             'environment' => $this->detectEnvironment($cloudPilot),
@@ -85,6 +87,16 @@ final class AiConfigViewService
                 'configured' => $this->pluginConfigService->isConfigured(),
             ],
         ];
+        if ($viewerUserId !== null) {
+            $this->audit('AI_CONFIG_VIEWED', 'success', [
+                'glpi_user_id' => $viewerUserId,
+                'environment' => $pageData['environment'],
+                'cloud_enabled' => $cloudPilot['cloud_enabled'],
+                'embeddings_enabled' => $cloudPilot['embeddings_enabled'],
+            ]);
+        }
+
+        return $pageData;
     }
 
     /**
@@ -104,6 +116,11 @@ final class AiConfigViewService
                 $config['db_password'] = '';
                 $config['integration_auth_key'] = '';
                 $this->pluginConfigService->saveConnectionConfig($config);
+                $this->audit('AI_CONFIG_UPDATED', 'success', [
+                    'glpi_user_id' => $userId,
+                    'field' => 'ai_supervisor_enabled',
+                    'new_value' => (int) $config['ai_supervisor_enabled'],
+                ]);
 
                 return [
                     'type' => 'success',
@@ -116,6 +133,13 @@ final class AiConfigViewService
                 $pilot = is_array($data['cloud_pilot'] ?? null) ? $data['cloud_pilot'] : [];
                 $missing = is_array($pilot['missing_gates'] ?? null) ? $pilot['missing_gates'] : [];
                 if ($missing !== []) {
+                    $this->audit('AI_CLOUD_GATE_UPDATED', 'blocked', [
+                        'glpi_user_id' => $userId,
+                        'action' => 'validate_cloud_gates',
+                        'missing_gates' => $missing,
+                        'cloud_enabled' => false,
+                    ]);
+
                     return [
                         'type' => 'danger',
                         'message' => sprintf(
@@ -124,6 +148,12 @@ final class AiConfigViewService
                         ),
                     ];
                 }
+                $this->audit('AI_CLOUD_GATE_UPDATED', 'success', [
+                    'glpi_user_id' => $userId,
+                    'action' => 'validate_cloud_gates',
+                    'cloud_enabled' => false,
+                    'no_env_edit' => true,
+                ]);
 
                 return [
                     'type' => 'warning',
@@ -231,6 +261,7 @@ final class AiConfigViewService
             'director_approved' => 'direção',
             'admin_opt_in' => 'admin opt-in',
             'incident_ack' => 'incident ack',
+            'synthetic_test_ok' => 'synthetic test',
         ] as $key => $label) {
             if (!$this->truthy($pilot[$key] ?? false)) {
                 $missing[] = $label;
@@ -250,6 +281,72 @@ final class AiConfigViewService
         }
 
         return in_array(strtolower(trim((string) $value)), ['1', 'true', 'yes', 'on'], true);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function audit(string $eventType, string $status, array $payload): void
+    {
+        if (!$this->pluginConfigService->isConfigured()) {
+            return;
+        }
+
+        try {
+            $pdo = ExternalDatabase::getConnection($this->pluginConfigService->getConnectionConfig());
+            $exists = $pdo->query("SELECT to_regclass('public.glpi_plugin_integaglpi_audit_events')");
+            if ($exists === false || !$exists->fetchColumn()) {
+                return;
+            }
+
+            $statement = $pdo->prepare(
+                "INSERT INTO public.glpi_plugin_integaglpi_audit_events (
+                    correlation_id,
+                    ticket_id,
+                    conversation_id,
+                    message_id,
+                    direction,
+                    event_type,
+                    status,
+                    severity,
+                    source,
+                    payload_json,
+                    created_at
+                ) VALUES (
+                    :correlation_id,
+                    NULL,
+                    NULL,
+                    NULL,
+                    NULL,
+                    :event_type,
+                    :status,
+                    :severity,
+                    'AiConfigViewService',
+                    CAST(:payload AS jsonb),
+                    NOW()
+                )"
+            );
+            $statement->execute([
+                ':correlation_id' => 'ai_config:' . bin2hex(random_bytes(8)),
+                ':event_type' => $eventType,
+                ':status' => $status,
+                ':severity' => $status === 'blocked' ? 'warning' : 'info',
+                ':payload' => json_encode($this->sanitizeAuditPayload($payload), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}',
+            ]);
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][ai_config][audit] ' . $this->sanitizeLog($exception->getMessage()));
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private function sanitizeAuditPayload(array $payload): array
+    {
+        unset($payload['token'], $payload['secret'], $payload['password'], $payload['api_key'], $payload['bearer']);
+
+        return $payload;
     }
 
     private function sanitizeLog(string $message): string

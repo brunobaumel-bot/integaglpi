@@ -13,6 +13,8 @@ final class HistoricalMiningUiService
 {
     private const MAX_UPLOAD_BYTES = 5242880;
     private const MAX_EXPORT_TICKETS = 1000;
+    private const JSONL_RETENTION_SECONDS = 86400;
+    private const LOCK_TTL_SECONDS = 900;
     private PluginConfigService $pluginConfigService;
     private IntegrationServiceClient $client;
 
@@ -29,11 +31,14 @@ final class HistoricalMiningUiService
      */
     public function getPageData(array $query, ?array $flash = null): array
     {
+        $this->cleanupExpiredUploads();
+
         return [
             'flash' => $flash,
             'configured' => $this->pluginConfigService->isConfigured(),
             'selected_run_id' => $this->cleanIdentifier((string) ($query['run_id'] ?? '')),
             'export_options' => $this->loadExportOptions(),
+            'jsonl_retention_seconds' => self::JSONL_RETENTION_SECONDS,
         ];
     }
 
@@ -47,6 +52,7 @@ final class HistoricalMiningUiService
         if (!$this->pluginConfigService->isConfigured()) {
             return ['type' => 'danger', 'message' => __('PostgreSQL externo ainda não está configurado.', 'glpiintegaglpi')];
         }
+        $this->cleanupExpiredUploads();
 
         $action = trim((string) ($post['action'] ?? ''));
         try {
@@ -120,21 +126,31 @@ final class HistoricalMiningUiService
             throw new RuntimeException(__('Execute o dry-run do mesmo arquivo antes da mineração real.', 'glpiintegaglpi'));
         }
 
-        $payload = $this->payloadForUpload($upload, $post, $userId);
-        $payload['dry_run_token'] = $dryRunToken;
-        $response = $this->client->executeHistoricalMining($payload);
-        if (empty($response['success'])) {
-            return $this->clientError($response, __('Execução da mineração falhou.', 'glpiintegaglpi'));
-        }
+        return $this->withFileLock('p2_execute:' . (string) $upload['upload_id'], function () use ($upload, $post, $userId, $dryRunToken): array {
+            $payload = $this->payloadForUpload($upload, $post, $userId);
+            $payload['dry_run_token'] = $dryRunToken;
+            $response = $this->client->executeHistoricalMining($payload);
+            if (empty($response['success'])) {
+                return $this->clientError($response, __('Execução da mineração falhou.', 'glpiintegaglpi'));
+            }
 
-        $body = is_array($response['body'] ?? null) ? $response['body'] : [];
+            $body = is_array($response['body'] ?? null) ? $response['body'] : [];
+            $summary = is_array($body['summary'] ?? null) ? $body['summary'] : [];
+            $this->audit('HISTORICAL_MINING_EXECUTED', [
+                'glpi_user_id' => $userId,
+                'upload_id_hash' => hash('sha256', (string) $upload['upload_id']),
+                'run_id' => (string) ($summary['run_id'] ?? ''),
+                'rows_processed' => $summary['rows_processed'] ?? null,
+                'rows_rejected' => $summary['rows_rejected'] ?? null,
+            ]);
 
-        return [
-            'type' => 'success',
-            'message' => __('Mineração executada. O run_id está disponível para gerar candidatos de KB.', 'glpiintegaglpi'),
-            'upload' => $upload,
-            'mining_result' => $body,
-        ];
+            return [
+                'type' => 'success',
+                'message' => __('Mineração executada. O run_id está disponível para gerar candidatos de KB.', 'glpiintegaglpi'),
+                'upload' => $upload,
+                'mining_result' => $body,
+            ];
+        });
     }
 
     /**
@@ -148,22 +164,39 @@ final class HistoricalMiningUiService
             throw new RuntimeException(__('Informe um run_id válido da mineração P2.', 'glpiintegaglpi'));
         }
 
-        $response = $this->client->generateKbCandidatesFromHistory([
-            'run_id' => $runId,
-            'max_candidates' => max(1, min(50, (int) ($post['max_candidates'] ?? 20))),
-            'min_confidence' => max(1, min(100, (int) ($post['min_confidence'] ?? 65))),
-            'dry_run' => false,
-            'requested_by' => $userId,
-        ]);
-        if (empty($response['success'])) {
-            return $this->clientError($response, __('Geração de candidatos falhou.', 'glpiintegaglpi'));
-        }
+        return $this->withFileLock('p3_candidates:' . $runId, function () use ($runId, $post, $userId): array {
+            $maxCandidates = max(1, min(50, (int) ($post['max_candidates'] ?? 20)));
+            $minConfidence = max(1, min(100, (int) ($post['min_confidence'] ?? 65)));
+            $this->audit('KB_CANDIDATE_GENERATION_REQUESTED', [
+                'glpi_user_id' => $userId,
+                'run_id' => $runId,
+                'max_candidates' => $maxCandidates,
+                'min_confidence' => $minConfidence,
+            ]);
+            $response = $this->client->generateKbCandidatesFromHistory([
+                'run_id' => $runId,
+                'max_candidates' => $maxCandidates,
+                'min_confidence' => $minConfidence,
+                'dry_run' => false,
+                'requested_by' => $userId,
+            ]);
+            if (empty($response['success'])) {
+                return $this->clientError($response, __('Geração de candidatos falhou.', 'glpiintegaglpi'));
+            }
+            $body = is_array($response['body'] ?? null) ? $response['body'] : [];
+            $this->audit('KB_CANDIDATE_GENERATION_COMPLETED', [
+                'glpi_user_id' => $userId,
+                'run_id' => $runId,
+                'candidates_generated' => $body['candidates_generated'] ?? null,
+                'candidates_inserted' => $body['candidates_inserted'] ?? null,
+            ]);
 
-        return [
-            'type' => 'success',
-            'message' => __('Candidatos de KB gerados para revisão humana. Nenhuma publicação automática foi executada.', 'glpiintegaglpi'),
-            'candidate_result' => is_array($response['body'] ?? null) ? $response['body'] : [],
-        ];
+            return [
+                'type' => 'success',
+                'message' => __('Candidatos de KB gerados para revisão humana. Nenhuma publicação automática foi executada.', 'glpiintegaglpi'),
+                'candidate_result' => $body,
+            ];
+        });
     }
 
     /**
@@ -176,7 +209,7 @@ final class HistoricalMiningUiService
         $export = $this->buildGlpiJsonlExport($filters, false);
         $token = $this->exportPreviewToken($filters);
         $this->rememberExportPreview($token, $filters);
-        $this->audit('HISTORICAL_MINING_GLPI_EXPORT_PREVIEWED', [
+        $this->audit('HISTORICAL_JSONL_PREVIEWED', [
             'glpi_user_id' => $userId,
             'filters_hash' => hash('sha256', json_encode($filters, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: ''),
             'total_found' => $export['total_found'],
@@ -209,33 +242,43 @@ final class HistoricalMiningUiService
             throw new RuntimeException(__('Gere a pré-visualização da exportação antes de criar o JSONL.', 'glpiintegaglpi'));
         }
 
-        $export = $this->buildGlpiJsonlExport($filters, true);
-        if ($export['total_exportable'] <= 0 || trim((string) $export['jsonl_content']) === '') {
-            throw new RuntimeException(__('Nenhuma linha exportável para gerar JSONL.', 'glpiintegaglpi'));
-        }
-        if ((int) ($export['residual_sensitive_rows'] ?? 0) > 0) {
-            throw new RuntimeException(__('A exportação foi bloqueada porque ainda há dado sensível detectável após sanitização.', 'glpiintegaglpi'));
-        }
+        return $this->withFileLock('glpi_jsonl_export:' . hash('sha256', $userId . ':' . json_encode($filters, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)), function () use ($filters, $token, $userId): array {
+            $export = $this->buildGlpiJsonlExport($filters, true);
+            if ((int) ($export['residual_sensitive_rows'] ?? 0) > 0) {
+                $this->audit('HISTORICAL_JSONL_BLOCKED_PII', [
+                    'glpi_user_id' => $userId,
+                    'filters_hash' => hash('sha256', json_encode($filters, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: ''),
+                    'residual_sensitive_rows' => $export['residual_sensitive_rows'],
+                    'rows_rejected' => $export['rows_rejected'],
+                ]);
+                throw new RuntimeException(__('A exportação foi bloqueada porque ainda há dado sensível detectável após sanitização.', 'glpiintegaglpi'));
+            }
+            if ($export['total_exportable'] <= 0 || trim((string) $export['jsonl_content']) === '') {
+                throw new RuntimeException(__('Nenhuma linha exportável para gerar JSONL.', 'glpiintegaglpi'));
+            }
 
-        $upload = $this->storeGeneratedJsonl((string) $export['jsonl_content']);
-        $this->rememberUpload($upload);
-        $this->audit('HISTORICAL_MINING_GLPI_JSONL_GENERATED', [
-            'glpi_user_id' => $userId,
-            'upload_id_hash' => hash('sha256', (string) $upload['upload_id']),
-            'filters_hash' => hash('sha256', json_encode($filters, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: ''),
-            'total_exportable' => $export['total_exportable'],
-            'rows_rejected' => $export['rows_rejected'],
-        ]);
+            $upload = $this->storeGeneratedJsonl((string) $export['jsonl_content']);
+            $this->rememberUpload($upload);
+            $this->audit('HISTORICAL_JSONL_GENERATED', [
+                'glpi_user_id' => $userId,
+                'upload_id_hash' => hash('sha256', (string) $upload['upload_id']),
+                'content_hash' => (string) ($upload['content_hash'] ?? ''),
+                'filters_hash' => hash('sha256', json_encode($filters, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: ''),
+                'total_exportable' => $export['total_exportable'],
+                'rows_rejected' => $export['rows_rejected'],
+                'retention_seconds' => self::JSONL_RETENTION_SECONDS,
+            ]);
 
-        return [
-            'type' => 'success',
-            'message' => __('JSONL sanitizado gerado em área controlada. Agora execute o dry-run P2 com este arquivo.', 'glpiintegaglpi'),
-            'export_preview' => $export + [
-                'preview_token' => $token,
-                'filters' => $filters,
-            ],
-            'export_upload' => $upload,
-        ];
+            return [
+                'type' => 'success',
+                'message' => __('JSONL sanitizado gerado em área controlada. Agora execute o dry-run P2 com este arquivo.', 'glpiintegaglpi'),
+                'export_preview' => $export + [
+                    'preview_token' => $token,
+                    'filters' => $filters,
+                ],
+                'export_upload' => $upload,
+            ];
+        });
     }
 
     /**
@@ -249,31 +292,32 @@ final class HistoricalMiningUiService
             throw new RuntimeException(__('Arquivo gerado inválido. Gere novamente o JSONL a partir do GLPI.', 'glpiintegaglpi'));
         }
 
-        $payload = $this->payloadForUpload($upload, $post, $userId);
-        $response = $this->client->previewHistoricalMining($payload);
-        if (empty($response['success'])) {
-            return $this->clientError($response, __('Dry-run de mineração falhou.', 'glpiintegaglpi'));
-        }
+        return $this->withFileLock('p2_dry_run:' . (string) $upload['upload_id'], function () use ($upload, $post, $userId): array {
+            $payload = $this->payloadForUpload($upload, $post, $userId);
+            $this->audit('HISTORICAL_MINING_DRY_RUN_REQUESTED', [
+                'glpi_user_id' => $userId,
+                'upload_id_hash' => hash('sha256', (string) $upload['upload_id']),
+                'source' => 'glpi_export',
+            ]);
+            $response = $this->client->previewHistoricalMining($payload);
+            if (empty($response['success'])) {
+                return $this->clientError($response, __('Dry-run de mineração falhou.', 'glpiintegaglpi'));
+            }
 
-        $body = is_array($response['body'] ?? null) ? $response['body'] : [];
-        $upload['dry_run_token'] = (string) ($body['dry_run_token'] ?? '');
-        $upload['window_start'] = (string) ($payload['window_start'] ?? '');
-        $upload['window_end'] = (string) ($payload['window_end'] ?? '');
-        $upload['max_rows'] = (int) ($payload['max_rows'] ?? 1000);
-        $this->rememberUpload($upload);
-        $this->audit('HISTORICAL_MINING_GLPI_EXPORT_DRY_RUN', [
-            'glpi_user_id' => $userId,
-            'upload_id_hash' => hash('sha256', (string) $upload['upload_id']),
-            'rows_processed' => $body['summary']['rows_processed'] ?? null,
-            'rows_rejected' => $body['summary']['rows_rejected'] ?? null,
-        ]);
+            $body = is_array($response['body'] ?? null) ? $response['body'] : [];
+            $upload['dry_run_token'] = (string) ($body['dry_run_token'] ?? '');
+            $upload['window_start'] = (string) ($payload['window_start'] ?? '');
+            $upload['window_end'] = (string) ($payload['window_end'] ?? '');
+            $upload['max_rows'] = (int) ($payload['max_rows'] ?? 1000);
+            $this->rememberUpload($upload);
 
-        return [
-            'type' => 'success',
-            'message' => __('Dry-run do JSONL gerado concluído. Revise o preview antes da execução real.', 'glpiintegaglpi'),
-            'upload' => $upload,
-            'mining_result' => $body,
-        ];
+            return [
+                'type' => 'success',
+                'message' => __('Dry-run do JSONL gerado concluído. Revise o preview antes da execução real.', 'glpiintegaglpi'),
+                'upload' => $upload,
+                'mining_result' => $body,
+            ];
+        });
     }
 
     /**
@@ -317,6 +361,9 @@ final class HistoricalMiningUiService
             'path' => $path,
             'filename' => $originalName,
             'created_at' => time(),
+            'expires_at' => time() + self::JSONL_RETENTION_SECONDS,
+            'retention_seconds' => self::JSONL_RETENTION_SECONDS,
+            'source' => 'upload',
         ];
     }
 
@@ -837,6 +884,9 @@ final class HistoricalMiningUiService
             'path' => $path,
             'filename' => 'glpi-history-' . date('Ymd-His') . '.jsonl',
             'created_at' => time(),
+            'expires_at' => time() + self::JSONL_RETENTION_SECONDS,
+            'retention_seconds' => self::JSONL_RETENTION_SECONDS,
+            'content_hash' => hash('sha256', $content),
             'source' => 'glpi_export',
         ];
     }
@@ -849,7 +899,7 @@ final class HistoricalMiningUiService
     private function payloadForUpload(array $upload, array $post, int $userId): array
     {
         $path = (string) ($upload['path'] ?? '');
-        if ($path === '' || !is_file($path) || strpos(realpath($path) ?: '', realpath($this->uploadDir()) ?: '___') !== 0) {
+        if ($path === '' || !is_file($path) || !$this->isPathInside($path, $this->uploadDir())) {
             throw new RuntimeException(__('Upload expirado ou inválido. Reenvie o arquivo JSONL.', 'glpiintegaglpi'));
         }
 
@@ -873,6 +923,7 @@ final class HistoricalMiningUiService
      */
     private function rememberUpload(array $upload): void
     {
+        $this->cleanupExpiredUploads();
         if (!isset($_SESSION['integaglpi_ai_mining_uploads']) || !is_array($_SESSION['integaglpi_ai_mining_uploads'])) {
             $_SESSION['integaglpi_ai_mining_uploads'] = [];
         }
@@ -933,8 +984,71 @@ final class HistoricalMiningUiService
         if ($upload === null) {
             throw new RuntimeException(__('Upload não encontrado na sessão. Refaça o dry-run.', 'glpiintegaglpi'));
         }
+        if ((int) ($upload['expires_at'] ?? 0) > 0 && time() > (int) $upload['expires_at']) {
+            $path = (string) ($upload['path'] ?? '');
+            if ($path !== '' && $this->isPathInside($path, $this->uploadDir())) {
+                @unlink($path);
+            }
+            unset($_SESSION['integaglpi_ai_mining_uploads'][$uploadId]);
+            throw new RuntimeException(__('Upload expirado pela política de retenção. Gere ou envie o JSONL novamente.', 'glpiintegaglpi'));
+        }
 
         return $upload;
+    }
+
+    /**
+     * @template T
+     * @param callable(): T $work
+     * @return T
+     */
+    private function withFileLock(string $key, callable $work)
+    {
+        $dir = $this->lockDir();
+        if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) {
+            throw new RuntimeException(__('Não foi possível preparar lock operacional.', 'glpiintegaglpi'));
+        }
+
+        $lockFile = $dir . DIRECTORY_SEPARATOR . hash('sha256', $key) . '.lock';
+        if (is_file($lockFile) && (time() - (int) filemtime($lockFile)) > self::LOCK_TTL_SECONDS) {
+            @unlink($lockFile);
+        }
+
+        $handle = fopen($lockFile, 'c');
+        if ($handle === false) {
+            throw new RuntimeException(__('Não foi possível criar lock operacional.', 'glpiintegaglpi'));
+        }
+
+        try {
+            if (!flock($handle, LOCK_EX | LOCK_NB)) {
+                throw new RuntimeException(__('Operação já em andamento para o mesmo arquivo/filtro. Aguarde finalizar.', 'glpiintegaglpi'));
+            }
+            ftruncate($handle, 0);
+            fwrite($handle, (string) time());
+
+            return $work();
+        } finally {
+            @flock($handle, LOCK_UN);
+            @fclose($handle);
+        }
+    }
+
+    private function cleanupExpiredUploads(): void
+    {
+        $uploads = is_array($_SESSION['integaglpi_ai_mining_uploads'] ?? null) ? $_SESSION['integaglpi_ai_mining_uploads'] : [];
+        foreach ($uploads as $uploadId => $upload) {
+            if (!is_array($upload)) {
+                unset($_SESSION['integaglpi_ai_mining_uploads'][$uploadId]);
+                continue;
+            }
+            $expiresAt = (int) ($upload['expires_at'] ?? 0);
+            if ($expiresAt > 0 && time() > $expiresAt) {
+                $path = (string) ($upload['path'] ?? '');
+                if ($path !== '' && $this->isPathInside($path, $this->uploadDir())) {
+                    @unlink($path);
+                }
+                unset($_SESSION['integaglpi_ai_mining_uploads'][$uploadId]);
+            }
+        }
     }
 
     /**
@@ -1019,6 +1133,22 @@ final class HistoricalMiningUiService
     private function uploadDir(): string
     {
         return rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'integaglpi_ai_mining';
+    }
+
+    private function lockDir(): string
+    {
+        return rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'integaglpi_ai_mining_locks';
+    }
+
+    private function isPathInside(string $path, string $directory): bool
+    {
+        $realPath = realpath($path);
+        $realDirectory = realpath($directory);
+        if ($realPath === false || $realDirectory === false) {
+            return false;
+        }
+
+        return strpos($realPath . DIRECTORY_SEPARATOR, rtrim($realDirectory, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR) === 0;
     }
 
     private function cleanIdentifier(string $value): string

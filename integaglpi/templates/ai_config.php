@@ -138,6 +138,7 @@ $renderRows = function (array $rows): void {
                                 'director_approved' => $pilot['director_approved'] ?? 'false',
                                 'admin_opt_in' => $pilot['admin_opt_in'] ?? 'false',
                                 'incident_ack' => $pilot['incident_ack'] ?? 'false',
+                                'synthetic_test_ok' => $pilot['synthetic_test_ok'] ?? 'false',
                                 'monthly_budget_limit' => $pilot['monthly_budget_limit'] ?? '0',
                                 'gates_ok' => $pilot['gates_ok'] ?? false,
                             ]); ?>

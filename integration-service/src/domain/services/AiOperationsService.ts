@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { RedisKeyLock } from '../../cache/RedisKeyLock.js';
 import type { SqlExecutor } from '../../infra/db/postgres.js';
 import { analyzeHistoricalMiningDataset } from '../../historicalMining/engine.js';
 import { loadHistoricalMiningDataset, validateHistoricalWindow, validateMaxRows } from '../../historicalMining/input.js';
@@ -11,6 +12,7 @@ import { persistHistoricalMiningResult } from '../../historicalMining/repository
 import type { HistoricalMiningResult } from '../../historicalMining/types.js';
 import { generateKbCandidatesFromHistory } from '../../kbCandidates/generator.js';
 import { loadKbCandidateGenerationInput, persistKbCandidates } from '../../kbCandidates/repository.js';
+import type { KeyLock } from '../contracts/KeyLock.js';
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const MAX_UI_ROWS = 5_000;
@@ -71,7 +73,10 @@ function safeFilename(value: string): string {
 }
 
 export class AiOperationsService {
-  public constructor(private readonly executor: SqlExecutor) {}
+  public constructor(
+    private readonly executor: SqlExecutor,
+    private readonly lock: KeyLock = new RedisKeyLock(60_000, 0, 0),
+  ) {}
 
   public async previewHistoricalMining(input: HistoricalMiningUiInput) {
     const { result, options } = await this.analyzeUploadedJsonl(input);
@@ -104,35 +109,37 @@ export class AiOperationsService {
   }
 
   public async executeHistoricalMining(input: HistoricalMiningUiInput) {
-    const { result, options } = await this.analyzeUploadedJsonl(input);
-    const expectedToken = this.dryRunToken(result.run.inputHash, options);
-    if (!input.dryRunToken || input.dryRunToken !== expectedToken) {
-      await this.audit('HISTORICAL_MINING_EXECUTION_BLOCKED', 'blocked', input.requestedBy ?? null, {
-        reason: 'dry_run_required',
+    return this.withOperationLock(this.miningLockKey(input), async () => {
+      const { result, options } = await this.analyzeUploadedJsonl(input);
+      const expectedToken = this.dryRunToken(result.run.inputHash, options);
+      if (!input.dryRunToken || input.dryRunToken !== expectedToken) {
+        await this.audit('HISTORICAL_MINING_EXECUTION_BLOCKED', 'blocked', input.requestedBy ?? null, {
+          reason: 'dry_run_required',
+          input_hash: result.run.inputHash,
+        });
+        throw new AiOperationsError(
+          'HISTORICAL_MINING_DRY_RUN_REQUIRED',
+          'Execute o dry-run e confirme o mesmo arquivo antes da mineração real.',
+          409,
+        );
+      }
+
+      await persistHistoricalMiningResult(this.executor, result, 'glpi_ui');
+      await this.audit('HISTORICAL_MINING_EXECUTED', 'success', input.requestedBy ?? null, {
+        run_id: result.run.runId,
         input_hash: result.run.inputHash,
+        rows_processed: result.run.rowsProcessed,
+        patterns: result.patterns.length,
+        insights: result.insights.length,
       });
-      throw new AiOperationsError(
-        'HISTORICAL_MINING_DRY_RUN_REQUIRED',
-        'Execute o dry-run e confirme o mesmo arquivo antes da mineração real.',
-        409,
-      );
-    }
 
-    await persistHistoricalMiningResult(this.executor, result, 'glpi_ui');
-    await this.audit('HISTORICAL_MINING_EXECUTED', 'success', input.requestedBy ?? null, {
-      run_id: result.run.runId,
-      input_hash: result.run.inputHash,
-      rows_processed: result.run.rowsProcessed,
-      patterns: result.patterns.length,
-      insights: result.insights.length,
+      return {
+        summary: this.summaryFor(result, false),
+        patterns: result.patterns.slice(0, 10),
+        insights: result.insights.slice(0, 10),
+        evidence: result.evidence.slice(0, 10),
+      };
     });
-
-    return {
-      summary: this.summaryFor(result, false),
-      patterns: result.patterns.slice(0, 10),
-      insights: result.insights.slice(0, 10),
-      evidence: result.evidence.slice(0, 10),
-    };
   }
 
   public async generateKbCandidates(input: KbCandidateUiInput) {
@@ -141,47 +148,81 @@ export class AiOperationsService {
       throw new AiOperationsError('KB_CANDIDATE_RUN_ID_REQUIRED', 'run_id obrigatório.');
     }
 
-    const maxCandidates = normalizePositiveInteger(input.maxCandidates, 20, 50);
-    const minConfidence = normalizePositiveInteger(input.minConfidence, 65, 100);
-    await this.audit('KB_CANDIDATE_GENERATION_REQUESTED', 'pending', input.requestedBy ?? null, {
-      run_id: runId,
-      max_candidates: maxCandidates,
-      min_confidence: minConfidence,
-      dry_run: input.dryRun === true,
-    });
+    return this.withOperationLock(`kb_candidates:${sha256(runId)}`, async () => {
+      const maxCandidates = normalizePositiveInteger(input.maxCandidates, 20, 50);
+      const minConfidence = normalizePositiveInteger(input.minConfidence, 65, 100);
+      await this.audit('KB_CANDIDATE_GENERATION_REQUESTED', 'pending', input.requestedBy ?? null, {
+        run_id: runId,
+        max_candidates: maxCandidates,
+        min_confidence: minConfidence,
+        dry_run: input.dryRun === true,
+      });
 
-    const generationInput = await loadKbCandidateGenerationInput(this.executor, runId);
-    const candidates = generateKbCandidatesFromHistory(generationInput, {
-      maxCandidates,
-      minConfidence,
-    });
-    const inserted = input.dryRun === true
-      ? 0
-      : await persistKbCandidates(this.executor, candidates, input.requestedBy ?? null);
+      const generationInput = await loadKbCandidateGenerationInput(this.executor, runId);
+      const candidates = generateKbCandidatesFromHistory(generationInput, {
+        maxCandidates,
+        minConfidence,
+      });
+      const inserted = input.dryRun === true
+        ? 0
+        : await persistKbCandidates(this.executor, candidates, input.requestedBy ?? null);
 
-    await this.audit('KB_CANDIDATE_GENERATION_COMPLETED', 'success', input.requestedBy ?? null, {
-      run_id: runId,
-      candidates_generated: candidates.length,
-      candidates_inserted: inserted,
-      low_confidence: candidates.filter((candidate) => candidate.status === 'low_confidence').length,
-      possible_duplicate: candidates.filter((candidate) => candidate.possibleDuplicate).length,
-    });
+      await this.audit('KB_CANDIDATE_GENERATION_COMPLETED', 'success', input.requestedBy ?? null, {
+        run_id: runId,
+        candidates_generated: candidates.length,
+        candidates_inserted: inserted,
+        low_confidence: candidates.filter((candidate) => candidate.status === 'low_confidence').length,
+        possible_duplicate: candidates.filter((candidate) => candidate.possibleDuplicate).length,
+      });
 
-    return {
-      run_id: runId,
-      dry_run: input.dryRun === true,
-      candidates_generated: candidates.length,
-      candidates_inserted: inserted,
-      low_confidence: candidates.filter((candidate) => candidate.status === 'low_confidence').length,
-      possible_duplicate: candidates.filter((candidate) => candidate.possibleDuplicate).length,
-      candidates: candidates.slice(0, 10).map((candidate) => ({
-        title: candidate.title,
-        status: candidate.status,
-        article_type: candidate.articleType,
-        confidence_score: candidate.confidenceScore,
-        possible_duplicate: candidate.possibleDuplicate,
-      })),
-    };
+      return {
+        run_id: runId,
+        dry_run: input.dryRun === true,
+        candidates_generated: candidates.length,
+        candidates_inserted: inserted,
+        low_confidence: candidates.filter((candidate) => candidate.status === 'low_confidence').length,
+        possible_duplicate: candidates.filter((candidate) => candidate.possibleDuplicate).length,
+        candidates: candidates.slice(0, 10).map((candidate) => ({
+          title: candidate.title,
+          status: candidate.status,
+          article_type: candidate.articleType,
+          confidence_score: candidate.confidenceScore,
+          possible_duplicate: candidate.possibleDuplicate,
+        })),
+      };
+    });
+  }
+
+  private miningLockKey(input: HistoricalMiningUiInput): string {
+    return `historical_mining:${sha256([
+      input.filename,
+      input.jsonlContent,
+      String(input.maxRows),
+      input.windowStart ?? '',
+      input.windowEnd ?? '',
+    ].join('|'))}`;
+  }
+
+  private async withOperationLock<T>(key: string, work: () => Promise<T>): Promise<T> {
+    let entered = false;
+    try {
+      return await this.lock.withLock(`ai_operations:${key}`, async () => {
+        entered = true;
+        return work();
+      });
+    } catch (error: unknown) {
+      if (error instanceof AiOperationsError) {
+        throw error;
+      }
+      if (entered) {
+        throw error;
+      }
+      throw new AiOperationsError(
+        'AI_OPERATIONS_LOCK_UNAVAILABLE',
+        'Operação já em execução ou lock Redis indisponível. Tente novamente em instantes.',
+        409,
+      );
+    }
   }
 
   private async analyzeUploadedJsonl(input: HistoricalMiningUiInput) {

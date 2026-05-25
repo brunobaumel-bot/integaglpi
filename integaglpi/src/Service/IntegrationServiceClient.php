@@ -30,9 +30,11 @@ final class IntegrationServiceClient
     private const TIMEOUT_SECONDS   = 5;
     private const ENTITY_SELECTION_TIMEOUT_SECONDS = 8;
     private const AI_QUALITY_ANALYZE_TIMEOUT_SECONDS = 75;
+    private ?PluginConfigService $pluginConfigService;
 
-    public function __construct(private readonly ?PluginConfigService $pluginConfigService = null)
+    public function __construct(?PluginConfigService $pluginConfigService = null)
     {
+        $this->pluginConfigService = $pluginConfigService;
     }
 
     /**
@@ -162,7 +164,9 @@ final class IntegrationServiceClient
     {
         $query = http_build_query(array_filter(
             $filters,
-            static fn (mixed $value): bool => $value !== null && $value !== '' && $value !== []
+            static function ($value): bool {
+                return $value !== null && $value !== '' && $value !== [];
+            }
         ));
         $path = self::PATH_QUALITY_DASHBOARD . ($query !== '' ? '?' . $query : '');
 
@@ -177,7 +181,9 @@ final class IntegrationServiceClient
     {
         $query = http_build_query(array_filter(
             $filters,
-            static fn (mixed $value): bool => $value !== null && $value !== '' && $value !== []
+            static function ($value): bool {
+                return $value !== null && $value !== '' && $value !== [];
+            }
         ));
         $path = self::PATH_OBSERVABILITY . ($query !== '' ? '?' . $query : '');
 
