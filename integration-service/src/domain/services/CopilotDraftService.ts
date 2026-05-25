@@ -24,6 +24,22 @@ export interface RequestCopilotDraftInput {
   requestedBy: number | null;
 }
 
+type SupportIssueKey = 'printer' | 'formatting' | 'outlook';
+
+interface SupportIssueCoverage {
+  key: SupportIssueKey;
+  label: string;
+  guidance: string;
+  missingInformation: string[];
+}
+
+const COPILOT_MAX_CONTEXT_MESSAGES = 8;
+const COPILOT_MESSAGE_TEXT_CHARS = 360;
+const COPILOT_MAX_KB_ARTICLES = 3;
+const COPILOT_KB_EXCERPT_CHARS = 500;
+const COPILOT_MAX_AUXILIARY_ITEMS = 3;
+const COPILOT_MAX_CONTEXT_CHARS = 6_000;
+
 export class CopilotDraftService {
   public constructor(
     private readonly provider: CopilotDraftProvider,
@@ -41,8 +57,15 @@ export class CopilotDraftService {
 
     const result = this.config.dryRun
       ? this.createDryRunDraft(context, input.tone)
-      : await this.provider.generate(buildCopilotDraftPrompt(context, input.tone, this.config.maxChars));
-    const qualityResult = this.applySupportResponseQuality(context, result, input.tone);
+      : await this.provider.generate(buildCopilotDraftPrompt(
+        context,
+        input.tone,
+        Math.min(this.config.maxChars, COPILOT_MAX_CONTEXT_CHARS),
+      ));
+    const qualityResult = this.applyLocalKnowledgeFirst(
+      context,
+      this.applySupportResponseQuality(context, result, input.tone),
+    );
     const draftHash = this.hash(qualityResult.draftResponse);
 
     await this.audit('COPILOT_DRAFT_GENERATED', 'success', 'info', context, input.requestedBy, {
@@ -107,22 +130,22 @@ export class CopilotDraftService {
       queueName: sanitizeAiQualityText(context.queueName).slice(0, 120),
       slaLabel: sanitizeAiQualityText(context.slaLabel).slice(0, 120),
       windowNotice: context.windowNotice,
-      messages: context.messages.slice(-12).map((message) => ({
+      messages: context.messages.slice(-COPILOT_MAX_CONTEXT_MESSAGES).map((message) => ({
         direction: sanitizeAiQualityText(message.direction).slice(0, 20),
         messageType: sanitizeAiQualityText(message.messageType).slice(0, 40),
-        text: sanitizeAiQualityText(message.text).slice(0, 600),
+        text: sanitizeAiQualityText(message.text).slice(0, COPILOT_MESSAGE_TEXT_CHARS),
         createdAt: sanitizeAiQualityText(message.createdAt).slice(0, 40),
       })),
-      kbArticles: context.kbArticles.slice(0, 5).map((article) => ({
+      kbArticles: context.kbArticles.slice(0, COPILOT_MAX_KB_ARTICLES).map((article) => ({
         articleId: Number(article.articleId),
         title: sanitizeAiQualityText(article.title).slice(0, 180),
         category: sanitizeAiQualityText(article.category).slice(0, 120),
-        excerpt: sanitizeAiQualityText(article.excerpt).slice(0, 800),
+        excerpt: sanitizeAiQualityText(article.excerpt).slice(0, COPILOT_KB_EXCERPT_CHARS),
         internalUrl: sanitizeAiQualityText(article.internalUrl).slice(0, 300),
       })),
       aiQuality: context.aiQuality,
-      kbCandidates: context.kbCandidates.slice(0, 5),
-      historicalInsights: context.historicalInsights.slice(0, 5),
+      kbCandidates: context.kbCandidates.slice(0, COPILOT_MAX_AUXILIARY_ITEMS),
+      historicalInsights: context.historicalInsights.slice(0, COPILOT_MAX_AUXILIARY_ITEMS),
     };
   }
 
@@ -160,64 +183,101 @@ export class CopilotDraftService {
     tone: CopilotTone,
   ): CopilotDraftResult {
     const detectedIssues = this.detectSupportIssues(context);
-    if (detectedIssues.length >= 2) {
-      return {
-        ...result,
-        draftResponse: this.buildOperationalSupportDraft(detectedIssues),
-        tone,
-        missingInformation: this.mergeUnique(
-          detectedIssues.flatMap((issue) => issue.missingInformation),
-          result.missingInformation,
-          6,
-        ),
-        technicianChecklist: this.mergeUnique([
-          'Conferir se cada problema deve virar tarefa separada ou subchamado.',
-          'Validar dados mínimos antes de prometer execução.',
-          'Enviar a resposta manualmente somente após revisão.',
-        ], result.technicianChecklist, 8),
-        assumptions: this.mergeUnique([
-          'Cliente informou múltiplas demandas no mesmo atendimento.',
-        ], result.assumptions, 6),
-        confidenceScore: Math.max(result.confidenceScore, 70),
-      };
-    }
+    let draftResponse = this.compactDraftResponse(result.draftResponse);
+    draftResponse = this.removeTemplatePhrases(draftResponse, detectedIssues);
+    draftResponse = this.ensureIssueCoverage(draftResponse, detectedIssues);
+    draftResponse = this.ensureNextAction(draftResponse, detectedIssues);
+    draftResponse = this.compactDraftResponse(draftResponse);
 
     return {
       ...result,
-      draftResponse: this.compactDraftResponse(result.draftResponse),
+      draftResponse,
+      tone,
+      missingInformation: this.mergeUnique(
+        detectedIssues.flatMap((issue) => issue.missingInformation),
+        result.missingInformation,
+        6,
+      ),
+      technicianChecklist: this.mergeUnique([
+        'Conferir se o rascunho responde ao caso real, não a um modelo genérico.',
+        'Validar dados mínimos antes de prometer execução.',
+        'Enviar a resposta manualmente somente após revisão.',
+      ], result.technicianChecklist, 8),
+      assumptions: detectedIssues.length >= 2
+        ? this.mergeUnique(['Cliente informou múltiplas demandas no mesmo atendimento.'], result.assumptions, 6)
+        : result.assumptions,
+    };
+  }
+
+  private applyLocalKnowledgeFirst(context: CopilotContext, result: CopilotDraftResult): CopilotDraftResult {
+    const localReferences = context.kbArticles.slice(0, COPILOT_MAX_KB_ARTICLES).map((article) => ({
+      articleId: article.articleId,
+      title: sanitizeAiQualityText(article.title).slice(0, 180),
+      internalUrl: sanitizeAiQualityText(article.internalUrl).slice(0, 300),
+    }));
+    const seenReferences = new Set<string>();
+    const kbReferences = [...localReferences, ...result.kbReferences]
+      .map((reference) => ({
+        articleId: Number(reference.articleId),
+        title: sanitizeAiQualityText(reference.title).slice(0, 180),
+        internalUrl: sanitizeAiQualityText(reference.internalUrl).slice(0, 300),
+      }))
+      .filter((reference) => {
+        const key = `${reference.articleId}:${reference.internalUrl}`;
+        if (reference.title === '' || seenReferences.has(key)) {
+          return false;
+        }
+        seenReferences.add(key);
+        return true;
+      })
+      .slice(0, COPILOT_MAX_KB_ARTICLES);
+
+    return {
+      ...result,
+      kbReferences,
+      assumptions: context.kbArticles.length > 0
+        ? this.mergeUnique(['KB local consultada antes da sugestão de resposta.'], result.assumptions, 6)
+        : result.assumptions,
+      safetyWarnings: this.mergeUnique([
+        'Nenhuma mensagem foi enviada automaticamente.',
+        context.kbArticles.length > 0
+          ? 'Valide se os artigos da KB local se aplicam ao caso antes de enviar.'
+          : 'Sem artigo de KB local suficiente; revise tecnicamente antes de enviar.',
+      ], result.safetyWarnings, 6),
+      technicianChecklist: this.mergeUnique([
+        'Conferir artigos da KB local relacionados antes de enviar.',
+        'Usar a IA apenas como rascunho revisável pelo técnico.',
+      ], result.technicianChecklist, 8),
+      noAutoSend: true,
     };
   }
 
   /**
-   * @return Array<{
-   *   label: string;
-   *   action: string;
-   *   missingInformation: string[];
-   * }>
+   * @return SupportIssueCoverage[]
    */
-  private detectSupportIssues(context: CopilotContext): Array<{
-    label: string;
-    action: string;
-    missingInformation: string[];
-  }> {
+  private detectSupportIssues(context: CopilotContext): SupportIssueCoverage[] {
     const text = this.normalizeForDetection(
       context.messages
         .filter((message) => message.direction.toLowerCase() !== 'outbound')
         .map((message) => message.text)
         .join(' '),
     );
-    const issues: Array<{ label: string; action: string; missingInformation: string[] }> = [];
+    const issues: SupportIssueCoverage[] = [];
 
-    if (/\bimpressora\b/.test(text) && /\b(rede|wifi|wi fi|ip)\b/.test(text)) {
+    if (/\bimpressora\b/.test(text) && /\b(rede|wifi|wi fi|ip|instalar|configurar|computador)\b/.test(text)) {
       const missing = [];
-      if (!this.hasPrinterNetworkDetails(text)) {
-        missing.push('modelo e IP/nome da impressora');
+      const customerDoesNotKnowPrinter = this.customerDoesNotKnowPrinterDetails(text);
+      if (!this.hasPrinterNetworkDetails(text) && !customerDoesNotKnowPrinter) {
+        missing.push('algum identificador da impressora, se disponível');
       }
       issues.push({
+        key: 'printer',
         label: 'Impressora na rede',
-        action: missing.length > 0
-          ? `envie ${missing.join(' e ')} para eu orientar a instalação correta.`
-          : 'já tenho os dados principais; vou validar o procedimento de instalação na rede.',
+        guidance: customerDoesNotKnowPrinter
+          ? 'Sobre a impressora, não precisa levantar IP ou modelo agora; o técnico verifica no computador, no equipamento e na rede durante o atendimento.'
+          : missing.length > 0
+          ? 'Sobre a impressora, qualquer identificação que tiver ajuda, mas se não souber o técnico confere no local e na rede.'
+          : 'Sobre a impressora, vou usar os dados informados para validar instalação no computador e acesso na rede.',
         missingInformation: missing,
       });
     }
@@ -225,20 +285,25 @@ export class CopilotDraftService {
     if (/\b(formatar|formatacao|reinstalar)\b/.test(text) && /\b(computador|notebook|pc|maquina)\b/.test(text)) {
       const missing = [];
       const hasSchedule = this.hasCollectionSchedule(text);
+      const scheduleSummary = this.extractScheduleSummary(text);
       const hasBackupInfo = /\b(backup|arquivos?|dados|perfil|onedrive)\b/.test(text);
+      const hasPickup = /\b(retirar|retirada|coletar|coleta|buscar|pegar|empresa|local)\b/.test(text);
       if (!hasSchedule) {
-        missing.push('dia e horário para coleta ou acesso');
+        missing.push(hasPickup ? 'melhor dia e horário para retirada' : 'forma de atendimento e melhor dia/horário');
       }
       if (!hasBackupInfo) {
         missing.push('se há arquivos para backup');
       }
       issues.push({
+        key: 'formatting',
         label: 'Formatação do computador',
-        action: missing.length > 0 && hasSchedule
-          ? `já tenho dia/horário; confirme ${missing.join(' e ')} antes da execução.`
+        guidance: missing.length > 0 && hasSchedule
+          ? `A retirada já está encaminhada${scheduleSummary !== '' ? ` para ${scheduleSummary}` : ''}; falta confirmar se há arquivos, perfil ou dados que precisam de backup antes da formatação.`
+          : missing.length > 0 && hasPickup
+          ? 'Como o equipamento será retirado, preciso do melhor dia/horário de coleta e confirmar se há arquivos para backup.'
           : missing.length > 0
-          ? `confirme ${missing.join(' e ')} antes da execução.`
-          : 'já tenho janela e backup indicados; vou encaminhar a execução segura.',
+          ? 'Para a formatação, confirme se será coleta, acesso remoto ou atendimento local, além de backup necessário.'
+          : 'Para a formatação, já há informação suficiente para preparar a execução segura e revisar backup antes de iniciar.',
         missingInformation: missing,
       });
     }
@@ -249,25 +314,19 @@ export class CopilotDraftService {
         missing.push('print ou código do erro');
       }
       if (!/\b(versao|office 2016|office 2019|office 2021|microsoft 365|365)\b/.test(text)) {
-        missing.push('versão do Outlook/Office');
+        missing.push('se é Microsoft 365 ou licença local');
       }
       issues.push({
+        key: 'outlook',
         label: 'Outlook/licença',
-        action: missing.length > 0
-          ? `envie ${missing.join(' e ')} para validar a licença sem tentativa no escuro.`
-          : 'já tenho evidência e versão; vou validar ativação/licenciamento.',
+        guidance: missing.length > 0
+          ? `Para o Outlook, preciso de ${missing.join(' e ')} para validar ativação/licenciamento sem tentativa no escuro.`
+          : 'Para o Outlook, vou usar o erro informado para validar conta/licença antes de reinstalar ou alterar configuração.',
         missingInformation: missing,
       });
     }
 
     return issues.slice(0, 3);
-  }
-
-  private buildOperationalSupportDraft(issues: Array<{ label: string; action: string }>): string {
-    const lines = issues.map((issue, index) => `${index + 1}. ${issue.label}: ${issue.action}`);
-    lines.push('Próxima ação: com esses dados eu separo as demandas e encaminho o atendimento com segurança.');
-
-    return lines.slice(0, 5).join('\n');
   }
 
   private hasPrinterNetworkDetails(text: string): boolean {
@@ -276,18 +335,103 @@ export class CopilotDraftService {
       || /\b(nome da impressora|fila de impressao)\b/.test(text);
   }
 
+  private customerDoesNotKnowPrinterDetails(text: string): boolean {
+    return /\b(nao sei|nao sabe|nao tenho|desconheco|sem informacao|não sei|não sabe|não tenho)\b/.test(text)
+      && /\b(impressora|ip|modelo|nome)\b/.test(text);
+  }
+
   private hasCollectionSchedule(text: string): boolean {
     return /\b(\d{1,2}[:h]\d{0,2}|hoje|amanha|segunda|terca|quarta|quinta|sexta|sabado|domingo|manha|tarde)\b/.test(text);
   }
 
+  private extractScheduleSummary(text: string): string {
+    const day = text.match(/\b(hoje|amanha|segunda|terca|quarta|quinta|sexta|sabado|domingo)\b/)?.[1] ?? '';
+    const time = text.match(/\b\d{1,2}(?::\d{2}|h\d{0,2})\b/)?.[0] ?? '';
+    if (day !== '' && time !== '') {
+      return `${day} às ${time}`;
+    }
+    return day || time;
+  }
+
+  private removeTemplatePhrases(value: string, issues: SupportIssueCoverage[]): string {
+    const printerIssue = issues.find((issue) => issue.key === 'printer');
+    const customerDoesNotKnowPrinter = printerIssue !== undefined
+      && this.normalizeForDetection(printerIssue.guidance).includes('nao precisa levantar');
+    const printerReplacement = customerDoesNotKnowPrinter
+      ? 'não precisa levantar os dados técnicos da impressora agora; verificamos no local/rede.'
+      : 'se tiver algum identificador da impressora, informe; se não tiver, verificamos no local/rede.';
+    const nextAction = this.nextActionText(issues);
+    const nextActionWithoutPrefix = nextAction.replace(/^Próxima ação:\s*/i, '');
+
+    return value
+      .replace(/Próxima ação:\s*com esses dados eu separo as demandas[^.\n]*\.?/gi, nextAction)
+      .replace(/com esses dados eu separo as demandas[^.\n]*\.?/gi, nextActionWithoutPrefix)
+      .replace(/envie modelo e IP\/nome da impressora\.?/gi, printerReplacement)
+      .replace(/envie[^.\n]*(?:modelo|ip)[^.\n]*impressora[^.\n]*\.?/gi, printerReplacement);
+  }
+
+  private ensureIssueCoverage(value: string, issues: SupportIssueCoverage[]): string {
+    if (issues.length === 0) {
+      return value;
+    }
+    const lines = this.linesFromDraft(value);
+    for (const issue of issues) {
+      if (!this.draftCoversIssue(lines.join(' '), issue)) {
+        lines.push(issue.guidance);
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  private draftCoversIssue(value: string, issue: SupportIssueCoverage): boolean {
+    const text = this.normalizeForDetection(value);
+    if (issue.key === 'printer') {
+      return /\bimpressora\b/.test(text)
+        && (/\b(verific|rede|local|computador|equipamento|instal)\b/.test(text)
+          || /\b(modelo|fila|identificador|ip)\b/.test(text));
+    }
+    if (issue.key === 'formatting') {
+      return /\b(format|retir|colet|backup|horario|dia|agenda)\b/.test(text);
+    }
+    if (issue.key === 'outlook') {
+      return /\b(outlook|licenca|ativacao|erro|print|codigo|365|office)\b/.test(text);
+    }
+
+    return false;
+  }
+
+  private ensureNextAction(value: string, issues: SupportIssueCoverage[]): string {
+    if (/\bproxima acao\b/.test(this.normalizeForDetection(value))) {
+      return value;
+    }
+    const lines = this.linesFromDraft(value);
+    lines.push(this.nextActionText(issues));
+
+    return lines.join('\n');
+  }
+
+  private nextActionText(issues: SupportIssueCoverage[]): string {
+    const missing = issues.flatMap((issue) => issue.missingInformation);
+    if (missing.length > 0) {
+      return `Próxima ação: confirme ${this.humanJoin(missing.slice(0, 3))} para o técnico avançar com segurança.`;
+    }
+
+    return 'Próxima ação: validar os pontos acima e seguir com o atendimento manual pelo técnico responsável.';
+  }
+
   private compactDraftResponse(value: string): string {
-    const lines = value
-      .split(/\r?\n+/)
-      .map((line) => line.replace(/\s+/g, ' ').trim())
-      .filter((line) => line !== '');
+    const lines = this.linesFromDraft(value);
 
     const compacted = this.mergeUnique(lines, [], 5).join('\n');
     return compacted !== '' ? compacted : value;
+  }
+
+  private linesFromDraft(value: string): string[] {
+    return value
+      .split(/\r?\n+/)
+      .map((line) => line.replace(/\s+/g, ' ').trim())
+      .filter((line) => line !== '');
   }
 
   private mergeUnique(primary: string[], secondary: string[], maxItems: number): string[] {
@@ -307,6 +451,17 @@ export class CopilotDraftService {
     }
 
     return merged;
+  }
+
+  private humanJoin(items: string[]): string {
+    if (items.length <= 1) {
+      return items[0] ?? '';
+    }
+    if (items.length === 2) {
+      return `${items[0]} e ${items[1]}`;
+    }
+
+    return `${items.slice(0, -1).join(', ')} e ${items[items.length - 1]}`;
   }
 
   private normalizeForDetection(value: string): string {

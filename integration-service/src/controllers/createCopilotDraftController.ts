@@ -1,7 +1,9 @@
 import type { Request, Response } from 'express';
+import { randomUUID } from 'node:crypto';
 
 import { COPILOT_TONES, COPILOT_WINDOW_NOTICES, type CopilotContext, type CopilotTone } from '../ai/copilotTypes.js';
 import type { CopilotDraftService } from '../domain/services/CopilotDraftService.js';
+import { logger } from '../infra/logger/logger.js';
 
 function safeString(value: unknown, max: number): string {
   return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -69,8 +71,43 @@ function normalizeContext(value: unknown): CopilotContext {
   };
 }
 
+function payloadSize(req: Request): number {
+  const contentLength = Number(req.headers['content-length'] ?? 0);
+  if (Number.isFinite(contentLength) && contentLength > 0) {
+    return contentLength;
+  }
+
+  try {
+    return Buffer.byteLength(JSON.stringify(req.body ?? {}), 'utf8');
+  } catch {
+    return 0;
+  }
+}
+
+function classifyCopilotError(error: unknown): { code: string; status: number; errorType: string } {
+  const message = error instanceof Error ? error.message : 'COPILOT_DRAFT_FAILED';
+  const normalized = message.toLowerCase();
+  if (message === 'COPILOT_DISABLED') {
+    return { code: 'COPILOT_DISABLED', status: 503, errorType: 'disabled' };
+  }
+  if (normalized.includes('aborted') || normalized.includes('timeout') || normalized.includes('timed out')) {
+    return { code: 'COPILOT_PROVIDER_TIMEOUT', status: 504, errorType: 'timeout' };
+  }
+  if (normalized.includes('fetch failed') || normalized.includes('econnrefused') || /^COPILOT_OLLAMA_HTTP_/i.test(message)) {
+    return { code: 'COPILOT_PROVIDER_UNAVAILABLE', status: 503, errorType: 'provider_unavailable' };
+  }
+  if (/COPILOT_DRAFT_(INVALID_JSON|INVALID_SHAPE|INVALID_ENUM|EMPTY)/.test(message)) {
+    return { code: 'COPILOT_DRAFT_INVALID_JSON', status: 502, errorType: 'invalid_provider_response' };
+  }
+
+  return { code: message || 'COPILOT_DRAFT_FAILED', status: 400, errorType: 'validation' };
+}
+
 export function createCopilotDraftController(service: CopilotDraftService) {
   return async (req: Request, res: Response): Promise<void> => {
+    const startedAt = Date.now();
+    const requestId = randomUUID();
+    const size = payloadSize(req);
     try {
       const body = req.body as Record<string, unknown>;
       const action = safeString(body.action, 40) || 'generate';
@@ -84,6 +121,13 @@ export function createCopilotDraftController(service: CopilotDraftService) {
           tone: normalizeTone(body.tone),
           requestedBy: Number.isFinite(userId) ? userId : null,
         });
+        logger.info({
+          request_id: requestId,
+          elapsed_ms: Date.now() - startedAt,
+          payload_size: size,
+          provider_mode: 'copilot',
+          error_type: 'none',
+        }, '[integration-service][copilot][draft_generated]');
         res.status(201).json({ ok: true, draft: result });
         return;
       }
@@ -120,9 +164,15 @@ export function createCopilotDraftController(service: CopilotDraftService) {
 
       res.status(400).json({ ok: false, message: 'COPILOT_INVALID_ACTION' });
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'COPILOT_DRAFT_FAILED';
-      const status = message === 'COPILOT_DISABLED' ? 503 : 400;
-      res.status(status).json({ ok: false, message });
+      const classified = classifyCopilotError(error);
+      logger.warn({
+        request_id: requestId,
+        elapsed_ms: Date.now() - startedAt,
+        payload_size: size,
+        provider_mode: 'copilot',
+        error_type: classified.errorType,
+      }, '[integration-service][copilot][draft_failed]');
+      res.status(classified.status).json({ ok: false, message: classified.code, error_type: classified.errorType });
     }
   };
 }

@@ -25,6 +25,31 @@ function integaglpiCopilotJsonResponse(array $payload, int $statusCode = 200): v
     echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 }
 
+function integaglpiCopilotUserMessage(string $message): string
+{
+    if ($message === 'COPILOT_TIMEOUT' || $message === 'COPILOT_PROVIDER_TIMEOUT' || preg_match('/timeout|timed out|aborted/i', $message) === 1) {
+        return __('O Copiloto demorou mais que o esperado. Tente novamente ou reduza o contexto do chamado.', 'glpiintegaglpi');
+    }
+
+    if ($message === 'COPILOT_PROVIDER_UNAVAILABLE' || preg_match('/COPILOT_(?:OLLAMA|PROVIDER)|fetch failed|connection refused/i', $message) === 1) {
+        return __('Serviço de IA indisponível no momento.', 'glpiintegaglpi');
+    }
+
+    if (preg_match('/COPILOT_DRAFT_(?:INVALID_JSON|INVALID_SHAPE|INVALID_ENUM|EMPTY)|formato inválido/i', $message) === 1) {
+        return __('A IA respondeu em formato inválido. Tente novamente.', 'glpiintegaglpi');
+    }
+
+    if ($message === 'COPILOT_DISABLED') {
+        return __('Copiloto desabilitado no momento.', 'glpiintegaglpi');
+    }
+
+    if ($message === 'COPILOT_INVALID_CONTEXT') {
+        return __('Contexto do chamado inválido ou insuficiente para gerar rascunho.', 'glpiintegaglpi');
+    }
+
+    return __('Não foi possível usar o Copiloto agora.', 'glpiintegaglpi');
+}
+
 try {
     if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string) ($_GET['csrf_token'] ?? '') === '1') {
         if (!Plugin::canUpdate()) {
@@ -96,9 +121,16 @@ try {
     integaglpiCopilotJsonResponse([
         'success' => $response['success'],
         'body' => $response['body'],
-        'message' => (string) ($response['body']['message'] ?? ''),
+        'message' => $response['success']
+            ? (string) ($response['body']['message'] ?? '')
+            : integaglpiCopilotUserMessage((string) ($response['body']['message'] ?? '')),
     ], $response['success'] ? 200 : max(400, (int) $response['status']));
 } catch (Throwable $exception) {
     error_log('[integaglpi][copilot][error] ' . preg_replace('/(password|token|secret|bearer)\s*[:=]\s*\S+/i', '$1=[redacted]', $exception->getMessage()));
-    integaglpiCopilotJsonResponse(['success' => false, 'message' => __('Não foi possível usar o Copiloto agora.', 'glpiintegaglpi')], 500);
+    $isTimeout = $exception->getMessage() === 'COPILOT_TIMEOUT'
+        || preg_match('/timeout|timed out|aborted/i', $exception->getMessage()) === 1;
+    integaglpiCopilotJsonResponse([
+        'success' => false,
+        'message' => integaglpiCopilotUserMessage($exception->getMessage()),
+    ], $isTimeout ? 504 : 500);
 }

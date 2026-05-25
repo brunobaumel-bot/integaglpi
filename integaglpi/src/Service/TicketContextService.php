@@ -12,6 +12,12 @@ use Throwable;
 
 final class TicketContextService
 {
+    private const COPILOT_MAX_MESSAGES = 8;
+    private const COPILOT_MESSAGE_CHARS = 360;
+    private const COPILOT_MAX_KB_ARTICLES = 3;
+    private const COPILOT_KB_EXCERPT_CHARS = 500;
+    private const COPILOT_MAX_AUXILIARY_ITEMS = 3;
+
     private PluginConfigService $pluginConfigService;
 
     private ?PDO $pdo = null;
@@ -158,7 +164,7 @@ final class TicketContextService
             'summary' => (string) ($ticket->fields['content'] ?? ''),
             'last_message' => $this->latestMessageText($conversationId),
             'queue_name' => (string) ($conversation['queue_name'] ?? ''),
-        ], 5);
+        ], self::COPILOT_MAX_KB_ARTICLES);
 
         return [
             'conversation_id' => $conversationId,
@@ -174,7 +180,7 @@ final class TicketContextService
                     'article_id' => (int) ($article['article_id'] ?? 0),
                     'title' => $this->sanitizeCopilotText((string) ($article['title'] ?? ''), 180),
                     'category' => $this->sanitizeCopilotText((string) ($article['category'] ?? ''), 120),
-                    'excerpt' => $this->sanitizeCopilotText((string) ($article['excerpt'] ?? ''), 800),
+                    'excerpt' => $this->sanitizeCopilotText((string) ($article['excerpt'] ?? ''), self::COPILOT_KB_EXCERPT_CHARS),
                     'internal_url' => $this->sanitizeCopilotUrl((string) ($article['internal_url'] ?? '')),
                 ],
                 $kbArticles
@@ -506,7 +512,7 @@ final class TicketContextService
                   AND message_text IS NOT NULL
                   AND trim(message_text) <> ''
                 ORDER BY created_at DESC, id DESC
-                LIMIT 12
+                LIMIT 8
             ) recent
             ORDER BY created_at ASC, id ASC
             SQL
@@ -522,7 +528,7 @@ final class TicketContextService
         return array_map(fn (array $row): array => [
             'direction' => $this->sanitizeCopilotText((string) ($row['direction'] ?? ''), 20),
             'message_type' => $this->sanitizeCopilotText((string) ($row['message_type'] ?? ''), 40),
-            'text' => $this->sanitizeCopilotText((string) ($row['message_text'] ?? ''), 600),
+            'text' => $this->sanitizeCopilotText((string) ($row['message_text'] ?? ''), self::COPILOT_MESSAGE_CHARS),
             'created_at' => $this->sanitizeCopilotText((string) ($row['created_at'] ?? ''), 40),
         ], $rows);
     }
@@ -550,7 +556,7 @@ final class TicketContextService
             FROM glpi_plugin_integaglpi_kb_candidates
             WHERE status IN ('approved', 'in_review')
             ORDER BY confidence_score DESC, updated_at DESC
-            LIMIT 5
+            LIMIT 3
             SQL
         );
         $statement->execute();
@@ -582,7 +588,7 @@ final class TicketContextService
             SELECT insight_type, priority, title, confidence_score
             FROM glpi_plugin_integaglpi_hist_insights
             ORDER BY created_at DESC
-            LIMIT 5
+            LIMIT 3
             SQL
         );
         $statement->execute();

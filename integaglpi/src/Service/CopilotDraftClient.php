@@ -10,6 +10,8 @@ use RuntimeException;
 final class CopilotDraftClient
 {
     private const PATH_COPILOT_DRAFT = '/internal/glpi/copilot/draft';
+    private const COPILOT_DRAFT_TIMEOUT_MS = 90000;
+    private const COPILOT_DRAFT_CONNECT_TIMEOUT_MS = 10000;
 
     public function __construct(private readonly ?PluginConfigService $pluginConfigService = null)
     {
@@ -40,12 +42,16 @@ final class CopilotDraftClient
             throw new RuntimeException('[integaglpi][copilot] curl_init failed');
         }
 
+        $requestId = bin2hex(random_bytes(8));
+        $startedAt = microtime(true);
+        $payloadSize = strlen($json);
         curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT        => 35,
-            CURLOPT_POST           => true,
-            CURLOPT_POSTFIELDS     => $json,
-            CURLOPT_HTTPHEADER     => [
+            CURLOPT_RETURNTRANSFER    => true,
+            CURLOPT_TIMEOUT_MS        => self::COPILOT_DRAFT_TIMEOUT_MS,
+            CURLOPT_CONNECTTIMEOUT_MS => self::COPILOT_DRAFT_CONNECT_TIMEOUT_MS,
+            CURLOPT_POST              => true,
+            CURLOPT_POSTFIELDS        => $json,
+            CURLOPT_HTTPHEADER        => [
                 'Content-Type: application/json',
                 'Authorization: Bearer ' . $this->getAuthKey(),
             ],
@@ -53,10 +59,18 @@ final class CopilotDraftClient
 
         $raw = curl_exec($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlErrNo = (int) curl_errno($ch);
         $curlError = curl_error($ch);
         curl_close($ch);
+        $elapsedMs = (int) round((microtime(true) - $startedAt) * 1000);
 
         if ($raw === false || $curlError !== '') {
+            $errorType = $curlErrNo === CURLE_OPERATION_TIMEDOUT ? 'timeout' : 'transport';
+            $this->logRequest($requestId, $elapsedMs, $payloadSize, 0, $errorType);
+            if ($errorType === 'timeout') {
+                throw new RuntimeException('COPILOT_TIMEOUT');
+            }
+
             throw new RuntimeException('[integaglpi][copilot] curl error: ' . $curlError);
         }
 
@@ -65,6 +79,10 @@ final class CopilotDraftClient
             $body = [
                 'message' => __('Resposta inesperada do integration-service.', 'glpiintegaglpi'),
             ];
+        }
+
+        if ($status < 200 || $status >= 300) {
+            $this->logRequest($requestId, $elapsedMs, $payloadSize, $status, 'http_error');
         }
 
         return [
@@ -95,5 +113,18 @@ final class CopilotDraftClient
         $configService = $this->pluginConfigService ?? new PluginConfigService();
 
         return rtrim($configService->getIntegrationServiceUrl(), '/') . $path;
+    }
+
+    private function logRequest(string $requestId, int $elapsedMs, int $payloadSize, int $status, string $errorType): void
+    {
+        error_log(sprintf(
+            '[integaglpi][copilot][request] request_id=%s elapsed_ms=%d payload_size=%d timeout_ms=%d provider_mode=internal status=%d error_type=%s',
+            $requestId,
+            $elapsedMs,
+            $payloadSize,
+            self::COPILOT_DRAFT_TIMEOUT_MS,
+            $status,
+            preg_replace('/[^a-z0-9_:-]/i', '', $errorType) ?: 'unknown'
+        ));
     }
 }

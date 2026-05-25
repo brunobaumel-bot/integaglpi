@@ -124,9 +124,128 @@ describe('internal copilot draft', () => {
     expect(response.body.draft.noAutoSend).toBe(true);
   });
 
-  it('rewrites multi-issue support drafts into short numbered operational questions', async () => {
+  it('returns a clear operational timeout error for slow provider calls', async () => {
+    const service = {
+      requestDraft: vi.fn(async () => {
+        throw new Error('This operation was aborted.');
+      }),
+      recordUsage: vi.fn(),
+      recordFeedback: vi.fn(),
+    };
+    const app = createTestApp(service as never);
+
+    const response = await request(app)
+      .post('/internal/glpi/copilot/draft')
+      .set('Authorization', `Bearer ${apiKey}`)
+      .send({ action: 'generate', tone: 'technical', context, glpi_user_id: 7 });
+
+    expect(response.status).toBe(504);
+    expect(response.body.message).toBe('COPILOT_PROVIDER_TIMEOUT');
+    expect(response.body.error_type).toBe('timeout');
+  });
+
+  it('limits Copilot context before sending it to the provider', async () => {
+    let prompt = '';
+    const provider = {
+      generate: vi.fn(async (value: string) => {
+        prompt = value;
+        return parseCopilotDraftResult(JSON.stringify({
+          draft_response: 'Rascunho contextual curto para revisão humana.',
+          tone: 'neutral',
+          kb_references: [],
+          assumptions: [],
+          missing_information: [],
+          safety_warnings: ['revise antes de enviar'],
+          technician_checklist: ['confirmar dados'],
+          confidence_score: 40,
+          window_notice: 'open_24h',
+          template_notice: '',
+          no_auto_send: true,
+        }));
+      }),
+    };
+    const service = new CopilotDraftService(provider, {
+      enabled: true,
+      provider: 'ollama',
+      model: 'llama3.1',
+      dryRun: false,
+      maxChars: 20_000,
+    }, createAudit() as never);
+
+    await service.requestDraft({
+      context: {
+        ...context,
+        windowNotice: 'open_24h',
+        messages: Array.from({ length: 20 }, (_, index) => ({
+          direction: index % 2 === 0 ? 'inbound' : 'outbound',
+          messageType: 'text',
+          text: `old-marker-${index} ` + 'x'.repeat(900),
+          createdAt: `2026-05-23T10:${String(index).padStart(2, '0')}:00Z`,
+        })),
+        kbArticles: Array.from({ length: 8 }, (_, index) => ({
+          articleId: index + 1,
+          title: `Artigo ${index + 1}`,
+          category: 'Suporte',
+          excerpt: 'k'.repeat(1_000),
+          internalUrl: `/front/knowbaseitem.form.php?id=${index + 1}`,
+        })),
+      },
+      tone: 'neutral',
+      requestedBy: 7,
+    });
+
+    expect(provider.generate).toHaveBeenCalledOnce();
+    expect(prompt).not.toContain('old-marker-0');
+    expect(prompt).not.toContain('old-marker-11');
+    expect(prompt).toContain('old-marker-19');
+    expect(prompt).not.toContain('x'.repeat(361));
+    expect(prompt).not.toContain('Artigo 4');
+    expect(prompt.length).toBeLessThan(8_500);
+  });
+
+  it('keeps local KB references when the provider omits them', async () => {
     const provider = createProvider(JSON.stringify({
-      draft_response: 'Olá! Vamos revisar seu caso. Para ajudar melhor preciso de mais informações. Olá! Vamos revisar seu caso. Para ajudar melhor preciso de mais informações.',
+      draft_response: 'Valide a ativação do Office pelo procedimento interno antes de orientar o cliente.',
+      tone: 'technical',
+      kb_references: [],
+      assumptions: [],
+      missing_information: [],
+      safety_warnings: ['revise antes de enviar'],
+      technician_checklist: ['confirmar dados'],
+      confidence_score: 55,
+      window_notice: 'open_24h',
+      template_notice: '',
+      no_auto_send: true,
+    }));
+    const service = new CopilotDraftService(provider, {
+      enabled: true,
+      provider: 'ollama',
+      model: 'llama3.1',
+      dryRun: false,
+      maxChars: 8_000,
+    }, createAudit() as never);
+
+    const result = await service.requestDraft({
+      context: {
+        ...context,
+        windowNotice: 'open_24h',
+      },
+      tone: 'technical',
+      requestedBy: 7,
+    });
+
+    expect(result.kbReferences).toEqual([
+      { articleId: 10, title: 'Ativacao Office', internalUrl: '/front/knowbaseitem.form.php?id=10' },
+    ]);
+    expect(result.assumptions).toContain('KB local consultada antes da sugestão de resposta.');
+    expect(result.safetyWarnings.join(' ')).toContain('KB local');
+    expect(result.technicianChecklist.join(' ')).toContain('KB local');
+    expect(result.noAutoSend).toBe(true);
+  });
+
+  it('keeps contextual provider analysis and removes fixed template phrases', async () => {
+    const provider = createProvider(JSON.stringify({
+      draft_response: 'Entendi as três demandas. A retirada do computador precisa ser agendada antes da formatação. Para a impressora, envie modelo e IP/nome da impressora. No Outlook, vamos validar o erro de licença ao abrir. Próxima ação: com esses dados eu separo as demandas.',
       tone: 'neutral',
       kb_references: [],
       assumptions: [],
@@ -146,25 +265,36 @@ describe('internal copilot draft', () => {
       maxChars: 8_000,
     }, createAudit() as never);
 
-    const result = await service.requestDraft({ context: multiIssueContext, tone: 'neutral', requestedBy: 7 });
-    const lines = result.draftResponse.split('\n');
+    const result = await service.requestDraft({
+      context: {
+        ...multiIssueContext,
+        messages: [
+          multiIssueContext.messages[0],
+          {
+            direction: 'inbound',
+            messageType: 'text',
+            text: 'O equipamento será retirado na empresa, preciso agendar dia e horário. Não sei IP/modelo da impressora. Outlook dá erro de licença ao abrir.',
+            createdAt: '2026-05-23T10:02:00Z',
+          },
+        ],
+      },
+      tone: 'neutral',
+      requestedBy: 7,
+    });
 
-    expect(lines).toHaveLength(4);
-    expect(lines[0]).toMatch(/^1\. Impressora na rede:/);
-    expect(lines[0]).toContain('modelo e IP/nome da impressora');
-    expect(lines[1]).toMatch(/^2\. Formatação do computador:/);
-    expect(lines[1]).toContain('dia e horário para coleta ou acesso');
-    expect(lines[2]).toMatch(/^3\. Outlook\/licença:/);
-    expect(lines[2]).toContain('print ou código do erro');
-    expect(lines[2]).toContain('versão do Outlook/Office');
-    expect(lines[3]).toContain('Próxima ação');
-    expect(result.confidenceScore).toBeGreaterThanOrEqual(70);
+    expect(result.draftResponse).toContain('retirada do computador precisa ser agendada');
+    expect(result.draftResponse).toContain('não precisa levantar os dados técnicos da impressora');
+    expect(result.draftResponse).toContain('Outlook');
+    expect(result.draftResponse).toContain('Próxima ação');
+    expect(result.draftResponse).not.toContain('envie modelo e IP/nome');
+    expect(result.draftResponse).not.toContain('com esses dados eu separo as demandas');
+    expect(result.draftResponse.split('\n').length).toBeLessThanOrEqual(5);
     expect(result.noAutoSend).toBe(true);
   });
 
-  it('uses recent conversation history to avoid repeating answered support questions', async () => {
+  it('adapts to complete history without asking answered questions again', async () => {
     const provider = createProvider(JSON.stringify({
-      draft_response: 'Obrigado. Vou analisar.',
+      draft_response: 'Obrigado pelas informações. Vou organizar o atendimento conforme o que já foi informado.',
       tone: 'technical',
       kb_references: [],
       assumptions: [],
@@ -192,7 +322,7 @@ describe('internal copilot draft', () => {
           {
             direction: 'inbound',
             messageType: 'text',
-            text: 'A impressora é HP LaserJet no IP 192.168.10.30. Pode coletar amanhã 14h. Outlook Microsoft 365 com erro 0x80070005.',
+            text: 'Não sei IP/modelo da impressora. Pode retirar o equipamento amanhã às 14h. Outlook Microsoft 365 mostra erro 0x80070005 de licença ao abrir.',
             createdAt: '2026-05-23T10:02:00Z',
           },
         ],
@@ -201,13 +331,17 @@ describe('internal copilot draft', () => {
       requestedBy: 7,
     });
 
-    expect(result.draftResponse).not.toContain('modelo e IP/nome da impressora');
-    expect(result.draftResponse).not.toContain('dia e horário para coleta ou acesso');
+    expect(result.draftResponse).toContain('não precisa levantar IP ou modelo agora');
+    expect(result.draftResponse).toMatch(/amanh/i);
+    expect(result.draftResponse).toContain('14h');
+    expect(result.draftResponse).toContain('backup');
+    expect(result.draftResponse).toContain('Outlook');
+    expect(result.draftResponse).not.toContain('envie modelo e IP/nome');
+    expect(result.draftResponse).not.toMatch(/envie[^.\n]*(modelo|ip)[^.\n]*impressora/i);
+    expect(result.draftResponse).not.toContain('melhor dia e horário para retirada');
     expect(result.draftResponse).not.toContain('print ou código do erro');
-    expect(result.draftResponse).not.toContain('versão do Outlook/Office');
-    expect(result.draftResponse).toContain('já tenho os dados principais');
-    expect(result.draftResponse).toContain('já tenho dia/horário');
-    expect(result.draftResponse).toContain('se há arquivos para backup');
+    expect(result.draftResponse).not.toContain('Microsoft 365 ou licença local');
     expect(result.draftResponse.split('\n').length).toBeLessThanOrEqual(5);
+    expect(result.noAutoSend).toBe(true);
   });
 });
