@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 namespace GlpiPlugin\Integaglpi\Service;
 
+use GlpiPlugin\Integaglpi\External\ExternalDatabase;
+use PDO;
 use RuntimeException;
 use Throwable;
 
 final class HistoricalMiningUiService
 {
     private const MAX_UPLOAD_BYTES = 5242880;
+    private const MAX_EXPORT_TICKETS = 1000;
     private PluginConfigService $pluginConfigService;
     private IntegrationServiceClient $client;
 
@@ -30,6 +33,7 @@ final class HistoricalMiningUiService
             'flash' => $flash,
             'configured' => $this->pluginConfigService->isConfigured(),
             'selected_run_id' => $this->cleanIdentifier((string) ($query['run_id'] ?? '')),
+            'export_options' => $this->loadExportOptions(),
         ];
     }
 
@@ -46,6 +50,15 @@ final class HistoricalMiningUiService
 
         $action = trim((string) ($post['action'] ?? ''));
         try {
+            if ($action === 'preview_glpi_export') {
+                return $this->previewGlpiExport($post, $userId);
+            }
+            if ($action === 'generate_glpi_jsonl') {
+                return $this->generateGlpiJsonl($post, $userId);
+            }
+            if ($action === 'validate_generated') {
+                return $this->validateGeneratedJsonl($post, $userId);
+            }
             if ($action === 'validate_upload') {
                 return $this->validateUpload($post, $files, $userId);
             }
@@ -154,6 +167,116 @@ final class HistoricalMiningUiService
     }
 
     /**
+     * @param array<string, mixed> $post
+     * @return array<string, mixed>
+     */
+    private function previewGlpiExport(array $post, int $userId): array
+    {
+        $filters = $this->normalizeExportFilters($post);
+        $export = $this->buildGlpiJsonlExport($filters, false);
+        $token = $this->exportPreviewToken($filters);
+        $this->rememberExportPreview($token, $filters);
+        $this->audit('HISTORICAL_MINING_GLPI_EXPORT_PREVIEWED', [
+            'glpi_user_id' => $userId,
+            'filters_hash' => hash('sha256', json_encode($filters, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: ''),
+            'total_found' => $export['total_found'],
+            'total_exportable' => $export['total_exportable'],
+            'rows_rejected' => $export['rows_rejected'],
+            'fields_sanitized' => $export['fields_sanitized'],
+        ]);
+
+        return [
+            'type' => $export['total_exportable'] > 0 ? 'success' : 'warning',
+            'message' => $export['total_exportable'] > 0
+                ? __('Pré-visualização gerada. Revise a amostra sanitizada antes de gerar o JSONL.', 'glpiintegaglpi')
+                : __('Nenhum chamado exportável foi encontrado com esses filtros.', 'glpiintegaglpi'),
+            'export_preview' => $export + [
+                'preview_token' => $token,
+                'filters' => $filters,
+            ],
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $post
+     * @return array<string, mixed>
+     */
+    private function generateGlpiJsonl(array $post, int $userId): array
+    {
+        $filters = $this->normalizeExportFilters($post);
+        $token = trim((string) ($post['export_preview_token'] ?? ''));
+        if ($token === '' || !$this->isRememberedExportPreview($token, $filters)) {
+            throw new RuntimeException(__('Gere a pré-visualização da exportação antes de criar o JSONL.', 'glpiintegaglpi'));
+        }
+
+        $export = $this->buildGlpiJsonlExport($filters, true);
+        if ($export['total_exportable'] <= 0 || trim((string) $export['jsonl_content']) === '') {
+            throw new RuntimeException(__('Nenhuma linha exportável para gerar JSONL.', 'glpiintegaglpi'));
+        }
+        if ((int) ($export['residual_sensitive_rows'] ?? 0) > 0) {
+            throw new RuntimeException(__('A exportação foi bloqueada porque ainda há dado sensível detectável após sanitização.', 'glpiintegaglpi'));
+        }
+
+        $upload = $this->storeGeneratedJsonl((string) $export['jsonl_content']);
+        $this->rememberUpload($upload);
+        $this->audit('HISTORICAL_MINING_GLPI_JSONL_GENERATED', [
+            'glpi_user_id' => $userId,
+            'upload_id_hash' => hash('sha256', (string) $upload['upload_id']),
+            'filters_hash' => hash('sha256', json_encode($filters, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: ''),
+            'total_exportable' => $export['total_exportable'],
+            'rows_rejected' => $export['rows_rejected'],
+        ]);
+
+        return [
+            'type' => 'success',
+            'message' => __('JSONL sanitizado gerado em área controlada. Agora execute o dry-run P2 com este arquivo.', 'glpiintegaglpi'),
+            'export_preview' => $export + [
+                'preview_token' => $token,
+                'filters' => $filters,
+            ],
+            'export_upload' => $upload,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $post
+     * @return array<string, mixed>
+     */
+    private function validateGeneratedJsonl(array $post, int $userId): array
+    {
+        $upload = $this->loadRememberedUpload((string) ($post['upload_id'] ?? ''));
+        if (($upload['source'] ?? '') !== 'glpi_export') {
+            throw new RuntimeException(__('Arquivo gerado inválido. Gere novamente o JSONL a partir do GLPI.', 'glpiintegaglpi'));
+        }
+
+        $payload = $this->payloadForUpload($upload, $post, $userId);
+        $response = $this->client->previewHistoricalMining($payload);
+        if (empty($response['success'])) {
+            return $this->clientError($response, __('Dry-run de mineração falhou.', 'glpiintegaglpi'));
+        }
+
+        $body = is_array($response['body'] ?? null) ? $response['body'] : [];
+        $upload['dry_run_token'] = (string) ($body['dry_run_token'] ?? '');
+        $upload['window_start'] = (string) ($payload['window_start'] ?? '');
+        $upload['window_end'] = (string) ($payload['window_end'] ?? '');
+        $upload['max_rows'] = (int) ($payload['max_rows'] ?? 1000);
+        $this->rememberUpload($upload);
+        $this->audit('HISTORICAL_MINING_GLPI_EXPORT_DRY_RUN', [
+            'glpi_user_id' => $userId,
+            'upload_id_hash' => hash('sha256', (string) $upload['upload_id']),
+            'rows_processed' => $body['summary']['rows_processed'] ?? null,
+            'rows_rejected' => $body['summary']['rows_rejected'] ?? null,
+        ]);
+
+        return [
+            'type' => 'success',
+            'message' => __('Dry-run do JSONL gerado concluído. Revise o preview antes da execução real.', 'glpiintegaglpi'),
+            'upload' => $upload,
+            'mining_result' => $body,
+        ];
+    }
+
+    /**
      * @param array<string, mixed> $file
      * @return array<string, mixed>
      */
@@ -198,6 +321,527 @@ final class HistoricalMiningUiService
     }
 
     /**
+     * @param array<string, mixed> $post
+     * @return array<string, mixed>
+     */
+    private function normalizeExportFilters(array $post): array
+    {
+        $closedOnly = !empty($post['closed_only']);
+        $status = $this->cleanTicketStatus((string) ($post['ticket_status'] ?? ''));
+
+        return [
+            'date_start' => $this->cleanDate((string) ($post['export_date_start'] ?? '')),
+            'date_end' => $this->cleanDate((string) ($post['export_date_end'] ?? '')),
+            'entities_id' => max(0, (int) ($post['entities_id'] ?? 0)),
+            'groups_id' => max(0, (int) ($post['groups_id'] ?? 0)),
+            'itilcategories_id' => max(0, (int) ($post['itilcategories_id'] ?? 0)),
+            'status' => $closedOnly ? '' : $status,
+            'closed_only' => $closedOnly,
+            'limit' => max(1, min(self::MAX_EXPORT_TICKETS, (int) ($post['export_limit'] ?? 100))),
+            'include_followups' => !empty($post['include_followups']),
+            'include_solution' => !empty($post['include_solution']),
+        ];
+    }
+
+    private function cleanTicketStatus(string $value): string
+    {
+        $value = trim($value);
+
+        return in_array($value, ['1', '2', '3', '4', '5', '6'], true) ? $value : '';
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return array<string, mixed>
+     */
+    private function buildGlpiJsonlExport(array $filters, bool $includeContent): array
+    {
+        $tickets = $this->fetchGlpiTicketsForExport($filters);
+        $sample = [];
+        $jsonlLines = [];
+        $fieldsSanitized = [];
+        $rowsRejected = 0;
+        $residualSensitiveRows = 0;
+
+        foreach ($tickets as $ticket) {
+            $row = $this->buildJsonlRowFromTicket($ticket, $filters, $fieldsSanitized);
+            $json = json_encode($row, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            if (!is_string($json) || $json === '') {
+                $rowsRejected++;
+                continue;
+            }
+            if ($this->containsSensitiveData($json)) {
+                $rowsRejected++;
+                $residualSensitiveRows++;
+                continue;
+            }
+
+            if (count($sample) < 5) {
+                $sample[] = $json;
+            }
+            if ($includeContent) {
+                $jsonlLines[] = $json;
+            }
+        }
+
+        return [
+            'total_found' => count($tickets),
+            'total_exportable' => count($jsonlLines) > 0 ? count($jsonlLines) : max(0, count($tickets) - $rowsRejected),
+            'rows_rejected' => $rowsRejected,
+            'residual_sensitive_rows' => $residualSensitiveRows,
+            'sample_jsonl' => $sample,
+            'fields_sanitized' => array_values(array_unique($fieldsSanitized)),
+            'fields_removed' => ['id', 'requesttypes_id', 'users_id_recipient', 'locations_id', 'content_raw', 'followups_raw', 'solution_raw', 'attachments'],
+            'jsonl_content' => $includeContent ? implode("\n", $jsonlLines) . "\n" : '',
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return list<array<string, mixed>>
+     */
+    private function fetchGlpiTicketsForExport(array $filters): array
+    {
+        global $DB;
+        if (!isset($DB) || !is_object($DB)) {
+            return [];
+        }
+
+        $where = ['is_deleted' => 0];
+        $activeEntities = $this->activeEntityIds();
+        if ($activeEntities !== []) {
+            $where['entities_id'] = $activeEntities;
+        }
+
+        $entityId = (int) ($filters['entities_id'] ?? 0);
+        if ($entityId > 0) {
+            if (!$this->canUseEntity($entityId)) {
+                throw new RuntimeException(__('Entidade sem permissão para exportação.', 'glpiintegaglpi'));
+            }
+            $where['entities_id'] = $entityId;
+        }
+
+        $categoryId = (int) ($filters['itilcategories_id'] ?? 0);
+        if ($categoryId > 0) {
+            $where['itilcategories_id'] = $categoryId;
+        }
+
+        if (!empty($filters['closed_only'])) {
+            $where['status'] = [5, 6];
+        } elseif ((string) ($filters['status'] ?? '') !== '') {
+            $where['status'] = (int) $filters['status'];
+        }
+
+        $dateStart = (string) ($filters['date_start'] ?? '');
+        $dateEnd = (string) ($filters['date_end'] ?? '');
+        if ($dateStart !== '') {
+            $where[] = ['date' => ['>=', $dateStart . ' 00:00:00']];
+        }
+        if ($dateEnd !== '') {
+            $where[] = ['date' => ['<=', $dateEnd . ' 23:59:59']];
+        }
+
+        $ticketIdsForGroup = null;
+        $groupId = (int) ($filters['groups_id'] ?? 0);
+        if ($groupId > 0) {
+            $ticketIdsForGroup = $this->ticketIdsForGroup($groupId);
+            if ($ticketIdsForGroup === []) {
+                return [];
+            }
+            $where['id'] = $ticketIdsForGroup;
+        }
+
+        $rows = [];
+        foreach ($DB->request([
+            'SELECT' => ['id', 'name', 'content', 'date', 'solvedate', 'closedate', 'status', 'entities_id', 'itilcategories_id', 'priority', 'urgency'],
+            'FROM' => 'glpi_tickets',
+            'WHERE' => $where,
+            'ORDER' => 'date DESC',
+            'LIMIT' => (int) ($filters['limit'] ?? 100),
+        ]) as $row) {
+            $ticket = (array) $row;
+            $ticketId = (int) ($ticket['id'] ?? 0);
+            if ($ticketId <= 0) {
+                continue;
+            }
+            if (!$this->canReadTicket($ticketId)) {
+                continue;
+            }
+            $ticket['entity_name'] = $this->lookupName('glpi_entities', (int) ($ticket['entities_id'] ?? 0), 'completename');
+            $ticket['category_name'] = $this->lookupName('glpi_itilcategories', (int) ($ticket['itilcategories_id'] ?? 0), 'completename');
+            $ticket['group_name'] = $this->assignedGroupName($ticketId);
+            $ticket['followup_text'] = !empty($filters['include_followups']) ? $this->loadFollowupText($ticketId) : '';
+            $ticket['solution_text'] = !empty($filters['include_solution']) ? $this->loadSolutionText($ticketId) : '';
+            $ticket['satisfaction_score'] = $this->loadSatisfactionScore($ticketId);
+            $rows[] = $ticket;
+        }
+
+        return $rows;
+    }
+
+    /**
+     * @param array<string, mixed> $ticket
+     * @param array<string, mixed> $filters
+     * @param array<int, string> $fieldsSanitized
+     * @return array<string, mixed>
+     */
+    private function buildJsonlRowFromTicket(array $ticket, array $filters, array &$fieldsSanitized): array
+    {
+        $ticketId = (int) ($ticket['id'] ?? 0);
+        $title = $this->sanitizeExportText((string) ($ticket['name'] ?? ''), 400, 'title_text_sanitized', $fieldsSanitized);
+        $description = $this->sanitizeExportText((string) ($ticket['content'] ?? ''), 1200, 'description_text_sanitized', $fieldsSanitized);
+        $followups = $this->sanitizeExportText((string) ($ticket['followup_text'] ?? ''), 1200, 'followup_text_sanitized', $fieldsSanitized);
+        $solution = $this->sanitizeExportText((string) ($ticket['solution_text'] ?? ''), 1200, 'solution_text_sanitized', $fieldsSanitized);
+
+        return [
+            'ticket_id_hash' => hash('sha256', 'glpi_ticket:' . $ticketId),
+            'opened_at' => $this->dateOrNull((string) ($ticket['date'] ?? '')),
+            'solved_at' => $this->dateOrNull((string) ($ticket['solvedate'] ?? '')) ?? $this->dateOrNull((string) ($ticket['closedate'] ?? '')),
+            'status' => $this->statusLabel((int) ($ticket['status'] ?? 0)),
+            'category' => $this->sanitizeExportText((string) ($ticket['category_name'] ?? ''), 160, 'category', $fieldsSanitized),
+            'entity' => $this->sanitizeExportText((string) ($ticket['entity_name'] ?? ''), 160, 'entity', $fieldsSanitized),
+            'group' => $this->sanitizeExportText((string) ($ticket['group_name'] ?? ''), 160, 'group', $fieldsSanitized),
+            'priority' => (string) ((int) ($ticket['priority'] ?? 0)),
+            'urgency' => (string) ((int) ($ticket['urgency'] ?? 0)),
+            'title_text_sanitized' => $title,
+            'description_text_sanitized' => $description,
+            'followup_text_sanitized' => $followups,
+            'solution_text_sanitized' => $solution,
+            'reopened_count' => 0,
+            'satisfaction_score' => $ticket['satisfaction_score'],
+        ];
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function activeEntityIds(): array
+    {
+        if (!class_exists('\Session') || !method_exists('\Session', 'getActiveEntities')) {
+            return [];
+        }
+
+        $ids = \Session::getActiveEntities();
+        if (!is_array($ids)) {
+            return [];
+        }
+
+        return array_values(array_unique(array_filter(array_map('intval', $ids), static function (int $id): bool {
+            return $id >= 0;
+        })));
+    }
+
+    private function canUseEntity(int $entityId): bool
+    {
+        return !class_exists('\Session')
+            || !method_exists('\Session', 'haveAccessToEntity')
+            || (bool) \Session::haveAccessToEntity($entityId);
+    }
+
+    private function canReadTicket(int $ticketId): bool
+    {
+        $ticket = new \Ticket();
+
+        return $ticketId > 0
+            && $ticket->getFromDB($ticketId)
+            && (bool) $ticket->can($ticketId, READ);
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function ticketIdsForGroup(int $groupId): array
+    {
+        global $DB;
+        if ($groupId <= 0 || !isset($DB) || !is_object($DB)) {
+            return [];
+        }
+
+        $ids = [];
+        foreach ($DB->request([
+            'SELECT' => ['tickets_id'],
+            'FROM' => 'glpi_groups_tickets',
+            'WHERE' => ['groups_id' => $groupId],
+            'LIMIT' => self::MAX_EXPORT_TICKETS * 2,
+        ]) as $row) {
+            $id = (int) ($row['tickets_id'] ?? 0);
+            if ($id > 0) {
+                $ids[] = $id;
+            }
+        }
+
+        return array_values(array_unique($ids));
+    }
+
+    private function assignedGroupName(int $ticketId): string
+    {
+        global $DB;
+        if ($ticketId <= 0 || !isset($DB) || !is_object($DB)) {
+            return '';
+        }
+
+        foreach ($DB->request([
+            'SELECT' => ['groups_id'],
+            'FROM' => 'glpi_groups_tickets',
+            'WHERE' => ['tickets_id' => $ticketId],
+            'ORDER' => 'type DESC, groups_id ASC',
+            'LIMIT' => 1,
+        ]) as $row) {
+            return $this->lookupName('glpi_groups', (int) ($row['groups_id'] ?? 0), 'completename');
+        }
+
+        return '';
+    }
+
+    private function loadFollowupText(int $ticketId): string
+    {
+        global $DB;
+        if ($ticketId <= 0 || !isset($DB) || !is_object($DB)) {
+            return '';
+        }
+
+        $parts = [];
+        foreach ($DB->request([
+            'SELECT' => ['content'],
+            'FROM' => 'glpi_itilfollowups',
+            'WHERE' => [
+                'itemtype' => 'Ticket',
+                'items_id' => $ticketId,
+                'is_private' => 0,
+            ],
+            'ORDER' => 'date ASC',
+            'LIMIT' => 5,
+        ]) as $row) {
+            $parts[] = (string) ($row['content'] ?? '');
+        }
+
+        return implode("\n", $parts);
+    }
+
+    private function loadSolutionText(int $ticketId): string
+    {
+        global $DB;
+        if ($ticketId <= 0 || !isset($DB) || !is_object($DB)) {
+            return '';
+        }
+
+        $parts = [];
+        foreach ($DB->request([
+            'SELECT' => ['content'],
+            'FROM' => 'glpi_itilsolutions',
+            'WHERE' => [
+                'itemtype' => 'Ticket',
+                'items_id' => $ticketId,
+            ],
+            'ORDER' => 'date_creation ASC',
+            'LIMIT' => 3,
+        ]) as $row) {
+            $parts[] = (string) ($row['content'] ?? '');
+        }
+
+        return implode("\n", $parts);
+    }
+
+    private function loadSatisfactionScore(int $ticketId): ?int
+    {
+        global $DB;
+        if ($ticketId <= 0 || !isset($DB) || !is_object($DB) || !$DB->tableExists('glpi_ticketsatisfactions')) {
+            return null;
+        }
+
+        foreach ($DB->request([
+            'SELECT' => ['satisfaction'],
+            'FROM' => 'glpi_ticketsatisfactions',
+            'WHERE' => ['tickets_id' => $ticketId],
+            'LIMIT' => 1,
+        ]) as $row) {
+            $score = (int) ($row['satisfaction'] ?? 0);
+
+            return $score > 0 ? $score : null;
+        }
+
+        return null;
+    }
+
+    private function lookupName(string $table, int $id, string $preferredField = 'name'): string
+    {
+        static $cache = [];
+        global $DB;
+        if ($id <= 0 || !isset($DB) || !is_object($DB)) {
+            return '';
+        }
+
+        $key = $table . ':' . $preferredField . ':' . $id;
+        if (array_key_exists($key, $cache)) {
+            return (string) $cache[$key];
+        }
+
+        foreach ($DB->request([
+            'FROM' => $table,
+            'WHERE' => ['id' => $id],
+            'LIMIT' => 1,
+        ]) as $row) {
+            $row = (array) $row;
+            $name = (string) ($row[$preferredField] ?? $row['name'] ?? '');
+            $cache[$key] = $name;
+
+            return $name;
+        }
+
+        $cache[$key] = '';
+        return '';
+    }
+
+    /**
+     * @return array<string, list<array<string, mixed>>>
+     */
+    private function loadExportOptions(): array
+    {
+        return [
+            'entities' => $this->loadOptionsFromTable('glpi_entities', 'completename', 250, true),
+            'groups' => $this->loadOptionsFromTable('glpi_groups', 'completename', 250, false),
+            'categories' => $this->loadOptionsFromTable('glpi_itilcategories', 'completename', 250, false),
+            'statuses' => [
+                ['id' => 1, 'name' => 'new'],
+                ['id' => 2, 'name' => 'processing'],
+                ['id' => 3, 'name' => 'planned'],
+                ['id' => 4, 'name' => 'pending'],
+                ['id' => 5, 'name' => 'solved'],
+                ['id' => 6, 'name' => 'closed'],
+            ],
+        ];
+    }
+
+    /**
+     * @return list<array{id: int, name: string}>
+     */
+    private function loadOptionsFromTable(string $table, string $labelField, int $limit, bool $filterEntities): array
+    {
+        global $DB;
+        if (!isset($DB) || !is_object($DB) || !$DB->tableExists($table)) {
+            return [];
+        }
+
+        $where = [];
+        if ($filterEntities) {
+            $active = $this->activeEntityIds();
+            if ($active !== []) {
+                $where['id'] = $active;
+            }
+        }
+
+        $criteria = [
+            'FROM' => $table,
+            'ORDER' => $labelField . ' ASC',
+            'LIMIT' => $limit,
+        ];
+        if ($where !== []) {
+            $criteria['WHERE'] = $where;
+        }
+
+        $rows = [];
+        foreach ($DB->request($criteria) as $row) {
+            $row = (array) $row;
+            $id = (int) ($row['id'] ?? 0);
+            if ($id < 0) {
+                continue;
+            }
+            $rows[] = [
+                'id' => $id,
+                'name' => (string) ($row[$labelField] ?? $row['name'] ?? ('#' . $id)),
+            ];
+        }
+
+        return $rows;
+    }
+
+    private function sanitizeExportText(string $value, int $limit, string $field, array &$fieldsSanitized): string
+    {
+        $original = $value;
+        $value = html_entity_decode(strip_tags($value), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $value = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]+/u', ' ', $value) ?? '';
+        $patterns = [
+            'email' => '/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/i',
+            'phone' => '/\b(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?\d{4,5}[\s.\-]?\d{4}\b/',
+            'cpf_cnpj' => '/\b(?:\d{3}\.?\d{3}\.?\d{3}-?\d{2}|\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})\b/',
+            'bearer' => '/\bBearer\s+[A-Za-z0-9._~+\/=-]+/i',
+            'password' => '/\b(password|senha|token|secret|api[_-]?key|app_secret)\s*[:=]\s*\S+/i',
+            'ip' => '/\b(?:10|127|172\.(?:1[6-9]|2\d|3[0-1])|192\.168)(?:\.\d{1,3}){2}\b/',
+            'url' => '/https?:\/\/[^\s<>"\']+/i',
+            'base64' => '/\b[A-Za-z0-9+\/]{48,}={0,2}\b/',
+        ];
+
+        foreach ($patterns as $kind => $pattern) {
+            $updated = preg_replace($pattern, '[' . $kind . '_redacted]', $value);
+            if (is_string($updated) && $updated !== $value) {
+                $fieldsSanitized[] = $field . ':' . $kind;
+                $value = $updated;
+            }
+        }
+
+        $value = preg_replace('/\s+/u', ' ', $value) ?? '';
+        $value = trim($value);
+        if ($value !== trim(strip_tags($original))) {
+            $fieldsSanitized[] = $field . ':normalized';
+        }
+
+        return mb_substr($value, 0, $limit, 'UTF-8');
+    }
+
+    private function containsSensitiveData(string $value): bool
+    {
+        return preg_match('/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}|\b(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?\d{4,5}[\s.\-]?\d{4}\b|\b(?:\d{3}\.?\d{3}\.?\d{3}-?\d{2}|\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})\b|\bBearer\s+[A-Za-z0-9._~+\/=-]+|\b(password|senha|token|secret|api[_-]?key|app_secret)\s*[:=]\s*\S+/i', $value) === 1;
+    }
+
+    private function statusLabel(int $status): string
+    {
+        $labels = [
+            1 => 'new',
+            2 => 'processing',
+            3 => 'planned',
+            4 => 'pending',
+            5 => 'solved',
+            6 => 'closed',
+        ];
+
+        return $labels[$status] ?? 'unknown';
+    }
+
+    private function dateOrNull(string $value): ?string
+    {
+        $value = trim($value);
+
+        return $value !== '' ? $value : null;
+    }
+
+    private function storeGeneratedJsonl(string $content): array
+    {
+        if (trim($content) === '') {
+            throw new RuntimeException(__('JSONL gerado vazio.', 'glpiintegaglpi'));
+        }
+
+        $dir = $this->uploadDir();
+        if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) {
+            throw new RuntimeException(__('Não foi possível preparar área temporária controlada.', 'glpiintegaglpi'));
+        }
+
+        $uploadId = bin2hex(random_bytes(16));
+        $path = $dir . DIRECTORY_SEPARATOR . $uploadId . '.jsonl';
+        if (file_put_contents($path, $content, LOCK_EX) === false) {
+            throw new RuntimeException(__('Falha ao gravar JSONL sanitizado.', 'glpiintegaglpi'));
+        }
+        @chmod($path, 0600);
+
+        return [
+            'upload_id' => $uploadId,
+            'path' => $path,
+            'filename' => 'glpi-history-' . date('Ymd-His') . '.jsonl',
+            'created_at' => time(),
+            'source' => 'glpi_export',
+        ];
+    }
+
+    /**
      * @param array<string, mixed> $upload
      * @param array<string, mixed> $post
      * @return array<string, mixed>
@@ -237,6 +881,48 @@ final class HistoricalMiningUiService
     }
 
     /**
+     * @param array<string, mixed> $filters
+     */
+    private function rememberExportPreview(string $token, array $filters): void
+    {
+        if (!isset($_SESSION['integaglpi_ai_mining_export_previews']) || !is_array($_SESSION['integaglpi_ai_mining_export_previews'])) {
+            $_SESSION['integaglpi_ai_mining_export_previews'] = [];
+        }
+
+        $_SESSION['integaglpi_ai_mining_export_previews'][$token] = [
+            'filters' => $filters,
+            'created_at' => time(),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     */
+    private function isRememberedExportPreview(string $token, array $filters): bool
+    {
+        $token = preg_match('/^[a-f0-9]{64}$/', $token) ? $token : '';
+        if ($token === '') {
+            return false;
+        }
+
+        $previews = is_array($_SESSION['integaglpi_ai_mining_export_previews'] ?? null) ? $_SESSION['integaglpi_ai_mining_export_previews'] : [];
+        $preview = is_array($previews[$token] ?? null) ? $previews[$token] : null;
+        if ($preview === null || (time() - (int) ($preview['created_at'] ?? 0)) > 1800) {
+            return false;
+        }
+
+        return hash_equals($token, $this->exportPreviewToken($filters));
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     */
+    private function exportPreviewToken(array $filters): string
+    {
+        return hash('sha256', 'integaglpi_glpi_jsonl_export_preview_v1|' . (json_encode($filters, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: ''));
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function loadRememberedUpload(string $uploadId): array
@@ -249,6 +935,70 @@ final class HistoricalMiningUiService
         }
 
         return $upload;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function audit(string $eventType, array $payload): void
+    {
+        if (!$this->pluginConfigService->isConfigured()) {
+            return;
+        }
+
+        try {
+            $pdo = ExternalDatabase::getConnection($this->pluginConfigService->getConnectionConfig());
+            $exists = $pdo->query("SELECT to_regclass('public.glpi_plugin_integaglpi_audit_events')");
+            if ($exists === false || !$exists->fetchColumn()) {
+                return;
+            }
+
+            $statement = $pdo->prepare(
+                "INSERT INTO public.glpi_plugin_integaglpi_audit_events (
+                    correlation_id,
+                    ticket_id,
+                    conversation_id,
+                    message_id,
+                    direction,
+                    event_type,
+                    status,
+                    severity,
+                    source,
+                    payload_json,
+                    created_at
+                ) VALUES (
+                    :correlation_id,
+                    NULL,
+                    NULL,
+                    NULL,
+                    NULL,
+                    :event_type,
+                    'success',
+                    'info',
+                    'HistoricalMiningUiService',
+                    CAST(:payload AS jsonb),
+                    NOW()
+                )"
+            );
+            $statement->execute([
+                ':correlation_id' => 'historical_mining_ui:' . bin2hex(random_bytes(8)),
+                ':event_type' => $eventType,
+                ':payload' => json_encode($this->sanitizeAuditPayload($payload), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}',
+            ]);
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][historical_mining_ui][audit] ' . $this->sanitizeLog($exception->getMessage()));
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private function sanitizeAuditPayload(array $payload): array
+    {
+        unset($payload['jsonl_content'], $payload['sample_jsonl'], $payload['path']);
+
+        return $payload;
     }
 
     /**

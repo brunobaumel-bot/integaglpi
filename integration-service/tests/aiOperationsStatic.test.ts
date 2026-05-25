@@ -26,16 +26,25 @@ describe('AI operations console static safety', () => {
     expect(menu).toContain('Plugin::canAiOperationsRead()');
   });
 
-  it('keeps AI configuration read-only and masks sensitive values', async () => {
+  it('keeps AI configuration gated and masks sensitive values', async () => {
     const front = await readProjectFile('integaglpi/front/ai.config.php');
     const service = await readProjectFile('integaglpi/src/Service/AiConfigViewService.php');
     const template = await readProjectFile('integaglpi/templates/ai_config.php');
 
     expect(front).toContain('Plugin::requireAiOperationsRead()');
+    expect(front).toContain('Plugin::isCsrfValid($_POST)');
     expect(service).toContain('maskUrl');
+    expect(service).toContain('missingCloudGates');
+    expect(service).toContain('AI_PILOT_DIRECTOR_APPROVED');
+    expect(service).toContain('AI_PILOT_MONTHLY_BUDGET_LIMIT');
     expect(template).toContain('auth_key_visible');
-    expect(template).toContain('read-only');
-    expect(`${front}\n${service}\n${template}`).not.toMatch(/name=".*token|name=".*secret|integration_auth_key|META_ACCESS_TOKEN/);
+    expect(template).toContain('Validar gates para habilitar cloud');
+    expect(template).toContain('Habilitar IA Supervisora no plugin');
+    const inputNames = [...template.matchAll(/name="([^"]+)"/g)].map((match) => match[1]);
+    expect(inputNames.filter((name) => name !== '_glpi_csrf_token')).not.toEqual(
+      expect.arrayContaining(['integration_auth_key', 'token', 'secret', 'password', 'api_key']),
+    );
+    expect(`${front}\n${service}\n${template}`).not.toContain('META_ACCESS_TOKEN');
   });
 
   it('uses controlled internal endpoints for P2/P3 UI without shell or arbitrary paths', async () => {
@@ -51,11 +60,49 @@ describe('AI operations console static safety', () => {
     expect(app).toContain('/internal/glpi/historical-mining/execute');
     expect(app).toContain('/internal/glpi/kb-candidates/generate');
     expect(phpService).toContain('move_uploaded_file');
+    expect(phpService).toContain('preview_glpi_export');
+    expect(phpService).toContain('generate_glpi_jsonl');
+    expect(phpService).toContain('validate_generated');
     expect(phpService).toContain('jsonl_base64');
     expect(phpService).toContain('dry_run_token');
     expect(nodeService).toContain('mkdtemp');
     expect(nodeService).toContain('HISTORICAL_MINING_DRY_RUN_REQUIRED');
     expect(`${phpService}\n${nodeService}`).not.toMatch(/shell_exec|exec\s*\(|passthru|proc_open|spawn\(|child_process|inputPath|path_arbitrary/i);
+  });
+
+  it('exports GLPI tickets to the P2 JSONL contract with sanitization and no attachments', async () => {
+    const phpService = await readProjectFile('integaglpi/src/Service/HistoricalMiningUiService.php');
+    const template = await readProjectFile('integaglpi/templates/historical_mining.php');
+
+    for (const field of [
+      'ticket_id_hash',
+      'opened_at',
+      'solved_at',
+      'status',
+      'category',
+      'entity',
+      'group',
+      'priority',
+      'urgency',
+      'title_text_sanitized',
+      'description_text_sanitized',
+      'followup_text_sanitized',
+      'solution_text_sanitized',
+      'reopened_count',
+      'satisfaction_score',
+    ]) {
+      expect(phpService).toContain(field);
+    }
+
+    expect(phpService).toContain('sanitizeExportText');
+    expect(phpService).toContain('containsSensitiveData');
+    expect(phpService).toContain('glpi_itilfollowups');
+    expect(phpService).toContain('glpi_itilsolutions');
+    expect(phpService).not.toMatch(/glpi_documents|glpi_documents_items|Document_Item/i);
+    expect(template).toContain('Gerar JSONL a partir do GLPI');
+    expect(template).toContain('Pré-visualizar exportação');
+    expect(template).toContain('Gerar arquivo JSONL sanitizado');
+    expect(template).toContain('Usar arquivo gerado no dry-run P2');
   });
 
   it('keeps operations pages away from WhatsApp, ticket mutation and KB publishing', async () => {

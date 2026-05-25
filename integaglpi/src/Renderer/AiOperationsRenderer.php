@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace GlpiPlugin\Integaglpi\Renderer;
 
+use GlpiPlugin\Integaglpi\Plugin;
+
 final class AiOperationsRenderer
 {
     /**
@@ -25,5 +27,10 @@ final class AiOperationsRenderer
     public function escape(string $value): string
     {
         return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    }
+
+    public function getAiConfigUrl(): string
+    {
+        return Plugin::getAiConfigUrl();
     }
 }

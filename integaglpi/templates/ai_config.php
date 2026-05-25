@@ -12,6 +12,11 @@ $copilot = is_array($data['copilot'] ?? null) ? $data['copilot'] : [];
 $pilot = is_array($data['cloud_pilot'] ?? null) ? $data['cloud_pilot'] : [];
 $integration = is_array($data['integration_service'] ?? null) ? $data['integration_service'] : [];
 $diagnosticsError = trim((string) ($data['diagnostics_error'] ?? ''));
+$flash = is_array($data['flash'] ?? null) ? $data['flash'] : null;
+$environment = (string) ($data['environment'] ?? 'desconhecido');
+$riskAlerts = is_array($data['risk_alerts'] ?? null) ? $data['risk_alerts'] : [];
+$pendingSafeFields = is_array($data['pending_safe_fields'] ?? null) ? $data['pending_safe_fields'] : [];
+$csrf = GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
 
 $renderRows = function (array $rows): void {
     foreach ($rows as $label => $value) { ?>
@@ -31,15 +36,28 @@ $renderRows = function (array $rows): void {
                 <?= $this->escape(__('Visão operacional sem segredos. Alterações sensíveis continuam manuais via ambiente/ops.', 'glpiintegaglpi')); ?>
             </p>
         </div>
-        <span class="badge bg-secondary"><?= $this->escape(__('read-only', 'glpiintegaglpi')); ?></span>
+        <span class="badge bg-secondary"><?= $this->escape($environment); ?></span>
     </div>
 
     <div class="alert alert-info">
-        <?= $this->escape(__('Esta tela não edita .env, não mostra tokens/API keys e não habilita cloud/embeddings.', 'glpiintegaglpi')); ?>
+        <?= $this->escape(__('Esta tela não edita .env, não mostra tokens/API keys e não habilita cloud/embeddings por padrão.', 'glpiintegaglpi')); ?>
     </div>
+
+    <?php if ($flash !== null) { ?>
+        <div class="alert alert-<?= $this->escape((string) ($flash['type'] ?? 'info')); ?>">
+            <?= $this->escape((string) ($flash['message'] ?? '')); ?>
+        </div>
+    <?php } ?>
 
     <?php if ($diagnosticsError !== '') { ?>
         <div class="alert alert-warning"><?= $this->escape($diagnosticsError); ?></div>
+    <?php } ?>
+
+    <?php if ($riskAlerts !== []) { ?>
+        <div class="alert alert-warning">
+            <strong><?= $this->escape(__('Alertas de risco:', 'glpiintegaglpi')); ?></strong>
+            <?= $this->escape(implode(', ', array_map('strval', $riskAlerts))); ?>
+        </div>
     <?php } ?>
 
     <div class="row g-3">
@@ -62,6 +80,27 @@ $renderRows = function (array $rows): void {
                             ]); ?>
                         </tbody>
                     </table>
+                </div>
+                <div class="card-footer">
+                    <form method="post" action="<?= $this->escape($this->getAiConfigUrl()); ?>" class="d-flex flex-wrap gap-3 align-items-end">
+                        <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
+                        <input type="hidden" name="action" value="save_safe_config">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="ai_supervisor_enabled_safe" name="ai_supervisor_enabled" value="1" <?= !empty($ai['enabled']) ? 'checked' : ''; ?>>
+                            <label class="form-check-label" for="ai_supervisor_enabled_safe">
+                                <?= $this->escape(__('Habilitar IA Supervisora no plugin', 'glpiintegaglpi')); ?>
+                            </label>
+                        </div>
+                        <button class="btn btn-sm btn-outline-primary" type="submit">
+                            <?= $this->escape(__('Salvar flag segura', 'glpiintegaglpi')); ?>
+                        </button>
+                    </form>
+                    <?php if ($pendingSafeFields !== []) { ?>
+                        <div class="text-muted small mt-2">
+                            <?= $this->escape(__('Pendentes sem storage seguro nesta fase:', 'glpiintegaglpi')); ?>
+                            <code><?= $this->escape(implode(', ', array_map('strval', $pendingSafeFields))); ?></code>
+                        </div>
+                    <?php } ?>
                 </div>
             </div>
         </div>
@@ -99,9 +138,27 @@ $renderRows = function (array $rows): void {
                                 'director_approved' => $pilot['director_approved'] ?? 'false',
                                 'admin_opt_in' => $pilot['admin_opt_in'] ?? 'false',
                                 'incident_ack' => $pilot['incident_ack'] ?? 'false',
+                                'monthly_budget_limit' => $pilot['monthly_budget_limit'] ?? '0',
+                                'gates_ok' => $pilot['gates_ok'] ?? false,
                             ]); ?>
                         </tbody>
                     </table>
+                </div>
+                <div class="card-footer">
+                    <?php $missingGates = is_array($pilot['missing_gates'] ?? null) ? $pilot['missing_gates'] : []; ?>
+                    <?php if ($missingGates !== []) { ?>
+                        <div class="alert alert-warning py-2">
+                            <?= $this->escape(__('Cloud bloqueada por gates pendentes:', 'glpiintegaglpi')); ?>
+                            <code><?= $this->escape(implode(', ', array_map('strval', $missingGates))); ?></code>
+                        </div>
+                    <?php } ?>
+                    <form method="post" action="<?= $this->escape($this->getAiConfigUrl()); ?>">
+                        <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
+                        <input type="hidden" name="action" value="request_cloud_enable">
+                        <button class="btn btn-sm btn-outline-warning" type="submit">
+                            <?= $this->escape(__('Validar gates para habilitar cloud', 'glpiintegaglpi')); ?>
+                        </button>
+                    </form>
                 </div>
             </div>
         </div>

@@ -13,9 +13,23 @@ use GlpiPlugin\Integaglpi\Service\PluginConfigService;
 Session::checkLoginUser();
 Plugin::requireAiOperationsRead();
 
+$service = new AiConfigViewService(new PluginConfigService());
+$flash = null;
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!Plugin::isCsrfValid($_POST)) {
+        $flash = [
+            'type' => 'danger',
+            'message' => __('Token CSRF inválido. Recarregue a página e tente novamente.', 'glpiintegaglpi'),
+        ];
+    } else {
+        $flash = $service->handlePost($_POST, Plugin::getCurrentUserId());
+    }
+}
+
 Html::header(__('Configuração IA', 'glpiintegaglpi'), $_SERVER['PHP_SELF'], 'plugins', AiOperationsMenu::class);
 
 $renderer = new AiOperationsRenderer();
-$renderer->renderAiConfig((new AiConfigViewService(new PluginConfigService()))->getPageData());
+$renderer->renderAiConfig($service->getPageData($flash));
 
 Html::footer();
