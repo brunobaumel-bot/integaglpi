@@ -71,8 +71,9 @@ Nunca versionar, copiar ou colar em documentação: .env real, .ovpn, tokens, Be
 
 Validar somente em TESTE/HOMOLOGAÇÃO antes de qualquer promoção; em produção a IA permanece OFF até aprovação humana.
 
-- [ ] Em chamado com impressora na rede, formatação e Outlook/licença, o rascunho separa os temas em lista numerada.
-- [ ] O rascunho pede apenas dados faltantes: modelo/IP da impressora, dia/horário de coleta e print/código/versão do Outlook.
+- [ ] Em chamado com impressora, formatação e Outlook/licença, o rascunho adapta a resposta ao histórico real e não copia frases fixas de exemplo.
+- [ ] O rascunho pede apenas dados faltantes; se o cliente não souber IP/modelo da impressora, orienta que o técnico verifica no local/rede.
 - [ ] Quando o histórico recente já contém esses dados, o rascunho reconhece a informação e não repete a pergunta.
 - [ ] A resposta tem até 5 linhas sempre que possível e termina com próxima ação clara.
+- [ ] Se a geração demorar além do esperado, a UI mostra erro operacional claro de timeout e orienta tentar novamente/reduzir contexto.
 - [ ] O rascunho não promete envio, fechamento, reabertura, publicação de KB ou execução automática.

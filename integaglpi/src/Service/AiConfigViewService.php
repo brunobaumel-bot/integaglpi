@@ -65,26 +65,63 @@ final class AiConfigViewService
             'base_url_configured' => $aiSupervisor['base_url_configured'] ?? null,
         ];
 
+        $copilot = [
+            'enabled' => Plugin::isAiSupervisorEnabled(),
+            'provider' => $this->runtimeValue('COPILOT_PROVIDER', $this->runtimeValue('AI_SUPERVISOR_PROVIDER', 'disabled')),
+            'dry_run' => $this->runtimeValue('COPILOT_DRY_RUN', $this->runtimeValue('AI_SUPERVISOR_DRY_RUN', 'true')),
+            'kb_local_lookup' => 'enabled',
+            'kb_local_first' => 'true',
+            'max_context_messages' => '8',
+            'max_kb_articles' => '3',
+            'timeout_ms' => '90000',
+            'auto_send' => 'false',
+            'ticket_mutation' => 'false',
+        ];
+        $externalResearch = $this->externalResearchStatus();
+        $p4Review = $this->p4CandidateReviewStatus();
+        $embeddings = [
+            'enabled' => $cloudPilot['embeddings_enabled'],
+            'provider' => $this->runtimeValue('AI_PILOT_PROVIDER', 'disabled'),
+            'operational_rag' => 'false',
+            'default_enabled' => 'false',
+        ];
+        $auditStatus = [
+            'table_available' => $this->externalTableExists('glpi_plugin_integaglpi_audit_events'),
+            'payload_policy' => 'hashes_only_no_raw_prompt_no_pii',
+            'source_required' => 'true',
+            'retention_documented' => 'true',
+        ];
+
         $pageData = [
             'flash' => $flash,
             'diagnostics_error' => $diagnosticsError,
             'environment' => $this->detectEnvironment($cloudPilot),
             'risk_alerts' => $this->riskAlerts($aiSupervisor, $cloudPilot),
             'editable_safe_fields' => ['ai_supervisor_enabled'],
-            'pending_safe_fields' => ['provider', 'model', 'timeout_seconds', 'max_messages', 'max_chars', 'dry_run'],
+            'pending_safe_fields' => ['provider', 'model', 'timeout_seconds', 'max_messages', 'max_chars', 'dry_run', 'copilot_provider', 'p4_provider'],
+            'secret_fields' => ['api_key', 'token', 'bearer', 'password', 'secret', 'client_secret'],
             'ai_supervisor' => $aiSupervisor,
-            'copilot' => [
-                'enabled' => Plugin::isAiSupervisorEnabled(),
-                'provider' => $this->runtimeValue('COPILOT_PROVIDER', $this->runtimeValue('AI_SUPERVISOR_PROVIDER', 'disabled')),
-                'dry_run' => $this->runtimeValue('COPILOT_DRY_RUN', $this->runtimeValue('AI_SUPERVISOR_DRY_RUN', 'true')),
-            ],
+            'copilot' => $copilot,
             'cloud_pilot' => $cloudPilot + [
                 'gates_ok' => $this->cloudGatesOk($cloudPilot),
                 'missing_gates' => $this->missingCloudGates($cloudPilot),
             ],
+            'external_research' => $externalResearch,
+            'p4_candidate_review' => $p4Review,
+            'embeddings' => $embeddings,
+            'audit_status' => $auditStatus,
+            'governance' => [
+                'secrets_in_env_only' => true,
+                'no_auto_send' => true,
+                'no_auto_publish_kb' => true,
+                'no_raw_ticket_to_ai' => true,
+                'no_pii_to_ai' => true,
+                'local_first' => true,
+            ],
             'integration_service' => [
                 'url_masked' => $this->maskUrl($integrationUrl),
                 'configured' => $this->pluginConfigService->isConfigured(),
+                'auth_key_visible' => false,
             ],
         ];
         if ($viewerUserId !== null) {
@@ -161,6 +198,34 @@ final class AiConfigViewService
                 ];
             }
 
+            if ($action === 'run_synthetic_local_test') {
+                $data = $this->getPageData();
+                $ai = is_array($data['ai_supervisor'] ?? null) ? $data['ai_supervisor'] : [];
+                $provider = strtolower(trim((string) ($ai['provider'] ?? '')));
+                $model = trim((string) ($ai['model'] ?? ''));
+                $baseConfigured = $this->truthy($ai['base_url_configured'] ?? false)
+                    || trim((string) ($ai['base_url'] ?? '')) !== ''
+                    && trim((string) ($ai['base_url'] ?? '')) !== 'não verificado';
+                $ok = $provider === 'ollama'
+                    && $model !== ''
+                    && $model !== 'não verificado'
+                    && $baseConfigured;
+                $this->audit('AI_LOCAL_SYNTHETIC_TEST_RUN', $ok ? 'success' : 'blocked', [
+                    'glpi_user_id' => $userId,
+                    'provider' => $provider !== '' ? $provider : 'disabled',
+                    'model_configured' => $model !== '' && $model !== 'não verificado',
+                    'base_url_configured' => $baseConfigured,
+                    'synthetic_payload' => 'no_pii_status_check_only',
+                ]);
+
+                return [
+                    'type' => $ok ? 'success' : 'warning',
+                    'message' => $ok
+                        ? __('Configuração local/Ollama parece pronta. Teste sintético não enviou dados reais nem alterou .env.', 'glpiintegaglpi')
+                        : __('Provider local/Ollama ainda não está completamente configurado. Nenhum dado real foi enviado.', 'glpiintegaglpi'),
+                ];
+            }
+
             return ['type' => 'danger', 'message' => __('Ação inválida.', 'glpiintegaglpi')];
         } catch (Throwable $exception) {
             error_log('[integaglpi][ai_config][post] ' . $this->sanitizeLog($exception->getMessage()));
@@ -196,6 +261,76 @@ final class AiConfigViewService
         $port = isset($parts['port']) ? ':****' : '';
 
         return $scheme . '://' . $host . $port;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function externalResearchStatus(): array
+    {
+        $enabled = $this->runtimeValue('EXTERNAL_RESEARCH_ENABLED', 'false');
+        $cloudEnabled = $this->runtimeValue('EXTERNAL_RESEARCH_CLOUD_ENABLED', 'false');
+        $tablesReady = $this->externalTableExists('glpi_plugin_integaglpi_external_source_catalog')
+            && $this->externalTableExists('glpi_plugin_integaglpi_external_research_requests')
+            && $this->externalTableExists('glpi_plugin_integaglpi_external_research_candidates');
+
+        return [
+            'enabled' => $enabled,
+            'enabled_default' => 'false',
+            'cloud_enabled' => $cloudEnabled,
+            'manual_trigger_required' => 'true',
+            'prompt_preview_required' => 'true',
+            'source_allowlist_required' => 'true',
+            'tables_ready' => $tablesReady,
+            'status' => $this->truthy($enabled) && $tablesReady ? 'available' : 'disabled',
+            'blocked_reason' => $this->truthy($enabled)
+                ? ($tablesReady ? '' : 'migration_036_not_ready')
+                : 'feature_flag_disabled',
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function p4CandidateReviewStatus(): array
+    {
+        $enabled = $this->runtimeValue('AI_KB_CANDIDATE_REVIEW_ENABLED', 'false');
+        $provider = $this->runtimeValue('AI_KB_CANDIDATE_REVIEW_PROVIDER', $this->runtimeValue('AI_SUPERVISOR_PROVIDER', 'disabled'));
+        $model = $this->runtimeValue('AI_KB_CANDIDATE_REVIEW_MODEL', $this->runtimeValue('AI_SUPERVISOR_MODEL', 'não verificado'));
+        $tablesReady = $this->externalTableExists('glpi_plugin_integaglpi_kb_candidates')
+            && $this->externalTableExists('glpi_plugin_integaglpi_kb_candidate_reviews');
+
+        return [
+            'enabled' => $enabled,
+            'enabled_default' => 'false',
+            'provider' => $provider,
+            'model' => $model,
+            'local_provider_configured' => strtolower($provider) === 'ollama' && $model !== '' && $model !== 'não verificado',
+            'confidence_threshold' => '70',
+            'max_candidates_per_run' => '10',
+            'tables_ready' => $tablesReady,
+            'human_review_required' => 'true',
+            'no_auto_publish' => 'true',
+        ];
+    }
+
+    private function externalTableExists(string $table): bool
+    {
+        if (!$this->pluginConfigService->isConfigured()) {
+            return false;
+        }
+
+        try {
+            $pdo = ExternalDatabase::getConnection($this->pluginConfigService->getConnectionConfig());
+            $statement = $pdo->prepare('SELECT to_regclass(:table_name)');
+            $statement->execute([':table_name' => 'public.' . $table]);
+
+            return (string) ($statement->fetchColumn() ?: '') !== '';
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][ai_config][table_exists] ' . $this->sanitizeLog($exception->getMessage()));
+
+            return false;
+        }
     }
 
     /**

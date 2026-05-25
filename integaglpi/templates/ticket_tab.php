@@ -1096,6 +1096,11 @@ if ($auditPanelOk) {
                         <button type="button" class="btn btn-outline-secondary js-integaglpi-copilot-generate" data-tone="concise">
                             <?= $this->escape(__('Mais curta', 'glpiintegaglpi')); ?>
                         </button>
+                        <?php if (\GlpiPlugin\Integaglpi\Plugin::canExternalResearchRead()) { ?>
+                            <a class="btn btn-outline-secondary" href="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getExternalResearchUrl()); ?>" target="_blank" rel="noopener">
+                                <?= $this->escape(__('Pesquisa externa controlada', 'glpiintegaglpi')); ?>
+                            </a>
+                        <?php } ?>
                     </div>
                 </div>
                 <textarea class="form-control mt-2 js-integaglpi-copilot-draft" rows="4" maxlength="2000" placeholder="<?= $this->escape(__('O rascunho aparecerá aqui para revisão.', 'glpiintegaglpi')); ?>"></textarea>
