@@ -42,14 +42,25 @@ describe('AI operations console static safety', () => {
     expect(service).toContain('AI_CONFIG_UPDATED');
     expect(service).toContain('AI_CLOUD_GATE_UPDATED');
     expect(service).toContain('AI_LOCAL_SYNTHETIC_TEST_RUN');
+    expect(service).toContain("AI_SETTINGS_CONTEXT = 'ai_settings'");
+    expect(service).toContain('normalizeAiSettingsPost');
+    expect(service).toContain('saveAiSettings');
+    expect(service).toContain('cloud_budget_configured');
+    expect(service).toContain('Storage de configurações IA não está pronto');
     expect(service).toContain('externalResearchStatus');
     expect(service).toContain('p4CandidateReviewStatus');
     expect(service).toContain('secrets_in_env_only');
     expect(service).toContain('no_raw_ticket_to_ai');
+    expect(template).toContain('Configurações não sensíveis');
+    expect(template).toContain('name="copilot_enabled"');
+    expect(template).toContain('name="external_research_enabled"');
+    expect(template).toContain('name="p4_candidate_review_enabled"');
+      expect(template).toContain('cloud_director_approved');
+    expect(template).toContain('Salvar configurações não sensíveis');
     expect(template).toContain('auth_key_visible');
     expect(template).toContain('Validar gates para habilitar cloud');
     expect(template).toContain('Validar configuração local sem dados reais');
-    expect(template).toContain('Habilitar IA Supervisora no plugin');
+    expect(template).toContain('IA Supervisora habilitada');
     expect(template).toContain('kb_local_first');
     expect(template).toContain('Pesquisa Externa Controlada');
     expect(template).toContain('manual_trigger_required');
@@ -167,8 +178,22 @@ describe('AI operations console static safety', () => {
     const template = await readProjectFile('integaglpi/templates/historical_mining.php');
 
     expect(phpService).toContain("P4_AI_REVIEW_FEATURE_FLAG = 'AI_KB_CANDIDATE_REVIEW_ENABLED'");
+    expect(phpService).toContain('aiConfigSettingValue');
+    expect(phpService).toContain('p4_candidate_review_enabled');
+    expect(phpService).toContain('p4_candidate_review_provider');
+    expect(phpService).toContain('p4_candidate_review_model');
     expect(phpService).toContain('previewAiCandidateReview');
     expect(phpService).toContain('executeAiCandidateReview');
+    expect(phpService).toContain("P4_ELIGIBLE_CANDIDATE_STATUSES = ['suggested', 'in_review', 'low_confidence', 'possible_duplicate', 'approved']");
+    expect(phpService).toContain('lookupAiReviewCandidatePayloads');
+    expect(phpService).toContain('resolveP4RunInputHashes');
+    expect(phpService).toContain('$inputHashes[] = $runId');
+    expect(phpService).toContain('loadP4CandidateStatusCounts');
+    expect(phpService).toContain('assertP4CandidateSchema');
+    expect(phpService).toContain('aiReviewCandidateLookupMessage');
+    expect(phpService).toContain('run_id/input_hash não encontrado');
+    expect(phpService).toContain('run_id existe, mas ainda não possui candidatos P3 persistidos');
+    expect(phpService).toContain('nenhum está em status elegível para P4');
     expect(phpService).toContain('KB_CANDIDATE_AI_REVIEW_PREVIEWED');
     expect(phpService).toContain('KB_CANDIDATE_AI_REVIEW_BLOCKED');
     expect(phpService).toContain('KB_CANDIDATE_AI_REVIEW_COMPLETED');
@@ -191,6 +216,10 @@ describe('AI operations console static safety', () => {
     expect(phpService).toContain('human_review_required');
     expect(template).toContain('4. Revisão IA opcional P4');
     expect(template).toContain('P4 usa apenas candidatos P3 sanitizados');
+    expect(template).toContain('Últimos run_id/input_hash com candidatos P3 persistidos');
+    expect(template).toContain('Usar este run_id');
+    expect(template).toContain('Status elegíveis para P4');
+    expect(template).toContain('Gere candidatos P3 antes de executar P4');
     expect(template).toContain('revisão humana obrigatória');
     expect(template).toContain('Confiança abaixo do limite');
     expect(template).toContain('disabled');
@@ -211,7 +240,14 @@ describe('AI operations console static safety', () => {
 
   it('preserves Copilot drafts and shows first-attempt feedback in the ticket tab', async () => {
     const ticketTab = await readProjectFile('integaglpi/templates/ticket_tab.php');
+    const contextService = await readProjectFile('integaglpi/src/Service/TicketContextService.php');
 
+    expect(ticketTab).toContain('Assistente IA');
+    expect(ticketTab).toContain('Base de Conhecimento Local');
+    expect(ticketTab).toContain('Consultar KB Local');
+    expect(ticketTab).toContain('Gerar rascunho com IA');
+    expect(ticketTab).toContain('Pesquisar fora');
+    expect(ticketTab).toContain('KB local exibida. Nenhuma IA externa foi chamada.');
     expect(ticketTab).toContain('sessionStorage');
     expect(ticketTab).toContain('refreshCsrfToken');
     expect(ticketTab).toContain('updateCsrfToken');
@@ -220,5 +256,8 @@ describe('AI operations console static safety', () => {
     expect(ticketTab).toContain('Rascunho pronto para revisão.');
     expect(ticketTab).toContain('O Copiloto retornou um rascunho vazio.');
     expect(ticketTab).toContain('Não foi possível registrar feedback.');
+    expect(contextService).toContain('buildTicketAiAssistant');
+    expect(contextService).toContain('TICKET_AI_ASSISTANT_KB_LOCAL_PREPARED');
+    expect(contextService).toContain('payload_policy');
   });
 });

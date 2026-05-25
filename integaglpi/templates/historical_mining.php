@@ -17,6 +17,8 @@ $upload = is_array($flash['upload'] ?? null) ? $flash['upload'] : null;
 $exportPreview = is_array($flash['export_preview'] ?? null) ? $flash['export_preview'] : null;
 $exportUpload = is_array($flash['export_upload'] ?? null) ? $flash['export_upload'] : null;
 $exportOptions = is_array($data['export_options'] ?? null) ? $data['export_options'] : [];
+$recentP4CandidateRuns = is_array($data['recent_p4_candidate_runs'] ?? null) ? $data['recent_p4_candidate_runs'] : [];
+$eligibleP4Statuses = is_array($data['p4_eligible_candidate_statuses'] ?? null) ? $data['p4_eligible_candidate_statuses'] : [];
 $entities = is_array($exportOptions['entities'] ?? null) ? $exportOptions['entities'] : [];
 $groups = is_array($exportOptions['groups'] ?? null) ? $exportOptions['groups'] : [];
 $categories = is_array($exportOptions['categories'] ?? null) ? $exportOptions['categories'] : [];
@@ -50,6 +52,19 @@ $dryRunReady = $upload !== null
     && $rowsProcessed > 0;
 $aiReviewEnabled = (bool) ($data['p4_ai_review_enabled'] ?? $aiReviewPreview['enabled'] ?? false);
 $aiReviewFeatureFlag = (string) ($data['p4_ai_review_feature_flag'] ?? 'AI_KB_CANDIDATE_REVIEW_ENABLED');
+$selectedP4CandidateCount = null;
+$selectedP4EligibleCount = null;
+foreach ($recentP4CandidateRuns as $recentRun) {
+    if (!is_array($recentRun)) {
+        continue;
+    }
+    if ($runId !== '' && (string) ($recentRun['run_id'] ?? '') === $runId) {
+        $selectedP4CandidateCount = (int) ($recentRun['candidate_count'] ?? 0);
+        $selectedP4EligibleCount = (int) ($recentRun['eligible_count'] ?? 0);
+        break;
+    }
+}
+$p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null && $selectedP4EligibleCount !== null && $selectedP4EligibleCount <= 0;
 ?>
 
 <div class="container-fluid plugin-integaglpi-historical-mining">
@@ -320,21 +335,86 @@ $aiReviewFeatureFlag = (string) ($data['p4_ai_review_feature_flag'] ?? 'AI_KB_CA
                 <div class="card-body">
                     <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
                     <label class="form-label" for="ai_review_run_id"><?= $this->escape(__('run_id com candidatos P3', 'glpiintegaglpi')); ?></label>
-                    <input class="form-control" type="text" id="ai_review_run_id" name="run_id" value="<?= $this->escape($runId); ?>">
+                    <input class="form-control" type="text" id="ai_review_run_id" name="run_id" value="<?= $this->escape($runId); ?>" list="ai_review_run_id_options" placeholder="<?= $this->escape(__('Cole o run_id ou escolha um candidato recente abaixo', 'glpiintegaglpi')); ?>">
+                    <datalist id="ai_review_run_id_options">
+                        <?php foreach ($recentP4CandidateRuns as $recentRun) {
+                            if (!is_array($recentRun)) { continue; }
+                            $recentRunId = (string) ($recentRun['run_id'] ?? '');
+                            if ($recentRunId === '') { continue; }
+                            ?>
+                            <option value="<?= $this->escape($recentRunId); ?>">
+                                <?= $this->escape(sprintf(
+                                    '%d elegíveis / %d candidatos · %s',
+                                    (int) ($recentRun['eligible_count'] ?? 0),
+                                    (int) ($recentRun['candidate_count'] ?? 0),
+                                    (string) ($recentRun['status_list'] ?? '')
+                                )); ?>
+                            </option>
+                        <?php } ?>
+                    </datalist>
                     <div class="row g-2 mt-1">
                         <div class="col-md-6">
                             <label class="form-label" for="ai_review_max_candidates"><?= $this->escape(__('Máx. candidatos para preview', 'glpiintegaglpi')); ?></label>
                             <input class="form-control" type="number" id="ai_review_max_candidates" name="max_candidates" min="1" max="10" value="5">
                         </div>
                     </div>
+                    <?php if ($recentP4CandidateRuns !== []) { ?>
+                        <div class="border rounded p-2 mt-3">
+                            <div class="small text-muted mb-2">
+                                <?= $this->escape(__('Últimos run_id/input_hash com candidatos P3 persistidos', 'glpiintegaglpi')); ?>
+                            </div>
+                            <?php foreach ($recentP4CandidateRuns as $recentRun) {
+                                if (!is_array($recentRun)) { continue; }
+                                $recentRunId = (string) ($recentRun['run_id'] ?? '');
+                                if ($recentRunId === '') { continue; }
+                                $candidateCount = (int) ($recentRun['candidate_count'] ?? 0);
+                                $eligibleCount = (int) ($recentRun['eligible_count'] ?? 0);
+                                ?>
+                                <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 border-top py-2">
+                                    <div>
+                                        <code><?= $this->escape($recentRunId); ?></code>
+                                        <div class="text-muted small">
+                                            <?= $this->escape(sprintf(
+                                                __('%d candidatos · %d elegíveis · status: %s', 'glpiintegaglpi'),
+                                                $candidateCount,
+                                                $eligibleCount,
+                                                (string) ($recentRun['status_list'] ?? '')
+                                            )); ?>
+                                        </div>
+                                    </div>
+                                    <?php if ($eligibleCount > 0) { ?>
+                                        <a class="btn btn-sm btn-outline-secondary" href="<?= $this->escape($this->getHistoricalMiningUrl() . '?run_id=' . rawurlencode($recentRunId) . '#ai_review_run_id'); ?>">
+                                            <?= $this->escape(__('Usar este run_id', 'glpiintegaglpi')); ?>
+                                        </a>
+                                    <?php } else { ?>
+                                        <span class="badge bg-warning text-dark"><?= $this->escape(__('sem candidato elegível para P4', 'glpiintegaglpi')); ?></span>
+                                    <?php } ?>
+                                </div>
+                            <?php } ?>
+                        </div>
+                    <?php } else { ?>
+                        <div class="alert alert-warning mt-3 mb-0">
+                            <?= $this->escape(__('Nenhum candidato P3 encontrado ainda. Gere candidatos P3 antes de executar P4.', 'glpiintegaglpi')); ?>
+                        </div>
+                    <?php } ?>
                     <div class="alert alert-info mt-3 mb-3">
                         <?= $this->escape(__('P4 usa apenas candidatos P3 sanitizados e persistidos. Nunca envia histórico bruto, anexos, PII ou publica KB automaticamente.', 'glpiintegaglpi')); ?>
+                        <?php if ($eligibleP4Statuses !== []) { ?>
+                            <br>
+                            <?= $this->escape(__('Status elegíveis para P4:', 'glpiintegaglpi')); ?>
+                            <code><?= $this->escape(implode(', ', array_map('strval', $eligibleP4Statuses))); ?></code>
+                        <?php } ?>
                     </div>
+                    <?php if ($p4KnownSelectedWithoutEligibleCandidates) { ?>
+                        <div class="alert alert-warning">
+                            <?= $this->escape(__('Este run_id possui candidatos P3, mas nenhum está em status elegível para P4.', 'glpiintegaglpi')); ?>
+                        </div>
+                    <?php } ?>
                     <div class="d-flex flex-wrap gap-2">
-                        <button class="btn btn-outline-primary" type="submit" name="action" value="preview_ai_candidate_review">
+                        <button class="btn btn-outline-primary" type="submit" name="action" value="preview_ai_candidate_review" <?= $p4KnownSelectedWithoutEligibleCandidates ? 'disabled' : ''; ?>>
                             <?= $this->escape(__('Pré-visualizar payload P4', 'glpiintegaglpi')); ?>
                         </button>
-                        <button class="btn btn-outline-secondary" type="submit" name="action" value="execute_ai_candidate_review" <?= !$aiReviewEnabled ? 'disabled' : ''; ?>>
+                        <button class="btn btn-outline-secondary" type="submit" name="action" value="execute_ai_candidate_review" <?= (!$aiReviewEnabled || $p4KnownSelectedWithoutEligibleCandidates) ? 'disabled' : ''; ?>>
                             <?= $this->escape(__('Executar revisão IA', 'glpiintegaglpi')); ?>
                         </button>
                     </div>

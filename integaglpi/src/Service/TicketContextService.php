@@ -51,6 +51,11 @@ final class TicketContextService
             'dead_letter' => null,
             'risk' => null,
             'warnings' => [],
+            'ai_assistant' => [
+                'local_knowledge' => ['items' => [], 'message' => __('Nenhum contexto disponível para consultar KB local.', 'glpiintegaglpi')],
+                'external_research' => ['status' => 'disabled', 'blocked_reason' => 'context_unavailable'],
+                'p4' => ['status' => 'manual_review_only'],
+            ],
             'can_view_technical' => $canViewTechnical,
         ];
 
@@ -101,6 +106,7 @@ final class TicketContextService
                 'ai_supervisor_enabled' => Plugin::isAiSupervisorEnabled(),
                 'risk' => $risk,
                 'correlation_id' => $correlationId,
+                'ai_assistant' => $this->buildTicketAiAssistant($ticket, $conversationId, $conversation),
                 'warnings' => $this->buildWarnings(
                     $conversation,
                     $ticketStatus,
@@ -137,6 +143,68 @@ final class TicketContextService
         $suffix = substr($digits, -4);
 
         return $prefix . '******' . $suffix;
+    }
+
+    /**
+     * @param array<string, mixed> $conversation
+     * @return array<string, mixed>
+     */
+    private function buildTicketAiAssistant(\Ticket $ticket, string $conversationId, array $conversation): array
+    {
+        $queryParts = [
+            (string) ($ticket->fields['name'] ?? ''),
+            (string) ($ticket->fields['content'] ?? ''),
+            $this->latestMessageText($conversationId),
+            (string) ($conversation['queue_name'] ?? ''),
+        ];
+        $query = $this->sanitizeCopilotText(implode(' ', array_filter($queryParts, static fn (string $value): bool => trim($value) !== '')), 360);
+        $items = [];
+        try {
+            foreach ((new NativeKnowledgeBaseService())->buildRelatedArticlesContext(['summary' => $query], 3) as $article) {
+                if (!is_array($article)) {
+                    continue;
+                }
+                $items[] = [
+                    'origin' => 'KB nativa',
+                    'title' => $this->sanitizeCopilotText((string) ($article['title'] ?? ''), 180),
+                    'excerpt' => $this->sanitizeCopilotText((string) ($article['excerpt'] ?? ''), 360),
+                    'confidence' => 80,
+                    'internal_url' => $this->sanitizeCopilotUrl((string) ($article['internal_url'] ?? '')),
+                ];
+            }
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][ticket_ai_assistant][kb_native] ' . $this->sanitizeCopilotText($exception->getMessage(), 180));
+        }
+
+        if ($this->pluginConfigService->isConfigured()) {
+            try {
+                $items = array_merge($items, $this->loadTicketAssistantKbCandidates($query), $this->loadTicketAssistantHistoricalInsights($query));
+            } catch (Throwable $exception) {
+                error_log('[integaglpi][ticket_ai_assistant][internal_context] ' . $this->sanitizeCopilotText($exception->getMessage(), 180));
+            }
+        }
+
+        $items = array_slice($items, 0, 6);
+        $this->auditTicketAiAssistant('TICKET_AI_ASSISTANT_KB_LOCAL_PREPARED', (int) $ticket->getID(), $conversationId, [
+            'query_hash' => hash('sha256', $query),
+            'result_count' => count($items),
+            'source' => 'TicketContextService',
+        ]);
+
+        return [
+            'local_knowledge' => [
+                'query' => $query,
+                'items' => $items,
+                'message' => $items === []
+                    ? __('Nenhum artigo/candidato/insight interno encontrado. Use o Copiloto apenas como rascunho revisável.', 'glpiintegaglpi')
+                    : __('KB local consultada antes de qualquer IA externa.', 'glpiintegaglpi'),
+            ],
+            'external_research' => $this->ticketExternalResearchStatus(),
+            'p4' => [
+                'status' => 'available_in_historical_mining',
+                'message' => __('P4 revisa apenas candidatos P3 sanitizados e nunca publica KB automaticamente.', 'glpiintegaglpi'),
+            ],
+        ];
     }
 
     /**
@@ -539,6 +607,158 @@ final class TicketContextService
         $last = end($messages);
 
         return is_array($last) ? (string) ($last['text'] ?? '') : '';
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function loadTicketAssistantKbCandidates(string $query): array
+    {
+        if ($query === '' || !$this->tableExists('glpi_plugin_integaglpi_kb_candidates')) {
+            return [];
+        }
+
+        $statement = $this->getPdo()->prepare(
+            <<<SQL
+            SELECT title, article_type, confidence_score, status, content_markdown
+            FROM glpi_plugin_integaglpi_kb_candidates
+            WHERE status IN ('approved', 'in_review', 'suggested')
+              AND (
+                title ILIKE :term
+                OR COALESCE(problem_pattern, '') ILIKE :term
+                OR COALESCE(content_markdown, '') ILIKE :term
+              )
+            ORDER BY confidence_score DESC, updated_at DESC
+            LIMIT 3
+            SQL
+        );
+        $statement->bindValue(':term', '%' . $query . '%');
+        $statement->execute();
+
+        $rows = $statement->fetchAll();
+        if (!is_array($rows)) {
+            return [];
+        }
+
+        return array_map(fn (array $row): array => [
+            'origin' => 'candidato KB',
+            'title' => $this->sanitizeCopilotText((string) ($row['title'] ?? ''), 180),
+            'excerpt' => $this->sanitizeCopilotText((string) ($row['content_markdown'] ?? ''), 360),
+            'confidence' => (int) ($row['confidence_score'] ?? 0),
+            'status' => $this->sanitizeCopilotText((string) ($row['status'] ?? ''), 40),
+            'internal_url' => '',
+        ], $rows);
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function loadTicketAssistantHistoricalInsights(string $query): array
+    {
+        if ($query === '' || !$this->tableExists('glpi_plugin_integaglpi_hist_insights')) {
+            return [];
+        }
+
+        $statement = $this->getPdo()->prepare(
+            <<<SQL
+            SELECT title, summary_sanitized, recommendation_sanitized, confidence_score, priority
+            FROM glpi_plugin_integaglpi_hist_insights
+            WHERE title ILIKE :term
+               OR summary_sanitized ILIKE :term
+               OR recommendation_sanitized ILIKE :term
+            ORDER BY confidence_score DESC, created_at DESC
+            LIMIT 3
+            SQL
+        );
+        $statement->bindValue(':term', '%' . $query . '%');
+        $statement->execute();
+        $rows = $statement->fetchAll();
+        if (!is_array($rows)) {
+            return [];
+        }
+
+        return array_map(fn (array $row): array => [
+            'origin' => 'insight histórico',
+            'title' => $this->sanitizeCopilotText((string) ($row['title'] ?? ''), 180),
+            'excerpt' => $this->sanitizeCopilotText((string) ($row['recommendation_sanitized'] ?? $row['summary_sanitized'] ?? ''), 360),
+            'confidence' => (int) ($row['confidence_score'] ?? 0),
+            'priority' => $this->sanitizeCopilotText((string) ($row['priority'] ?? ''), 40),
+            'internal_url' => '',
+        ], $rows);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function ticketExternalResearchStatus(): array
+    {
+        $enabled = strtolower($this->loadAiSettingValue('external_research_enabled', Plugin::getRuntimeConfigValue('EXTERNAL_RESEARCH_ENABLED') ?: 'false'));
+        $tablesReady = $this->pluginConfigService->isConfigured()
+            && $this->tableExists('glpi_plugin_integaglpi_external_source_catalog')
+            && $this->tableExists('glpi_plugin_integaglpi_external_research_requests')
+            && $this->tableExists('glpi_plugin_integaglpi_external_research_candidates');
+
+        return [
+            'status' => $enabled === 'true' && $tablesReady ? 'available' : 'disabled',
+            'blocked_reason' => $enabled === 'true'
+                ? ($tablesReady ? '' : 'migration_036_not_ready')
+                : 'feature_flag_disabled',
+            'manual_only' => true,
+            'preview_required' => true,
+        ];
+    }
+
+    private function loadAiSettingValue(string $key, string $fallback): string
+    {
+        if (!preg_match('/^[a-z0-9_]+$/', $key) || !$this->pluginConfigService->isConfigured() || !$this->tableExists('glpi_plugin_integaglpi_configs')) {
+            return $fallback;
+        }
+
+        try {
+            $statement = $this->getPdo()->prepare(
+                'SELECT "' . $key . '" FROM glpi_plugin_integaglpi_configs WHERE context = :context LIMIT 1'
+            );
+            $statement->execute([':context' => 'ai_settings']);
+            $value = $statement->fetchColumn();
+
+            return $value === false || $value === null || $value === '' ? $fallback : (string) $value;
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][ticket_ai_assistant][setting] ' . $this->sanitizeCopilotText($exception->getMessage(), 180));
+
+            return $fallback;
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function auditTicketAiAssistant(string $eventType, int $ticketId, string $conversationId, array $payload): void
+    {
+        try {
+            if (!$this->pluginConfigService->isConfigured() || !$this->tableExists('glpi_plugin_integaglpi_audit_events')) {
+                return;
+            }
+            $statement = $this->getPdo()->prepare(
+                "INSERT INTO glpi_plugin_integaglpi_audit_events (
+                    correlation_id, ticket_id, conversation_id, event_type, status, severity, source, payload_json, created_at
+                ) VALUES (
+                    :correlation_id, :ticket_id, :conversation_id, :event_type, 'success', 'info', 'TicketContextService', CAST(:payload AS jsonb), NOW()
+                )"
+            );
+            $statement->execute([
+                ':correlation_id' => 'ticket_ai_assistant:' . bin2hex(random_bytes(8)),
+                ':ticket_id' => $ticketId,
+                ':conversation_id' => $this->sanitizeCopilotText($conversationId, 80),
+                ':event_type' => $eventType,
+                ':payload' => json_encode([
+                    'payload_policy' => 'hashes_only_no_raw_ticket_no_pii',
+                    'result_count' => (int) ($payload['result_count'] ?? 0),
+                    'query_hash' => (string) ($payload['query_hash'] ?? ''),
+                ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}',
+            ]);
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][ticket_ai_assistant][audit] ' . $this->sanitizeCopilotText($exception->getMessage(), 180));
+        }
     }
 
     /**

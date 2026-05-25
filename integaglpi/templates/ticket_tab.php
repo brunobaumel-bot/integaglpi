@@ -41,6 +41,11 @@ $contextEvents = is_array($contextView['events'] ?? null) ? $contextView['events
 $contextDeadLetter = is_array($contextView['dead_letter'] ?? null) ? $contextView['dead_letter'] : null;
 $contextCsat = is_array($contextView['csat'] ?? null) ? $contextView['csat'] : null;
 $contextAiQuality = is_array($contextView['ai_quality'] ?? null) ? $contextView['ai_quality'] : null;
+$aiAssistant = is_array($contextView['ai_assistant'] ?? null) ? $contextView['ai_assistant'] : [];
+$aiAssistantKnowledge = is_array($aiAssistant['local_knowledge'] ?? null) ? $aiAssistant['local_knowledge'] : [];
+$aiAssistantKnowledgeItems = is_array($aiAssistantKnowledge['items'] ?? null) ? $aiAssistantKnowledge['items'] : [];
+$aiAssistantExternal = is_array($aiAssistant['external_research'] ?? null) ? $aiAssistant['external_research'] : [];
+$aiAssistantP4 = is_array($aiAssistant['p4'] ?? null) ? $aiAssistant['p4'] : [];
 $aiSupervisorEnabled = (bool) ($contextView['ai_supervisor_enabled'] ?? \GlpiPlugin\Integaglpi\Plugin::isAiSupervisorEnabled());
 $contextCorrelationId = trim((string) ($contextView['correlation_id'] ?? ''));
 $canViewTechnical = (bool) ($contextView['can_view_technical'] ?? false);
@@ -1066,6 +1071,11 @@ if ($auditPanelOk) {
         . '/plugins/integaglpi/front/ticket.whatsapp.reply.php';
     $copilotPostUrl = rtrim($CFG_GLPI['root_doc'] ?? '', '/')
         . '/plugins/integaglpi/front/copilot.draft.php';
+    $assistantExternalQuery = trim((string) ($aiAssistantKnowledge['query'] ?? ''));
+    $assistantExternalUrl = \GlpiPlugin\Integaglpi\Plugin::getExternalResearchUrl()
+        . ($assistantExternalQuery !== '' ? '?' . http_build_query(['q' => $assistantExternalQuery]) : '');
+    $assistantExternalAvailable = \GlpiPlugin\Integaglpi\Plugin::canExternalResearchRead()
+        && (string) ($aiAssistantExternal['status'] ?? '') === 'available';
     $replyCsrfToken = \GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
     $replyDomId    = 'integaglpi-reply-' . $replyTicketId;
     // Phase 7.4C regression fix: previous version used window.location.href to a GET
@@ -1075,6 +1085,88 @@ if ($auditPanelOk) {
     <div class="card mt-3" id="<?= $this->escape($replyDomId); ?>" data-reply-card="1">
         <div class="card-header"><?= $this->escape(__('Responder cliente', 'glpiintegaglpi')); ?></div>
         <div class="card-body">
+            <div class="border rounded p-3 mb-3 bg-white js-integaglpi-ticket-ai-assistant">
+                <div class="d-flex justify-content-between align-items-start gap-2 flex-wrap mb-2">
+                    <div>
+                        <strong><?= $this->escape(__('Assistente IA', 'glpiintegaglpi')); ?></strong>
+                        <div class="text-muted small">
+                            <?= $this->escape(__('Fluxo local-first: consulte KB local, gere rascunho revisável e use pesquisa externa somente por clique manual.', 'glpiintegaglpi')); ?>
+                        </div>
+                    </div>
+                    <span class="badge bg-light text-dark border"><?= $this->escape(__('noAutoSend=true', 'glpiintegaglpi')); ?></span>
+                </div>
+                <div class="row g-2">
+                    <div class="col-lg-4">
+                        <div class="border rounded p-2 h-100">
+                            <div class="d-flex justify-content-between align-items-center gap-2">
+                                <strong class="small"><?= $this->escape(__('Base de Conhecimento Local', 'glpiintegaglpi')); ?></strong>
+                                <button type="button" class="btn btn-sm btn-outline-primary js-integaglpi-kb-local-focus">
+                                    <?= $this->escape(__('Consultar KB Local', 'glpiintegaglpi')); ?>
+                                </button>
+                            </div>
+                            <div class="small text-muted mt-1"><?= $this->escape((string) ($aiAssistantKnowledge['message'] ?? '')); ?></div>
+                            <?php if ($aiAssistantKnowledgeItems !== []) { ?>
+                                <ul class="list-unstyled small mt-2 mb-0 js-integaglpi-kb-local-results">
+                                    <?php foreach ($aiAssistantKnowledgeItems as $item) {
+                                        if (!is_array($item)) {
+                                            continue;
+                                        }
+                                        $itemUrl = trim((string) ($item['internal_url'] ?? ''));
+                                        ?>
+                                        <li class="mb-2">
+                                            <span class="badge bg-light text-dark border"><?= $this->escape((string) ($item['origin'] ?? 'interno')); ?></span>
+                                            <?php if ($itemUrl !== '') { ?>
+                                                <a href="<?= $this->escape($itemUrl); ?>" target="_blank" rel="noopener"><?= $this->escape((string) ($item['title'] ?? '')); ?></a>
+                                            <?php } else { ?>
+                                                <strong><?= $this->escape((string) ($item['title'] ?? '')); ?></strong>
+                                            <?php } ?>
+                                            <div class="text-muted"><?= $this->escape((string) ($item['excerpt'] ?? '')); ?></div>
+                                        </li>
+                                    <?php } ?>
+                                </ul>
+                            <?php } else { ?>
+                                <div class="text-muted small mt-2"><?= $this->escape(__('Sem resultado local suficiente para este chamado.', 'glpiintegaglpi')); ?></div>
+                            <?php } ?>
+                        </div>
+                    </div>
+                    <div class="col-lg-4">
+                        <div class="border rounded p-2 h-100">
+                            <strong class="small d-block"><?= $this->escape(__('Rascunho Técnico', 'glpiintegaglpi')); ?></strong>
+                            <div class="small text-muted mb-2">
+                                <?= $this->escape(__('O Copiloto usa contexto sanitizado e referências locais. O técnico revisa e envia manualmente.', 'glpiintegaglpi')); ?>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-outline-primary js-integaglpi-copilot-generate" data-tone="neutral">
+                                <?= $this->escape(__('Gerar rascunho com IA', 'glpiintegaglpi')); ?>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="col-lg-4">
+                        <div class="border rounded p-2 h-100">
+                            <strong class="small d-block"><?= $this->escape(__('Pesquisa Externa', 'glpiintegaglpi')); ?></strong>
+                            <div class="small text-muted mb-2">
+                                <?= $this->escape(__('Pesquisa externa exige preview anonimizado, fontes allowlisted e não preenche resposta automaticamente.', 'glpiintegaglpi')); ?>
+                            </div>
+                            <?php if ($assistantExternalAvailable) { ?>
+                                <a class="btn btn-sm btn-outline-secondary" href="<?= $this->escape($assistantExternalUrl); ?>" target="_blank" rel="noopener">
+                                    <?= $this->escape(__('Pesquisar fora', 'glpiintegaglpi')); ?>
+                                </a>
+                            <?php } else { ?>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" disabled>
+                                    <?= $this->escape(__('Pesquisar fora', 'glpiintegaglpi')); ?>
+                                </button>
+                                <div class="small text-muted mt-1">
+                                    <?= $this->escape(__('Bloqueada:', 'glpiintegaglpi')); ?>
+                                    <code><?= $this->escape((string) ($aiAssistantExternal['blocked_reason'] ?? 'feature_flag_disabled')); ?></code>
+                                </div>
+                            <?php } ?>
+                            <div class="small text-muted mt-2">
+                                <?= $this->escape((string) ($aiAssistantP4['message'] ?? __('P4 permanece manual na tela de Mineração Histórica.', 'glpiintegaglpi'))); ?>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <small class="js-integaglpi-kb-local-status text-muted d-block mt-2"></small>
+            </div>
             <div class="border rounded p-3 mb-3 bg-light js-integaglpi-copilot" data-draft-hash="">
                 <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap">
                     <div>
@@ -1182,6 +1274,7 @@ if ($auditPanelOk) {
         var copilotMeta = card.querySelector('.js-integaglpi-copilot-meta');
         var copilotStatus = card.querySelector('.js-integaglpi-copilot-status');
         var copilotNotes = card.querySelector('.js-integaglpi-copilot-notes');
+        var kbLocalStatus = card.querySelector('.js-integaglpi-kb-local-status');
         var copilotStorageKey = 'integaglpi_copilot_draft_' + String(button ? button.dataset.ticketId || '' : '') + '_' + String(button ? button.dataset.conversationId || '' : '');
 
         if (!button || !textarea) {
@@ -1239,6 +1332,19 @@ if ($auditPanelOk) {
                 : 'text-muted'
             );
         }
+
+        card.querySelectorAll('.js-integaglpi-kb-local-focus').forEach(function (kbButton) {
+            kbButton.addEventListener('click', function () {
+                var results = card.querySelector('.js-integaglpi-kb-local-results');
+                if (results) {
+                    results.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }
+                if (kbLocalStatus) {
+                    kbLocalStatus.textContent = <?= json_encode(__('KB local exibida. Nenhuma IA externa foi chamada.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+                    kbLocalStatus.className = 'js-integaglpi-kb-local-status text-success small d-block mt-2';
+                }
+            });
+        });
 
         function postCopilot(payload) {
             return refreshCsrfToken().then(function () {

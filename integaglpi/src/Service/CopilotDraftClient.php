@@ -13,8 +13,11 @@ final class CopilotDraftClient
     private const COPILOT_DRAFT_TIMEOUT_MS = 90000;
     private const COPILOT_DRAFT_CONNECT_TIMEOUT_MS = 10000;
 
-    public function __construct(private readonly ?PluginConfigService $pluginConfigService = null)
+    private ?PluginConfigService $pluginConfigService;
+
+    public function __construct(?PluginConfigService $pluginConfigService = null)
     {
+        $this->pluginConfigService = $pluginConfigService;
     }
 
     /**

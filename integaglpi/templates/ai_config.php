@@ -21,6 +21,8 @@ $flash = is_array($data['flash'] ?? null) ? $data['flash'] : null;
 $environment = (string) ($data['environment'] ?? 'desconhecido');
 $riskAlerts = is_array($data['risk_alerts'] ?? null) ? $data['risk_alerts'] : [];
 $pendingSafeFields = is_array($data['pending_safe_fields'] ?? null) ? $data['pending_safe_fields'] : [];
+$safeSettings = is_array($data['safe_settings'] ?? null) ? $data['safe_settings'] : [];
+$safeSettingsAvailable = (bool) ($data['safe_settings_available'] ?? false);
 $csrf = GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
 
 $renderRows = function (array $rows): void {
@@ -78,6 +80,149 @@ $renderRows = function (array $rows): void {
         </div>
     <?php } ?>
 
+    <div class="card mb-3">
+        <div class="card-header"><?= $this->escape(__('Configurações não sensíveis', 'glpiintegaglpi')); ?></div>
+        <div class="card-body">
+            <?php if (!$safeSettingsAvailable) { ?>
+                <div class="alert alert-warning">
+                    <?= $this->escape(__('Storage de configurações IA ainda não está pronto. Execute a migration 038 antes de editar pela UI.', 'glpiintegaglpi')); ?>
+                </div>
+            <?php } ?>
+            <form method="post" action="<?= $this->escape($this->getAiConfigUrl()); ?>">
+                <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
+                <input type="hidden" name="action" value="save_safe_config">
+                <div class="row g-3">
+                    <div class="col-lg-4">
+                        <h2 class="h6"><?= $this->escape(__('Provider local', 'glpiintegaglpi')); ?></h2>
+                        <label class="form-check">
+                            <input class="form-check-input" type="checkbox" name="ai_supervisor_enabled" value="1" <?= ((string) ($safeSettings['ai_supervisor_enabled'] ?? '') === 'true' || !empty($ai['enabled'])) ? 'checked' : ''; ?> <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                            <span class="form-check-label"><?= $this->escape(__('IA Supervisora habilitada', 'glpiintegaglpi')); ?></span>
+                        </label>
+                        <label class="form-check">
+                            <input class="form-check-input" type="checkbox" name="ai_supervisor_dry_run" value="1" <?= ((string) ($safeSettings['ai_supervisor_dry_run'] ?? $ai['dry_run'] ?? 'true') !== 'false') ? 'checked' : ''; ?> <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                            <span class="form-check-label"><?= $this->escape(__('Dry-run inicial', 'glpiintegaglpi')); ?></span>
+                        </label>
+                        <label class="form-label mt-2"><?= $this->escape(__('Provider lógico', 'glpiintegaglpi')); ?></label>
+                        <select class="form-select form-select-sm" name="ai_supervisor_provider" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                            <?php foreach (['disabled', 'ollama', 'local'] as $providerOption) { ?>
+                                <option value="<?= $this->escape($providerOption); ?>" <?= (string) ($safeSettings['ai_supervisor_provider'] ?? $ai['provider'] ?? 'disabled') === $providerOption ? 'selected' : ''; ?>><?= $this->escape($providerOption); ?></option>
+                            <?php } ?>
+                        </select>
+                        <label class="form-label mt-2"><?= $this->escape(__('Modelo local', 'glpiintegaglpi')); ?></label>
+                        <input class="form-control form-control-sm" name="ai_supervisor_model" maxlength="120" value="<?= $this->escape((string) ($safeSettings['ai_supervisor_model'] ?? $ai['model'] ?? '')); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                        <div class="row g-2 mt-1">
+                            <div class="col-4">
+                                <label class="form-label small"><?= $this->escape(__('Timeout s', 'glpiintegaglpi')); ?></label>
+                                <input class="form-control form-control-sm" type="number" name="ai_supervisor_timeout_seconds" min="15" max="180" value="<?= $this->escape((string) ($safeSettings['ai_supervisor_timeout_seconds'] ?? $ai['timeout_seconds'] ?? 75)); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                            </div>
+                            <div class="col-4">
+                                <label class="form-label small"><?= $this->escape(__('Mensagens', 'glpiintegaglpi')); ?></label>
+                                <input class="form-control form-control-sm" type="number" name="ai_supervisor_max_messages" min="1" max="20" value="<?= $this->escape((string) ($safeSettings['ai_supervisor_max_messages'] ?? $ai['max_messages'] ?? 8)); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                            </div>
+                            <div class="col-4">
+                                <label class="form-label small"><?= $this->escape(__('Chars', 'glpiintegaglpi')); ?></label>
+                                <input class="form-control form-control-sm" type="number" name="ai_supervisor_max_chars" min="500" max="12000" value="<?= $this->escape((string) ($safeSettings['ai_supervisor_max_chars'] ?? $ai['max_chars'] ?? 6000)); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-lg-4">
+                        <h2 class="h6"><?= $this->escape(__('Copiloto e Pesquisa', 'glpiintegaglpi')); ?></h2>
+                        <label class="form-check">
+                            <input class="form-check-input" type="checkbox" name="copilot_enabled" value="1" <?= ((string) ($safeSettings['copilot_enabled'] ?? $copilot['enabled'] ?? '') === 'true' || !empty($copilot['enabled'])) ? 'checked' : ''; ?> <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                            <span class="form-check-label"><?= $this->escape(__('Copiloto habilitado', 'glpiintegaglpi')); ?></span>
+                        </label>
+                        <label class="form-check">
+                            <input class="form-check-input" type="checkbox" name="copilot_dry_run" value="1" <?= ((string) ($safeSettings['copilot_dry_run'] ?? $copilot['dry_run'] ?? 'true') !== 'false') ? 'checked' : ''; ?> <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                            <span class="form-check-label"><?= $this->escape(__('Copiloto dry-run', 'glpiintegaglpi')); ?></span>
+                        </label>
+                        <label class="form-check">
+                            <input class="form-check-input" type="checkbox" name="external_research_enabled" value="1" <?= ((string) ($safeSettings['external_research_enabled'] ?? $externalResearch['enabled'] ?? '') === 'true') ? 'checked' : ''; ?> <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                            <span class="form-check-label"><?= $this->escape(__('Pesquisa externa manual', 'glpiintegaglpi')); ?></span>
+                        </label>
+                        <label class="form-check">
+                            <input class="form-check-input" type="checkbox" name="external_research_cloud_enabled" value="1" <?= ((string) ($safeSettings['external_research_cloud_enabled'] ?? 'false') === 'true') ? 'checked' : ''; ?> <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                            <span class="form-check-label"><?= $this->escape(__('Cloud para pesquisa externa somente com gates', 'glpiintegaglpi')); ?></span>
+                        </label>
+                        <label class="form-label mt-2"><?= $this->escape(__('Provider Copiloto', 'glpiintegaglpi')); ?></label>
+                        <select class="form-select form-select-sm" name="copilot_provider" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                            <?php foreach (['disabled', 'ollama', 'local'] as $providerOption) { ?>
+                                <option value="<?= $this->escape($providerOption); ?>" <?= (string) ($safeSettings['copilot_provider'] ?? $copilot['provider'] ?? 'disabled') === $providerOption ? 'selected' : ''; ?>><?= $this->escape($providerOption); ?></option>
+                            <?php } ?>
+                        </select>
+                        <label class="form-label mt-2"><?= $this->escape(__('Modelo Copiloto', 'glpiintegaglpi')); ?></label>
+                        <input class="form-control form-control-sm" name="copilot_model" maxlength="120" value="<?= $this->escape((string) ($safeSettings['copilot_model'] ?? $copilot['model'] ?? '')); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                        <div class="row g-2 mt-1">
+                            <div class="col-4">
+                                <label class="form-label small"><?= $this->escape(__('Timeout ms', 'glpiintegaglpi')); ?></label>
+                                <input class="form-control form-control-sm" type="number" name="copilot_timeout_ms" min="15000" max="120000" value="<?= $this->escape((string) ($safeSettings['copilot_timeout_ms'] ?? $copilot['timeout_ms'] ?? 90000)); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                            </div>
+                            <div class="col-4">
+                                <label class="form-label small"><?= $this->escape(__('Msgs', 'glpiintegaglpi')); ?></label>
+                                <input class="form-control form-control-sm" type="number" name="copilot_max_context_messages" min="1" max="12" value="<?= $this->escape((string) ($safeSettings['copilot_max_context_messages'] ?? $copilot['max_context_messages'] ?? 8)); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                            </div>
+                            <div class="col-4">
+                                <label class="form-label small"><?= $this->escape(__('Chars', 'glpiintegaglpi')); ?></label>
+                                <input class="form-control form-control-sm" type="number" name="copilot_max_context_chars" min="1000" max="12000" value="<?= $this->escape((string) ($safeSettings['copilot_max_context_chars'] ?? $copilot['max_context_chars'] ?? 6000)); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                            </div>
+                        </div>
+                        <label class="form-label mt-2"><?= $this->escape(__('Limite pesquisa externa/dia', 'glpiintegaglpi')); ?></label>
+                        <input class="form-control form-control-sm" type="number" name="external_research_rate_limit_per_day" min="0" max="200" value="<?= $this->escape((string) ($safeSettings['external_research_rate_limit_per_day'] ?? $externalResearch['rate_limit_per_day'] ?? 20)); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                    </div>
+                    <div class="col-lg-4">
+                        <h2 class="h6"><?= $this->escape(__('P4, Embeddings e Gates', 'glpiintegaglpi')); ?></h2>
+                        <label class="form-check">
+                            <input class="form-check-input" type="checkbox" name="p4_candidate_review_enabled" value="1" <?= ((string) ($safeSettings['p4_candidate_review_enabled'] ?? $p4CandidateReview['enabled'] ?? '') === 'true') ? 'checked' : ''; ?> <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                            <span class="form-check-label"><?= $this->escape(__('P4 revisão IA de candidatos', 'glpiintegaglpi')); ?></span>
+                        </label>
+                        <label class="form-check">
+                            <input class="form-check-input" type="checkbox" name="embeddings_enabled" value="1" <?= ((string) ($safeSettings['embeddings_enabled'] ?? $embeddings['enabled'] ?? '') === 'true') ? 'checked' : ''; ?> <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                            <span class="form-check-label"><?= $this->escape(__('Embeddings piloto', 'glpiintegaglpi')); ?></span>
+                        </label>
+                        <label class="form-label mt-2"><?= $this->escape(__('Provider P4', 'glpiintegaglpi')); ?></label>
+                        <select class="form-select form-select-sm" name="p4_candidate_review_provider" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                            <?php foreach (['disabled', 'ollama', 'local'] as $providerOption) { ?>
+                                <option value="<?= $this->escape($providerOption); ?>" <?= (string) ($safeSettings['p4_candidate_review_provider'] ?? $p4CandidateReview['provider'] ?? 'disabled') === $providerOption ? 'selected' : ''; ?>><?= $this->escape($providerOption); ?></option>
+                            <?php } ?>
+                        </select>
+                        <label class="form-label mt-2"><?= $this->escape(__('Modelo P4', 'glpiintegaglpi')); ?></label>
+                        <input class="form-control form-control-sm" name="p4_candidate_review_model" maxlength="120" value="<?= $this->escape((string) ($safeSettings['p4_candidate_review_model'] ?? $p4CandidateReview['model'] ?? '')); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                        <div class="row g-2 mt-1">
+                            <div class="col-6">
+                                <label class="form-label small"><?= $this->escape(__('Confiança', 'glpiintegaglpi')); ?></label>
+                                <input class="form-control form-control-sm" type="number" name="p4_confidence_threshold" min="0" max="100" value="<?= $this->escape((string) ($safeSettings['p4_confidence_threshold'] ?? $p4CandidateReview['confidence_threshold'] ?? 70)); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                            </div>
+                            <div class="col-6">
+                                <label class="form-label small"><?= $this->escape(__('Lote P4', 'glpiintegaglpi')); ?></label>
+                                <input class="form-control form-control-sm" type="number" name="p4_max_candidates_per_run" min="1" max="50" value="<?= $this->escape((string) ($safeSettings['p4_max_candidates_per_run'] ?? $p4CandidateReview['max_candidates_per_run'] ?? 10)); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                            </div>
+                        </div>
+                        <div class="border rounded p-2 mt-3">
+                            <?php foreach ([
+                                'cloud_dpo_approved' => __('DPO/LGPD aprovado', 'glpiintegaglpi'),
+                                'cloud_director_approved' => __('Direção aprovada', 'glpiintegaglpi'),
+                                'cloud_admin_opt_in' => __('Admin opt-in', 'glpiintegaglpi'),
+                                'cloud_budget_configured' => __('Budget configurado', 'glpiintegaglpi'),
+                                'cloud_incident_ack' => __('Incidente ack', 'glpiintegaglpi'),
+                                'cloud_synthetic_test_ok' => __('Teste sintético OK', 'glpiintegaglpi'),
+                            ] as $gateName => $gateLabel) { ?>
+                                <label class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="<?= $this->escape($gateName); ?>" value="1" <?= ((string) ($safeSettings[$gateName] ?? 'false') === 'true') ? 'checked' : ''; ?> <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                                    <span class="form-check-label"><?= $this->escape($gateLabel); ?></span>
+                                </label>
+                            <?php } ?>
+                        </div>
+                    </div>
+                </div>
+                <div class="d-flex gap-2 align-items-center mt-3">
+                    <button class="btn btn-primary" type="submit" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                        <?= $this->escape(__('Salvar configurações não sensíveis', 'glpiintegaglpi')); ?>
+                    </button>
+                    <span class="text-muted small"><?= $this->escape(__('Segredos, base_url sensível, API keys e .env permanecem somente em ambiente/ops.', 'glpiintegaglpi')); ?></span>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <div class="row g-3">
         <div class="col-lg-6">
             <div class="card h-100">
@@ -100,19 +245,9 @@ $renderRows = function (array $rows): void {
                     </table>
                 </div>
                 <div class="card-footer">
-                    <form method="post" action="<?= $this->escape($this->getAiConfigUrl()); ?>" class="d-flex flex-wrap gap-3 align-items-end">
-                        <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
-                        <input type="hidden" name="action" value="save_safe_config">
-                        <div class="form-check">
-                            <input class="form-check-input" type="checkbox" id="ai_supervisor_enabled_safe" name="ai_supervisor_enabled" value="1" <?= !empty($ai['enabled']) ? 'checked' : ''; ?>>
-                            <label class="form-check-label" for="ai_supervisor_enabled_safe">
-                                <?= $this->escape(__('Habilitar IA Supervisora no plugin', 'glpiintegaglpi')); ?>
-                            </label>
-                        </div>
-                        <button class="btn btn-sm btn-outline-primary" type="submit">
-                            <?= $this->escape(__('Salvar flag segura', 'glpiintegaglpi')); ?>
-                        </button>
-                    </form>
+                    <div class="text-muted small">
+                        <?= $this->escape(__('A edição fica no bloco “Configurações não sensíveis”. Esta seção é somente status efetivo/diagnóstico.', 'glpiintegaglpi')); ?>
+                    </div>
                     <?php if ($pendingSafeFields !== []) { ?>
                         <div class="text-muted small mt-2">
                             <?= $this->escape(__('Pendentes sem storage seguro nesta fase:', 'glpiintegaglpi')); ?>

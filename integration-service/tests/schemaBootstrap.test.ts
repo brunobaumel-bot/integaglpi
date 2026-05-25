@@ -590,4 +590,21 @@ describe('database bootstrap hardening', () => {
     expect(migration).not.toContain('DELETE');
     expect(migration).not.toContain('ALTER TABLE');
   });
+
+  it('keeps actionable AI settings additive and free of secrets', async () => {
+    const migration = compactSql(await readProjectFile('schema-migrations/038_ai_actionable_config_settings.sql'));
+
+    expect(migration).toContain('ALTER TABLE public.glpi_plugin_integaglpi_configs');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS ai_supervisor_provider TEXT NULL');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS copilot_timeout_ms INTEGER NULL');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS external_research_enabled TEXT NULL');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS p4_candidate_review_enabled TEXT NULL');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS cloud_director_approved TEXT NULL');
+    expect(migration).toContain("context = 'ai_settings'");
+    expect(migration).toContain('ON CONFLICT (context) DO NOTHING');
+    expect(migration).not.toContain('DROP');
+    expect(migration).not.toContain('TRUNCATE');
+    expect(migration).not.toContain('DELETE');
+    expect(migration).not.toMatch(/api_key|token|bearer|password|secret/i);
+  });
 });

@@ -31,7 +31,14 @@ describe('PHP internal Copilot static safety', () => {
     expect(client).toContain('COPILOT_DRAFT_TIMEOUT_MS = 90000');
     expect(client).toContain('CURLOPT_TIMEOUT_MS');
     expect(client).toContain('payload_size');
+    expect(client).not.toMatch(/__construct\s*\(\s*(?:public|protected|private)\s/i);
+    expect(client).not.toMatch(/\breadonly\b/i);
     expect(client).not.toContain('CURLOPT_TIMEOUT        => 35');
+    expect(ticketTab).toContain('Assistente IA');
+    expect(ticketTab).toContain('Base de Conhecimento Local');
+    expect(ticketTab).toContain('Consultar KB Local');
+    expect(ticketTab).toContain('Gerar rascunho com IA');
+    expect(ticketTab).toContain('Pesquisar fora');
     expect(ticketTab).toContain('Sugerir resposta');
     expect(ticketTab).toContain('refreshCsrfToken');
     expect(ticketTab).toContain('updateCsrfToken');
@@ -43,6 +50,8 @@ describe('PHP internal Copilot static safety', () => {
     expect(ticketTab).toContain('canExternalResearchRead');
     expect(ticketTab).toContain('setTimeout(function () { button.disabled = false; }, 2500)');
     expect(contextService).toContain('NativeKnowledgeBaseService');
+    expect(contextService).toContain('buildTicketAiAssistant');
+    expect(contextService).toContain('TICKET_AI_ASSISTANT_KB_LOCAL_PREPARED');
     expect(contextService).toContain('glpi_plugin_integaglpi_kb_candidates');
     expect(contextService).toContain('glpi_plugin_integaglpi_hist_insights');
     expect(contextService).toContain('COPILOT_MAX_MESSAGES = 8');

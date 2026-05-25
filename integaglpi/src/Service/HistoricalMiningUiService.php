@@ -22,6 +22,7 @@ final class HistoricalMiningUiService
     private const P4_AI_REVIEW_TIMEOUT_SECONDS = 'AI_KB_CANDIDATE_REVIEW_TIMEOUT_SECONDS';
     private const P4_CONFIDENCE_THRESHOLD = 70;
     private const P4_MAX_CANDIDATES = 10;
+    private const P4_ELIGIBLE_CANDIDATE_STATUSES = ['suggested', 'in_review', 'low_confidence', 'possible_duplicate', 'approved'];
     private PluginConfigService $pluginConfigService;
     private IntegrationServiceClient $client;
 
@@ -48,6 +49,8 @@ final class HistoricalMiningUiService
             'jsonl_retention_seconds' => self::JSONL_RETENTION_SECONDS,
             'p4_ai_review_enabled' => $this->isAiCandidateReviewEnabled(),
             'p4_ai_review_feature_flag' => self::P4_AI_REVIEW_FEATURE_FLAG,
+            'recent_p4_candidate_runs' => $this->loadRecentP4CandidateRuns(),
+            'p4_eligible_candidate_statuses' => self::P4_ELIGIBLE_CANDIDATE_STATUSES,
         ];
     }
 
@@ -281,16 +284,19 @@ final class HistoricalMiningUiService
         }
 
         $maxCandidates = max(1, min(self::P4_MAX_CANDIDATES, (int) ($post['max_candidates'] ?? self::P4_MAX_CANDIDATES)));
-        $payloads = $this->loadAiReviewCandidatePayloads($runId, $maxCandidates);
+        $lookup = $this->lookupAiReviewCandidatePayloads($runId, $maxCandidates);
+        $payloads = is_array($lookup['payloads'] ?? null) ? $lookup['payloads'] : [];
+        $diagnostic = is_array($lookup['diagnostic'] ?? null) ? $lookup['diagnostic'] : [];
         if ($payloads === []) {
             return [
                 'type' => 'warning',
-                'message' => __('Nenhum candidato P3 sanitizado foi encontrado para este run_id. Gere P3 antes da revisão IA.', 'glpiintegaglpi'),
+                'message' => $this->aiReviewCandidateLookupMessage($diagnostic),
                 'ai_review_preview' => [
                     'enabled' => $this->isAiCandidateReviewEnabled(),
                     'run_id' => $runId,
+                    'diagnostic' => $diagnostic,
                     'candidates' => [],
-                    'next_action' => __('Gere candidatos P3 determinísticos ou revise manualmente.', 'glpiintegaglpi'),
+                    'next_action' => $this->aiReviewCandidateLookupNextAction($diagnostic),
                 ],
             ];
         }
@@ -363,14 +369,17 @@ final class HistoricalMiningUiService
         }
 
         $maxCandidates = max(1, min(self::P4_MAX_CANDIDATES, (int) ($post['max_candidates'] ?? self::P4_MAX_CANDIDATES)));
-        $payloads = $this->loadAiReviewCandidatePayloads($runId, $maxCandidates);
+        $lookup = $this->lookupAiReviewCandidatePayloads($runId, $maxCandidates);
+        $payloads = is_array($lookup['payloads'] ?? null) ? $lookup['payloads'] : [];
+        $diagnostic = is_array($lookup['diagnostic'] ?? null) ? $lookup['diagnostic'] : [];
         if ($payloads === []) {
             return [
                 'type' => 'warning',
-                'message' => __('Nenhum candidato P3 sanitizado foi encontrado para revisão IA.', 'glpiintegaglpi'),
+                'message' => $this->aiReviewCandidateLookupMessage($diagnostic),
                 'ai_review_result' => [
                     'status' => 'no_candidates',
                     'run_id' => $runId,
+                    'diagnostic' => $diagnostic,
                     'no_auto_publish' => true,
                 ],
             ];
@@ -1205,23 +1214,76 @@ final class HistoricalMiningUiService
      */
     private function loadAiReviewCandidatePayloads(string $runId, int $maxCandidates): array
     {
+        $lookup = $this->lookupAiReviewCandidatePayloads($runId, $maxCandidates);
+
+        return is_array($lookup['payloads'] ?? null) ? $lookup['payloads'] : [];
+    }
+
+    /**
+     * @return array{payloads: list<array<string, mixed>>, diagnostic: array<string, mixed>}
+     */
+    private function lookupAiReviewCandidatePayloads(string $runId, int $maxCandidates): array
+    {
         if (!$this->pluginConfigService->isConfigured()) {
-            return [];
+            return [
+                'payloads' => [],
+                'diagnostic' => [
+                    'status' => 'not_configured',
+                    'message_key' => 'postgres_not_configured',
+                    'run_id' => $runId,
+                    'candidate_count' => 0,
+                    'eligible_count' => 0,
+                ],
+            ];
         }
 
         $pdo = ExternalDatabase::getConnection($this->pluginConfigService->getConnectionConfig());
-        $runStatement = $pdo->prepare(
-            'SELECT input_hash
-               FROM public.glpi_plugin_integaglpi_hist_mining_runs
-              WHERE run_id = :run_id
-              LIMIT 1'
-        );
-        $runStatement->execute([':run_id' => $runId]);
-        $inputHash = (string) ($runStatement->fetchColumn() ?: '');
-        if ($inputHash === '') {
-            return [];
+        $this->assertP4CandidateSchema($pdo);
+
+        $resolved = $this->resolveP4RunInputHashes($pdo, $runId);
+        $inputHashes = is_array($resolved['input_hashes'] ?? null) ? $resolved['input_hashes'] : [];
+        $diagnostic = [
+            'status' => 'unknown',
+            'message_key' => '',
+            'run_id' => $runId,
+            'run_exists' => (bool) ($resolved['run_exists'] ?? false),
+            'input_hashes' => $inputHashes,
+            'candidate_count' => 0,
+            'eligible_count' => 0,
+            'status_counts' => [],
+            'eligible_statuses' => self::P4_ELIGIBLE_CANDIDATE_STATUSES,
+        ];
+        if ($inputHashes === []) {
+            $diagnostic['status'] = 'run_not_found';
+            $diagnostic['message_key'] = 'run_id_not_found';
+
+            return ['payloads' => [], 'diagnostic' => $diagnostic];
         }
 
+        $statusCounts = $this->loadP4CandidateStatusCounts($pdo, $inputHashes);
+        $candidateCount = array_sum($statusCounts);
+        $eligibleCount = 0;
+        foreach (self::P4_ELIGIBLE_CANDIDATE_STATUSES as $status) {
+            $eligibleCount += (int) ($statusCounts[$status] ?? 0);
+        }
+        $diagnostic['candidate_count'] = $candidateCount;
+        $diagnostic['eligible_count'] = $eligibleCount;
+        $diagnostic['status_counts'] = $statusCounts;
+        if ($candidateCount <= 0) {
+            $diagnostic['status'] = !empty($diagnostic['run_exists']) ? 'run_without_candidates' : 'input_hash_without_candidates';
+            $diagnostic['message_key'] = !empty($diagnostic['run_exists']) ? 'run_without_candidates' : 'run_id_not_found';
+
+            return ['payloads' => [], 'diagnostic' => $diagnostic];
+        }
+        if ($eligibleCount <= 0) {
+            $diagnostic['status'] = 'no_eligible_status';
+            $diagnostic['message_key'] = 'no_eligible_status';
+
+            return ['payloads' => [], 'diagnostic' => $diagnostic];
+        }
+
+        [$inputHashWhere, $inputHashParams] = $this->pdoInClause('input_hash', $inputHashes);
+        [$statusWhere, $statusParams] = $this->pdoInClause('status', self::P4_ELIGIBLE_CANDIDATE_STATUSES);
         $candidateStatement = $pdo->prepare(
             "SELECT id,
                     candidate_key,
@@ -1237,12 +1299,14 @@ final class HistoricalMiningUiService
                     possible_duplicate,
                     limitations_json
                FROM public.glpi_plugin_integaglpi_kb_candidates
-              WHERE input_hash = :input_hash
-                AND status IN ('suggested', 'in_review', 'low_confidence', 'possible_duplicate')
+              WHERE input_hash IN ($inputHashWhere)
+                AND status IN ($statusWhere)
               ORDER BY confidence_score DESC, created_at DESC
               LIMIT :limit"
         );
-        $candidateStatement->bindValue(':input_hash', $inputHash);
+        foreach ($inputHashParams + $statusParams as $key => $value) {
+            $candidateStatement->bindValue($key, $value);
+        }
         $candidateStatement->bindValue(':limit', $maxCandidates, PDO::PARAM_INT);
         $candidateStatement->execute();
 
@@ -1292,7 +1356,238 @@ final class HistoricalMiningUiService
             $payloads[] = $payload;
         }
 
-        return $payloads;
+        $diagnostic['status'] = $payloads !== [] ? 'ok' : 'no_eligible_status';
+        $diagnostic['message_key'] = $payloads !== [] ? 'ok' : 'no_eligible_status';
+
+        return ['payloads' => $payloads, 'diagnostic' => $diagnostic];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function loadRecentP4CandidateRuns(): array
+    {
+        if (!$this->pluginConfigService->isConfigured()) {
+            return [];
+        }
+
+        try {
+            $pdo = ExternalDatabase::getConnection($this->pluginConfigService->getConnectionConfig());
+            $this->assertP4CandidateSchema($pdo);
+            $statuses = implode("','", array_map(static function (string $status): string {
+                return str_replace("'", "''", $status);
+            }, self::P4_ELIGIBLE_CANDIDATE_STATUSES));
+            $statement = $pdo->query(
+                "SELECT COALESCE(r.run_id, c.input_hash) AS run_id,
+                        c.input_hash,
+                        COUNT(*)::int AS candidate_count,
+                        COUNT(*) FILTER (WHERE c.status IN ('$statuses'))::int AS eligible_count,
+                        STRING_AGG(DISTINCT c.status, ', ' ORDER BY c.status) AS status_list,
+                        MAX(c.created_at) AS last_candidate_at
+                   FROM public.glpi_plugin_integaglpi_kb_candidates c
+              LEFT JOIN public.glpi_plugin_integaglpi_hist_mining_runs r
+                     ON r.input_hash = c.input_hash
+               GROUP BY COALESCE(r.run_id, c.input_hash), c.input_hash
+               ORDER BY MAX(c.created_at) DESC
+                  LIMIT 10"
+            );
+            if ($statement === false) {
+                return [];
+            }
+
+            $rows = [];
+            while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
+                $ignored = [];
+                $statusList = $this->sanitizeExportText((string) ($row['status_list'] ?? ''), 200, 'p4_status_list', $ignored);
+                $ignored = [];
+                $lastCandidateAt = $this->sanitizeExportText((string) ($row['last_candidate_at'] ?? ''), 80, 'p4_last_candidate_at', $ignored);
+                $rows[] = [
+                    'run_id' => $this->cleanIdentifier((string) ($row['run_id'] ?? '')),
+                    'input_hash' => $this->cleanIdentifier((string) ($row['input_hash'] ?? '')),
+                    'candidate_count' => max(0, (int) ($row['candidate_count'] ?? 0)),
+                    'eligible_count' => max(0, (int) ($row['eligible_count'] ?? 0)),
+                    'status_list' => $statusList,
+                    'last_candidate_at' => $lastCandidateAt,
+                ];
+            }
+
+            return array_values(array_filter($rows, static function (array $row): bool {
+                return (string) ($row['run_id'] ?? '') !== '';
+            }));
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][historical_mining_ui][p4_recent_runs] ' . $this->sanitizeLog($exception->getMessage()));
+
+            return [];
+        }
+    }
+
+    private function assertP4CandidateSchema(PDO $pdo): void
+    {
+        $required = [
+            'candidate_key',
+            'input_hash',
+            'status',
+            'article_type',
+            'title',
+            'content_markdown',
+            'problem_pattern',
+            'recommended_procedure_json',
+            'evidence_hashes_json',
+            'evidence_summary_sanitized',
+            'confidence_score',
+            'possible_duplicate',
+            'limitations_json',
+            'created_at',
+        ];
+        $placeholders = [];
+        $params = [':table_name' => 'glpi_plugin_integaglpi_kb_candidates'];
+        foreach ($required as $index => $column) {
+            $key = ':column_' . $index;
+            $placeholders[] = $key;
+            $params[$key] = $column;
+        }
+        $statement = $pdo->prepare(
+            'SELECT column_name
+               FROM information_schema.columns
+              WHERE table_schema = \'public\'
+                AND table_name = :table_name
+                AND column_name IN (' . implode(', ', $placeholders) . ')'
+        );
+        $statement->execute($params);
+        $found = [];
+        while (($column = $statement->fetchColumn()) !== false) {
+            $found[] = (string) $column;
+        }
+        $missing = array_values(array_diff($required, $found));
+        if ($missing !== []) {
+            throw new RuntimeException(sprintf(
+                __('Schema de candidatos P3 incompatível para P4. Colunas ausentes: %s.', 'glpiintegaglpi'),
+                implode(', ', $missing)
+            ));
+        }
+    }
+
+    /**
+     * @return array{run_exists: bool, input_hashes: list<string>}
+     */
+    private function resolveP4RunInputHashes(PDO $pdo, string $runId): array
+    {
+        $inputHashes = [];
+        $runExists = false;
+        try {
+            $runStatement = $pdo->prepare(
+                'SELECT input_hash
+                   FROM public.glpi_plugin_integaglpi_hist_mining_runs
+                  WHERE run_id = :run_id
+                  LIMIT 1'
+            );
+            $runStatement->execute([':run_id' => $runId]);
+            $inputHash = $this->cleanIdentifier((string) ($runStatement->fetchColumn() ?: ''));
+            if ($inputHash !== '') {
+                $runExists = true;
+                $inputHashes[] = $inputHash;
+            }
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][historical_mining_ui][p4_run_resolve] ' . $this->sanitizeLog($exception->getMessage()));
+        }
+
+        $inputHashes[] = $runId;
+
+        return [
+            'run_exists' => $runExists,
+            'input_hashes' => array_values(array_unique(array_filter($inputHashes, static function (string $value): bool {
+                return $value !== '';
+            }))),
+        ];
+    }
+
+    /**
+     * @param list<string> $inputHashes
+     * @return array<string, int>
+     */
+    private function loadP4CandidateStatusCounts(PDO $pdo, array $inputHashes): array
+    {
+        if ($inputHashes === []) {
+            return [];
+        }
+
+        [$where, $params] = $this->pdoInClause('input_hash', $inputHashes);
+        $statement = $pdo->prepare(
+            "SELECT status, COUNT(*)::int AS total
+               FROM public.glpi_plugin_integaglpi_kb_candidates
+              WHERE input_hash IN ($where)
+              GROUP BY status
+              ORDER BY status ASC"
+        );
+        $statement->execute($params);
+
+        $counts = [];
+        while (($row = $statement->fetch(PDO::FETCH_ASSOC)) !== false) {
+            $counts[(string) ($row['status'] ?? 'unknown')] = max(0, (int) ($row['total'] ?? 0));
+        }
+
+        return $counts;
+    }
+
+    /**
+     * @param list<string> $values
+     * @return array{0: string, 1: array<string, string>}
+     */
+    private function pdoInClause(string $prefix, array $values): array
+    {
+        $placeholders = [];
+        $params = [];
+        foreach (array_values($values) as $index => $value) {
+            $key = ':' . $prefix . '_' . $index;
+            $placeholders[] = $key;
+            $params[$key] = $value;
+        }
+
+        return [implode(', ', $placeholders), $params];
+    }
+
+    /**
+     * @param array<string, mixed> $diagnostic
+     */
+    private function aiReviewCandidateLookupMessage(array $diagnostic): string
+    {
+        $messageKey = (string) ($diagnostic['message_key'] ?? '');
+        if ($messageKey === 'run_id_not_found') {
+            return __('run_id/input_hash não encontrado com candidatos P3 persistidos.', 'glpiintegaglpi');
+        }
+        if ($messageKey === 'run_without_candidates') {
+            return __('run_id existe, mas ainda não possui candidatos P3 persistidos. Gere candidatos P3 antes de executar P4.', 'glpiintegaglpi');
+        }
+        if ($messageKey === 'no_eligible_status') {
+            return __('Candidatos P3 encontrados, mas nenhum está em status elegível para P4.', 'glpiintegaglpi');
+        }
+        if ($messageKey === 'postgres_not_configured') {
+            return __('PostgreSQL externo ainda não está configurado.', 'glpiintegaglpi');
+        }
+
+        return __('Nenhum candidato P3 sanitizado foi encontrado para revisão IA.', 'glpiintegaglpi');
+    }
+
+    /**
+     * @param array<string, mixed> $diagnostic
+     */
+    private function aiReviewCandidateLookupNextAction(array $diagnostic): string
+    {
+        $messageKey = (string) ($diagnostic['message_key'] ?? '');
+        if ($messageKey === 'no_eligible_status') {
+            $statuses = is_array($diagnostic['status_counts'] ?? null) ? implode(', ', array_keys($diagnostic['status_counts'])) : '';
+
+            return sprintf(
+                __('Revise o status dos candidatos. Status elegíveis para P4: %s. Status encontrados: %s.', 'glpiintegaglpi'),
+                implode(', ', self::P4_ELIGIBLE_CANDIDATE_STATUSES),
+                $statuses !== '' ? $statuses : __('nenhum', 'glpiintegaglpi')
+            );
+        }
+        if ($messageKey === 'run_without_candidates') {
+            return __('Execute P3 para esse run_id e volte para pré-visualizar o payload P4.', 'glpiintegaglpi');
+        }
+
+        return __('Use um run_id da lista de candidatos recentes ou gere candidatos P3 antes de executar P4.', 'glpiintegaglpi');
     }
 
     /**
@@ -1318,7 +1613,10 @@ final class HistoricalMiningUiService
 
     private function isAiCandidateReviewEnabled(): bool
     {
-        $value = strtolower(trim((string) getenv(self::P4_AI_REVIEW_FEATURE_FLAG)));
+        $value = strtolower($this->aiConfigSettingValue(
+            'p4_candidate_review_enabled',
+            (string) getenv(self::P4_AI_REVIEW_FEATURE_FLAG)
+        ));
 
         return in_array($value, ['1', 'true', 'yes', 'on'], true);
     }
@@ -1328,7 +1626,7 @@ final class HistoricalMiningUiService
      */
     private function loadAiCandidateReviewProviderConfig(): array
     {
-        $provider = strtolower($this->runtimeConfigValue(self::P4_AI_REVIEW_PROVIDER));
+        $provider = strtolower($this->aiConfigSettingValue('p4_candidate_review_provider', $this->runtimeConfigValue(self::P4_AI_REVIEW_PROVIDER)));
         if ($provider === '') {
             $provider = strtolower($this->runtimeConfigValue('AI_SUPERVISOR_PROVIDER'));
         }
@@ -1340,7 +1638,7 @@ final class HistoricalMiningUiService
             ];
         }
 
-        $model = $this->runtimeConfigValue(self::P4_AI_REVIEW_MODEL);
+        $model = $this->aiConfigSettingValue('p4_candidate_review_model', $this->runtimeConfigValue(self::P4_AI_REVIEW_MODEL));
         if ($model === '') {
             $model = $this->runtimeConfigValue('AI_SUPERVISOR_MODEL');
         }
@@ -1380,6 +1678,43 @@ final class HistoricalMiningUiService
             'model' => $model,
             'timeout_seconds' => $timeout,
         ];
+    }
+
+    private function aiConfigSettingValue(string $column, string $fallback): string
+    {
+        if (!preg_match('/^[a-z0-9_]+$/', $column) || !$this->pluginConfigService->isConfigured()) {
+            return trim($fallback);
+        }
+
+        try {
+            $pdo = ExternalDatabase::getConnection($this->pluginConfigService->getConnectionConfig());
+            $exists = $pdo->prepare(
+                'SELECT 1 FROM information_schema.columns
+                  WHERE table_schema = current_schema()
+                    AND table_name = :table
+                    AND column_name = :column
+                  LIMIT 1'
+            );
+            $exists->execute([
+                ':table' => 'glpi_plugin_integaglpi_configs',
+                ':column' => $column,
+            ]);
+            if (!$exists->fetchColumn()) {
+                return trim($fallback);
+            }
+
+            $stmt = $pdo->prepare(
+                'SELECT "' . $column . '" FROM public.glpi_plugin_integaglpi_configs WHERE context = :context LIMIT 1'
+            );
+            $stmt->execute([':context' => 'ai_settings']);
+            $value = $stmt->fetchColumn();
+
+            return $value === false || $value === null || trim((string) $value) === '' ? trim($fallback) : trim((string) $value);
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][historical_mining_ui][ai_config_setting] ' . $this->sanitizeLog($exception->getMessage()));
+
+            return trim($fallback);
+        }
     }
 
     private function runtimeConfigValue(string $key): string
@@ -2040,6 +2375,8 @@ final class HistoricalMiningUiService
 
     private function cleanIdentifier(string $value): string
     {
+        $value = trim($value);
+
         return preg_match('/^[a-z0-9:_-]{8,100}$/i', $value) ? $value : '';
     }
 

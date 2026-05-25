@@ -19,6 +19,7 @@ $error = trim((string) ($data['error'] ?? ''));
 $csrf = GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
 $previewToken = is_array($preview) ? (string) ($preview['preview_token'] ?? '') : '';
 $requestId = trim((string) ($flash['request_id'] ?? $candidate['request_id'] ?? $_POST['request_id'] ?? ''));
+$prefillTechnicalSummary = (string) ($_POST['technical_summary'] ?? $_GET['q'] ?? '');
 ?>
 
 <div class="container-fluid plugin-integaglpi-external-research">
@@ -104,7 +105,7 @@ $requestId = trim((string) ($flash['request_id'] ?? $candidate['request_id'] ?? 
                         <input type="hidden" name="request_id" value="<?php echo $this->escape($requestId); ?>">
                     <?php } ?>
                     <label class="form-label" for="technical_summary"><?php echo $this->escape(__('Resumo técnico sem dados pessoais', 'glpiintegaglpi')); ?></label>
-                    <textarea class="form-control" id="technical_summary" name="technical_summary" rows="6" maxlength="4000"><?php echo $this->escape((string) ($_POST['technical_summary'] ?? '')); ?></textarea>
+                    <textarea class="form-control" id="technical_summary" name="technical_summary" rows="6" maxlength="4000"><?php echo $this->escape($prefillTechnicalSummary); ?></textarea>
                     <div class="form-text">
                         <?php echo $this->escape(__('Não cole e-mail, telefone, CPF/CNPJ, tokens, senhas, IPs internos, anexos ou histórico completo.', 'glpiintegaglpi')); ?>
                     </div>

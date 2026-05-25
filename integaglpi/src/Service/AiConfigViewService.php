@@ -11,6 +11,104 @@ use Throwable;
 
 final class AiConfigViewService
 {
+    private const AI_SETTINGS_CONTEXT = 'ai_settings';
+    private const AI_SETTINGS_TABLE = 'glpi_plugin_integaglpi_configs';
+    private const AI_SETTINGS_COLUMNS = [
+        'ai_supervisor_enabled',
+        'ai_supervisor_provider',
+        'ai_supervisor_model',
+        'ai_supervisor_timeout_seconds',
+        'ai_supervisor_max_messages',
+        'ai_supervisor_max_chars',
+        'ai_supervisor_dry_run',
+        'copilot_enabled',
+        'copilot_provider',
+        'copilot_model',
+        'copilot_dry_run',
+        'copilot_timeout_ms',
+        'copilot_max_context_messages',
+        'copilot_max_context_chars',
+        'external_research_enabled',
+        'external_research_cloud_enabled',
+        'external_research_rate_limit_per_day',
+        'p4_candidate_review_enabled',
+        'p4_candidate_review_provider',
+        'p4_candidate_review_model',
+        'p4_confidence_threshold',
+        'p4_max_candidates_per_run',
+        'embeddings_enabled',
+        'cloud_dpo_approved',
+        'cloud_director_approved',
+        'cloud_admin_opt_in',
+        'cloud_budget_configured',
+        'cloud_incident_ack',
+        'cloud_synthetic_test_ok',
+        'ai_settings_updated_by',
+    ];
+    private const BOOLEAN_SETTING_KEYS = [
+        'ai_supervisor_enabled',
+        'ai_supervisor_dry_run',
+        'copilot_enabled',
+        'copilot_dry_run',
+        'external_research_enabled',
+        'external_research_cloud_enabled',
+        'p4_candidate_review_enabled',
+        'embeddings_enabled',
+        'cloud_dpo_approved',
+        'cloud_director_approved',
+        'cloud_admin_opt_in',
+        'cloud_budget_configured',
+        'cloud_incident_ack',
+        'cloud_synthetic_test_ok',
+    ];
+    private const PROVIDER_KEYS = [
+        'ai_supervisor_provider',
+        'copilot_provider',
+        'p4_candidate_review_provider',
+    ];
+    private const INTEGER_LIMITS = [
+        'ai_supervisor_timeout_seconds' => [15, 180],
+        'ai_supervisor_max_messages' => [1, 20],
+        'ai_supervisor_max_chars' => [500, 12000],
+        'copilot_timeout_ms' => [15000, 120000],
+        'copilot_max_context_messages' => [1, 12],
+        'copilot_max_context_chars' => [1000, 12000],
+        'external_research_rate_limit_per_day' => [0, 200],
+        'p4_confidence_threshold' => [0, 100],
+        'p4_max_candidates_per_run' => [1, 50],
+    ];
+    private const DEFAULT_AI_SETTINGS = [
+        'ai_supervisor_enabled' => 'false',
+        'ai_supervisor_provider' => 'disabled',
+        'ai_supervisor_model' => '',
+        'ai_supervisor_timeout_seconds' => 75,
+        'ai_supervisor_max_messages' => 8,
+        'ai_supervisor_max_chars' => 6000,
+        'ai_supervisor_dry_run' => 'true',
+        'copilot_enabled' => 'false',
+        'copilot_provider' => 'disabled',
+        'copilot_model' => '',
+        'copilot_dry_run' => 'true',
+        'copilot_timeout_ms' => 90000,
+        'copilot_max_context_messages' => 8,
+        'copilot_max_context_chars' => 6000,
+        'external_research_enabled' => 'false',
+        'external_research_cloud_enabled' => 'false',
+        'external_research_rate_limit_per_day' => 20,
+        'p4_candidate_review_enabled' => 'false',
+        'p4_candidate_review_provider' => 'disabled',
+        'p4_candidate_review_model' => '',
+        'p4_confidence_threshold' => 70,
+        'p4_max_candidates_per_run' => 10,
+        'embeddings_enabled' => 'false',
+        'cloud_dpo_approved' => 'false',
+        'cloud_director_approved' => 'false',
+        'cloud_admin_opt_in' => 'false',
+        'cloud_budget_configured' => 'false',
+        'cloud_incident_ack' => 'false',
+        'cloud_synthetic_test_ok' => 'false',
+    ];
+
     private PluginConfigService $pluginConfigService;
 
     public function __construct(PluginConfigService $pluginConfigService)
@@ -37,48 +135,54 @@ final class AiConfigViewService
             $diagnosticsError = __('Não foi possível consultar o integration-service agora.', 'glpiintegaglpi');
         }
 
-        $aiSupervisor = is_array($diagnostics['ai_supervisor'] ?? null) ? $diagnostics['ai_supervisor'] : [];
+        $aiSupervisorDiagnostics = is_array($diagnostics['ai_supervisor'] ?? null) ? $diagnostics['ai_supervisor'] : [];
+        $settings = $this->loadAiSettings();
         $integrationUrl = $this->pluginConfigService->getIntegrationServiceUrl();
 
         $cloudPilot = [
             'cloud_enabled' => $this->runtimeValue('AI_PILOT_CLOUD_ENABLED', 'false'),
-            'embeddings_enabled' => $this->runtimeValue('AI_PILOT_EMBEDDINGS_ENABLED', 'false'),
+            'embeddings_enabled' => $this->settingValue($settings, 'embeddings_enabled', $this->runtimeValue('AI_PILOT_EMBEDDINGS_ENABLED', 'false')),
             'provider' => $this->runtimeValue('AI_PILOT_PROVIDER', 'disabled'),
-            'dpo_approved' => $this->runtimeValue('AI_PILOT_DPO_APPROVED', 'false'),
-            'director_approved' => $this->runtimeValue('AI_PILOT_DIRECTOR_APPROVED', 'false'),
-            'admin_opt_in' => $this->runtimeValue('AI_PILOT_ADMIN_OPT_IN', 'false'),
-            'incident_ack' => $this->runtimeValue('AI_PILOT_INCIDENT_ACK', 'false'),
-            'synthetic_test_ok' => $this->runtimeValue('AI_PILOT_SYNTHETIC_TEST_OK', 'false'),
-            'monthly_budget_limit' => $this->runtimeValue('AI_PILOT_MONTHLY_BUDGET_LIMIT', '0'),
+            'dpo_approved' => $this->settingValue($settings, 'cloud_dpo_approved', $this->runtimeValue('AI_PILOT_DPO_APPROVED', 'false')),
+            'director_approved' => $this->settingValue($settings, 'cloud_director_approved', $this->runtimeValue('AI_PILOT_DIRECTOR_APPROVED', 'false')),
+            'admin_opt_in' => $this->settingValue($settings, 'cloud_admin_opt_in', $this->runtimeValue('AI_PILOT_ADMIN_OPT_IN', 'false')),
+            'incident_ack' => $this->settingValue($settings, 'cloud_incident_ack', $this->runtimeValue('AI_PILOT_INCIDENT_ACK', 'false')),
+            'synthetic_test_ok' => $this->settingValue($settings, 'cloud_synthetic_test_ok', $this->runtimeValue('AI_PILOT_SYNTHETIC_TEST_OK', 'false')),
+            'monthly_budget_limit' => $this->settingValue($settings, 'cloud_budget_configured', 'false') === 'true'
+                ? $this->runtimeValue('AI_PILOT_MONTHLY_BUDGET_LIMIT', 'configured')
+                : $this->runtimeValue('AI_PILOT_MONTHLY_BUDGET_LIMIT', '0'),
+            'budget_configured' => $this->settingValue($settings, 'cloud_budget_configured', 'false'),
             'environment' => $this->runtimeValue('AI_PILOT_ENVIRONMENT', $this->runtimeValue('APP_ENV', 'unknown')),
         ];
 
         $aiSupervisor = [
-            'enabled' => $aiSupervisor['enabled'] ?? Plugin::isAiSupervisorEnabled(),
-            'provider' => (string) ($aiSupervisor['provider'] ?? $this->runtimeValue('AI_SUPERVISOR_PROVIDER', 'não verificado')),
-            'model' => $this->runtimeValue('AI_SUPERVISOR_MODEL', 'não verificado'),
-            'timeout_seconds' => $this->runtimeValue('AI_SUPERVISOR_TIMEOUT_SECONDS', 'não verificado'),
-            'max_messages' => $this->runtimeValue('AI_SUPERVISOR_MAX_MESSAGES', 'não verificado'),
-            'max_chars' => $this->runtimeValue('AI_SUPERVISOR_MAX_CHARS', 'não verificado'),
-            'dry_run' => $aiSupervisor['dry_run'] ?? $this->runtimeValue('AI_SUPERVISOR_DRY_RUN', 'true'),
+            'enabled' => $this->settingValue($settings, 'ai_supervisor_enabled', $aiSupervisorDiagnostics['enabled'] ?? Plugin::isAiSupervisorEnabled()),
+            'provider' => $this->settingValue($settings, 'ai_supervisor_provider', $aiSupervisorDiagnostics['provider'] ?? $this->runtimeValue('AI_SUPERVISOR_PROVIDER', 'não verificado')),
+            'model' => $this->settingValue($settings, 'ai_supervisor_model', $this->runtimeValue('AI_SUPERVISOR_MODEL', 'não verificado')),
+            'timeout_seconds' => $this->settingValue($settings, 'ai_supervisor_timeout_seconds', $this->runtimeValue('AI_SUPERVISOR_TIMEOUT_SECONDS', 'não verificado')),
+            'max_messages' => $this->settingValue($settings, 'ai_supervisor_max_messages', $this->runtimeValue('AI_SUPERVISOR_MAX_MESSAGES', 'não verificado')),
+            'max_chars' => $this->settingValue($settings, 'ai_supervisor_max_chars', $this->runtimeValue('AI_SUPERVISOR_MAX_CHARS', 'não verificado')),
+            'dry_run' => $this->settingValue($settings, 'ai_supervisor_dry_run', $aiSupervisorDiagnostics['dry_run'] ?? $this->runtimeValue('AI_SUPERVISOR_DRY_RUN', 'true')),
             'base_url' => $this->maskUrl($this->runtimeValue('AI_SUPERVISOR_BASE_URL', 'não verificado')),
-            'base_url_configured' => $aiSupervisor['base_url_configured'] ?? null,
+            'base_url_configured' => $aiSupervisorDiagnostics['base_url_configured'] ?? null,
         ];
 
         $copilot = [
-            'enabled' => Plugin::isAiSupervisorEnabled(),
-            'provider' => $this->runtimeValue('COPILOT_PROVIDER', $this->runtimeValue('AI_SUPERVISOR_PROVIDER', 'disabled')),
-            'dry_run' => $this->runtimeValue('COPILOT_DRY_RUN', $this->runtimeValue('AI_SUPERVISOR_DRY_RUN', 'true')),
+            'enabled' => $this->settingValue($settings, 'copilot_enabled', Plugin::isAiSupervisorEnabled()),
+            'provider' => $this->settingValue($settings, 'copilot_provider', $this->runtimeValue('COPILOT_PROVIDER', $this->runtimeValue('AI_SUPERVISOR_PROVIDER', 'disabled'))),
+            'model' => $this->settingValue($settings, 'copilot_model', $this->runtimeValue('AI_SUPERVISOR_MODEL', 'não verificado')),
+            'dry_run' => $this->settingValue($settings, 'copilot_dry_run', $this->runtimeValue('COPILOT_DRY_RUN', $this->runtimeValue('AI_SUPERVISOR_DRY_RUN', 'true'))),
             'kb_local_lookup' => 'enabled',
             'kb_local_first' => 'true',
-            'max_context_messages' => '8',
+            'max_context_messages' => $this->settingValue($settings, 'copilot_max_context_messages', '8'),
+            'max_context_chars' => $this->settingValue($settings, 'copilot_max_context_chars', '6000'),
             'max_kb_articles' => '3',
-            'timeout_ms' => '90000',
+            'timeout_ms' => $this->settingValue($settings, 'copilot_timeout_ms', '90000'),
             'auto_send' => 'false',
             'ticket_mutation' => 'false',
         ];
-        $externalResearch = $this->externalResearchStatus();
-        $p4Review = $this->p4CandidateReviewStatus();
+        $externalResearch = $this->externalResearchStatus($settings);
+        $p4Review = $this->p4CandidateReviewStatus($settings);
         $embeddings = [
             'enabled' => $cloudPilot['embeddings_enabled'],
             'provider' => $this->runtimeValue('AI_PILOT_PROVIDER', 'disabled'),
@@ -97,9 +201,11 @@ final class AiConfigViewService
             'diagnostics_error' => $diagnosticsError,
             'environment' => $this->detectEnvironment($cloudPilot),
             'risk_alerts' => $this->riskAlerts($aiSupervisor, $cloudPilot),
-            'editable_safe_fields' => ['ai_supervisor_enabled'],
-            'pending_safe_fields' => ['provider', 'model', 'timeout_seconds', 'max_messages', 'max_chars', 'dry_run', 'copilot_provider', 'p4_provider'],
+            'editable_safe_fields' => array_values(array_filter(self::AI_SETTINGS_COLUMNS, static fn (string $key): bool => $key !== 'ai_settings_updated_by')),
+            'pending_safe_fields' => [],
             'secret_fields' => ['api_key', 'token', 'bearer', 'password', 'secret', 'client_secret'],
+            'safe_settings' => $settings,
+            'safe_settings_available' => $this->aiSettingsStorageAvailable(),
             'ai_supervisor' => $aiSupervisor,
             'copilot' => $copilot,
             'cloud_pilot' => $cloudPilot + [
@@ -145,23 +251,24 @@ final class AiConfigViewService
         $action = trim((string) ($post['action'] ?? ''));
         try {
             if ($action === 'save_safe_config') {
-                $config = $this->pluginConfigService->getConnectionConfig();
                 if (!$this->pluginConfigService->isConfigured()) {
                     throw new RuntimeException(__('Configure a conexão do plugin antes de salvar flags seguras.', 'glpiintegaglpi'));
                 }
-                $config['ai_supervisor_enabled'] = !empty($post['ai_supervisor_enabled']) ? 1 : 0;
-                $config['db_password'] = '';
-                $config['integration_auth_key'] = '';
-                $this->pluginConfigService->saveConnectionConfig($config);
+                $settings = $this->normalizeAiSettingsPost($post, $userId);
+                $this->saveAiSettings($settings);
                 $this->audit('AI_CONFIG_UPDATED', 'success', [
                     'glpi_user_id' => $userId,
-                    'field' => 'ai_supervisor_enabled',
-                    'new_value' => (int) $config['ai_supervisor_enabled'],
+                    'fields' => array_values(array_filter(
+                        array_keys($settings),
+                        static fn (string $key): bool => $key !== 'ai_settings_updated_by'
+                    )),
+                    'secret_fields_changed' => false,
+                    'env_edited' => false,
                 ]);
 
                 return [
                     'type' => 'success',
-                    'message' => __('Configuração segura salva. Campos sensíveis e .env não foram alterados.', 'glpiintegaglpi'),
+                    'message' => __('Configurações não sensíveis salvas. Segredos e .env não foram alterados.', 'glpiintegaglpi'),
                 ];
             }
 
@@ -237,6 +344,194 @@ final class AiConfigViewService
         }
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    private function loadAiSettings(): array
+    {
+        $settings = self::DEFAULT_AI_SETTINGS;
+        if (!$this->pluginConfigService->isConfigured() || !$this->aiSettingsStorageAvailable()) {
+            return $settings;
+        }
+
+        try {
+            $pdo = ExternalDatabase::getConnection($this->pluginConfigService->getConnectionConfig());
+            $stmt = $pdo->prepare(
+                'SELECT ' . implode(', ', array_map(static fn (string $column): string => '"' . $column . '"', self::AI_SETTINGS_COLUMNS)) . '
+                   FROM public.' . self::AI_SETTINGS_TABLE . '
+                  WHERE context = :context
+                  LIMIT 1'
+            );
+            $stmt->execute([':context' => self::AI_SETTINGS_CONTEXT]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!is_array($row)) {
+                return $settings;
+            }
+
+            foreach (self::AI_SETTINGS_COLUMNS as $column) {
+                if (!array_key_exists($column, $row) || $row[$column] === null || $row[$column] === '') {
+                    continue;
+                }
+                $settings[$column] = is_bool($row[$column]) ? ($row[$column] ? 'true' : 'false') : $row[$column];
+            }
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][ai_config][settings_load] ' . $this->sanitizeLog($exception->getMessage()));
+        }
+
+        return $settings;
+    }
+
+    private function aiSettingsStorageAvailable(): bool
+    {
+        if (!$this->pluginConfigService->isConfigured()) {
+            return false;
+        }
+
+        try {
+            $pdo = ExternalDatabase::getConnection($this->pluginConfigService->getConnectionConfig());
+            if (!$this->externalTableExists(self::AI_SETTINGS_TABLE)) {
+                return false;
+            }
+            $columnList = implode(', ', array_map(static fn (string $column): string => "'" . $column . "'", self::AI_SETTINGS_COLUMNS));
+            $stmt = $pdo->prepare(
+                'SELECT COUNT(*) FROM information_schema.columns
+                  WHERE table_schema = current_schema()
+                    AND table_name = :table
+                    AND column_name IN (' . $columnList . ')'
+            );
+            $stmt->execute([
+                ':table' => self::AI_SETTINGS_TABLE,
+            ]);
+
+            return (int) $stmt->fetchColumn() >= count(self::AI_SETTINGS_COLUMNS);
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][ai_config][settings_schema] ' . $this->sanitizeLog($exception->getMessage()));
+
+            return false;
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $post
+     * @return array<string, mixed>
+     */
+    private function normalizeAiSettingsPost(array $post, int $userId): array
+    {
+        if (!$this->aiSettingsStorageAvailable()) {
+            throw new RuntimeException(__('Storage de configurações IA não está pronto. Execute a migration 038 em TESTE.', 'glpiintegaglpi'));
+        }
+
+        $settings = [];
+        foreach (self::BOOLEAN_SETTING_KEYS as $key) {
+            $settings[$key] = !empty($post[$key]) ? 'true' : 'false';
+        }
+        foreach (self::PROVIDER_KEYS as $key) {
+            $settings[$key] = $this->normalizeProvider($post[$key] ?? 'disabled');
+        }
+        foreach (['ai_supervisor_model', 'copilot_model', 'p4_candidate_review_model'] as $key) {
+            $settings[$key] = $this->normalizeSafeText((string) ($post[$key] ?? ''), 120);
+        }
+        foreach (self::INTEGER_LIMITS as $key => $limits) {
+            $settings[$key] = $this->normalizeBoundedInteger($post[$key] ?? null, (int) self::DEFAULT_AI_SETTINGS[$key], $limits[0], $limits[1]);
+        }
+        $settings['ai_settings_updated_by'] = max(0, $userId);
+        $cloudRequested = $settings['external_research_cloud_enabled'] === 'true'
+            || $settings['embeddings_enabled'] === 'true';
+        if ($cloudRequested) {
+            $missing = $this->missingCloudGates([
+                'dpo_approved' => $settings['cloud_dpo_approved'],
+                'director_approved' => $settings['cloud_director_approved'],
+                'admin_opt_in' => $settings['cloud_admin_opt_in'],
+                'incident_ack' => $settings['cloud_incident_ack'],
+                'synthetic_test_ok' => $settings['cloud_synthetic_test_ok'],
+                'budget_configured' => $settings['cloud_budget_configured'],
+            ]);
+            if ($missing !== []) {
+                throw new RuntimeException(sprintf(
+                    __('Cloud bloqueada. Gates pendentes: %s.', 'glpiintegaglpi'),
+                    implode(', ', $missing)
+                ));
+            }
+        }
+
+        return $settings;
+    }
+
+    /**
+     * @param array<string, mixed> $settings
+     */
+    private function saveAiSettings(array $settings): void
+    {
+        $columns = array_keys($settings);
+        $insertColumns = array_merge(['context'], $columns);
+        $insertNames = array_map(static fn (string $column): string => '"' . $column . '"', $insertColumns);
+        $insertValues = array_map(static fn (string $column): string => ':' . $column, $insertColumns);
+        $updates = array_map(
+            static fn (string $column): string => '"' . $column . '" = EXCLUDED."' . $column . '"',
+            $columns
+        );
+        $updates[] = 'updated_at = NOW()';
+
+        $stmt = ExternalDatabase::getConnection($this->pluginConfigService->getConnectionConfig())->prepare(
+            'INSERT INTO public.' . self::AI_SETTINGS_TABLE . ' (' . implode(', ', $insertNames) . ', updated_at)
+             VALUES (' . implode(', ', $insertValues) . ', NOW())
+             ON CONFLICT (context) DO UPDATE SET ' . implode(', ', $updates)
+        );
+        $stmt->bindValue(':context', self::AI_SETTINGS_CONTEXT);
+        foreach ($settings as $key => $value) {
+            if (is_int($value)) {
+                $stmt->bindValue(':' . $key, $value, PDO::PARAM_INT);
+                continue;
+            }
+            $stmt->bindValue(':' . $key, (string) $value);
+        }
+        $stmt->execute();
+    }
+
+    private function settingValue(array $settings, string $key, $fallback): string
+    {
+        $value = $settings[$key] ?? null;
+        if ($value === null || $value === '') {
+            if (is_bool($fallback)) {
+                return $fallback ? 'true' : 'false';
+            }
+
+            return (string) $fallback;
+        }
+
+        if (is_bool($value)) {
+            return $value ? 'true' : 'false';
+        }
+
+        return (string) $value;
+    }
+
+    private function normalizeProvider($value): string
+    {
+        $provider = strtolower(trim((string) $value));
+
+        return in_array($provider, ['disabled', 'ollama', 'local'], true) ? $provider : 'disabled';
+    }
+
+    private function normalizeSafeText(string $value, int $limit): string
+    {
+        $value = trim(strip_tags($value));
+        $value = preg_replace('/(password|senha|token|secret|bearer|api_key)\s*[:=]\s*\S+/i', '$1=[redacted]', $value) ?? '';
+        $value = preg_replace('/[^A-Za-z0-9_.:\/-]+/', '', $value) ?? '';
+
+        return substr($value, 0, $limit);
+    }
+
+    private function normalizeBoundedInteger($value, int $default, int $min, int $max): int
+    {
+        $integer = (int) $value;
+        if ($integer < $min || $integer > $max) {
+            return $default;
+        }
+
+        return $integer;
+    }
+
     private function runtimeValue(string $key, string $fallback): string
     {
         $value = Plugin::getRuntimeConfigValue($key);
@@ -266,10 +561,10 @@ final class AiConfigViewService
     /**
      * @return array<string, mixed>
      */
-    private function externalResearchStatus(): array
+    private function externalResearchStatus(array $settings): array
     {
-        $enabled = $this->runtimeValue('EXTERNAL_RESEARCH_ENABLED', 'false');
-        $cloudEnabled = $this->runtimeValue('EXTERNAL_RESEARCH_CLOUD_ENABLED', 'false');
+        $enabled = $this->settingValue($settings, 'external_research_enabled', $this->runtimeValue('EXTERNAL_RESEARCH_ENABLED', 'false'));
+        $cloudEnabled = $this->settingValue($settings, 'external_research_cloud_enabled', $this->runtimeValue('EXTERNAL_RESEARCH_CLOUD_ENABLED', 'false'));
         $tablesReady = $this->externalTableExists('glpi_plugin_integaglpi_external_source_catalog')
             && $this->externalTableExists('glpi_plugin_integaglpi_external_research_requests')
             && $this->externalTableExists('glpi_plugin_integaglpi_external_research_candidates');
@@ -281,6 +576,7 @@ final class AiConfigViewService
             'manual_trigger_required' => 'true',
             'prompt_preview_required' => 'true',
             'source_allowlist_required' => 'true',
+            'rate_limit_per_day' => $this->settingValue($settings, 'external_research_rate_limit_per_day', '20'),
             'tables_ready' => $tablesReady,
             'status' => $this->truthy($enabled) && $tablesReady ? 'available' : 'disabled',
             'blocked_reason' => $this->truthy($enabled)
@@ -292,11 +588,11 @@ final class AiConfigViewService
     /**
      * @return array<string, mixed>
      */
-    private function p4CandidateReviewStatus(): array
+    private function p4CandidateReviewStatus(array $settings): array
     {
-        $enabled = $this->runtimeValue('AI_KB_CANDIDATE_REVIEW_ENABLED', 'false');
-        $provider = $this->runtimeValue('AI_KB_CANDIDATE_REVIEW_PROVIDER', $this->runtimeValue('AI_SUPERVISOR_PROVIDER', 'disabled'));
-        $model = $this->runtimeValue('AI_KB_CANDIDATE_REVIEW_MODEL', $this->runtimeValue('AI_SUPERVISOR_MODEL', 'não verificado'));
+        $enabled = $this->settingValue($settings, 'p4_candidate_review_enabled', $this->runtimeValue('AI_KB_CANDIDATE_REVIEW_ENABLED', 'false'));
+        $provider = $this->settingValue($settings, 'p4_candidate_review_provider', $this->runtimeValue('AI_KB_CANDIDATE_REVIEW_PROVIDER', $this->runtimeValue('AI_SUPERVISOR_PROVIDER', 'disabled')));
+        $model = $this->settingValue($settings, 'p4_candidate_review_model', $this->runtimeValue('AI_KB_CANDIDATE_REVIEW_MODEL', $this->runtimeValue('AI_SUPERVISOR_MODEL', 'não verificado')));
         $tablesReady = $this->externalTableExists('glpi_plugin_integaglpi_kb_candidates')
             && $this->externalTableExists('glpi_plugin_integaglpi_kb_candidate_reviews');
 
@@ -306,8 +602,8 @@ final class AiConfigViewService
             'provider' => $provider,
             'model' => $model,
             'local_provider_configured' => strtolower($provider) === 'ollama' && $model !== '' && $model !== 'não verificado',
-            'confidence_threshold' => '70',
-            'max_candidates_per_run' => '10',
+            'confidence_threshold' => $this->settingValue($settings, 'p4_confidence_threshold', '70'),
+            'max_candidates_per_run' => $this->settingValue($settings, 'p4_max_candidates_per_run', '10'),
             'tables_ready' => $tablesReady,
             'human_review_required' => 'true',
             'no_auto_publish' => 'true',
@@ -402,7 +698,7 @@ final class AiConfigViewService
                 $missing[] = $label;
             }
         }
-        if ((float) ($pilot['monthly_budget_limit'] ?? 0) <= 0) {
+        if (!$this->truthy($pilot['budget_configured'] ?? false) && (float) ($pilot['monthly_budget_limit'] ?? 0) <= 0) {
             $missing[] = 'budget';
         }
 
