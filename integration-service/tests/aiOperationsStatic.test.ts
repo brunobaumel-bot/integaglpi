@@ -41,9 +41,27 @@ describe('AI operations console static safety', () => {
     expect(service).toContain('AI_CONFIG_VIEWED');
     expect(service).toContain('AI_CONFIG_UPDATED');
     expect(service).toContain('AI_CLOUD_GATE_UPDATED');
+    expect(service).toContain('AI_LOCAL_SYNTHETIC_TEST_RUN');
+    expect(service).toContain('externalResearchStatus');
+    expect(service).toContain('p4CandidateReviewStatus');
+    expect(service).toContain('secrets_in_env_only');
+    expect(service).toContain('no_raw_ticket_to_ai');
     expect(template).toContain('auth_key_visible');
     expect(template).toContain('Validar gates para habilitar cloud');
+    expect(template).toContain('Validar configuração local sem dados reais');
     expect(template).toContain('Habilitar IA Supervisora no plugin');
+    expect(template).toContain('kb_local_first');
+    expect(template).toContain('Pesquisa Externa Controlada');
+    expect(template).toContain('manual_trigger_required');
+    expect(template).toContain('prompt_preview_required');
+    expect(template).toContain('P4 Revisão de Candidatos KB');
+    expect(template).toContain('human_review_required');
+    expect(template).toContain('no_auto_publish');
+    expect(template).toContain('Embeddings');
+    expect(template).toContain('operational_rag');
+    expect(template).toContain('Auditoria IA');
+    expect(template).toContain('payload_policy');
+    expect(template).toContain('Política operacional');
     const inputNames = [...template.matchAll(/name="([^"]+)"/g)].map((match) => match[1]);
     expect(inputNames.filter((name) => name !== '_glpi_csrf_token')).not.toEqual(
       expect.arrayContaining(['integration_auth_key', 'token', 'secret', 'password', 'api_key']),
@@ -79,7 +97,7 @@ describe('AI operations console static safety', () => {
     expect(nodeService).toContain('withOperationLock');
     expect(nodeService).toContain('AI_OPERATIONS_LOCK_UNAVAILABLE');
     expect(nodeService).toContain('HISTORICAL_MINING_DRY_RUN_REQUIRED');
-    expect(`${phpService}\n${nodeService}`).not.toMatch(/shell_exec|exec\s*\(|passthru|proc_open|spawn\(|child_process|inputPath|path_arbitrary/i);
+    expect(`${phpService}\n${nodeService}`).not.toMatch(/\b(?:shell_exec|exec|passthru|proc_open|system)\s*\(|spawn\(|child_process|inputPath|path_arbitrary/i);
   });
 
   it('exports GLPI tickets to the P2 JSONL contract with sanitization and no attachments', async () => {
@@ -115,6 +133,13 @@ describe('AI operations console static safety', () => {
     expect(phpService).toContain('HISTORICAL_JSONL_SELECTED_FOR_DRY_RUN');
     expect(phpService).toContain('HISTORICAL_JSONL_EXPIRED_OR_NOT_FOUND');
     expect(phpService).toContain('HISTORICAL_MINING_DRY_RUN_REQUESTED');
+    expect(phpService).toContain('source_origin');
+    expect(phpService).toContain('file_id_hash');
+    expect(phpService).toContain('exportPreviewForSession');
+    expect(phpService).toContain('exportPreviewFromUpload');
+    expect(phpService).toContain('rowsProcessedFromMiningBody');
+    expect(phpService).toContain('Execução real bloqueada');
+    expect(phpService).toContain('Ação inválida.');
     expect(phpService).toContain('glpi_itilfollowups');
     expect(phpService).toContain('glpi_itilsolutions');
     expect(phpService).not.toMatch(/glpi_documents|glpi_documents_items|Document_Item/i);
@@ -124,12 +149,52 @@ describe('AI operations console static safety', () => {
     expect(template).toContain('Arquivo JSONL gerado');
     expect(template).toContain('Baixar JSONL sanitizado');
     expect(template).toContain('Executar dry-run P2 com este arquivo');
+    expect(template).toContain('Pré-visualizar payload P4');
+    expect(template).toContain('Revisão IA de candidatos está desabilitada');
     expect(template).toContain('file_id');
     expect(template).toContain('sha256');
     expect(template).toContain('expires_at');
     expect(template).toContain('área temporária controlada');
+    expect(template).toContain('Diagnóstico de rejeições do dry-run');
+    expect(template).toContain('Próxima ação');
+    expect(template).toContain('!$dryRunReady');
     expect(template).not.toContain("$exportUpload['path']");
     expect(template).not.toContain('name="path"');
+  });
+
+  it('keeps P4 AI candidate review disabled by default and candidate-only', async () => {
+    const phpService = await readProjectFile('integaglpi/src/Service/HistoricalMiningUiService.php');
+    const template = await readProjectFile('integaglpi/templates/historical_mining.php');
+
+    expect(phpService).toContain("P4_AI_REVIEW_FEATURE_FLAG = 'AI_KB_CANDIDATE_REVIEW_ENABLED'");
+    expect(phpService).toContain('previewAiCandidateReview');
+    expect(phpService).toContain('executeAiCandidateReview');
+    expect(phpService).toContain('KB_CANDIDATE_AI_REVIEW_PREVIEWED');
+    expect(phpService).toContain('KB_CANDIDATE_AI_REVIEW_BLOCKED');
+    expect(phpService).toContain('KB_CANDIDATE_AI_REVIEW_COMPLETED');
+    expect(phpService).toContain('loadAiReviewCandidatePayloads');
+    expect(phpService).toContain('callLocalOllamaForCandidateReview');
+    expect(phpService).toContain('validateAiCandidateReviewResponse');
+    expect(phpService).toContain('persistAiCandidateReviewSuggestions');
+    expect(phpService).toContain('/api/generate');
+    expect(phpService).toContain("'stream' => false");
+    expect(phpService).toContain("'format' => 'json'");
+    expect(phpService).toContain("'edit_note'");
+    expect(phpService).toContain('provider_url_not_local');
+    expect(phpService).toContain('glpi_plugin_integaglpi_kb_candidates');
+    expect(phpService).toContain('glpi_plugin_integaglpi_kb_candidate_reviews');
+    expect(phpService).toContain('glpi_plugin_integaglpi_hist_mining_runs');
+    expect(phpService).toContain('p4_no_raw_history');
+    expect(phpService).toContain('p4_no_auto_publish');
+    expect(phpService).toContain('provider_unavailable');
+    expect(phpService).toContain('confidence_below_threshold');
+    expect(phpService).toContain('human_review_required');
+    expect(template).toContain('4. Revisão IA opcional P4');
+    expect(template).toContain('P4 usa apenas candidatos P3 sanitizados');
+    expect(template).toContain('revisão humana obrigatória');
+    expect(template).toContain('Confiança abaixo do limite');
+    expect(template).toContain('disabled');
+    expect(`${phpService}\n${template}`).not.toMatch(/KnowbaseItem::add|auto_publish\s*=\s*true|ticket raw|followup raw|sendOutbound|MetaClient/i);
   });
 
   it('keeps operations pages away from WhatsApp, ticket mutation and KB publishing', async () => {

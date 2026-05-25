@@ -9,7 +9,11 @@ import { analyzeHistoricalMiningDataset } from '../../historicalMining/engine.js
 import { loadHistoricalMiningDataset, validateHistoricalWindow, validateMaxRows } from '../../historicalMining/input.js';
 import { sanitizeHistoricalText } from '../../historicalMining/sanitizer.js';
 import { persistHistoricalMiningResult } from '../../historicalMining/repository.js';
-import type { HistoricalMiningResult } from '../../historicalMining/types.js';
+import type {
+  HistoricalMiningDataset,
+  HistoricalMiningRejection,
+  HistoricalMiningResult,
+} from '../../historicalMining/types.js';
 import { generateKbCandidatesFromHistory } from '../../kbCandidates/generator.js';
 import { loadKbCandidateGenerationInput, persistKbCandidates } from '../../kbCandidates/repository.js';
 import type { KeyLock } from '../contracts/KeyLock.js';
@@ -79,7 +83,7 @@ export class AiOperationsService {
   ) {}
 
   public async previewHistoricalMining(input: HistoricalMiningUiInput) {
-    const { result, options } = await this.analyzeUploadedJsonl(input);
+    const { result, options, dataset } = await this.analyzeUploadedJsonl(input);
     const token = this.dryRunToken(result.run.inputHash, options);
 
     await this.audit('HISTORICAL_MINING_UPLOAD_VALIDATED', 'success', input.requestedBy ?? null, {
@@ -102,6 +106,9 @@ export class AiOperationsService {
         ticket_id_hash: item.ticketIdHash,
         excerpt: sanitizeHistoricalText(item.anonymizedExcerpt, 240),
       })),
+      rejection_reasons: this.rejectionReasonsFor(dataset),
+      rejection_examples: this.rejectionExamplesFor(dataset),
+      next_action: this.nextActionFor(result, dataset, true),
       patterns: result.patterns.slice(0, 10),
       insights: result.insights.slice(0, 10),
       evidence: result.evidence.slice(0, 10),
@@ -110,7 +117,7 @@ export class AiOperationsService {
 
   public async executeHistoricalMining(input: HistoricalMiningUiInput) {
     return this.withOperationLock(this.miningLockKey(input), async () => {
-      const { result, options } = await this.analyzeUploadedJsonl(input);
+      const { result, options, dataset } = await this.analyzeUploadedJsonl(input);
       const expectedToken = this.dryRunToken(result.run.inputHash, options);
       if (!input.dryRunToken || input.dryRunToken !== expectedToken) {
         await this.audit('HISTORICAL_MINING_EXECUTION_BLOCKED', 'blocked', input.requestedBy ?? null, {
@@ -120,6 +127,20 @@ export class AiOperationsService {
         throw new AiOperationsError(
           'HISTORICAL_MINING_DRY_RUN_REQUIRED',
           'Execute o dry-run e confirme o mesmo arquivo antes da mineração real.',
+          409,
+        );
+      }
+      if (result.run.rowsProcessed <= 0) {
+        await this.audit('HISTORICAL_MINING_EXECUTION_BLOCKED', 'blocked', input.requestedBy ?? null, {
+          reason: 'no_processable_rows',
+          input_hash: result.run.inputHash,
+          rows_seen: result.run.rowsSeen,
+          rows_rejected: result.run.rowsRejected,
+          rejection_reasons: this.rejectionReasonsFor(dataset),
+        });
+        throw new AiOperationsError(
+          'HISTORICAL_MINING_NO_PROCESSABLE_ROWS',
+          'A execução real foi bloqueada porque o dry-run não encontrou linhas processáveis.',
           409,
         );
       }
@@ -135,6 +156,9 @@ export class AiOperationsService {
 
       return {
         summary: this.summaryFor(result, false),
+        rejection_reasons: this.rejectionReasonsFor(dataset),
+        rejection_examples: this.rejectionExamplesFor(dataset),
+        next_action: this.nextActionFor(result, dataset, false),
         patterns: result.patterns.slice(0, 10),
         insights: result.insights.slice(0, 10),
         evidence: result.evidence.slice(0, 10),
@@ -262,7 +286,7 @@ export class AiOperationsService {
         windowEnd,
       });
 
-      return { result, options };
+      return { result, options, dataset };
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
@@ -290,6 +314,44 @@ export class AiOperationsService {
       insights: result.insights.length,
       evidence: result.evidence.length,
     };
+  }
+
+  private rejectionReasonsFor(dataset: HistoricalMiningDataset) {
+    return Object.entries(dataset.rejectionReasonCounts ?? {})
+      .filter(([, count]) => Number(count) > 0)
+      .sort((a, b) => Number(b[1]) - Number(a[1]))
+      .map(([reason, count]) => ({
+        reason,
+        count: Number(count),
+      }));
+  }
+
+  private rejectionExamplesFor(dataset: HistoricalMiningDataset) {
+    return (dataset.rejectionExamples ?? []).slice(0, 5).map((item: HistoricalMiningRejection) => ({
+      line: item.line,
+      reason: item.reason,
+      field: item.field ?? null,
+      ticket_id_hash: item.ticketIdHash ?? null,
+      excerpt: item.excerpt ? sanitizeHistoricalText(item.excerpt, 180) : null,
+    }));
+  }
+
+  private nextActionFor(
+    result: HistoricalMiningResult,
+    dataset: HistoricalMiningDataset,
+    dryRun: boolean,
+  ): string {
+    if (result.run.rowsProcessed <= 0) {
+      const reasons = this.rejectionReasonsFor(dataset).slice(0, 2).map((item) => item.reason).join(', ');
+      return reasons
+        ? `Revise o JSONL antes de executar: principais rejeições: ${reasons}.`
+        : 'Revise o JSONL antes de executar: nenhuma linha processável foi encontrada.';
+    }
+    if (dryRun) {
+      return 'Dry-run válido. Revise patterns/insights e só então execute a mineração real.';
+    }
+
+    return 'Mineração persistida. Use o run_id para gerar candidatos de KB revisáveis.';
   }
 
   private async tableExists(tableName: string): Promise<boolean> {

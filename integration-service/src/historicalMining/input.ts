@@ -7,9 +7,16 @@ import { createInterface } from 'node:readline/promises';
 import {
   type HistoricalMiningDataset,
   type HistoricalMiningInputFormat,
+  type HistoricalMiningRejection,
+  type HistoricalMiningRejectionReason,
   type HistoricalTicketRecord,
 } from './types.js';
-import { hashTicketIdentifier, sanitizeHistoricalText, sha256Hex } from './sanitizer.js';
+import {
+  hashTicketIdentifier,
+  hasObviousSensitiveContent,
+  sanitizeHistoricalText,
+  sha256Hex,
+} from './sanitizer.js';
 
 export interface HistoricalMiningLoadOptions {
   windowStart?: Date;
@@ -30,7 +37,34 @@ const REQUIRED_FIELDS = [
   'solution_text_sanitized',
 ] as const;
 
+const REQUIRED_NON_EMPTY_FIELDS = [
+  'ticket_id_hash',
+  'opened_at',
+  'status',
+] as const;
+
+const SUPPORTED_STATUSES = new Set([
+  'new',
+  'processing',
+  'planned',
+  'pending',
+  'solved',
+  'closed',
+  '1',
+  '2',
+  '3',
+  '4',
+  '5',
+  '6',
+]);
+
+const EXPECTED_SCHEMA_VERSION = 'historical_mining_jsonl_v1';
+const MINIMUM_CONTENT_CHARS = 20;
+
 type RawRecord = Record<string, unknown>;
+type RecordMappingResult =
+  | { ok: true; record: HistoricalTicketRecord }
+  | { ok: false; rejection: HistoricalMiningRejection };
 
 export function detectHistoricalInputFormat(inputPath: string): HistoricalMiningInputFormat {
   const extension = extname(inputPath).toLowerCase();
@@ -88,6 +122,35 @@ function numberOrNull(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function lineNumber(raw: RawRecord): number {
+  const parsed = Number(raw.__line_number);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function reject(
+  raw: RawRecord,
+  reason: HistoricalMiningRejectionReason,
+  field?: string,
+  excerpt?: string,
+): RecordMappingResult {
+  return {
+    ok: false,
+    rejection: {
+      line: lineNumber(raw),
+      reason,
+      field,
+      ticketIdHash: String(raw.ticket_id_hash ?? '').trim() !== ''
+        ? hashTicketIdentifier(raw.ticket_id_hash)
+        : undefined,
+      excerpt: excerpt ? sanitizeHistoricalText(excerpt, 180) : undefined,
+    },
+  };
+}
+
+function hasOwn(raw: RawRecord, field: string): boolean {
+  return Object.prototype.hasOwnProperty.call(raw, field);
+}
+
 function parseReopenCount(raw: RawRecord): number {
   const count = numberOrNull(raw.reopened_count);
   if (count !== null) {
@@ -97,28 +160,70 @@ function parseReopenCount(raw: RawRecord): number {
   return ['true', 'yes', 'sim', '1'].includes(flag) ? 1 : 0;
 }
 
-function requiredFieldsPresent(raw: RawRecord): boolean {
-  return REQUIRED_FIELDS.every((field) => String(raw[field] ?? '').trim() !== '');
+function missingRequiredField(raw: RawRecord): string | null {
+  for (const field of REQUIRED_FIELDS) {
+    if (!hasOwn(raw, field)) {
+      return field;
+    }
+  }
+  for (const field of REQUIRED_NON_EMPTY_FIELDS) {
+    if (String(raw[field] ?? '').trim() === '') {
+      return field;
+    }
+  }
+
+  return null;
 }
 
-function mapRawRecord(raw: RawRecord): HistoricalTicketRecord | null {
-  if (!requiredFieldsPresent(raw)) {
-    return null;
+function normalizedLabel(value: unknown, fallback: string, maxLength: number): string {
+  const sanitized = sanitizeHistoricalText(value, maxLength);
+  return sanitized !== '' ? sanitized : fallback;
+}
+
+function combinedSanitizedText(record: HistoricalTicketRecord): string {
+  return [
+    record.titleText,
+    record.descriptionText,
+    record.followupText,
+    record.solutionText,
+  ].filter(Boolean).join(' ').trim();
+}
+
+function mapRawRecord(raw: RawRecord): RecordMappingResult {
+  if (raw.__invalid_json === true) {
+    return reject(raw, 'invalid_json');
+  }
+  if (
+    raw.schema_version !== undefined
+    && String(raw.schema_version).trim() !== ''
+    && String(raw.schema_version).trim() !== EXPECTED_SCHEMA_VERSION
+  ) {
+    return reject(raw, 'schema_version_mismatch', 'schema_version');
+  }
+
+  const missingField = missingRequiredField(raw);
+  if (missingField !== null) {
+    return reject(raw, 'missing_required_field', missingField);
   }
 
   const openedAt = parseDate(raw.opened_at);
   if (!openedAt) {
-    return null;
+    return reject(raw, 'schema_version_mismatch', 'opened_at');
   }
 
-  return {
+  const status = sanitizeHistoricalText(raw.status, 80).toLowerCase();
+  if (!SUPPORTED_STATUSES.has(status)) {
+    return reject(raw, 'unsupported_status', 'status', status);
+  }
+
+  const record: HistoricalTicketRecord = {
     ticketIdHash: hashTicketIdentifier(raw.ticket_id_hash),
     openedAt,
     solvedAt: parseDate(raw.solved_at),
-    status: sanitizeHistoricalText(raw.status, 80),
-    category: sanitizeHistoricalText(raw.category, 160),
-    entity: sanitizeHistoricalText(raw.entity, 160),
-    group: sanitizeHistoricalText(raw.group, 160),
+    status,
+    category: normalizedLabel(raw.category, 'Sem categoria', 160),
+    entity: normalizedLabel(raw.entity, 'Sem entidade', 160),
+    group: normalizedLabel(raw.group, 'Sem grupo', 160),
     priority: raw.priority === undefined ? null : sanitizeHistoricalText(raw.priority, 60),
     urgency: raw.urgency === undefined ? null : sanitizeHistoricalText(raw.urgency, 60),
     titleText: sanitizeHistoricalText(raw.title_text_sanitized, 400),
@@ -128,6 +233,19 @@ function mapRawRecord(raw: RawRecord): HistoricalTicketRecord | null {
     reopenedCount: parseReopenCount(raw),
     satisfactionScore: numberOrNull(raw.satisfaction_score),
   };
+
+  const text = combinedSanitizedText(record);
+  if (text === '') {
+    return reject(raw, 'empty_sanitized_text', undefined, text);
+  }
+  if (text.length < MINIMUM_CONTENT_CHARS) {
+    return reject(raw, 'below_minimum_content', undefined, text);
+  }
+  if (hasObviousSensitiveContent(text)) {
+    return reject(raw, 'sensitive_data_residual', undefined, text);
+  }
+
+  return { ok: true, record };
 }
 
 function recordInWindow(record: HistoricalTicketRecord, windowStart?: Date, windowEnd?: Date): boolean {
@@ -168,16 +286,22 @@ async function* readJsonl(inputPath: string): AsyncGenerator<RawRecord> {
     input: createReadStream(inputPath, { encoding: 'utf8' }),
     crlfDelay: Infinity,
   });
+  let lineNumberValue = 0;
   for await (const line of lineReader) {
+    lineNumberValue += 1;
     const trimmed = line.trim();
     if (trimmed === '') {
       continue;
     }
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      yield parsed as RawRecord;
-    } else {
-      yield {};
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        yield { ...(parsed as RawRecord), __line_number: lineNumberValue };
+      } else {
+        yield { __line_number: lineNumberValue, __invalid_json: true };
+      }
+    } catch {
+      yield { __line_number: lineNumberValue, __invalid_json: true };
     }
   }
 }
@@ -186,12 +310,15 @@ async function* readCsv(inputPath: string): AsyncGenerator<RawRecord> {
   const content = await readFile(inputPath, 'utf8');
   const lines = content.split(/\r?\n/).filter((line) => line.trim() !== '');
   const headers = parseCsvLine(lines.shift() ?? '').map((header) => header.trim());
+  let lineNumberValue = 1;
   for (const line of lines) {
+    lineNumberValue += 1;
     const values = parseCsvLine(line);
     const row: RawRecord = {};
     headers.forEach((header, index) => {
       row[header] = values[index] ?? '';
     });
+    row.__line_number = lineNumberValue;
     yield row;
   }
 }
@@ -205,22 +332,30 @@ export async function loadHistoricalMiningDataset(
   const format = detectHistoricalInputFormat(inputPath);
   const inputHash = await computeFileHash(inputPath);
   const records: HistoricalTicketRecord[] = [];
+  const rejectionReasonCounts: Partial<Record<HistoricalMiningRejectionReason, number>> = {};
+  const rejectionExamples: HistoricalMiningRejection[] = [];
   let rowsSeen = 0;
   let rowsRejected = 0;
   const reader = format === 'jsonl' ? readJsonl(inputPath) : readCsv(inputPath);
 
   for await (const raw of reader) {
     rowsSeen += 1;
-    let record: HistoricalTicketRecord | null = null;
+    let mapping: RecordMappingResult;
     try {
-      record = mapRawRecord(raw);
+      mapping = mapRawRecord(raw);
     } catch {
-      record = null;
+      mapping = reject(raw, 'unknown_error');
     }
-    if (!record) {
+    if (!mapping.ok) {
       rowsRejected += 1;
+      const reason = mapping.rejection.reason;
+      rejectionReasonCounts[reason] = (rejectionReasonCounts[reason] ?? 0) + 1;
+      if (rejectionExamples.length < 5) {
+        rejectionExamples.push(mapping.rejection);
+      }
       continue;
     }
+    const record = mapping.record;
     if (!recordInWindow(record, options.windowStart, options.windowEnd)) {
       continue;
     }
@@ -235,5 +370,7 @@ export async function loadHistoricalMiningDataset(
     rowsSeen,
     rowsRejected,
     records,
+    rejectionReasonCounts,
+    rejectionExamples,
   };
 }

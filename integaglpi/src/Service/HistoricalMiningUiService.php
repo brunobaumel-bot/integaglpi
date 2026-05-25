@@ -15,6 +15,13 @@ final class HistoricalMiningUiService
     private const MAX_EXPORT_TICKETS = 1000;
     private const JSONL_RETENTION_SECONDS = 86400;
     private const LOCK_TTL_SECONDS = 900;
+    private const P4_AI_REVIEW_FEATURE_FLAG = 'AI_KB_CANDIDATE_REVIEW_ENABLED';
+    private const P4_AI_REVIEW_PROVIDER = 'AI_KB_CANDIDATE_REVIEW_PROVIDER';
+    private const P4_AI_REVIEW_BASE_URL = 'AI_KB_CANDIDATE_REVIEW_BASE_URL';
+    private const P4_AI_REVIEW_MODEL = 'AI_KB_CANDIDATE_REVIEW_MODEL';
+    private const P4_AI_REVIEW_TIMEOUT_SECONDS = 'AI_KB_CANDIDATE_REVIEW_TIMEOUT_SECONDS';
+    private const P4_CONFIDENCE_THRESHOLD = 70;
+    private const P4_MAX_CANDIDATES = 10;
     private PluginConfigService $pluginConfigService;
     private IntegrationServiceClient $client;
 
@@ -39,6 +46,8 @@ final class HistoricalMiningUiService
             'selected_run_id' => $this->cleanIdentifier((string) ($query['run_id'] ?? '')),
             'export_options' => $this->loadExportOptions(),
             'jsonl_retention_seconds' => self::JSONL_RETENTION_SECONDS,
+            'p4_ai_review_enabled' => $this->isAiCandidateReviewEnabled(),
+            'p4_ai_review_feature_flag' => self::P4_AI_REVIEW_FEATURE_FLAG,
         ];
     }
 
@@ -73,6 +82,12 @@ final class HistoricalMiningUiService
             }
             if ($action === 'generate_candidates') {
                 return $this->generateCandidates($post, $userId);
+            }
+            if ($action === 'preview_ai_candidate_review') {
+                return $this->previewAiCandidateReview($post, $userId);
+            }
+            if ($action === 'execute_ai_candidate_review') {
+                return $this->executeAiCandidateReview($post, $userId);
             }
 
             return ['type' => 'danger', 'message' => __('Ação inválida.', 'glpiintegaglpi')];
@@ -142,15 +157,20 @@ final class HistoricalMiningUiService
         }
 
         $body = is_array($response['body'] ?? null) ? $response['body'] : [];
-        $upload['dry_run_token'] = (string) ($body['dry_run_token'] ?? '');
+        $rowsProcessed = $this->rowsProcessedFromMiningBody($body);
+        $upload['dry_run_token'] = $rowsProcessed > 0 ? (string) ($body['dry_run_token'] ?? '') : '';
+        $upload['dry_run_ready'] = $rowsProcessed > 0;
+        $upload['dry_run_rows_processed'] = $rowsProcessed;
         $upload['window_start'] = (string) ($payload['window_start'] ?? '');
         $upload['window_end'] = (string) ($payload['window_end'] ?? '');
         $upload['max_rows'] = (int) ($payload['max_rows'] ?? 1000);
         $this->rememberUpload($upload);
 
         return [
-            'type' => 'success',
-            'message' => __('Dry-run concluído. Revise o preview antes de executar a mineração real.', 'glpiintegaglpi'),
+            'type' => $rowsProcessed > 0 ? 'success' : 'warning',
+            'message' => $rowsProcessed > 0
+                ? __('Dry-run concluído. Revise o preview antes de executar a mineração real.', 'glpiintegaglpi')
+                : __('Dry-run concluído sem linhas processáveis. Revise os motivos de rejeição antes de executar a mineração real.', 'glpiintegaglpi'),
             'upload' => $upload,
             'mining_result' => $body,
         ];
@@ -167,6 +187,9 @@ final class HistoricalMiningUiService
         if ($dryRunToken === '' || !hash_equals((string) ($upload['dry_run_token'] ?? ''), $dryRunToken)) {
             throw new RuntimeException(__('Execute o dry-run do mesmo arquivo antes da mineração real.', 'glpiintegaglpi'));
         }
+        if (empty($upload['dry_run_ready']) || (int) ($upload['dry_run_rows_processed'] ?? 0) <= 0) {
+            throw new RuntimeException(__('Execução real bloqueada: o dry-run não encontrou linhas processáveis.', 'glpiintegaglpi'));
+        }
 
         return $this->withFileLock('p2_execute:' . (string) $upload['upload_id'], function () use ($upload, $post, $userId, $dryRunToken): array {
             $payload = $this->payloadForUpload($upload, $post, $userId);
@@ -178,6 +201,7 @@ final class HistoricalMiningUiService
 
             $body = is_array($response['body'] ?? null) ? $response['body'] : [];
             $summary = is_array($body['summary'] ?? null) ? $body['summary'] : [];
+            $rowsProcessed = (int) ($summary['rows_processed'] ?? 0);
             $this->audit('HISTORICAL_MINING_EXECUTED', [
                 'glpi_user_id' => $userId,
                 'upload_id_hash' => hash('sha256', (string) $upload['upload_id']),
@@ -187,9 +211,13 @@ final class HistoricalMiningUiService
             ]);
 
             return [
-                'type' => 'success',
-                'message' => __('Mineração executada. O run_id está disponível para gerar candidatos de KB.', 'glpiintegaglpi'),
+                'type' => $rowsProcessed > 0 ? 'success' : 'warning',
+                'message' => $rowsProcessed > 0
+                    ? __('Mineração executada. O run_id está disponível para gerar candidatos de KB.', 'glpiintegaglpi')
+                    : __('Mineração não foi persistida como sucesso pleno porque não houve linhas processadas.', 'glpiintegaglpi'),
                 'upload' => $upload,
+                'export_upload' => ($upload['source'] ?? '') === 'glpi_export' ? $upload : null,
+                'export_preview' => $this->exportPreviewFromUpload($upload),
                 'mining_result' => $body,
             ];
         });
@@ -239,6 +267,202 @@ final class HistoricalMiningUiService
                 'candidate_result' => $body,
             ];
         });
+    }
+
+    /**
+     * @param array<string, mixed> $post
+     * @return array<string, mixed>
+     */
+    private function previewAiCandidateReview(array $post, int $userId): array
+    {
+        $runId = $this->cleanIdentifier((string) ($post['run_id'] ?? ''));
+        if ($runId === '') {
+            throw new RuntimeException(__('Informe um run_id válido com candidatos P3 persistidos.', 'glpiintegaglpi'));
+        }
+
+        $maxCandidates = max(1, min(self::P4_MAX_CANDIDATES, (int) ($post['max_candidates'] ?? self::P4_MAX_CANDIDATES)));
+        $payloads = $this->loadAiReviewCandidatePayloads($runId, $maxCandidates);
+        if ($payloads === []) {
+            return [
+                'type' => 'warning',
+                'message' => __('Nenhum candidato P3 sanitizado foi encontrado para este run_id. Gere P3 antes da revisão IA.', 'glpiintegaglpi'),
+                'ai_review_preview' => [
+                    'enabled' => $this->isAiCandidateReviewEnabled(),
+                    'run_id' => $runId,
+                    'candidates' => [],
+                    'next_action' => __('Gere candidatos P3 determinísticos ou revise manualmente.', 'glpiintegaglpi'),
+                ],
+            ];
+        }
+
+        $payloadHash = hash('sha256', json_encode($payloads, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '');
+        $preview = [
+            'enabled' => $this->isAiCandidateReviewEnabled(),
+            'run_id' => $runId,
+            'feature_flag' => self::P4_AI_REVIEW_FEATURE_FLAG,
+            'confidence_threshold' => self::P4_CONFIDENCE_THRESHOLD,
+            'max_candidates' => $maxCandidates,
+            'payload_hash' => $payloadHash,
+            'candidates' => $payloads,
+            'safety_flags' => [
+                'p4_ai_sanitized_candidates_only' => true,
+                'p4_no_raw_history' => true,
+                'p4_no_pii' => true,
+                'p4_no_auto_publish' => true,
+                'p4_human_review_required' => true,
+            ],
+            'next_action' => $this->isAiCandidateReviewEnabled()
+                ? __('Payload P4 sanitizado. A execução real exige clique manual e provider disponível.', 'glpiintegaglpi')
+                : __('Revisão IA de candidatos está desabilitada. Você ainda pode revisar manualmente.', 'glpiintegaglpi'),
+        ];
+
+        $this->audit('KB_CANDIDATE_AI_REVIEW_PREVIEWED', [
+            'glpi_user_id' => $userId,
+            'run_id' => $runId,
+            'candidate_count' => count($payloads),
+            'payload_hash' => $payloadHash,
+            'feature_enabled' => (bool) $preview['enabled'],
+        ]);
+
+        return [
+            'type' => 'success',
+            'message' => __('Preview P4 gerado sem chamar IA. Revise o payload sanitizado antes de qualquer execução real.', 'glpiintegaglpi'),
+            'ai_review_preview' => $preview,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $post
+     * @return array<string, mixed>
+     */
+    private function executeAiCandidateReview(array $post, int $userId): array
+    {
+        $runId = $this->cleanIdentifier((string) ($post['run_id'] ?? ''));
+        if ($runId === '') {
+            throw new RuntimeException(__('Informe um run_id válido com candidatos P3 persistidos.', 'glpiintegaglpi'));
+        }
+
+        if (!$this->isAiCandidateReviewEnabled()) {
+            $this->audit('KB_CANDIDATE_AI_REVIEW_BLOCKED', [
+                'glpi_user_id' => $userId,
+                'run_id' => $runId,
+                'reason' => 'feature_flag_disabled',
+                'feature_flag' => self::P4_AI_REVIEW_FEATURE_FLAG,
+            ]);
+
+            return [
+                'type' => 'warning',
+                'message' => __('Revisão IA de candidatos está desabilitada. Você ainda pode revisar manualmente.', 'glpiintegaglpi'),
+                'ai_review_result' => [
+                    'status' => 'disabled',
+                    'run_id' => $runId,
+                    'feature_flag' => self::P4_AI_REVIEW_FEATURE_FLAG,
+                    'no_auto_publish' => true,
+                ],
+            ];
+        }
+
+        $maxCandidates = max(1, min(self::P4_MAX_CANDIDATES, (int) ($post['max_candidates'] ?? self::P4_MAX_CANDIDATES)));
+        $payloads = $this->loadAiReviewCandidatePayloads($runId, $maxCandidates);
+        if ($payloads === []) {
+            return [
+                'type' => 'warning',
+                'message' => __('Nenhum candidato P3 sanitizado foi encontrado para revisão IA.', 'glpiintegaglpi'),
+                'ai_review_result' => [
+                    'status' => 'no_candidates',
+                    'run_id' => $runId,
+                    'no_auto_publish' => true,
+                ],
+            ];
+        }
+
+        $providerConfig = $this->loadAiCandidateReviewProviderConfig();
+        if (empty($providerConfig['available'])) {
+            $this->audit('KB_CANDIDATE_AI_REVIEW_BLOCKED', [
+                'glpi_user_id' => $userId,
+                'run_id' => $runId,
+                'reason' => (string) ($providerConfig['reason'] ?? 'provider_unavailable'),
+                'feature_flag' => self::P4_AI_REVIEW_FEATURE_FLAG,
+                'provider' => (string) ($providerConfig['provider'] ?? 'disabled'),
+            ]);
+
+            return [
+                'type' => 'warning',
+                'message' => __('Provider local/Ollama de revisão IA não está disponível. P1/P2/P3 e revisão manual permanecem operacionais.', 'glpiintegaglpi'),
+                'ai_review_result' => [
+                    'status' => 'provider_unavailable',
+                    'run_id' => $runId,
+                    'reason' => (string) ($providerConfig['reason'] ?? 'provider_unavailable'),
+                    'provider' => (string) ($providerConfig['provider'] ?? 'disabled'),
+                    'no_auto_publish' => true,
+                ],
+            ];
+        }
+
+        $payloadHash = hash('sha256', json_encode($payloads, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '');
+        try {
+            $providerResponse = $this->callLocalOllamaForCandidateReview($providerConfig, $payloads);
+            $suggestions = $this->validateAiCandidateReviewResponse((string) $providerResponse['response_text'], $payloads);
+            $suggestionHash = hash('sha256', json_encode($suggestions, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '');
+            $persisted = $this->persistAiCandidateReviewSuggestions($runId, $suggestions, $userId);
+
+            $this->audit('KB_CANDIDATE_AI_REVIEW_COMPLETED', [
+                'glpi_user_id' => $userId,
+                'run_id' => $runId,
+                'provider' => (string) ($providerConfig['provider'] ?? 'ollama'),
+                'model_hash' => hash('sha256', (string) ($providerConfig['model'] ?? '')),
+                'payload_hash' => $payloadHash,
+                'suggestion_hash' => $suggestionHash,
+                'candidate_count' => count($payloads),
+                'suggestion_count' => count($suggestions),
+                'persisted_reviews' => $persisted,
+                'recommended_actions' => array_map(static function (array $suggestion): string {
+                    return (string) ($suggestion['recommended_action'] ?? '');
+                }, $suggestions),
+                'confidence_values' => array_map(static function (array $suggestion): int {
+                    return (int) ($suggestion['confidence'] ?? 0);
+                }, $suggestions),
+            ]);
+
+            return [
+                'type' => 'success',
+                'message' => __('Revisão IA concluída como sugestão revisável. Nenhuma publicação automática foi executada.', 'glpiintegaglpi'),
+                'ai_review_result' => [
+                    'status' => 'completed',
+                    'run_id' => $runId,
+                    'provider' => (string) ($providerConfig['provider'] ?? 'ollama'),
+                    'model' => (string) ($providerConfig['model'] ?? ''),
+                    'payload_hash' => $payloadHash,
+                    'suggestion_hash' => $suggestionHash,
+                    'elapsed_ms' => (int) ($providerResponse['elapsed_ms'] ?? 0),
+                    'persisted_reviews' => $persisted,
+                    'confidence_threshold' => self::P4_CONFIDENCE_THRESHOLD,
+                    'suggestions' => $suggestions,
+                    'human_review_required' => true,
+                    'no_auto_publish' => true,
+                ],
+            ];
+        } catch (RuntimeException $exception) {
+            $this->audit('KB_CANDIDATE_AI_REVIEW_BLOCKED', [
+                'glpi_user_id' => $userId,
+                'run_id' => $runId,
+                'reason' => 'provider_or_response_error',
+                'payload_hash' => $payloadHash,
+                'error_hash' => hash('sha256', $exception->getMessage()),
+            ]);
+
+            return [
+                'type' => 'warning',
+                'message' => $this->publicError($exception->getMessage()),
+                'ai_review_result' => [
+                    'status' => 'error',
+                    'run_id' => $runId,
+                    'payload_hash' => $payloadHash,
+                    'human_review_required' => true,
+                    'no_auto_publish' => true,
+                ],
+            ];
+        }
     }
 
     /**
@@ -299,7 +523,9 @@ final class HistoricalMiningUiService
                 throw new RuntimeException(__('Nenhuma linha exportável para gerar JSONL.', 'glpiintegaglpi'));
             }
 
+            $exportPreview = $this->exportPreviewForSession($export, $token, $filters);
             $upload = $this->storeGeneratedJsonl((string) $export['jsonl_content'], (int) $export['total_exportable']);
+            $upload['export_preview'] = $exportPreview;
             $this->rememberUpload($upload);
             $this->audit('HISTORICAL_JSONL_GENERATED', [
                 'glpi_user_id' => $userId,
@@ -316,10 +542,7 @@ final class HistoricalMiningUiService
             return [
                 'type' => 'success',
                 'message' => __('JSONL sanitizado gerado em área controlada. Agora execute o dry-run P2 com este arquivo.', 'glpiintegaglpi'),
-                'export_preview' => $export + [
-                    'preview_token' => $token,
-                    'filters' => $filters,
-                ],
+                'export_preview' => $exportPreview,
                 'export_upload' => $upload,
             ];
         });
@@ -358,17 +581,23 @@ final class HistoricalMiningUiService
             }
 
             $body = is_array($response['body'] ?? null) ? $response['body'] : [];
-            $upload['dry_run_token'] = (string) ($body['dry_run_token'] ?? '');
+            $rowsProcessed = $this->rowsProcessedFromMiningBody($body);
+            $upload['dry_run_token'] = $rowsProcessed > 0 ? (string) ($body['dry_run_token'] ?? '') : '';
+            $upload['dry_run_ready'] = $rowsProcessed > 0;
+            $upload['dry_run_rows_processed'] = $rowsProcessed;
             $upload['window_start'] = (string) ($payload['window_start'] ?? '');
             $upload['window_end'] = (string) ($payload['window_end'] ?? '');
             $upload['max_rows'] = (int) ($payload['max_rows'] ?? 1000);
             $this->rememberUpload($upload);
 
             return [
-                'type' => 'success',
-                'message' => __('Dry-run do JSONL gerado concluído. Revise o preview antes da execução real.', 'glpiintegaglpi'),
+                'type' => $rowsProcessed > 0 ? 'success' : 'warning',
+                'message' => $rowsProcessed > 0
+                    ? __('Dry-run do JSONL gerado concluído. Revise o preview antes da execução real.', 'glpiintegaglpi')
+                    : __('Dry-run do JSONL gerado concluiu sem linhas processáveis. Veja os motivos de rejeição e ajuste a exportação.', 'glpiintegaglpi'),
                 'upload' => $upload,
                 'export_upload' => $upload,
+                'export_preview' => $this->exportPreviewFromUpload($upload),
                 'mining_result' => $body,
             ];
         });
@@ -494,6 +723,21 @@ final class HistoricalMiningUiService
             'fields_sanitized' => array_values(array_unique($fieldsSanitized)),
             'fields_removed' => ['id', 'requesttypes_id', 'users_id_recipient', 'locations_id', 'content_raw', 'followups_raw', 'solution_raw', 'attachments'],
             'jsonl_content' => $includeContent ? implode("\n", $jsonlLines) . "\n" : '',
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $export
+     * @param array<string, mixed> $filters
+     * @return array<string, mixed>
+     */
+    private function exportPreviewForSession(array $export, string $token, array $filters): array
+    {
+        unset($export['jsonl_content']);
+
+        return $export + [
+            'preview_token' => $token,
+            'filters' => $filters,
         ];
     }
 
@@ -949,6 +1193,534 @@ final class HistoricalMiningUiService
 
     /**
      * @param array<string, mixed> $upload
+     * @return array<string, mixed>|null
+     */
+    private function exportPreviewFromUpload(array $upload): ?array
+    {
+        return is_array($upload['export_preview'] ?? null) ? $upload['export_preview'] : null;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function loadAiReviewCandidatePayloads(string $runId, int $maxCandidates): array
+    {
+        if (!$this->pluginConfigService->isConfigured()) {
+            return [];
+        }
+
+        $pdo = ExternalDatabase::getConnection($this->pluginConfigService->getConnectionConfig());
+        $runStatement = $pdo->prepare(
+            'SELECT input_hash
+               FROM public.glpi_plugin_integaglpi_hist_mining_runs
+              WHERE run_id = :run_id
+              LIMIT 1'
+        );
+        $runStatement->execute([':run_id' => $runId]);
+        $inputHash = (string) ($runStatement->fetchColumn() ?: '');
+        if ($inputHash === '') {
+            return [];
+        }
+
+        $candidateStatement = $pdo->prepare(
+            "SELECT id,
+                    candidate_key,
+                    status,
+                    article_type,
+                    title,
+                    content_markdown,
+                    problem_pattern,
+                    recommended_procedure_json,
+                    evidence_hashes_json,
+                    evidence_summary_sanitized,
+                    confidence_score,
+                    possible_duplicate,
+                    limitations_json
+               FROM public.glpi_plugin_integaglpi_kb_candidates
+              WHERE input_hash = :input_hash
+                AND status IN ('suggested', 'in_review', 'low_confidence', 'possible_duplicate')
+              ORDER BY confidence_score DESC, created_at DESC
+              LIMIT :limit"
+        );
+        $candidateStatement->bindValue(':input_hash', $inputHash);
+        $candidateStatement->bindValue(':limit', $maxCandidates, PDO::PARAM_INT);
+        $candidateStatement->execute();
+
+        $payloads = [];
+        while (($row = $candidateStatement->fetch(PDO::FETCH_ASSOC)) !== false) {
+            $fieldsSanitized = [];
+            $steps = [];
+            foreach (array_slice($this->jsonStringList($row['recommended_procedure_json'] ?? '[]'), 0, 6) as $step) {
+                $sanitizedStep = $this->sanitizeExportText($step, 500, 'p4_resolution_step', $fieldsSanitized);
+                if ($sanitizedStep !== '') {
+                    $steps[] = $sanitizedStep;
+                }
+            }
+
+            $payload = [
+                'candidate_id' => (int) ($row['id'] ?? 0),
+                'candidate_key' => $this->cleanIdentifier((string) ($row['candidate_key'] ?? '')),
+                'run_id' => $runId,
+                'suggested_type' => $this->sanitizeExportText((string) ($row['article_type'] ?? ''), 80, 'p4_article_type', $fieldsSanitized),
+                'status' => $this->sanitizeExportText((string) ($row['status'] ?? ''), 80, 'p4_status', $fieldsSanitized),
+                'kb_title_suggested' => $this->sanitizeExportText((string) ($row['title'] ?? ''), 180, 'p4_title', $fieldsSanitized),
+                'kb_problem_summary' => $this->sanitizeExportText((string) ($row['problem_pattern'] ?? ''), 500, 'p4_problem', $fieldsSanitized),
+                'kb_resolution_steps' => $steps,
+                'candidate_excerpt_sanitized' => $this->sanitizeExportText((string) ($row['content_markdown'] ?? ''), 900, 'p4_content', $fieldsSanitized),
+                'confidence' => (int) ($row['confidence_score'] ?? 0),
+                'duplicate_flags' => [
+                    'possible_duplicate' => (bool) ($row['possible_duplicate'] ?? false),
+                ],
+                'missing_information' => array_slice($this->jsonStringList($row['limitations_json'] ?? '[]'), 0, 5),
+                'evidence_used' => [
+                    'summary' => $this->sanitizeExportText((string) ($row['evidence_summary_sanitized'] ?? ''), 500, 'p4_evidence', $fieldsSanitized),
+                    'hashes' => array_slice($this->jsonStringList($row['evidence_hashes_json'] ?? '[]'), 0, 5),
+                ],
+                'fields_sanitized' => array_values(array_unique($fieldsSanitized)),
+                'safety_flags' => [
+                    'raw_history_included' => false,
+                    'contains_attachment' => false,
+                    'auto_publish' => false,
+                    'human_review_required' => true,
+                ],
+            ];
+
+            $encoded = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '';
+            if ($encoded === '' || $this->containsSensitiveData($encoded)) {
+                throw new RuntimeException(__('P4 bloqueado: candidato contém dado sensível residual após sanitização.', 'glpiintegaglpi'));
+            }
+            $payloads[] = $payload;
+        }
+
+        return $payloads;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function jsonStringList($value): array
+    {
+        if (is_array($value)) {
+            return array_values(array_filter(array_map('strval', $value), static function (string $item): bool {
+                return trim($item) !== '';
+            }));
+        }
+
+        $decoded = json_decode((string) $value, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        return array_values(array_filter(array_map('strval', $decoded), static function (string $item): bool {
+            return trim($item) !== '';
+        }));
+    }
+
+    private function isAiCandidateReviewEnabled(): bool
+    {
+        $value = strtolower(trim((string) getenv(self::P4_AI_REVIEW_FEATURE_FLAG)));
+
+        return in_array($value, ['1', 'true', 'yes', 'on'], true);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function loadAiCandidateReviewProviderConfig(): array
+    {
+        $provider = strtolower($this->runtimeConfigValue(self::P4_AI_REVIEW_PROVIDER));
+        if ($provider === '') {
+            $provider = strtolower($this->runtimeConfigValue('AI_SUPERVISOR_PROVIDER'));
+        }
+        if ($provider !== 'ollama') {
+            return [
+                'available' => false,
+                'reason' => $provider === '' ? 'provider_disabled' : 'provider_not_local_ollama',
+                'provider' => $provider === '' ? 'disabled' : $provider,
+            ];
+        }
+
+        $model = $this->runtimeConfigValue(self::P4_AI_REVIEW_MODEL);
+        if ($model === '') {
+            $model = $this->runtimeConfigValue('AI_SUPERVISOR_MODEL');
+        }
+        if ($model === '') {
+            return [
+                'available' => false,
+                'reason' => 'model_not_configured',
+                'provider' => 'ollama',
+            ];
+        }
+
+        $baseUrl = $this->runtimeConfigValue(self::P4_AI_REVIEW_BASE_URL);
+        if ($baseUrl === '') {
+            $baseUrl = $this->runtimeConfigValue('AI_SUPERVISOR_BASE_URL');
+        }
+        if ($baseUrl === '') {
+            $baseUrl = 'http://127.0.0.1:11434';
+        }
+        if (!$this->isAllowedLocalOllamaUrl($baseUrl)) {
+            return [
+                'available' => false,
+                'reason' => 'provider_url_not_local',
+                'provider' => 'ollama',
+            ];
+        }
+
+        $timeout = (int) $this->runtimeConfigValue(self::P4_AI_REVIEW_TIMEOUT_SECONDS);
+        if ($timeout <= 0) {
+            $timeout = (int) $this->runtimeConfigValue('AI_SUPERVISOR_TIMEOUT_SECONDS');
+        }
+        $timeout = max(15, min(120, $timeout > 0 ? $timeout : 75));
+
+        return [
+            'available' => true,
+            'provider' => 'ollama',
+            'base_url' => rtrim($baseUrl, '/'),
+            'model' => $model,
+            'timeout_seconds' => $timeout,
+        ];
+    }
+
+    private function runtimeConfigValue(string $key): string
+    {
+        if (isset($_ENV[$key]) && is_scalar($_ENV[$key])) {
+            return trim((string) $_ENV[$key]);
+        }
+        if (isset($_SERVER[$key]) && is_scalar($_SERVER[$key])) {
+            return trim((string) $_SERVER[$key]);
+        }
+
+        $value = getenv($key);
+
+        return is_string($value) ? trim($value) : '';
+    }
+
+    private function isAllowedLocalOllamaUrl(string $baseUrl): bool
+    {
+        $parts = parse_url($baseUrl);
+        if (!is_array($parts)) {
+            return false;
+        }
+
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        $host = strtolower((string) ($parts['host'] ?? ''));
+        if ($scheme !== 'http' || $host === '') {
+            return false;
+        }
+
+        return in_array($host, ['127.0.0.1', 'localhost', '::1', 'ollama', 'ollama-local'], true);
+    }
+
+    /**
+     * @param array<string, mixed> $providerConfig
+     * @param list<array<string, mixed>> $payloads
+     * @return array{response_text: string, elapsed_ms: int}
+     */
+    private function callLocalOllamaForCandidateReview(array $providerConfig, array $payloads): array
+    {
+        $payloadJson = json_encode(['candidates' => $payloads], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '';
+        if ($payloadJson === '' || $this->containsSensitiveData($payloadJson)) {
+            throw new RuntimeException(__('P4 bloqueado: payload sanitizado contém dado sensível residual.', 'glpiintegaglpi'));
+        }
+
+        $prompt = $this->buildAiCandidateReviewPrompt($payloads);
+        $request = [
+            'model' => (string) ($providerConfig['model'] ?? ''),
+            'prompt' => $prompt,
+            'stream' => false,
+            'format' => 'json',
+            'options' => [
+                'temperature' => 0.1,
+                'num_predict' => 1200,
+            ],
+        ];
+        $requestJson = json_encode($request, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (!is_string($requestJson) || $requestJson === '') {
+            throw new RuntimeException(__('P4 bloqueado: falha ao serializar payload sanitizado.', 'glpiintegaglpi'));
+        }
+        if (!function_exists('curl_init')) {
+            throw new RuntimeException(__('Provider local/Ollama indisponível: extensão cURL do PHP não está ativa.', 'glpiintegaglpi'));
+        }
+
+        $endpoint = rtrim((string) ($providerConfig['base_url'] ?? ''), '/') . '/api/generate';
+        $startedAt = microtime(true);
+        $handle = curl_init($endpoint);
+        if ($handle === false) {
+            throw new RuntimeException(__('Provider local/Ollama indisponível para revisão P4.', 'glpiintegaglpi'));
+        }
+
+        curl_setopt_array($handle, [
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            CURLOPT_POSTFIELDS => $requestJson,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT => (int) ($providerConfig['timeout_seconds'] ?? 75),
+        ]);
+        $raw = curl_exec($handle);
+        $status = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+        $error = curl_error($handle);
+        curl_close($handle);
+
+        $elapsedMs = (int) round((microtime(true) - $startedAt) * 1000);
+        if (!is_string($raw) || $raw === '') {
+            error_log('[integaglpi][historical_mining_ui][p4_ai_review] provider_empty elapsed_ms=' . $elapsedMs . ' error=' . $this->sanitizeLog($error));
+            throw new RuntimeException(__('Provider local/Ollama não respondeu à revisão P4. Tente novamente ou revise manualmente.', 'glpiintegaglpi'));
+        }
+        if ($status < 200 || $status >= 300) {
+            error_log('[integaglpi][historical_mining_ui][p4_ai_review] provider_http_' . $status . ' elapsed_ms=' . $elapsedMs);
+            throw new RuntimeException(__('Provider local/Ollama retornou erro na revisão P4. Revise manualmente ou tente novamente.', 'glpiintegaglpi'));
+        }
+
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            throw new RuntimeException(__('Provider local/Ollama respondeu em formato inválido.', 'glpiintegaglpi'));
+        }
+        $responseText = trim((string) ($decoded['response'] ?? ''));
+        if ($responseText === '') {
+            throw new RuntimeException(__('Provider local/Ollama não retornou sugestão estruturada.', 'glpiintegaglpi'));
+        }
+
+        return [
+            'response_text' => $responseText,
+            'elapsed_ms' => $elapsedMs,
+        ];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $payloads
+     */
+    private function buildAiCandidateReviewPrompt(array $payloads): string
+    {
+        $payloadJson = json_encode(['candidates' => $payloads], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{"candidates":[]}';
+
+        return implode("\n", [
+            'Voce e um revisor tecnico de base de conhecimento. Analise somente candidatos P3 sanitizados.',
+            'Nunca use historico bruto, PII, anexos, midia, telefone, email, CPF/CNPJ, tokens ou senhas.',
+            'Nao publique KB, nao altere ticket e nao execute comandos. Toda sugestao exige revisao humana.',
+            'Responda somente JSON valido no formato:',
+            '{"suggestions":[{"candidate_id":0,"candidate_key":"","recommended_action":"keep|improve|merge|discard","kb_title_suggested":"","kb_problem_summary":"","kb_resolution_steps":[""],"confidence":0.0,"reason":"","risks":[""],"missing_information":[""],"evidence_used":[""],"safety_flags":{"human_review_required":true,"auto_publish":false,"raw_history_included":false}}]}',
+            'Regras: confidence abaixo de 0.70 deve destacar revisao humana; merge nunca e automatico; discard deve justificar; improve deve trazer uma versao sugerida de KB.',
+            'Entrada sanitizada:',
+            $payloadJson,
+        ]);
+    }
+
+    /**
+     * @param list<array<string, mixed>> $payloads
+     * @return list<array<string, mixed>>
+     */
+    private function validateAiCandidateReviewResponse(string $responseText, array $payloads): array
+    {
+        $decoded = json_decode($responseText, true);
+        if (!is_array($decoded)) {
+            throw new RuntimeException(__('A IA retornou JSON inválido para revisão P4.', 'glpiintegaglpi'));
+        }
+
+        $items = is_array($decoded['suggestions'] ?? null) ? $decoded['suggestions'] : $decoded;
+        if (!is_array($items) || $items === []) {
+            throw new RuntimeException(__('A IA não retornou sugestões P4 revisáveis.', 'glpiintegaglpi'));
+        }
+
+        $lookup = [];
+        foreach ($payloads as $payload) {
+            $key = (string) ($payload['candidate_key'] ?? '');
+            $id = (int) ($payload['candidate_id'] ?? 0);
+            if ($key !== '') {
+                $lookup['key:' . $key] = $payload;
+            }
+            if ($id > 0) {
+                $lookup['id:' . $id] = $payload;
+            }
+        }
+
+        $suggestions = [];
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $candidateKey = $this->cleanIdentifier((string) ($item['candidate_key'] ?? ''));
+            $candidateId = (int) ($item['candidate_id'] ?? 0);
+            $sourcePayload = $candidateKey !== '' && isset($lookup['key:' . $candidateKey])
+                ? $lookup['key:' . $candidateKey]
+                : ($candidateId > 0 && isset($lookup['id:' . $candidateId]) ? $lookup['id:' . $candidateId] : null);
+            if (!is_array($sourcePayload)) {
+                continue;
+            }
+
+            $suggestion = $this->normalizeAiCandidateReviewSuggestion($item, $sourcePayload);
+            $encoded = json_encode($suggestion, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '';
+            if ($encoded === '' || $this->containsSensitiveData($encoded)) {
+                throw new RuntimeException(__('P4 bloqueado: sugestão IA contém dado sensível residual.', 'glpiintegaglpi'));
+            }
+            $suggestions[] = $suggestion;
+        }
+
+        if ($suggestions === []) {
+            throw new RuntimeException(__('A IA não retornou sugestão para candidatos P3 válidos.', 'glpiintegaglpi'));
+        }
+
+        return $suggestions;
+    }
+
+    /**
+     * @param array<string, mixed> $item
+     * @param array<string, mixed> $sourcePayload
+     * @return array<string, mixed>
+     */
+    private function normalizeAiCandidateReviewSuggestion(array $item, array $sourcePayload): array
+    {
+        $fieldsSanitized = [];
+        $action = strtolower(trim((string) ($item['recommended_action'] ?? 'improve')));
+        if (!in_array($action, ['keep', 'improve', 'merge', 'discard'], true)) {
+            $action = 'improve';
+        }
+
+        $safetyFlags = is_array($item['safety_flags'] ?? null) ? $item['safety_flags'] : [];
+        if (!empty($safetyFlags['auto_publish'])) {
+            throw new RuntimeException(__('P4 bloqueado: IA sugeriu publicação automática.', 'glpiintegaglpi'));
+        }
+        if (!empty($safetyFlags['raw_history_included'])) {
+            throw new RuntimeException(__('P4 bloqueado: IA indicou uso de histórico bruto.', 'glpiintegaglpi'));
+        }
+
+        $confidence = $this->normalizeAiConfidence($item['confidence'] ?? 0);
+        $steps = $this->sanitizeAiStringList($item['kb_resolution_steps'] ?? [], 8, 600, 'p4_ai_step', $fieldsSanitized);
+        if ($steps === [] && is_array($sourcePayload['kb_resolution_steps'] ?? null)) {
+            $steps = array_slice(array_map('strval', $sourcePayload['kb_resolution_steps']), 0, 8);
+        }
+
+        return [
+            'candidate_id' => (int) ($sourcePayload['candidate_id'] ?? 0),
+            'candidate_key' => (string) ($sourcePayload['candidate_key'] ?? ''),
+            'run_id' => (string) ($sourcePayload['run_id'] ?? ''),
+            'candidate_status' => (string) ($sourcePayload['status'] ?? ''),
+            'recommended_action' => $action,
+            'kb_title_before' => (string) ($sourcePayload['kb_title_suggested'] ?? ''),
+            'kb_title_suggested' => $this->sanitizeExportText((string) ($item['kb_title_suggested'] ?? $sourcePayload['kb_title_suggested'] ?? ''), 180, 'p4_ai_title', $fieldsSanitized),
+            'kb_problem_summary' => $this->sanitizeExportText((string) ($item['kb_problem_summary'] ?? $sourcePayload['kb_problem_summary'] ?? ''), 700, 'p4_ai_problem', $fieldsSanitized),
+            'kb_resolution_steps' => $steps,
+            'confidence' => $confidence,
+            'confidence_below_threshold' => $confidence < self::P4_CONFIDENCE_THRESHOLD,
+            'reason' => $this->sanitizeExportText((string) ($item['reason'] ?? ''), 700, 'p4_ai_reason', $fieldsSanitized),
+            'risks' => $this->sanitizeAiStringList($item['risks'] ?? [], 5, 300, 'p4_ai_risk', $fieldsSanitized),
+            'missing_information' => $this->sanitizeAiStringList($item['missing_information'] ?? [], 5, 300, 'p4_ai_missing', $fieldsSanitized),
+            'evidence_used' => $this->sanitizeAiStringList($item['evidence_used'] ?? [], 5, 220, 'p4_ai_evidence', $fieldsSanitized),
+            'human_review_required' => true,
+            'auto_publish' => false,
+            'merge_not_applied' => $action === 'merge',
+            'improve_not_applied' => $action === 'improve',
+            'fields_sanitized' => array_values(array_unique($fieldsSanitized)),
+            'safety_flags' => [
+                'human_review_required' => true,
+                'auto_publish' => false,
+                'raw_history_included' => false,
+                'p4_no_auto_publish' => true,
+                'p4_sanitized_candidate_only' => true,
+            ],
+        ];
+    }
+
+    private function normalizeAiConfidence($value): int
+    {
+        $confidence = is_numeric($value) ? (float) $value : 0.0;
+        if ($confidence > 0 && $confidence <= 1) {
+            $confidence *= 100;
+        }
+
+        return max(0, min(100, (int) round($confidence)));
+    }
+
+    /**
+     * @param mixed $value
+     * @return list<string>
+     */
+    private function sanitizeAiStringList($value, int $maxItems, int $itemLimit, string $field, array &$fieldsSanitized): array
+    {
+        $items = is_array($value) ? $value : [$value];
+        $clean = [];
+        foreach ($items as $item) {
+            $text = $this->sanitizeExportText((string) $item, $itemLimit, $field, $fieldsSanitized);
+            if ($text !== '') {
+                $clean[] = $text;
+            }
+            if (count($clean) >= $maxItems) {
+                break;
+            }
+        }
+
+        return $clean;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $suggestions
+     */
+    private function persistAiCandidateReviewSuggestions(string $runId, array $suggestions, int $userId): int
+    {
+        if (!$this->pluginConfigService->isConfigured()) {
+            return 0;
+        }
+
+        $pdo = ExternalDatabase::getConnection($this->pluginConfigService->getConnectionConfig());
+        $exists = $pdo->query("SELECT to_regclass('public.glpi_plugin_integaglpi_kb_candidate_reviews')");
+        if ($exists === false || !$exists->fetchColumn()) {
+            return 0;
+        }
+
+        $statement = $pdo->prepare(
+            "INSERT INTO public.glpi_plugin_integaglpi_kb_candidate_reviews (
+                candidate_id,
+                action,
+                reviewer_id,
+                notes,
+                previous_status,
+                new_status,
+                created_at
+            ) VALUES (
+                :candidate_id,
+                'edit_note',
+                :reviewer_id,
+                :notes,
+                :previous_status,
+                :new_status,
+                NOW()
+            )"
+        );
+
+        $persisted = 0;
+        foreach ($suggestions as $suggestion) {
+            $notes = [
+                'source' => 'ai_p4_candidate_review',
+                'run_id' => $runId,
+                'recommended_action' => (string) ($suggestion['recommended_action'] ?? ''),
+                'confidence' => (int) ($suggestion['confidence'] ?? 0),
+                'confidence_below_threshold' => (bool) ($suggestion['confidence_below_threshold'] ?? true),
+                'human_review_required' => true,
+                'auto_publish' => false,
+                'suggestion' => $suggestion,
+            ];
+            $encodedNotes = json_encode($notes, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}';
+            if ($this->containsSensitiveData($encodedNotes)) {
+                throw new RuntimeException(__('P4 bloqueado: revisão IA contém dado sensível residual.', 'glpiintegaglpi'));
+            }
+
+            $statement->execute([
+                ':candidate_id' => (int) ($suggestion['candidate_id'] ?? 0),
+                ':reviewer_id' => $userId > 0 ? $userId : null,
+                ':notes' => $encodedNotes,
+                ':previous_status' => (string) ($suggestion['candidate_status'] ?? ''),
+                ':new_status' => (string) ($suggestion['candidate_status'] ?? ''),
+            ]);
+            $persisted++;
+        }
+
+        return $persisted;
+    }
+
+    /**
+     * @param array<string, mixed> $upload
      * @param array<string, mixed> $post
      * @return array<string, mixed>
      */
@@ -971,6 +1743,8 @@ final class HistoricalMiningUiService
             'window_end' => $this->cleanDate((string) ($post['window_end'] ?? '')),
             'max_rows' => max(1, min(5000, (int) ($post['max_rows'] ?? 1000))),
             'requested_by' => $userId,
+            'source_origin' => (string) ($upload['source'] ?? 'upload'),
+            'file_id_hash' => hash('sha256', (string) ($upload['upload_id'] ?? '')),
         ];
     }
 
@@ -1229,7 +2003,18 @@ final class HistoricalMiningUiService
         return [
             'type' => 'danger',
             'message' => $message !== '' ? $this->publicError($message) : $fallback,
+            'mining_result' => $body,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $body
+     */
+    private function rowsProcessedFromMiningBody(array $body): int
+    {
+        $summary = is_array($body['summary'] ?? null) ? $body['summary'] : [];
+
+        return max(0, (int) ($summary['rows_processed'] ?? 0));
     }
 
     private function uploadDir(): string

@@ -28,11 +28,31 @@ export interface HistoricalTicketRecord {
   satisfactionScore: number | null;
 }
 
+export type HistoricalMiningRejectionReason =
+  | 'invalid_json'
+  | 'missing_required_field'
+  | 'empty_sanitized_text'
+  | 'unsupported_status'
+  | 'sensitive_data_residual'
+  | 'schema_version_mismatch'
+  | 'below_minimum_content'
+  | 'unknown_error';
+
+export interface HistoricalMiningRejection {
+  line: number;
+  reason: HistoricalMiningRejectionReason;
+  field?: string;
+  ticketIdHash?: string;
+  excerpt?: string;
+}
+
 export interface HistoricalMiningDataset {
   inputHash: string;
   rowsSeen: number;
   rowsRejected: number;
   records: HistoricalTicketRecord[];
+  rejectionReasonCounts?: Partial<Record<HistoricalMiningRejectionReason, number>>;
+  rejectionExamples?: HistoricalMiningRejection[];
 }
 
 export interface HistoricalMiningRunSummary {

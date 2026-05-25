@@ -11,6 +11,8 @@ $flash = is_array($data['flash'] ?? null) ? $data['flash'] : null;
 $configured = (bool) ($data['configured'] ?? false);
 $miningResult = is_array($flash['mining_result'] ?? null) ? $flash['mining_result'] : null;
 $candidateResult = is_array($flash['candidate_result'] ?? null) ? $flash['candidate_result'] : null;
+$aiReviewPreview = is_array($flash['ai_review_preview'] ?? null) ? $flash['ai_review_preview'] : null;
+$aiReviewResult = is_array($flash['ai_review_result'] ?? null) ? $flash['ai_review_result'] : null;
 $upload = is_array($flash['upload'] ?? null) ? $flash['upload'] : null;
 $exportPreview = is_array($flash['export_preview'] ?? null) ? $flash['export_preview'] : null;
 $exportUpload = is_array($flash['export_upload'] ?? null) ? $flash['export_upload'] : null;
@@ -24,6 +26,9 @@ $patterns = is_array($miningResult['patterns'] ?? null) ? $miningResult['pattern
 $insights = is_array($miningResult['insights'] ?? null) ? $miningResult['insights'] : [];
 $evidence = is_array($miningResult['evidence'] ?? null) ? $miningResult['evidence'] : [];
 $previewRows = is_array($miningResult['preview_rows'] ?? null) ? $miningResult['preview_rows'] : [];
+$rejectionReasons = is_array($miningResult['rejection_reasons'] ?? null) ? $miningResult['rejection_reasons'] : [];
+$rejectionExamples = is_array($miningResult['rejection_examples'] ?? null) ? $miningResult['rejection_examples'] : [];
+$nextAction = trim((string) ($miningResult['next_action'] ?? ''));
 $csrf = GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
 $runId = trim((string) ($summary['run_id'] ?? $candidateResult['run_id'] ?? $data['selected_run_id'] ?? ''));
 $retentionHours = max(1, (int) ceil(((int) ($data['jsonl_retention_seconds'] ?? 86400)) / 3600));
@@ -38,6 +43,13 @@ $selectedLimit = (int) ($exportFilters['limit'] ?? 100);
 $selectedClosedOnly = $exportFilters === [] ? true : (bool) ($exportFilters['closed_only'] ?? false);
 $selectedIncludeFollowups = (bool) ($exportFilters['include_followups'] ?? false);
 $selectedIncludeSolution = $exportFilters === [] ? true : (bool) ($exportFilters['include_solution'] ?? false);
+$rowsProcessed = (int) ($summary['rows_processed'] ?? 0);
+$dryRunReady = $upload !== null
+    && !empty($upload['dry_run_ready'])
+    && trim((string) ($upload['dry_run_token'] ?? '')) !== ''
+    && $rowsProcessed > 0;
+$aiReviewEnabled = (bool) ($data['p4_ai_review_enabled'] ?? $aiReviewPreview['enabled'] ?? false);
+$aiReviewFeatureFlag = (string) ($data['p4_ai_review_feature_flag'] ?? 'AI_KB_CANDIDATE_REVIEW_ENABLED');
 ?>
 
 <div class="container-fluid plugin-integaglpi-historical-mining">
@@ -45,7 +57,7 @@ $selectedIncludeSolution = $exportFilters === [] ? true : (bool) ($exportFilters
         <div>
             <h1 class="h3 mb-1"><?= $this->escape(__('Mineração Histórica', 'glpiintegaglpi')); ?></h1>
             <p class="text-muted mb-0">
-                <?= $this->escape(__('P2/P3 por UI: JSONL sanitizado, dry-run obrigatório, execução manual e candidatos revisáveis.', 'glpiintegaglpi')); ?>
+                <?= $this->escape(__('P1 exporta JSONL sanitizado, P2 minera sem IA, P3 gera candidatos determinísticos e P4 revisa candidatos com IA somente quando habilitado.', 'glpiintegaglpi')); ?>
             </p>
         </div>
         <span class="badge bg-secondary"><?= $this->escape(__('offline / read-only GLPI', 'glpiintegaglpi')); ?></span>
@@ -261,13 +273,18 @@ $selectedIncludeSolution = $exportFilters === [] ? true : (bool) ($exportFilters
                     <p class="text-muted">
                         <?= $this->escape(__('Disponível somente após dry-run OK do mesmo upload. O Node reprocessa o conteúdo e valida o token antes de persistir.', 'glpiintegaglpi')); ?>
                     </p>
-                    <button class="btn btn-primary" type="submit" <?= $upload === null ? 'disabled' : ''; ?>>
+                    <?php if ($upload !== null && !$dryRunReady) { ?>
+                        <div class="alert alert-warning">
+                            <?= $this->escape(__('Execução real bloqueada: o dry-run não encontrou linhas processáveis ou o token do arquivo não está válido.', 'glpiintegaglpi')); ?>
+                        </div>
+                    <?php } ?>
+                    <button class="btn btn-primary" type="submit" <?= !$dryRunReady ? 'disabled' : ''; ?>>
                         <?= $this->escape(__('Executar mineração', 'glpiintegaglpi')); ?>
                     </button>
                 </div>
             </form>
 
-            <form method="post" action="<?= $this->escape($this->getHistoricalMiningUrl()); ?>" class="card">
+            <form method="post" action="<?= $this->escape($this->getHistoricalMiningUrl()); ?>" class="card mb-3">
                 <div class="card-header"><?= $this->escape(__('3. Gerar candidatos P3', 'glpiintegaglpi')); ?></div>
                 <div class="card-body">
                     <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
@@ -295,6 +312,37 @@ $selectedIncludeSolution = $exportFilters === [] ? true : (bool) ($exportFilters
                     <small class="text-muted d-block mt-2">
                         <?= $this->escape(__('Candidatos ficam para revisão humana. Nenhuma publicação automática ocorre.', 'glpiintegaglpi')); ?>
                     </small>
+                </div>
+            </form>
+
+            <form method="post" action="<?= $this->escape($this->getHistoricalMiningUrl()); ?>" class="card">
+                <div class="card-header"><?= $this->escape(__('4. Revisão IA opcional P4', 'glpiintegaglpi')); ?></div>
+                <div class="card-body">
+                    <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
+                    <label class="form-label" for="ai_review_run_id"><?= $this->escape(__('run_id com candidatos P3', 'glpiintegaglpi')); ?></label>
+                    <input class="form-control" type="text" id="ai_review_run_id" name="run_id" value="<?= $this->escape($runId); ?>">
+                    <div class="row g-2 mt-1">
+                        <div class="col-md-6">
+                            <label class="form-label" for="ai_review_max_candidates"><?= $this->escape(__('Máx. candidatos para preview', 'glpiintegaglpi')); ?></label>
+                            <input class="form-control" type="number" id="ai_review_max_candidates" name="max_candidates" min="1" max="10" value="5">
+                        </div>
+                    </div>
+                    <div class="alert alert-info mt-3 mb-3">
+                        <?= $this->escape(__('P4 usa apenas candidatos P3 sanitizados e persistidos. Nunca envia histórico bruto, anexos, PII ou publica KB automaticamente.', 'glpiintegaglpi')); ?>
+                    </div>
+                    <div class="d-flex flex-wrap gap-2">
+                        <button class="btn btn-outline-primary" type="submit" name="action" value="preview_ai_candidate_review">
+                            <?= $this->escape(__('Pré-visualizar payload P4', 'glpiintegaglpi')); ?>
+                        </button>
+                        <button class="btn btn-outline-secondary" type="submit" name="action" value="execute_ai_candidate_review" <?= !$aiReviewEnabled ? 'disabled' : ''; ?>>
+                            <?= $this->escape(__('Executar revisão IA', 'glpiintegaglpi')); ?>
+                        </button>
+                    </div>
+                    <?php if (!$aiReviewEnabled) { ?>
+                        <small class="text-muted d-block mt-2">
+                            <?= $this->escape(__('Revisão IA de candidatos está desabilitada. Você ainda pode revisar manualmente.', 'glpiintegaglpi')); ?>
+                        </small>
+                    <?php } ?>
                 </div>
             </form>
         </div>
@@ -356,9 +404,58 @@ $selectedIncludeSolution = $exportFilters === [] ? true : (bool) ($exportFilters
                                 </div>
                             <?php } ?>
                         </div>
+                        <?php if ($nextAction !== '') { ?>
+                            <div class="alert alert-info mt-3 mb-0">
+                                <strong><?= $this->escape(__('Próxima ação', 'glpiintegaglpi')); ?>:</strong>
+                                <?= $this->escape($nextAction); ?>
+                            </div>
+                        <?php } elseif ($rowsProcessed <= 0) { ?>
+                            <div class="alert alert-warning mt-3 mb-0">
+                                <?= $this->escape(__('Nenhuma linha processável foi encontrada. Revise o JSONL, os filtros e os motivos de rejeição antes de executar P2.', 'glpiintegaglpi')); ?>
+                            </div>
+                        <?php } ?>
                     <?php } ?>
                 </div>
             </div>
+
+            <?php if ($rejectionReasons !== [] || $rejectionExamples !== []) { ?>
+                <div class="card mb-3">
+                    <div class="card-header"><?= $this->escape(__('Diagnóstico de rejeições do dry-run', 'glpiintegaglpi')); ?></div>
+                    <div class="card-body">
+                        <?php if ($rejectionReasons !== []) { ?>
+                            <div class="row g-2 mb-3">
+                                <?php foreach (array_slice($rejectionReasons, 0, 6) as $reason) {
+                                    if (!is_array($reason)) { continue; }
+                                    ?>
+                                    <div class="col-md-4">
+                                        <div class="border rounded p-2 h-100">
+                                            <div class="text-muted small"><?= $this->escape((string) ($reason['reason'] ?? 'unknown_error')); ?></div>
+                                            <strong><?= (int) ($reason['count'] ?? 0); ?></strong>
+                                        </div>
+                                    </div>
+                                <?php } ?>
+                            </div>
+                        <?php } ?>
+                        <?php if ($rejectionExamples !== []) { ?>
+                            <div class="small text-muted mb-2"><?= $this->escape(__('Até 5 exemplos anonimizados', 'glpiintegaglpi')); ?></div>
+                            <?php foreach (array_slice($rejectionExamples, 0, 5) as $example) {
+                                if (!is_array($example)) { continue; }
+                                ?>
+                                <div class="border rounded p-2 mb-2">
+                                    <code><?= $this->escape(__('linha', 'glpiintegaglpi') . ' ' . (string) ($example['line'] ?? '0')); ?></code>
+                                    · <?= $this->escape((string) ($example['reason'] ?? 'unknown_error')); ?>
+                                    <?php if (!empty($example['field'])) { ?>
+                                        · <span class="text-muted"><?= $this->escape((string) ($example['field'] ?? '')); ?></span>
+                                    <?php } ?>
+                                    <?php if (!empty($example['excerpt'])) { ?>
+                                        <div><?= $this->escape((string) ($example['excerpt'] ?? '')); ?></div>
+                                    <?php } ?>
+                                </div>
+                            <?php } ?>
+                        <?php } ?>
+                    </div>
+                </div>
+            <?php } ?>
 
             <?php if ($previewRows !== []) { ?>
                 <div class="card mb-3">
@@ -486,6 +583,132 @@ $selectedIncludeSolution = $exportFilters === [] ? true : (bool) ($exportFilters
                                     · <?= $this->escape((string) ($candidate['confidence_score'] ?? 0)); ?>%
                                 </div>
                             </div>
+                        <?php } ?>
+                    </div>
+                </div>
+            <?php } ?>
+
+            <?php if ($aiReviewPreview !== null) { ?>
+                <div class="card mt-3">
+                    <div class="card-header"><?= $this->escape(__('Preview P4 - payload sanitizado para revisão IA', 'glpiintegaglpi')); ?></div>
+                    <div class="card-body">
+                        <div class="alert alert-<?= !empty($aiReviewPreview['enabled']) ? 'info' : 'warning'; ?>">
+                            <?= $this->escape((string) ($aiReviewPreview['next_action'] ?? __('Revisão humana permanece obrigatória.', 'glpiintegaglpi'))); ?>
+                        </div>
+                        <dl class="row small mb-3">
+                            <dt class="col-sm-4"><?= $this->escape(__('run_id', 'glpiintegaglpi')); ?></dt>
+                            <dd class="col-sm-8"><code><?= $this->escape((string) ($aiReviewPreview['run_id'] ?? '')); ?></code></dd>
+                            <dt class="col-sm-4"><?= $this->escape(__('feature flag', 'glpiintegaglpi')); ?></dt>
+                            <dd class="col-sm-8"><code><?= $this->escape((string) ($aiReviewPreview['feature_flag'] ?? $aiReviewFeatureFlag)); ?></code></dd>
+                            <dt class="col-sm-4"><?= $this->escape(__('payload_hash', 'glpiintegaglpi')); ?></dt>
+                            <dd class="col-sm-8"><code><?= $this->escape((string) ($aiReviewPreview['payload_hash'] ?? '')); ?></code></dd>
+                        </dl>
+                        <?php $aiCandidates = is_array($aiReviewPreview['candidates'] ?? null) ? $aiReviewPreview['candidates'] : []; ?>
+                        <?php foreach ($aiCandidates as $candidate) {
+                            if (!is_array($candidate)) {
+                                continue;
+                            }
+                            ?>
+                            <div class="border rounded p-2 mb-2">
+                                <strong><?= $this->escape((string) ($candidate['kb_title_suggested'] ?? '')); ?></strong>
+                                <div class="text-muted small">
+                                    <?= $this->escape((string) ($candidate['suggested_type'] ?? '')); ?>
+                                    · <?= $this->escape((string) ($candidate['status'] ?? '')); ?>
+                                    · <?= (int) ($candidate['confidence'] ?? 0); ?>%
+                                </div>
+                                <div><?= $this->escape((string) ($candidate['kb_problem_summary'] ?? '')); ?></div>
+                                <?php $steps = is_array($candidate['kb_resolution_steps'] ?? null) ? $candidate['kb_resolution_steps'] : []; ?>
+                                <?php if ($steps !== []) { ?>
+                                    <ol class="mb-0 mt-2">
+                                        <?php foreach (array_slice($steps, 0, 4) as $step) { ?>
+                                            <li><?= $this->escape((string) $step); ?></li>
+                                        <?php } ?>
+                                    </ol>
+                                <?php } ?>
+                            </div>
+                        <?php } ?>
+                    </div>
+                </div>
+            <?php } ?>
+
+            <?php if ($aiReviewResult !== null) { ?>
+                <div class="card mt-3">
+                    <div class="card-header"><?= $this->escape(__('Resultado P4', 'glpiintegaglpi')); ?></div>
+                    <div class="card-body">
+                        <div class="alert alert-warning">
+                            <?= $this->escape(__('Nenhuma publicação automática foi executada. Revise candidatos manualmente.', 'glpiintegaglpi')); ?>
+                            <code><?= $this->escape((string) ($aiReviewResult['status'] ?? '')); ?></code>
+                        </div>
+                        <dl class="row small mb-3">
+                            <dt class="col-sm-4"><?= $this->escape(__('run_id', 'glpiintegaglpi')); ?></dt>
+                            <dd class="col-sm-8"><code><?= $this->escape((string) ($aiReviewResult['run_id'] ?? '')); ?></code></dd>
+                            <dt class="col-sm-4"><?= $this->escape(__('provider', 'glpiintegaglpi')); ?></dt>
+                            <dd class="col-sm-8"><?= $this->escape((string) ($aiReviewResult['provider'] ?? '')); ?></dd>
+                            <dt class="col-sm-4"><?= $this->escape(__('payload_hash', 'glpiintegaglpi')); ?></dt>
+                            <dd class="col-sm-8"><code><?= $this->escape((string) ($aiReviewResult['payload_hash'] ?? '')); ?></code></dd>
+                            <dt class="col-sm-4"><?= $this->escape(__('suggestion_hash', 'glpiintegaglpi')); ?></dt>
+                            <dd class="col-sm-8"><code><?= $this->escape((string) ($aiReviewResult['suggestion_hash'] ?? '')); ?></code></dd>
+                            <dt class="col-sm-4"><?= $this->escape(__('Revisões persistidas', 'glpiintegaglpi')); ?></dt>
+                            <dd class="col-sm-8"><?= (int) ($aiReviewResult['persisted_reviews'] ?? 0); ?></dd>
+                        </dl>
+                        <?php $aiSuggestions = is_array($aiReviewResult['suggestions'] ?? null) ? $aiReviewResult['suggestions'] : []; ?>
+                        <?php if ($aiSuggestions !== []) { ?>
+                            <?php foreach ($aiSuggestions as $suggestion) {
+                                if (!is_array($suggestion)) {
+                                    continue;
+                                }
+                                $belowThreshold = !empty($suggestion['confidence_below_threshold']);
+                                ?>
+                                <div class="border rounded p-2 mb-2">
+                                    <div class="d-flex flex-wrap justify-content-between gap-2">
+                                        <strong><?= $this->escape((string) ($suggestion['kb_title_suggested'] ?? '')); ?></strong>
+                                        <span class="badge <?= $belowThreshold ? 'bg-warning text-dark' : 'bg-info'; ?>">
+                                            <?= $this->escape((string) ($suggestion['recommended_action'] ?? '')); ?>
+                                            · <?= (int) ($suggestion['confidence'] ?? 0); ?>%
+                                        </span>
+                                    </div>
+                                    <div class="text-muted small">
+                                        <?= $this->escape(__('revisão humana obrigatória', 'glpiintegaglpi')); ?>
+                                        · <code><?= $this->escape((string) ($suggestion['candidate_key'] ?? '')); ?></code>
+                                    </div>
+                                    <?php if ($belowThreshold) { ?>
+                                        <div class="alert alert-warning py-2 my-2">
+                                            <?= $this->escape(__('Confiança abaixo do limite. Use apenas como insumo para revisão humana.', 'glpiintegaglpi')); ?>
+                                        </div>
+                                    <?php } ?>
+                                    <?php if (!empty($suggestion['kb_title_before']) && (string) $suggestion['kb_title_before'] !== (string) ($suggestion['kb_title_suggested'] ?? '')) { ?>
+                                        <div class="small text-muted">
+                                            <?= $this->escape(__('Antes', 'glpiintegaglpi')); ?>:
+                                            <?= $this->escape((string) ($suggestion['kb_title_before'] ?? '')); ?>
+                                        </div>
+                                    <?php } ?>
+                                    <p class="mb-2"><?= $this->escape((string) ($suggestion['kb_problem_summary'] ?? '')); ?></p>
+                                    <?php $suggestedSteps = is_array($suggestion['kb_resolution_steps'] ?? null) ? $suggestion['kb_resolution_steps'] : []; ?>
+                                    <?php if ($suggestedSteps !== []) { ?>
+                                        <ol class="mb-2">
+                                            <?php foreach (array_slice($suggestedSteps, 0, 6) as $step) { ?>
+                                                <li><?= $this->escape((string) $step); ?></li>
+                                            <?php } ?>
+                                        </ol>
+                                    <?php } ?>
+                                    <?php if (!empty($suggestion['reason'])) { ?>
+                                        <div><strong><?= $this->escape(__('Justificativa', 'glpiintegaglpi')); ?>:</strong> <?= $this->escape((string) ($suggestion['reason'] ?? '')); ?></div>
+                                    <?php } ?>
+                                    <?php foreach ([
+                                        'risks' => __('Riscos', 'glpiintegaglpi'),
+                                        'missing_information' => __('Informações faltantes', 'glpiintegaglpi'),
+                                        'evidence_used' => __('Evidências usadas', 'glpiintegaglpi'),
+                                    ] as $listKey => $listLabel) { ?>
+                                        <?php $listItems = is_array($suggestion[$listKey] ?? null) ? $suggestion[$listKey] : []; ?>
+                                        <?php if ($listItems !== []) { ?>
+                                            <div class="small mt-1">
+                                                <strong><?= $this->escape((string) $listLabel); ?>:</strong>
+                                                <?= $this->escape(implode(' · ', array_map('strval', $listItems))); ?>
+                                            </div>
+                                        <?php } ?>
+                                    <?php } ?>
+                                </div>
+                            <?php } ?>
                         <?php } ?>
                     </div>
                 </div>
