@@ -175,6 +175,21 @@ final class Plugin
         return self::getWebBasePath() . '/front/external.research.php';
     }
 
+    public static function getAiOperationsUrl(): string
+    {
+        return self::getWebBasePath() . '/front/ai.operations.php';
+    }
+
+    public static function getAiConfigUrl(): string
+    {
+        return self::getWebBasePath() . '/front/ai.config.php';
+    }
+
+    public static function getHistoricalMiningUrl(): string
+    {
+        return self::getWebBasePath() . '/front/historical.mining.php';
+    }
+
     public static function getAiPilotUrl(): string
     {
         return self::getWebBasePath() . '/front/ai.pilot.php';
@@ -306,6 +321,16 @@ final class Plugin
     }
 
     public static function requireAiPilotRead(): void
+    {
+        self::requireSupervisorRead();
+    }
+
+    public static function canAiOperationsRead(): bool
+    {
+        return self::canSupervisorRead();
+    }
+
+    public static function requireAiOperationsRead(): void
     {
         self::requireSupervisorRead();
     }

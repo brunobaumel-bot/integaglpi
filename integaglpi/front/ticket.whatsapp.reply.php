@@ -19,6 +19,10 @@ error_log('[integaglpi][outbound][REPLY_ENDPOINT_HIT] ' . json_encode([
 // ── Shared helper — JSON-only, exits immediately ─────────────────────────────
 function integaglpiJsonResponse(array $payload, int $code = 200): never
 {
+    if (!isset($payload['csrf_token'])) {
+        $payload['csrf_token'] = Plugin::getCsrfToken();
+    }
+
     http_response_code($code);
     echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;

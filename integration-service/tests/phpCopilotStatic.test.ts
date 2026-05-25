@@ -20,9 +20,13 @@ describe('PHP internal Copilot static safety', () => {
     expect(front).toContain('Session::checkLoginUser();');
     expect(front).toContain('Plugin::canUpdate()');
     expect(front).toContain('Plugin::isCsrfValid($_POST)');
+    expect(front).toContain("($_GET['csrf_token'] ?? '') === '1'");
+    expect(front).toContain("$payload['csrf_token'] = Plugin::getCsrfToken()");
     expect(front).toContain('buildCopilotContext');
     expect(client).toContain('/internal/glpi/copilot/draft');
     expect(ticketTab).toContain('Sugerir resposta');
+    expect(ticketTab).toContain('refreshCsrfToken');
+    expect(ticketTab).toContain('updateCsrfToken');
     expect(ticketTab).toContain('Rascunho gerado por IA. Revise antes de enviar. Nenhuma mensagem é enviada automaticamente.');
     expect(ticketTab).toContain('Usar rascunho');
     expect(ticketTab).toContain('Copiar rascunho');

@@ -12,22 +12,45 @@ Session::checkLoginUser();
 
 header('Content-Type: application/json; charset=UTF-8');
 
+/**
+ * @param array<string, mixed> $payload
+ */
+function integaglpiCopilotJsonResponse(array $payload, int $statusCode = 200): void
+{
+    if (!isset($payload['csrf_token'])) {
+        $payload['csrf_token'] = Plugin::getCsrfToken();
+    }
+
+    http_response_code($statusCode);
+    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}
+
 try {
+    if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string) ($_GET['csrf_token'] ?? '') === '1') {
+        if (!Plugin::canUpdate()) {
+            integaglpiCopilotJsonResponse([
+                'success' => false,
+                'message' => __('Sem permissão para usar o Copiloto.', 'glpiintegaglpi'),
+            ], 403);
+            exit;
+        }
+
+        integaglpiCopilotJsonResponse(['success' => true]);
+        exit;
+    }
+
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-        http_response_code(405);
-        echo json_encode(['success' => false, 'message' => __('Método não permitido.', 'glpiintegaglpi')]);
+        integaglpiCopilotJsonResponse(['success' => false, 'message' => __('Método não permitido.', 'glpiintegaglpi')], 405);
         exit;
     }
 
     if (!Plugin::canUpdate()) {
-        http_response_code(403);
-        echo json_encode(['success' => false, 'message' => __('Sem permissão para usar o Copiloto.', 'glpiintegaglpi')]);
+        integaglpiCopilotJsonResponse(['success' => false, 'message' => __('Sem permissão para usar o Copiloto.', 'glpiintegaglpi')], 403);
         exit;
     }
 
     if (!Plugin::isCsrfValid($_POST)) {
-        http_response_code(403);
-        echo json_encode(['success' => false, 'message' => __('Token CSRF inválido.', 'glpiintegaglpi')]);
+        integaglpiCopilotJsonResponse(['success' => false, 'message' => __('Token CSRF inválido.', 'glpiintegaglpi')], 403);
         exit;
     }
 
@@ -41,8 +64,7 @@ try {
 
     $ticket = new Ticket();
     if ($ticketId <= 0 || !$ticket->getFromDB($ticketId) || !$ticket->can($ticketId, READ)) {
-        http_response_code(404);
-        echo json_encode(['success' => false, 'message' => __('Chamado não encontrado ou sem permissão.', 'glpiintegaglpi')]);
+        integaglpiCopilotJsonResponse(['success' => false, 'message' => __('Chamado não encontrado ou sem permissão.', 'glpiintegaglpi')], 404);
         exit;
     }
 
@@ -67,19 +89,16 @@ try {
             'notes' => mb_substr(trim((string) ($_POST['notes'] ?? '')), 0, 500, 'UTF-8'),
         ]);
     } else {
-        http_response_code(400);
-        echo json_encode(['success' => false, 'message' => __('Ação inválida.', 'glpiintegaglpi')]);
+        integaglpiCopilotJsonResponse(['success' => false, 'message' => __('Ação inválida.', 'glpiintegaglpi')], 400);
         exit;
     }
 
-    http_response_code($response['success'] ? 200 : max(400, (int) $response['status']));
-    echo json_encode([
+    integaglpiCopilotJsonResponse([
         'success' => $response['success'],
         'body' => $response['body'],
         'message' => (string) ($response['body']['message'] ?? ''),
-    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    ], $response['success'] ? 200 : max(400, (int) $response['status']));
 } catch (Throwable $exception) {
     error_log('[integaglpi][copilot][error] ' . preg_replace('/(password|token|secret|bearer)\s*[:=]\s*\S+/i', '$1=[redacted]', $exception->getMessage()));
-    http_response_code(500);
-    echo json_encode(['success' => false, 'message' => __('Não foi possível usar o Copiloto agora.', 'glpiintegaglpi')]);
+    integaglpiCopilotJsonResponse(['success' => false, 'message' => __('Não foi possível usar o Copiloto agora.', 'glpiintegaglpi')], 500);
 }

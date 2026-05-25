@@ -24,6 +24,9 @@ final class IntegrationServiceClient
     private const PATH_MANUAL_TICKET_WHATSAPP_START_TEMPLATE = '/internal/glpi/manual-ticket-whatsapp/%d/start-template';
     private const PATH_AI_QUALITY_ANALYZE = '/internal/glpi/ai-quality/analyze';
     private const PATH_AI_QUALITY_FEEDBACK = '/internal/glpi/ai-quality/feedback';
+    private const PATH_HISTORICAL_MINING_PREVIEW = '/internal/glpi/historical-mining/preview';
+    private const PATH_HISTORICAL_MINING_EXECUTE = '/internal/glpi/historical-mining/execute';
+    private const PATH_KB_CANDIDATES_GENERATE = '/internal/glpi/kb-candidates/generate';
     private const TIMEOUT_SECONDS   = 5;
     private const ENTITY_SELECTION_TIMEOUT_SECONDS = 8;
     private const AI_QUALITY_ANALYZE_TIMEOUT_SECONDS = 75;
@@ -122,6 +125,33 @@ final class IntegrationServiceClient
     public function getDiagnostics(): array
     {
         return $this->getJson($this->endpoint(self::PATH_DIAGNOSTICS), 'diagnostics', 5);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function previewHistoricalMining(array $payload): array
+    {
+        return $this->postJson($this->endpoint(self::PATH_HISTORICAL_MINING_PREVIEW), $payload, 'historical_mining][preview', 30);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function executeHistoricalMining(array $payload): array
+    {
+        return $this->postJson($this->endpoint(self::PATH_HISTORICAL_MINING_EXECUTE), $payload, 'historical_mining][execute', 60);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function generateKbCandidatesFromHistory(array $payload): array
+    {
+        return $this->postJson($this->endpoint(self::PATH_KB_CANDIDATES_GENERATE), $payload, 'kb_candidates][generate', 60);
     }
 
     /**

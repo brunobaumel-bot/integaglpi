@@ -9,6 +9,7 @@ import type { AuditService } from './domain/services/AuditService.js';
 import type { AiSupervisorService } from './domain/services/AiSupervisorService.js';
 import type { CopilotDraftService } from './domain/services/CopilotDraftService.js';
 import type { AiPilotService } from './domain/services/AiPilotService.js';
+import type { AiOperationsService } from './domain/services/AiOperationsService.js';
 import type { ContactAgendaImportService } from './domain/services/ContactAgendaImportService.js';
 import type { ManualTicketWhatsappLinkService } from './domain/services/ManualTicketWhatsappLinkService.js';
 import type { GlpiClient } from './adapters/glpi/GlpiClient.js';
@@ -19,6 +20,11 @@ import { createAiQualityAnalysisController } from './controllers/createAiQuality
 import { createAiQualityFeedbackController } from './controllers/createAiQualityFeedbackController.js';
 import { createCopilotDraftController } from './controllers/createCopilotDraftController.js';
 import { createAiPilotStatusController, createAiPilotSyntheticTestController } from './controllers/createAiPilotController.js';
+import {
+  createHistoricalMiningExecuteController,
+  createHistoricalMiningPreviewController,
+  createKbCandidateGenerateController,
+} from './controllers/createAiOperationsController.js';
 import { createQualityDashboardController } from './controllers/createQualityDashboardController.js';
 import { createObservabilityController } from './controllers/createObservabilityController.js';
 import { createGlpiOutboundMessageController } from './controllers/createGlpiOutboundMessageController.js';
@@ -47,6 +53,7 @@ import { postgresPool } from './infra/db/postgres.js';
 
 const OUTBOUND_MEDIA_JSON_LIMIT = '30mb';
 const CONTACT_AGENDA_IMPORT_JSON_LIMIT = '5mb';
+const AI_OPERATIONS_JSON_LIMIT = '6mb';
 
 export interface AppDependencies {
   inboundWebhookService: InboundWebhookService;
@@ -61,6 +68,7 @@ export interface AppDependencies {
   aiSupervisorService?: AiSupervisorService;
   copilotDraftService?: CopilotDraftService;
   aiPilotService?: AiPilotService;
+  aiOperationsService?: AiOperationsService;
   qualityDashboardService?: QualityDashboardService;
   observabilityService?: ObservabilityService;
   contactAgendaImportService?: ContactAgendaImportService;
@@ -229,6 +237,27 @@ export function createApp(dependencies: AppDependencies) {
       '/internal/glpi/ai-pilot/test',
       internalAuth,
       createAiPilotSyntheticTestController(dependencies.aiPilotService),
+    );
+  }
+  if (dependencies.aiOperationsService) {
+    const internalAuth = createInternalBearerMiddleware(dependencies.integrationServiceApiKey);
+    app.post(
+      '/internal/glpi/historical-mining/preview',
+      internalAuth,
+      createJsonParser({ limit: AI_OPERATIONS_JSON_LIMIT }),
+      createHistoricalMiningPreviewController(dependencies.aiOperationsService),
+    );
+    app.post(
+      '/internal/glpi/historical-mining/execute',
+      internalAuth,
+      createJsonParser({ limit: AI_OPERATIONS_JSON_LIMIT }),
+      createHistoricalMiningExecuteController(dependencies.aiOperationsService),
+    );
+    app.post(
+      '/internal/glpi/kb-candidates/generate',
+      internalAuth,
+      createJsonParser(),
+      createKbCandidateGenerateController(dependencies.aiOperationsService),
     );
   }
 

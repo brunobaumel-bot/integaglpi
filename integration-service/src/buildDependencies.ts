@@ -25,6 +25,7 @@ import { ConversationSoftCloseService } from './domain/services/ConversationSoft
 import { AiSupervisorService } from './domain/services/AiSupervisorService.js';
 import { CopilotDraftService } from './domain/services/CopilotDraftService.js';
 import { AiPilotService } from './domain/services/AiPilotService.js';
+import { AiOperationsService } from './domain/services/AiOperationsService.js';
 import { OllamaCopilotProvider } from './copilot/OllamaCopilotProvider.js';
 import { AiPilotBudgetGuard } from './aiPilot/budgetGuard.js';
 import { AiPilotRepository } from './aiPilot/repository.js';
@@ -74,6 +75,7 @@ export function buildDependencies() {
   const messageFlowRepository = new PostgresMessageFlowRepository(postgresPool);
   const qualityDashboardService = new QualityDashboardService(postgresPool, redisClient);
   const observabilityService = new ObservabilityService(postgresPool, redisClient, glpiClient);
+  const aiOperationsService = new AiOperationsService(postgresPool);
   const auditService = new AuditService(auditEventRepository);
   const contactAgendaImportService = new ContactAgendaImportService(
     contactAgendaImportRepository,
@@ -235,6 +237,7 @@ export function buildDependencies() {
     aiSupervisorService,
     copilotDraftService,
     aiPilotService,
+    aiOperationsService,
     qualityDashboardService,
     observabilityService,
     contactAgendaImportService,

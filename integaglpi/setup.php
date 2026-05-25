@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Glpi\Plugin\Hooks;
+use GlpiPlugin\Integaglpi\AiOperationsMenu;
 use GlpiPlugin\Integaglpi\AttendanceCenterMenu;
 use GlpiPlugin\Integaglpi\ContactAgendaImportMenu;
 use GlpiPlugin\Integaglpi\ContractsHoursMenu;
@@ -172,6 +173,7 @@ function plugin_init_integaglpi(): void
             ContactAgendaImportMenu::class,
             AttendanceCenterMenu::class,
             SupervisorBackofficeMenu::class,
+            AiOperationsMenu::class,
             QualityDashboardMenu::class,
             CoachingMenu::class,
             ExternalResearchMenu::class,
@@ -220,6 +222,7 @@ function plugin_init_integaglpi(): void
     \Plugin::registerClass(ContactAgendaImportMenu::class);
     \Plugin::registerClass(AttendanceCenterMenu::class);
     \Plugin::registerClass(SupervisorBackofficeMenu::class);
+    \Plugin::registerClass(AiOperationsMenu::class);
     \Plugin::registerClass(QualityDashboardMenu::class);
     \Plugin::registerClass(CoachingMenu::class);
     \Plugin::registerClass(ExternalResearchMenu::class);

@@ -1177,6 +1177,7 @@ if ($auditPanelOk) {
         var copilotMeta = card.querySelector('.js-integaglpi-copilot-meta');
         var copilotStatus = card.querySelector('.js-integaglpi-copilot-status');
         var copilotNotes = card.querySelector('.js-integaglpi-copilot-notes');
+        var copilotStorageKey = 'integaglpi_copilot_draft_' + String(button ? button.dataset.ticketId || '' : '') + '_' + String(button ? button.dataset.conversationId || '' : '');
 
         if (!button || !textarea) {
             return;
@@ -1202,6 +1203,28 @@ if ($auditPanelOk) {
             });
         }
 
+        function updateCsrfToken(body) {
+            if (body && typeof body.csrf_token === 'string' && body.csrf_token !== '') {
+                csrfToken = body.csrf_token;
+            }
+        }
+
+        function refreshCsrfToken() {
+            return fetch(copilotEndpoint + '?csrf_token=1', {
+                method: 'GET',
+                credentials: 'same-origin',
+                headers: { 'Accept': 'application/json' }
+            })
+                .then(parseJsonResponse)
+                .then(function (result) {
+                    updateCsrfToken(result.body);
+                    return result;
+                })
+                .catch(function () {
+                    return { status: 0, body: null };
+                });
+        }
+
         function setCopilotStatus(message, kind) {
             if (!copilotStatus) { return; }
             copilotStatus.textContent = message || '';
@@ -1213,16 +1236,56 @@ if ($auditPanelOk) {
         }
 
         function postCopilot(payload) {
-            payload.set('_glpi_csrf_token', csrfToken);
-            payload.set('ticket_id', String(button.dataset.ticketId || ''));
-            payload.set('conversation_id', String(button.dataset.conversationId || ''));
-            return fetch(copilotEndpoint, {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'Accept': 'application/json' },
-                body: payload
-            }).then(parseJsonResponse);
+            return refreshCsrfToken().then(function () {
+                payload.set('_glpi_csrf_token', csrfToken);
+                payload.set('ticket_id', String(button.dataset.ticketId || ''));
+                payload.set('conversation_id', String(button.dataset.conversationId || ''));
+
+                return fetch(copilotEndpoint, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Accept': 'application/json' },
+                    body: payload
+                });
+            }).then(parseJsonResponse).then(function (result) {
+                updateCsrfToken(result.body);
+                return result;
+            });
         }
+
+        function restoreCopilotDraft() {
+            if (!copilotDraft || !copilotBox || !window.sessionStorage) { return; }
+            var raw = window.sessionStorage.getItem(copilotStorageKey);
+            if (!raw) { return; }
+            try {
+                var saved = JSON.parse(raw);
+                copilotDraft.value = saved.text || '';
+                copilotBox.dataset.draftHash = saved.hash || '';
+                if (copilotMeta) { copilotMeta.textContent = saved.meta || ''; }
+                if (copilotDraft.value.trim()) {
+                    setCopilotStatus(<?= json_encode(__('Rascunho restaurado para revisão.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'success');
+                }
+            } catch (e) {
+                window.sessionStorage.removeItem(copilotStorageKey);
+            }
+        }
+
+        function saveCopilotDraft(text, hash, meta) {
+            if (!window.sessionStorage) { return; }
+            window.sessionStorage.setItem(copilotStorageKey, JSON.stringify({
+                text: text || '',
+                hash: hash || '',
+                meta: meta || ''
+            }));
+        }
+
+        function clearCopilotDraft() {
+            if (window.sessionStorage) {
+                window.sessionStorage.removeItem(copilotStorageKey);
+            }
+        }
+
+        restoreCopilotDraft();
 
         card.querySelectorAll('.js-integaglpi-copilot-generate').forEach(function (copilotButton) {
             copilotButton.addEventListener('click', function () {
@@ -1234,19 +1297,32 @@ if ($auditPanelOk) {
                 setCopilotStatus(<?= json_encode(__('Gerando rascunho...', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'muted');
                 postCopilot(payload).then(function (result) {
                     copilotButton.disabled = false;
-                    if (!result.body || result.body.success !== true || !result.body.body || !result.body.body.draft) {
+                    var responseBody = result.body && (result.body.body || result.body);
+                    var draft = responseBody && responseBody.draft ? responseBody.draft : null;
+                    if (!result.body || result.body.success !== true || !draft) {
+                        if (result.status === 403 && (!result.body || !result.body.csrf_token)) {
+                            setCopilotStatus(<?= json_encode(__('Token de segurança expirado. Atualize a página e tente novamente.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
+                            return;
+                        }
                         setCopilotStatus((result.body && result.body.message) || <?= json_encode(__('Não foi possível gerar o rascunho.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
                         return;
                     }
-                    var draft = result.body.body.draft;
-                    copilotDraft.value = draft.draftResponse || draft.draft_response || '';
+                    var draftText = draft.draftResponse || draft.draft_response || '';
+                    if (!draftText.trim()) {
+                        setCopilotStatus(<?= json_encode(__('O Copiloto retornou um rascunho vazio.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
+                        return;
+                    }
+                    copilotDraft.value = draftText;
                     copilotBox.dataset.draftHash = draft.draftHash || draft.draft_hash || '';
+                    var metaText = '';
                     if (copilotMeta) {
                         var notices = [];
                         if (draft.templateNotice || draft.template_notice) { notices.push(draft.templateNotice || draft.template_notice); }
                         if (draft.confidenceScore || draft.confidence_score) { notices.push('confiança ' + String(draft.confidenceScore || draft.confidence_score) + '%'); }
-                        copilotMeta.textContent = notices.join(' · ');
+                        metaText = notices.join(' · ');
+                        copilotMeta.textContent = metaText;
                     }
+                    saveCopilotDraft(copilotDraft.value, copilotBox.dataset.draftHash || '', metaText);
                     setCopilotStatus(<?= json_encode(__('Rascunho pronto para revisão.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'success');
                 }).catch(function () {
                     copilotButton.disabled = false;
@@ -1275,6 +1351,7 @@ if ($auditPanelOk) {
                 postCopilot(payload);
                 button.disabled = true;
                 window.setTimeout(function () { button.disabled = false; }, 2500);
+                saveCopilotDraft(copilotDraft.value, copilotBox ? (copilotBox.dataset.draftHash || '') : '', copilotMeta ? copilotMeta.textContent : '');
                 setCopilotStatus(<?= json_encode(__('Rascunho aplicado. Revise antes de enviar manualmente.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'success');
             });
         }
@@ -1288,6 +1365,8 @@ if ($auditPanelOk) {
                 payload.set('draft_hash', copilotBox ? (copilotBox.dataset.draftHash || '') : '');
                 postCopilot(payload);
                 if (copilotBox) { copilotBox.dataset.draftHash = ''; }
+                if (copilotMeta) { copilotMeta.textContent = ''; }
+                clearCopilotDraft();
                 setCopilotStatus(<?= json_encode(__('Sugestão descartada.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'muted');
             });
         }
@@ -1300,8 +1379,14 @@ if ($auditPanelOk) {
                 payload.set('draft_hash', copilotBox ? (copilotBox.dataset.draftHash || '') : '');
                 payload.set('feedback', String(feedbackButton.dataset.feedback || 'useful'));
                 payload.set('notes', copilotNotes ? copilotNotes.value : '');
-                postCopilot(payload).then(function () {
+                postCopilot(payload).then(function (result) {
+                    if (!result.body || result.body.success !== true) {
+                        setCopilotStatus((result.body && result.body.message) || <?= json_encode(__('Não foi possível registrar feedback.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
+                        return;
+                    }
                     setCopilotStatus(<?= json_encode(__('Feedback registrado.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'success');
+                }).catch(function () {
+                    setCopilotStatus(<?= json_encode(__('Erro de rede ao registrar feedback.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
                 });
             });
         });
@@ -1315,7 +1400,6 @@ if ($auditPanelOk) {
             }
 
             var payload = new FormData();
-            payload.set('_glpi_csrf_token', csrfToken);
             payload.set('ticket_id',       String(button.dataset.ticketId || ''));
             payload.set('conversation_id', String(button.dataset.conversationId || ''));
             payload.set('reply_text',      msg);
@@ -1328,17 +1412,29 @@ if ($auditPanelOk) {
             button.textContent = sendingMsg;
             setFeedback('', 'muted');
 
-            fetch(endpoint, {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: {
-                    'Accept': 'application/json'
-                },
-                body: payload
-            })
+            refreshCsrfToken()
+                .then(function () {
+                    payload.set('_glpi_csrf_token', csrfToken);
+
+                    return fetch(endpoint, {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: {
+                            'Accept': 'application/json'
+                        },
+                        body: payload
+                    });
+                })
                 .then(parseJsonResponse)
                 .then(function (result) {
+                    updateCsrfToken(result.body);
                     if (!result.body || result.body.success !== true) {
+                        if (result.status === 403 && (!result.body || !result.body.csrf_token)) {
+                            setFeedback(<?= json_encode(__('Token de segurança expirado. Atualize a página e tente novamente.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
+                            button.disabled = false;
+                            button.textContent = originalLabel;
+                            return;
+                        }
                         var msgFromServer = result.body && result.body.message
                             ? result.body.message
                             : genericErr;
