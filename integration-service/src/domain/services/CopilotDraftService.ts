@@ -42,17 +42,18 @@ export class CopilotDraftService {
     const result = this.config.dryRun
       ? this.createDryRunDraft(context, input.tone)
       : await this.provider.generate(buildCopilotDraftPrompt(context, input.tone, this.config.maxChars));
-    const draftHash = this.hash(result.draftResponse);
+    const qualityResult = this.applySupportResponseQuality(context, result, input.tone);
+    const draftHash = this.hash(qualityResult.draftResponse);
 
     await this.audit('COPILOT_DRAFT_GENERATED', 'success', 'info', context, input.requestedBy, {
       draft_hash: draftHash,
-      tone: result.tone,
-      confidence_score: result.confidenceScore,
-      window_notice: result.windowNotice,
-      kb_reference_count: result.kbReferences.length,
+      tone: qualityResult.tone,
+      confidence_score: qualityResult.confidenceScore,
+      window_notice: qualityResult.windowNotice,
+      kb_reference_count: qualityResult.kbReferences.length,
     });
 
-    return { ...result, draftHash };
+    return { ...qualityResult, draftHash };
   }
 
   public async recordUsage(
@@ -151,6 +152,170 @@ export class CopilotDraftService {
       templateNotice,
       noAutoSend: true,
     };
+  }
+
+  private applySupportResponseQuality(
+    context: CopilotContext,
+    result: CopilotDraftResult,
+    tone: CopilotTone,
+  ): CopilotDraftResult {
+    const detectedIssues = this.detectSupportIssues(context);
+    if (detectedIssues.length >= 2) {
+      return {
+        ...result,
+        draftResponse: this.buildOperationalSupportDraft(detectedIssues),
+        tone,
+        missingInformation: this.mergeUnique(
+          detectedIssues.flatMap((issue) => issue.missingInformation),
+          result.missingInformation,
+          6,
+        ),
+        technicianChecklist: this.mergeUnique([
+          'Conferir se cada problema deve virar tarefa separada ou subchamado.',
+          'Validar dados mínimos antes de prometer execução.',
+          'Enviar a resposta manualmente somente após revisão.',
+        ], result.technicianChecklist, 8),
+        assumptions: this.mergeUnique([
+          'Cliente informou múltiplas demandas no mesmo atendimento.',
+        ], result.assumptions, 6),
+        confidenceScore: Math.max(result.confidenceScore, 70),
+      };
+    }
+
+    return {
+      ...result,
+      draftResponse: this.compactDraftResponse(result.draftResponse),
+    };
+  }
+
+  /**
+   * @return Array<{
+   *   label: string;
+   *   action: string;
+   *   missingInformation: string[];
+   * }>
+   */
+  private detectSupportIssues(context: CopilotContext): Array<{
+    label: string;
+    action: string;
+    missingInformation: string[];
+  }> {
+    const text = this.normalizeForDetection(
+      context.messages
+        .filter((message) => message.direction.toLowerCase() !== 'outbound')
+        .map((message) => message.text)
+        .join(' '),
+    );
+    const issues: Array<{ label: string; action: string; missingInformation: string[] }> = [];
+
+    if (/\bimpressora\b/.test(text) && /\b(rede|wifi|wi fi|ip)\b/.test(text)) {
+      const missing = [];
+      if (!this.hasPrinterNetworkDetails(text)) {
+        missing.push('modelo e IP/nome da impressora');
+      }
+      issues.push({
+        label: 'Impressora na rede',
+        action: missing.length > 0
+          ? `envie ${missing.join(' e ')} para eu orientar a instalação correta.`
+          : 'já tenho os dados principais; vou validar o procedimento de instalação na rede.',
+        missingInformation: missing,
+      });
+    }
+
+    if (/\b(formatar|formatacao|reinstalar)\b/.test(text) && /\b(computador|notebook|pc|maquina)\b/.test(text)) {
+      const missing = [];
+      const hasSchedule = this.hasCollectionSchedule(text);
+      const hasBackupInfo = /\b(backup|arquivos?|dados|perfil|onedrive)\b/.test(text);
+      if (!hasSchedule) {
+        missing.push('dia e horário para coleta ou acesso');
+      }
+      if (!hasBackupInfo) {
+        missing.push('se há arquivos para backup');
+      }
+      issues.push({
+        label: 'Formatação do computador',
+        action: missing.length > 0 && hasSchedule
+          ? `já tenho dia/horário; confirme ${missing.join(' e ')} antes da execução.`
+          : missing.length > 0
+          ? `confirme ${missing.join(' e ')} antes da execução.`
+          : 'já tenho janela e backup indicados; vou encaminhar a execução segura.',
+        missingInformation: missing,
+      });
+    }
+
+    if (/\b(outlook|office|microsoft 365)\b/.test(text) && /\b(licenca|ativacao|ativar|destravar|bloqueado|erro)\b/.test(text)) {
+      const missing = [];
+      if (!/\b(print|screenshot|captura|codigo)\b|erro\s*0x[0-9a-f]+/.test(text)) {
+        missing.push('print ou código do erro');
+      }
+      if (!/\b(versao|office 2016|office 2019|office 2021|microsoft 365|365)\b/.test(text)) {
+        missing.push('versão do Outlook/Office');
+      }
+      issues.push({
+        label: 'Outlook/licença',
+        action: missing.length > 0
+          ? `envie ${missing.join(' e ')} para validar a licença sem tentativa no escuro.`
+          : 'já tenho evidência e versão; vou validar ativação/licenciamento.',
+        missingInformation: missing,
+      });
+    }
+
+    return issues.slice(0, 3);
+  }
+
+  private buildOperationalSupportDraft(issues: Array<{ label: string; action: string }>): string {
+    const lines = issues.map((issue, index) => `${index + 1}. ${issue.label}: ${issue.action}`);
+    lines.push('Próxima ação: com esses dados eu separo as demandas e encaminho o atendimento com segurança.');
+
+    return lines.slice(0, 5).join('\n');
+  }
+
+  private hasPrinterNetworkDetails(text: string): boolean {
+    return /\b(?:\d{1,3}\.){3}\d{1,3}\b/.test(text)
+      || /\b(modelo|marca|hp|epson|brother|canon|ricoh|lexmark|samsung)\b/.test(text)
+      || /\b(nome da impressora|fila de impressao)\b/.test(text);
+  }
+
+  private hasCollectionSchedule(text: string): boolean {
+    return /\b(\d{1,2}[:h]\d{0,2}|hoje|amanha|segunda|terca|quarta|quinta|sexta|sabado|domingo|manha|tarde)\b/.test(text);
+  }
+
+  private compactDraftResponse(value: string): string {
+    const lines = value
+      .split(/\r?\n+/)
+      .map((line) => line.replace(/\s+/g, ' ').trim())
+      .filter((line) => line !== '');
+
+    const compacted = this.mergeUnique(lines, [], 5).join('\n');
+    return compacted !== '' ? compacted : value;
+  }
+
+  private mergeUnique(primary: string[], secondary: string[], maxItems: number): string[] {
+    const seen = new Set<string>();
+    const merged: string[] = [];
+    for (const item of [...primary, ...secondary]) {
+      const clean = sanitizeAiQualityText(item).replace(/\s+/g, ' ').trim();
+      const key = this.normalizeForDetection(clean);
+      if (clean === '' || seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      merged.push(clean);
+      if (merged.length >= maxItems) {
+        break;
+      }
+    }
+
+    return merged;
+  }
+
+  private normalizeForDetection(value: string): string {
+    return sanitizeAiQualityText(value)
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   private hash(value: string): string {

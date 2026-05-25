@@ -66,3 +66,13 @@ Objetivo: validar produção após promoção manual, sem alterar regras funcion
 ## Segurança Documental
 
 Nunca versionar, copiar ou colar em documentação: .env real, .ovpn, tokens, Bearer tokens, PSK, Phone Number ID real, senhas, dumps SQL, backups reais, payloads brutos sensíveis ou dados pessoais desnecessários.
+
+## Critério de Qualidade para Rascunhos IA
+
+Validar somente em TESTE/HOMOLOGAÇÃO antes de qualquer promoção; em produção a IA permanece OFF até aprovação humana.
+
+- [ ] Em chamado com impressora na rede, formatação e Outlook/licença, o rascunho separa os temas em lista numerada.
+- [ ] O rascunho pede apenas dados faltantes: modelo/IP da impressora, dia/horário de coleta e print/código/versão do Outlook.
+- [ ] Quando o histórico recente já contém esses dados, o rascunho reconhece a informação e não repete a pergunta.
+- [ ] A resposta tem até 5 linhas sempre que possível e termina com próxima ação clara.
+- [ ] O rascunho não promete envio, fechamento, reabertura, publicação de KB ou execução automática.
