@@ -188,9 +188,8 @@ final class ExternalResearchService
             ];
         }
 
-        if ($context['validated_sources'] === []) {
-            return ['type' => 'danger', 'message' => __('Informe ao menos uma fonte oficial cadastrada.', 'glpiintegaglpi'), 'preview' => $context];
-        }
+        // Sources are optional/advanced; when empty the prompt uses default official allowlist.
+        // Do NOT block here — proceed with research using default catalog as source guidance.
 
         $providerSelection = is_array($context['provider_selection'] ?? null) ? $context['provider_selection'] : [];
         if (!empty($providerSelection['cloud']) && empty($providerSelection['ready'])) {
@@ -342,9 +341,8 @@ final class ExternalResearchService
             ];
         }
 
-        if ($context['validated_sources'] === []) {
-            return ['type' => 'danger', 'message' => __('Informe ao menos uma fonte oficial cadastrada.', 'glpiintegaglpi'), 'preview' => $context];
-        }
+        // Sources are optional/advanced; when empty the candidate is built with low confidence using
+        // the default official allowlist as guidance. Do NOT block — proceed to build KB candidate.
 
         $candidate = $this->buildCandidate($context, $requestId);
         $pdo = $this->getPdo();
@@ -655,14 +653,23 @@ final class ExternalResearchService
             $sourceTitles[] = $this->sanitizeText((string) ($catalog['name'] ?? $source['url'] ?? ''), 180);
         }
 
+        $hasCustomSources = $sourceTitles !== [];
+        $defaultSourcesLine = 'Sem fontes personalizadas — use preferencialmente: Microsoft Learn, GLPI Docs (docs.glpi-project.org), Meta/WhatsApp Cloud API Docs, Docker Docs, PostgreSQL Docs, Redis Docs, Node.js Docs, Ubuntu Docs.';
+        $sourcesLine = $hasCustomSources
+            ? ('Fontes citadas: ' . implode('; ', array_filter($sourceTitles)))
+            : $defaultSourcesLine;
+
+        $schema = '{"diagnostico_provavel":"","perguntas_ao_cliente":[""],"passos_tecnicos":[""],"riscos_cuidados":[""],"fontes_links_sugeridas":[""],"texto_resposta_cliente":"","candidato_kb":{"titulo":"","problema":"","resolucao":[""],"adequado_para_kb":false},"confidence":0,"limites_incertezas":""}';
+
         return $this->sanitizeText(implode("\n", [
-            'Você é apoio técnico para pesquisa externa controlada.',
-            'Use apenas o resumo sanitizado e as fontes oficiais citadas; não invente dados do cliente.',
-            'Retorne diagnóstico provável, passos técnicos, riscos, perguntas ao cliente e possibilidade de KB.',
+            'Voce e apoio tecnico para pesquisa externa controlada. Use apenas o resumo sanitizado e as fontes citadas; nao invente dados do cliente, nao execute comandos e nao exponha PII.',
+            'Retorne SOMENTE JSON valido no schema abaixo. Nao inclua texto fora do JSON.',
+            'Schema obrigatorio: ' . $schema,
+            'Campos obrigatorios: diagnostico_provavel (string), perguntas_ao_cliente (array de strings), passos_tecnicos (array), riscos_cuidados (array), fontes_links_sugeridas (array de URLs/referencias), texto_resposta_cliente (string sem PII), candidato_kb (objeto: titulo, problema, resolucao array, adequado_para_kb bool), confidence (inteiro 0-100), limites_incertezas (string).',
+            'confidence: 0 se insuficiente, 100 se altamente confiante. candidato_kb.adequado_para_kb: true somente se resolucao clara, reproducivel e sem PII.',
             'Resumo sanitizado:',
             (string) ($context['sanitized']['text'] ?? ''),
-            'Fontes citadas:',
-            implode('; ', array_filter($sourceTitles)),
+            $sourcesLine,
         ]), self::MAX_PROMPT_CHARS);
     }
 
@@ -681,9 +688,11 @@ final class ExternalResearchService
             'token_url' => ['#https?://[^\s<>"\']*(?:token|access_token|key|secret|sig|signature)=[^\s<>"\']+#i', '[token_url]'],
             'email' => ['/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/i', '[email]'],
             'company' => ['/\b(?:empresa|cliente|companhia|organizacao|organização|razao social|razão social)\s*(?::|=|-)?\s*[A-ZÀ-Ý0-9][A-ZÀ-Ýa-zà-ÿ0-9 .&_-]{2,80}/iu', 'empresa: [empresa]'],
-            'name' => ['/\b(nome|cliente|contato|solicitante|tecnico|técnico)\s*(?::|=)?\s*[A-ZÀ-Ý][a-zà-ÿ]+(?:\s+[A-ZÀ-Ý][a-zà-ÿ]+){0,3}/iu', '$1: [nome]'],
+            'name' => ['/\b(nome|cliente|contato|solicitante|tecnico|técnico|usuario|usuário|responsavel|responsável|atendente|chamador|requerente|requisitante|sr|sra)\s*(?::|=)?\s*[A-ZÀ-Ý][a-zà-ÿ]+(?:\s+[A-ZÀ-Ý][a-zà-ÿ]+){0,3}/iu', '$1: [nome]'],
             'proper_name' => ['/\b[A-ZÀ-Ý][a-zà-ÿ]{2,}(?:\s+[A-ZÀ-Ý][a-zà-ÿ]{2,}){1,4}\b/u', '[nome]'],
             'uppercase_name' => ['/\b[A-ZÀ-Ý]{2,}(?:\s+[A-ZÀ-Ý]{2,}){1,5}\b/u', '[nome]'],
+            'patrimonio_id' => ['/\b(?:patrimônio|patrimonio|etiqueta|ativo|inv\.)\s*#?n?[o°]?\.?\s*\d{3,}/iu', '[id]'],
+            'ticket_id' => ['/\b(?:chamado|ticket|incidente)\s*#?\s*\d{3,}/iu', '[id]'],
             'phone' => ['/\b(?:\+?55\s?)?(?:\(?\d{2}\)?\s?)?(?:9\s?)?\d{4}[-.\s]?\d{4}\b/', '[telefone]'],
             'cpf_cnpj' => ['/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b|\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/', '[documento]'],
             'ip' => ['/\b(?:10|172\.(?:1[6-9]|2\d|3[0-1])|192\.168)\.\d{1,3}\.\d{1,3}\b/', '[ip_privado]'],
