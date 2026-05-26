@@ -19,6 +19,16 @@ $exportUpload = is_array($flash['export_upload'] ?? null) ? $flash['export_uploa
 $exportOptions = is_array($data['export_options'] ?? null) ? $data['export_options'] : [];
 $recentP4CandidateRuns = is_array($data['recent_p4_candidate_runs'] ?? null) ? $data['recent_p4_candidate_runs'] : [];
 $eligibleP4Statuses = is_array($data['p4_eligible_candidate_statuses'] ?? null) ? $data['p4_eligible_candidate_statuses'] : [];
+$aiProviderCatalog = is_array($data['ai_provider_catalog'] ?? null) ? $data['ai_provider_catalog'] : [];
+$localProvider = is_array($aiProviderCatalog['local_ollama_available'] ?? null) ? $aiProviderCatalog['local_ollama_available'] : [];
+$readyCloudProviders = is_array($aiProviderCatalog['cloud_ready_providers'] ?? null) ? $aiProviderCatalog['cloud_ready_providers'] : [];
+$blockedCloudProviders = is_array($aiProviderCatalog['cloud_blocked_providers'] ?? null) ? $aiProviderCatalog['cloud_blocked_providers'] : [];
+$p4DefaultProvider = is_array($aiProviderCatalog['p4_default'] ?? null) ? $aiProviderCatalog['p4_default'] : ['provider' => 'ollama', 'model' => ''];
+$previewProviderSelection = is_array($aiReviewPreview['provider_selection'] ?? null) ? $aiReviewPreview['provider_selection'] : [];
+$resultP4Provider = trim((string) ($aiReviewResult['provider'] ?? ''));
+$resultP4Model = trim((string) ($aiReviewResult['model'] ?? ''));
+$selectedP4Provider = trim((string) ($_POST['ai_provider'] ?? $previewProviderSelection['provider'] ?? ($resultP4Provider !== '' ? $resultP4Provider : ($p4DefaultProvider['provider'] ?? 'ollama'))));
+$selectedP4Model = trim((string) ($_POST['ai_model'] ?? $previewProviderSelection['model'] ?? ($resultP4Model !== '' ? $resultP4Model : ($p4DefaultProvider['model'] ?? ''))));
 $entities = is_array($exportOptions['entities'] ?? null) ? $exportOptions['entities'] : [];
 $groups = is_array($exportOptions['groups'] ?? null) ? $exportOptions['groups'] : [];
 $categories = is_array($exportOptions['categories'] ?? null) ? $exportOptions['categories'] : [];
@@ -410,6 +420,68 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                             <?= $this->escape(__('Este run_id possui candidatos P3, mas nenhum está em status elegível para P4.', 'glpiintegaglpi')); ?>
                         </div>
                     <?php } ?>
+                    <div class="row g-2 mt-3 mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label" for="ai_review_provider"><?= $this->escape(__('Provider IA P4', 'glpiintegaglpi')); ?></label>
+                            <select class="form-select" id="ai_review_provider" name="ai_provider">
+                                <?php $localReady = !empty($localProvider['ready']); ?>
+                                <option value="ollama" <?= $selectedP4Provider === 'ollama' ? 'selected' : ''; ?> <?= $localReady ? '' : 'disabled'; ?>>
+                                    <?= $this->escape(__('Ollama local', 'glpiintegaglpi')); ?>
+                                    <?= $localReady ? '' : ' - ' . $this->escape((string) ($localProvider['blocked_reason'] ?? 'local_model_not_configured')); ?>
+                                </option>
+                                <?php foreach ($readyCloudProviders as $provider) {
+                                    if (!is_array($provider)) { continue; }
+                                    $providerId = (string) ($provider['id'] ?? '');
+                                    if ($providerId === '') { continue; }
+                                    ?>
+                                    <option value="<?= $this->escape($providerId); ?>" <?= $selectedP4Provider === $providerId ? 'selected' : ''; ?>>
+                                        <?= $this->escape((string) ($provider['name'] ?? $providerId)); ?>
+                                    </option>
+                                <?php } ?>
+                                <?php foreach ($blockedCloudProviders as $provider) {
+                                    if (!is_array($provider)) { continue; }
+                                    $providerId = (string) ($provider['id'] ?? '');
+                                    if ($providerId === '') { continue; }
+                                    ?>
+                                    <option value="<?= $this->escape($providerId); ?>" disabled>
+                                        <?= $this->escape((string) ($provider['name'] ?? $providerId) . ' - bloqueado: ' . (string) ($provider['blocked_reason'] ?? 'provider_not_ready')); ?>
+                                    </option>
+                                <?php } ?>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="ai_review_model"><?= $this->escape(__('Modelo IA P4', 'glpiintegaglpi')); ?></label>
+                            <select class="form-select" id="ai_review_model" name="ai_model">
+                                <?php $localModels = is_array($localProvider['models'] ?? null) ? array_map('strval', $localProvider['models']) : []; ?>
+                                <?php if ($localModels !== []) { ?>
+                                    <optgroup label="<?= $this->escape(__('Ollama local', 'glpiintegaglpi')); ?>">
+                                        <?php foreach ($localModels as $modelOption) { ?>
+                                            <option value="<?= $this->escape($modelOption); ?>" <?= $selectedP4Model === $modelOption ? 'selected' : ''; ?>><?= $this->escape($modelOption); ?></option>
+                                        <?php } ?>
+                                    </optgroup>
+                                <?php } elseif ($selectedP4Model !== '') { ?>
+                                    <option value="<?= $this->escape($selectedP4Model); ?>" selected><?= $this->escape($selectedP4Model); ?></option>
+                                <?php } ?>
+                                <?php foreach (array_merge($readyCloudProviders, $blockedCloudProviders) as $provider) {
+                                    if (!is_array($provider)) { continue; }
+                                    $models = is_array($provider['models'] ?? null) ? array_map('strval', $provider['models']) : [];
+                                    if ($models === []) { continue; }
+                                    ?>
+                                    <optgroup label="<?= $this->escape((string) ($provider['name'] ?? $provider['id'] ?? 'cloud')); ?>">
+                                        <?php foreach ($models as $modelOption) { ?>
+                                            <option value="<?= $this->escape($modelOption); ?>" <?= $selectedP4Model === $modelOption ? 'selected' : ''; ?>><?= $this->escape($modelOption); ?></option>
+                                        <?php } ?>
+                                    </optgroup>
+                                <?php } ?>
+                                <?php if ($selectedP4Model === '') { ?>
+                                    <option value="" selected><?= $this->escape(__('sem modelo selecionado', 'glpiintegaglpi')); ?></option>
+                                <?php } ?>
+                            </select>
+                            <div class="form-text">
+                                <?= $this->escape(__('Default local-first. Cloud só executa se provider estiver pronto, payload P4 sanitizado e last_test_status=success.', 'glpiintegaglpi')); ?>
+                            </div>
+                        </div>
+                    </div>
                     <div class="d-flex flex-wrap gap-2">
                         <button class="btn btn-outline-primary" type="submit" name="action" value="preview_ai_candidate_review" <?= $p4KnownSelectedWithoutEligibleCandidates ? 'disabled' : ''; ?>>
                             <?= $this->escape(__('Pré-visualizar payload P4', 'glpiintegaglpi')); ?>
@@ -682,6 +754,16 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                             <dd class="col-sm-8"><code><?= $this->escape((string) ($aiReviewPreview['feature_flag'] ?? $aiReviewFeatureFlag)); ?></code></dd>
                             <dt class="col-sm-4"><?= $this->escape(__('payload_hash', 'glpiintegaglpi')); ?></dt>
                             <dd class="col-sm-8"><code><?= $this->escape((string) ($aiReviewPreview['payload_hash'] ?? '')); ?></code></dd>
+                            <?php $previewProvider = is_array($aiReviewPreview['provider_selection'] ?? null) ? $aiReviewPreview['provider_selection'] : []; ?>
+                            <dt class="col-sm-4"><?= $this->escape(__('provider/modelo', 'glpiintegaglpi')); ?></dt>
+                            <dd class="col-sm-8">
+                                <code><?= $this->escape((string) ($previewProvider['provider'] ?? 'ollama')); ?></code>
+                                /
+                                <code><?= $this->escape((string) ($previewProvider['model'] ?? '')); ?></code>
+                                <?php if (empty($previewProvider['ready'])) { ?>
+                                    <span class="badge bg-warning text-dark"><?= $this->escape((string) ($previewProvider['blocked_reason'] ?? 'provider_not_ready')); ?></span>
+                                <?php } ?>
+                            </dd>
                         </dl>
                         <?php $aiCandidates = is_array($aiReviewPreview['candidates'] ?? null) ? $aiReviewPreview['candidates'] : []; ?>
                         <?php foreach ($aiCandidates as $candidate) {
@@ -724,6 +806,8 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                             <dd class="col-sm-8"><code><?= $this->escape((string) ($aiReviewResult['run_id'] ?? '')); ?></code></dd>
                             <dt class="col-sm-4"><?= $this->escape(__('provider', 'glpiintegaglpi')); ?></dt>
                             <dd class="col-sm-8"><?= $this->escape((string) ($aiReviewResult['provider'] ?? '')); ?></dd>
+                            <dt class="col-sm-4"><?= $this->escape(__('model', 'glpiintegaglpi')); ?></dt>
+                            <dd class="col-sm-8"><?= $this->escape((string) ($aiReviewResult['model'] ?? '')); ?></dd>
                             <dt class="col-sm-4"><?= $this->escape(__('payload_hash', 'glpiintegaglpi')); ?></dt>
                             <dd class="col-sm-8"><code><?= $this->escape((string) ($aiReviewResult['payload_hash'] ?? '')); ?></code></dd>
                             <dt class="col-sm-4"><?= $this->escape(__('suggestion_hash', 'glpiintegaglpi')); ?></dt>

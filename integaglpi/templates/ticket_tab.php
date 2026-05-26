@@ -44,6 +44,7 @@ $contextAiQuality = is_array($contextView['ai_quality'] ?? null) ? $contextView[
 $aiAssistant = is_array($contextView['ai_assistant'] ?? null) ? $contextView['ai_assistant'] : [];
 $aiAssistantKnowledge = is_array($aiAssistant['local_knowledge'] ?? null) ? $aiAssistant['local_knowledge'] : [];
 $aiAssistantKnowledgeItems = is_array($aiAssistantKnowledge['items'] ?? null) ? $aiAssistantKnowledge['items'] : [];
+$aiAssistantCopilot = is_array($aiAssistant['copilot'] ?? null) ? $aiAssistant['copilot'] : [];
 $aiAssistantExternal = is_array($aiAssistant['external_research'] ?? null) ? $aiAssistant['external_research'] : [];
 $aiAssistantP4 = is_array($aiAssistant['p4'] ?? null) ? $aiAssistant['p4'] : [];
 $aiSupervisorEnabled = (bool) ($contextView['ai_supervisor_enabled'] ?? \GlpiPlugin\Integaglpi\Plugin::isAiSupervisorEnabled());
@@ -1176,6 +1177,15 @@ if ($auditPanelOk) {
                             <div class="small text-muted mb-2">
                                 <?= $this->escape(__('O Copiloto usa contexto sanitizado e referências locais. O técnico revisa e envia manualmente.', 'glpiintegaglpi')); ?>
                             </div>
+                            <div class="small mb-2">
+                                <?= $this->escape(__('Rascunho técnico:', 'glpiintegaglpi')); ?>
+                                <code><?= $this->escape((string) ($aiAssistantCopilot['provider'] ?? 'disabled')); ?></code>
+                                /
+                                <code><?= $this->escape((string) ($aiAssistantCopilot['model'] ?? '')); ?></code>
+                                <span class="badge bg-light text-dark border">
+                                    <?= $this->escape((string) ($aiAssistantCopilot['origin_label'] ?? '[Fallback local - provider desabilitado]')); ?>
+                                </span>
+                            </div>
                             <button type="button" class="btn btn-sm btn-outline-primary js-integaglpi-copilot-generate" data-tone="neutral">
                                 <?= $this->escape(__('Gerar rascunho com IA', 'glpiintegaglpi')); ?>
                             </button>
@@ -1229,6 +1239,13 @@ if ($auditPanelOk) {
                         <strong><?= $this->escape(__('Copiloto interno', 'glpiintegaglpi')); ?></strong>
                         <div class="text-muted small">
                             <?= $this->escape(__('Rascunho gerado por IA. Revise antes de enviar. Nenhuma mensagem é enviada automaticamente.', 'glpiintegaglpi')); ?>
+                        </div>
+                        <div class="small">
+                            <?= $this->escape(__('Provider efetivo:', 'glpiintegaglpi')); ?>
+                            <code><?= $this->escape((string) ($aiAssistantCopilot['provider'] ?? 'disabled')); ?></code>
+                            /
+                            <code><?= $this->escape((string) ($aiAssistantCopilot['model'] ?? '')); ?></code>
+                            <span class="badge bg-light text-dark border"><?= $this->escape((string) ($aiAssistantCopilot['origin_label'] ?? '[Fallback local - provider desabilitado]')); ?></span>
                         </div>
                     </div>
                     <div class="btn-group btn-group-sm">
@@ -1509,6 +1526,9 @@ if ($auditPanelOk) {
                     if (copilotMeta) {
                         var notices = [];
                         if (draft.templateNotice || draft.template_notice) { notices.push(draft.templateNotice || draft.template_notice); }
+                        if (draft.source || draft.provider || draft.model) {
+                            notices.push(String(draft.source || <?= json_encode((string) ($aiAssistantCopilot['origin_label'] ?? ''), JSON_UNESCAPED_UNICODE); ?> || 'provider efetivo'));
+                        }
                         if (draft.confidenceScore || draft.confidence_score) { notices.push('confiança ' + String(draft.confidenceScore || draft.confidence_score) + '%'); }
                         metaText = notices.join(' · ');
                         copilotMeta.textContent = metaText;

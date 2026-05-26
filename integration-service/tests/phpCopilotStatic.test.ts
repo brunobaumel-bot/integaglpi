@@ -45,6 +45,9 @@ describe('PHP internal Copilot static safety', () => {
     expect(ticketTab).toContain('Base de Conhecimento Local');
     expect(ticketTab).toContain('Consultar KB Local');
     expect(ticketTab).toContain('Gerar rascunho com IA');
+    expect(ticketTab).toContain('Provider efetivo:');
+    expect(ticketTab).toContain('Rascunho técnico:');
+    expect(ticketTab).toContain('origin_label');
     expect(ticketTab).toContain('Pesquisar fora');
     expect(ticketTab).toContain('Sugerir resposta');
     expect(ticketTab).toContain('refreshCsrfToken');
@@ -60,6 +63,9 @@ describe('PHP internal Copilot static safety', () => {
     expect(ticketTab).not.toContain("payload.set('copilot_action', 'use')");
     expect(contextService).toContain('NativeKnowledgeBaseService');
     expect(contextService).toContain('buildTicketAiAssistant');
+    expect(contextService).toContain('copilot_provider');
+    expect(contextService).toContain('copilot_model');
+    expect(contextService).toContain('origin_label');
     expect(contextService).toContain('TICKET_AI_ASSISTANT_KB_LOCAL_PREPARED');
     expect(contextService).toContain('glpi_plugin_integaglpi_kb_candidates');
     expect(contextService).toContain('glpi_plugin_integaglpi_hist_insights');

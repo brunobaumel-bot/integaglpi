@@ -186,6 +186,27 @@ final class TicketContextService
 
         $items = array_slice($items, 0, 6);
         $ticketSummaryForResearch = $this->buildExternalResearchTicketSummary($ticket, $conversationId, $items);
+        $copilotProvider = strtolower(trim($this->loadAiSettingValue(
+            'copilot_provider',
+            Plugin::getRuntimeConfigValue('COPILOT_PROVIDER') ?: (Plugin::getRuntimeConfigValue('AI_SUPERVISOR_PROVIDER') ?: 'disabled')
+        )));
+        if ($copilotProvider === 'local') {
+            $copilotProvider = 'ollama';
+        }
+        if (!in_array($copilotProvider, ['ollama', 'disabled'], true)) {
+            $copilotProvider = 'disabled';
+        }
+        $copilotModel = $this->sanitizeCopilotText($this->loadAiSettingValue(
+            'copilot_model',
+            Plugin::getRuntimeConfigValue('AI_SUPERVISOR_MODEL') ?: ''
+        ), 120);
+        $copilotDryRun = strtolower($this->loadAiSettingValue(
+            'copilot_dry_run',
+            Plugin::getRuntimeConfigValue('COPILOT_DRY_RUN') ?: (Plugin::getRuntimeConfigValue('AI_SUPERVISOR_DRY_RUN') ?: 'true')
+        )) !== 'false';
+        $copilotOrigin = $copilotProvider === 'ollama'
+            ? ($copilotDryRun ? '[Fallback local - dry-run ativo]' : '[IA Local - ' . ($copilotModel !== '' ? $copilotModel : 'modelo não configurado') . ']')
+            : '[Fallback local - provider desabilitado]';
         $this->auditTicketAiAssistant('TICKET_AI_ASSISTANT_KB_LOCAL_PREPARED', (int) $ticket->getID(), $conversationId, [
             'query_hash' => hash('sha256', $query),
             'result_count' => count($items),
@@ -200,6 +221,13 @@ final class TicketContextService
                     ? __('Nenhum artigo/candidato/insight interno encontrado. Use o Copiloto apenas como rascunho revisável.', 'glpiintegaglpi')
                     : __('KB local consultada antes de qualquer IA externa.', 'glpiintegaglpi'),
                 'ticket_summary_for_research' => $ticketSummaryForResearch,
+            ],
+            'copilot' => [
+                'provider' => $copilotProvider,
+                'model' => $copilotModel,
+                'dry_run' => $copilotDryRun,
+                'origin_label' => $copilotOrigin,
+                'no_auto_send' => true,
             ],
             'external_research' => $this->ticketExternalResearchStatus(),
             'p4' => [

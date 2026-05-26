@@ -234,6 +234,65 @@ final class AiSecretVaultService
     }
 
     /**
+     * Runs an explicit, operator-triggered cloud completion with a sanitized
+     * payload prepared by the caller. This method never logs prompt/response
+     * bodies and never returns the secret.
+     *
+     * @return array{provider: string, model: string, status: string, error_type: string, elapsed_ms: int, response_hash: string, response_text: string}
+     */
+    public function completeProvider(string $provider, string $model, string $prompt, int $timeoutMs = 30000, int $maxTokens = 900): array
+    {
+        $provider = $this->normalizeProvider($provider);
+        if ($provider === '') {
+            throw new RuntimeException('provider_not_allowed');
+        }
+        if (!$this->tableExists()) {
+            throw new RuntimeException('secret_vault_table_missing');
+        }
+        $masterKey = $this->masterKey();
+        if ($masterKey === null) {
+            throw new RuntimeException('secret_vault_locked');
+        }
+
+        $row = $this->activeSecretRow($provider);
+        if ($row === []) {
+            throw new RuntimeException('secret_not_configured');
+        }
+
+        $model = $this->normalizeModel($model);
+        if ($model === '') {
+            throw new RuntimeException('model_not_configured');
+        }
+        $prompt = trim($prompt);
+        if ($prompt === '' || strlen($prompt) > 12000) {
+            throw new RuntimeException('payload_invalid');
+        }
+
+        $secret = $this->decryptSecret((string) ($row['encrypted_secret'] ?? ''), $masterKey);
+        $result = $this->callCompletionProvider(
+            $provider,
+            $model,
+            $secret,
+            $prompt,
+            max(5000, min(60000, $timeoutMs)),
+            max(64, min(1600, $maxTokens))
+        );
+        if ((string) ($result['status'] ?? '') !== 'success') {
+            throw new RuntimeException((string) ($result['error_type'] ?? 'provider_unavailable'));
+        }
+
+        return [
+            'provider' => $provider,
+            'model' => $model,
+            'status' => (string) $result['status'],
+            'error_type' => (string) $result['error_type'],
+            'elapsed_ms' => (int) $result['elapsed_ms'],
+            'response_hash' => (string) $result['response_hash'],
+            'response_text' => (string) $result['response_text'],
+        ];
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function activeSecretRow(string $provider): array
@@ -304,6 +363,14 @@ final class AiSecretVaultService
                 'response_hash' => '',
             ];
         }
+        if ($curlErrNo !== 0) {
+            return [
+                'status' => 'failed',
+                'error_type' => 'provider_unreachable',
+                'elapsed_ms' => $elapsedMs,
+                'response_hash' => '',
+            ];
+        }
         if (!is_string($raw) || $raw === '') {
             return [
                 'status' => 'failed',
@@ -317,7 +384,7 @@ final class AiSecretVaultService
                 'status' => 'unauthorized',
                 'error_type' => 'unauthorized',
                 'elapsed_ms' => $elapsedMs,
-                'response_hash' => hash('sha256', $raw),
+                'response_hash' => hash('sha256', $this->sanitizeProviderRawForHash($raw)),
             ];
         }
         if ($httpStatus < 200 || $httpStatus >= 300) {
@@ -330,18 +397,27 @@ final class AiSecretVaultService
                 'status' => $status,
                 'error_type' => $errorType,
                 'elapsed_ms' => $elapsedMs,
-                'response_hash' => hash('sha256', $raw),
+                'response_hash' => hash('sha256', $this->sanitizeProviderRawForHash($raw)),
             ];
         }
 
         $responseText = $this->extractSyntheticResponseText($provider, $raw);
-        $responseHash = hash('sha256', $responseText);
+        $rawResponseHash = hash('sha256', $this->sanitizeProviderRawForHash($raw));
+        if (trim($responseText) === '') {
+            return [
+                'status' => 'invalid_response',
+                'error_type' => 'invalid_response',
+                'elapsed_ms' => $elapsedMs,
+                'response_hash' => $rawResponseHash,
+            ];
+        }
+        $responseHash = hash('sha256', $this->normalizeSyntheticResponseText($responseText));
         if (!$this->syntheticResponseOk($responseText)) {
             return [
                 'status' => 'invalid_response',
                 'error_type' => 'invalid_response',
                 'elapsed_ms' => $elapsedMs,
-                'response_hash' => $responseHash,
+                'response_hash' => $rawResponseHash,
             ];
         }
 
@@ -350,6 +426,153 @@ final class AiSecretVaultService
             'error_type' => 'none',
             'elapsed_ms' => $elapsedMs,
             'response_hash' => $responseHash,
+        ];
+    }
+
+    /**
+     * @return array{status: string, error_type: string, elapsed_ms: int, response_hash: string, response_text: string}
+     */
+    private function callCompletionProvider(string $provider, string $model, string $secret, string $prompt, int $timeoutMs, int $maxTokens): array
+    {
+        if (!function_exists('curl_init')) {
+            return [
+                'status' => 'failed',
+                'error_type' => 'curl_unavailable',
+                'elapsed_ms' => 0,
+                'response_hash' => '',
+                'response_text' => '',
+            ];
+        }
+
+        $request = $this->providerCompletionRequest($provider, $model, $secret, $prompt, $maxTokens);
+        $startedAt = microtime(true);
+        $handle = curl_init((string) $request['url']);
+        if ($handle === false) {
+            return [
+                'status' => 'failed',
+                'error_type' => 'curl_init_failed',
+                'elapsed_ms' => 0,
+                'response_hash' => '',
+                'response_text' => '',
+            ];
+        }
+
+        curl_setopt_array($handle, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => (string) $request['body'],
+            CURLOPT_HTTPHEADER => $request['headers'],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT_MS => 2500,
+            CURLOPT_TIMEOUT_MS => $timeoutMs,
+        ]);
+        $raw = curl_exec($handle);
+        $httpStatus = (int) curl_getinfo($handle, CURLINFO_HTTP_CODE);
+        $curlErrNo = (int) curl_errno($handle);
+        curl_close($handle);
+        $elapsedMs = (int) round((microtime(true) - $startedAt) * 1000);
+
+        if ($curlErrNo === CURLE_OPERATION_TIMEDOUT) {
+            return ['status' => 'timeout', 'error_type' => 'timeout', 'elapsed_ms' => $elapsedMs, 'response_hash' => '', 'response_text' => ''];
+        }
+        if ($curlErrNo !== 0) {
+            return ['status' => 'failed', 'error_type' => 'provider_unreachable', 'elapsed_ms' => $elapsedMs, 'response_hash' => '', 'response_text' => ''];
+        }
+        if (!is_string($raw) || $raw === '') {
+            return ['status' => 'failed', 'error_type' => 'provider_unreachable', 'elapsed_ms' => $elapsedMs, 'response_hash' => '', 'response_text' => ''];
+        }
+        $rawHash = hash('sha256', $this->sanitizeProviderRawForHash($raw));
+        if ($httpStatus === 401 || $httpStatus === 403) {
+            return ['status' => 'unauthorized', 'error_type' => 'unauthorized', 'elapsed_ms' => $elapsedMs, 'response_hash' => $rawHash, 'response_text' => ''];
+        }
+        if ($httpStatus < 200 || $httpStatus >= 300) {
+            $errorType = $this->providerErrorType($provider, $raw, $httpStatus);
+
+            return [
+                'status' => in_array($errorType, ['unauthorized', 'timeout', 'invalid_response'], true) ? $errorType : 'failed',
+                'error_type' => $errorType,
+                'elapsed_ms' => $elapsedMs,
+                'response_hash' => $rawHash,
+                'response_text' => '',
+            ];
+        }
+
+        $responseText = trim($this->extractSyntheticResponseText($provider, $raw));
+        if ($responseText === '') {
+            return ['status' => 'invalid_response', 'error_type' => 'invalid_response', 'elapsed_ms' => $elapsedMs, 'response_hash' => $rawHash, 'response_text' => ''];
+        }
+
+        return [
+            'status' => 'success',
+            'error_type' => 'none',
+            'elapsed_ms' => $elapsedMs,
+            'response_hash' => hash('sha256', $this->sanitizeProviderRawForHash($responseText)),
+            'response_text' => mb_substr($responseText, 0, 8000, 'UTF-8'),
+        ];
+    }
+
+    /**
+     * @return array{url: string, headers: list<string>, body: string}
+     */
+    private function providerCompletionRequest(string $provider, string $model, string $secret, string $prompt, int $maxTokens): array
+    {
+        if ($provider === 'anthropic') {
+            return [
+                'url' => 'https://api.anthropic.com/v1/messages',
+                'headers' => [
+                    'Content-Type: application/json',
+                    'x-api-key: ' . $secret,
+                    'anthropic-version: 2023-06-01',
+                ],
+                'body' => json_encode([
+                    'model' => $model,
+                    'max_tokens' => $maxTokens,
+                    'temperature' => 0.1,
+                    'messages' => [
+                        ['role' => 'user', 'content' => $prompt],
+                    ],
+                ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}',
+            ];
+        }
+
+        if ($provider === 'gemini') {
+            return [
+                'url' => 'https://generativelanguage.googleapis.com/v1beta/models/' . rawurlencode($model) . ':generateContent',
+                'headers' => [
+                    'Content-Type: application/json',
+                    'x-goog-api-key: ' . $secret,
+                ],
+                'body' => json_encode([
+                    'contents' => [
+                        ['parts' => [['text' => $prompt]]],
+                    ],
+                    'generationConfig' => [
+                        'temperature' => 0.1,
+                        'maxOutputTokens' => $maxTokens,
+                    ],
+                ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}',
+            ];
+        }
+
+        $baseUrl = [
+            'openai' => 'https://api.openai.com/v1',
+            'deepseek' => 'https://api.deepseek.com',
+            'xai' => 'https://api.x.ai/v1',
+        ][$provider] ?? '';
+
+        return [
+            'url' => rtrim($baseUrl, '/') . '/chat/completions',
+            'headers' => [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $secret,
+            ],
+            'body' => json_encode([
+                'model' => $model,
+                'temperature' => 0.1,
+                'max_tokens' => $maxTokens,
+                'messages' => [
+                    ['role' => 'user', 'content' => $prompt],
+                ],
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}',
         ];
     }
 
@@ -379,8 +602,11 @@ final class AiSecretVaultService
 
         if ($provider === 'gemini') {
             return [
-                'url' => 'https://generativelanguage.googleapis.com/v1beta/models/' . rawurlencode($model) . ':generateContent?key=' . rawurlencode($secret),
-                'headers' => ['Content-Type: application/json'],
+                'url' => 'https://generativelanguage.googleapis.com/v1beta/models/' . rawurlencode($model) . ':generateContent',
+                'headers' => [
+                    'Content-Type: application/json',
+                    'x-goog-api-key: ' . $secret,
+                ],
                 'body' => json_encode([
                     'contents' => [
                         ['parts' => [['text' => self::SYNTHETIC_PROMPT]]],
@@ -431,6 +657,10 @@ final class AiSecretVaultService
                     if (!is_array($part)) {
                         continue;
                     }
+                    $type = strtolower(trim((string) ($part['type'] ?? 'text')));
+                    if ($type !== 'text') {
+                        continue;
+                    }
                     $text = $part['text'] ?? '';
                     if (is_string($text) && trim($text) !== '') {
                         $content .= "\n" . $text;
@@ -465,8 +695,11 @@ final class AiSecretVaultService
 
     private function syntheticResponseOk(string $responseText): bool
     {
-        $responseText = trim($responseText);
+        $responseText = $this->normalizeSyntheticResponseText($responseText);
         if ($responseText === '') {
+            return false;
+        }
+        if (strlen($responseText) > 120) {
             return false;
         }
 
@@ -475,8 +708,16 @@ final class AiSecretVaultService
             return true;
         }
 
-        return preg_match('/"ok"\s*:\s*true/i', $responseText) === 1
-            || strtoupper(trim($responseText, " \t\n\r\0\x0B`")) === 'OK';
+        return strtolower($responseText) === 'ok';
+    }
+
+    private function normalizeSyntheticResponseText(string $responseText): string
+    {
+        $responseText = trim($responseText);
+        $responseText = preg_replace('/^```(?:json)?\s*/i', '', $responseText) ?? $responseText;
+        $responseText = preg_replace('/\s*```$/', '', $responseText) ?? $responseText;
+
+        return trim($responseText);
     }
 
     private function updateProviderTestStatus(int $id, string $status, int $userId): void
@@ -630,8 +871,11 @@ final class AiSecretVaultService
         if (in_array($type, ['authentication_error', 'permission_error', 'unauthorized', 'unauthenticated', 'permission_denied'], true)) {
             return 'unauthorized';
         }
-        if (in_array($type, ['invalid_request_error', 'not_found_error', 'invalid_argument', 'not_found'], true)) {
-            return 'invalid_response';
+        if (in_array($type, ['not_found_error', 'not_found'], true)) {
+            return 'model_not_found';
+        }
+        if (in_array($type, ['invalid_request_error', 'invalid_argument'], true)) {
+            return 'invalid_request';
         }
         if (in_array($type, ['timeout', 'deadline_exceeded'], true)) {
             return 'timeout';
@@ -643,13 +887,20 @@ final class AiSecretVaultService
             return 'provider_unavailable';
         }
         if ($httpStatus === 400 || $httpStatus === 404) {
-            return 'invalid_response';
+            return $httpStatus === 404 ? 'model_not_found' : 'invalid_request';
         }
         if ($httpStatus === 408 || $httpStatus === 504) {
             return 'timeout';
         }
 
         return 'provider_http_' . $httpStatus;
+    }
+
+    private function sanitizeProviderRawForHash(string $raw): string
+    {
+        $raw = preg_replace('/(api[_-]?key|token|secret|password|bearer|x-goog-api-key)\s*["\']?\s*[:=]\s*["\']?[^"\',\s}]+/i', '$1=[redacted]', $raw) ?? '';
+
+        return substr($raw, 0, 20000);
     }
 
     private function normalizeModel(string $value): string

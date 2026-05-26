@@ -8,6 +8,7 @@ use DateInterval;
 use DateTimeImmutable;
 use GlpiPlugin\Integaglpi\External\ExternalDatabase;
 use PDO;
+use RuntimeException;
 use Throwable;
 
 final class ExternalResearchService
@@ -48,6 +49,7 @@ final class ExternalResearchService
             'recent_requests' => [],
             'recent_candidates' => [],
             'internal_context' => $this->loadInternalKnowledgeContext($internalQuery, $configured),
+            'ai_provider_catalog' => $this->loadOperationalProviderCatalog(),
             'error' => '',
         ];
 
@@ -121,12 +123,15 @@ final class ExternalResearchService
         if ($context['sanitized']['text'] === '') {
             return ['type' => 'danger', 'message' => __('Informe um resumo técnico sem dados pessoais.', 'glpiintegaglpi')];
         }
+        $providerSelection = is_array($context['provider_selection'] ?? null) ? $context['provider_selection'] : [];
 
         return [
-            'type' => $context['sanitized']['blocked'] ? 'warning' : 'info',
+            'type' => $context['sanitized']['blocked'] || empty($providerSelection['ready']) ? 'warning' : 'info',
             'message' => $context['sanitized']['blocked']
                 ? __('Preview gerado, mas a pesquisa será bloqueada até remover PII/segredos do insumo.', 'glpiintegaglpi')
-                : __('Preview anonimizado gerado. Confirme manualmente antes da pesquisa.', 'glpiintegaglpi'),
+                : (empty($providerSelection['ready'])
+                    ? __('Preview gerado, mas o provider/modelo selecionado ainda não está pronto para uso.', 'glpiintegaglpi')
+                    : __('Preview anonimizado gerado. Confirme manualmente antes da pesquisa.', 'glpiintegaglpi')),
             'preview' => $context,
         ];
     }
@@ -146,6 +151,8 @@ final class ExternalResearchService
             $this->audit('EXTERNAL_RESEARCH_PREVIEW_REQUIRED', null, $userId, [
                 'source_count' => count($context['source_urls']),
                 'anonymized_payload_hash' => $context['sanitized']['anonymized_payload_hash'],
+                'provider' => (string) ($context['provider_selection']['provider'] ?? 'disabled'),
+                'model_hash' => hash('sha256', (string) ($context['provider_selection']['model'] ?? '')),
             ]);
 
             return [
@@ -185,7 +192,50 @@ final class ExternalResearchService
             return ['type' => 'danger', 'message' => __('Informe ao menos uma fonte oficial cadastrada.', 'glpiintegaglpi'), 'preview' => $context];
         }
 
+        $providerSelection = is_array($context['provider_selection'] ?? null) ? $context['provider_selection'] : [];
+        if (!empty($providerSelection['cloud']) && empty($providerSelection['ready'])) {
+            $this->audit('EXTERNAL_RESEARCH_BLOCKED_PROVIDER', null, $userId, [
+                'provider' => (string) ($providerSelection['provider'] ?? 'disabled'),
+                'model_hash' => hash('sha256', (string) ($providerSelection['model'] ?? '')),
+                'blocked_reason' => (string) ($providerSelection['blocked_reason'] ?? 'provider_not_ready'),
+                'anonymized_payload_hash' => $context['sanitized']['anonymized_payload_hash'],
+            ]);
+
+            return [
+                'type' => 'danger',
+                'message' => sprintf(
+                    __('Pesquisa bloqueada: provider/modelo não está pronto (%s).', 'glpiintegaglpi'),
+                    (string) ($providerSelection['blocked_reason'] ?? 'provider_not_ready')
+                ),
+                'preview' => $context,
+            ];
+        }
+
         $requestId = $this->newId('extresearch');
+        $cloudResult = null;
+        if (!empty($providerSelection['cloud'])) {
+            $cloudResult = $this->executeCloudResearch($context, $userId);
+            if (($cloudResult['status'] ?? '') !== 'success') {
+                return [
+                    'type' => 'warning',
+                    'message' => sprintf(
+                        __('Pesquisa cloud não concluída: %s. Nenhum dado bruto foi enviado ou salvo.', 'glpiintegaglpi'),
+                        (string) ($cloudResult['error_type'] ?? 'provider_unavailable')
+                    ),
+                    'preview' => $context,
+                    'research_result' => [
+                        'status' => 'error',
+                        'provider' => (string) ($providerSelection['provider'] ?? 'disabled'),
+                        'model' => (string) ($providerSelection['model'] ?? ''),
+                        'source' => 'external_research_cloud',
+                        'error_type' => (string) ($cloudResult['error_type'] ?? 'provider_unavailable'),
+                        'no_auto_send' => true,
+                        'no_auto_publish' => true,
+                    ],
+                ];
+            }
+            $context['cloud_result'] = $cloudResult;
+        }
         $candidate = $this->buildCandidate($context, $requestId);
         $pdo = $this->getPdo();
         $pdo->beginTransaction();
@@ -200,13 +250,20 @@ final class ExternalResearchService
 
         $this->audit('EXTERNAL_RESEARCH_REQUESTED', $requestId, $userId, [
             'source_catalog_ids' => $candidate['source_catalog_ids'],
-            'provider' => 'disabled',
+            'provider' => (string) ($providerSelection['provider'] ?? 'disabled'),
+            'model_hash' => hash('sha256', (string) ($providerSelection['model'] ?? '')),
             'estimated_cost' => 0,
             'anonymized_payload_hash' => $context['sanitized']['anonymized_payload_hash'],
         ]);
-        $this->audit('EXTERNAL_RESEARCH_COMPLETED', $requestId, $userId, [
+        $this->audit('EXTERNAL_RESEARCH_EXECUTED', $requestId, $userId, [
             'confidence_score' => $candidate['confidence_score'],
             'source_catalog_ids' => $candidate['source_catalog_ids'],
+            'provider' => (string) ($providerSelection['provider'] ?? 'disabled'),
+            'model_hash' => hash('sha256', (string) ($providerSelection['model'] ?? '')),
+            'response_hash' => (string) ($cloudResult['response_hash'] ?? ''),
+            'cloud_used' => !empty($providerSelection['cloud']),
+            'no_auto_send' => true,
+            'no_auto_publish' => true,
         ]);
 
         return [
@@ -217,6 +274,11 @@ final class ExternalResearchService
                 'status' => 'completed',
                 'confidence_score' => $candidate['confidence_score'],
                 'source_catalog_ids' => $candidate['source_catalog_ids'],
+                'provider' => (string) ($providerSelection['provider'] ?? 'disabled'),
+                'model' => (string) ($providerSelection['model'] ?? ''),
+                'source' => !empty($providerSelection['cloud']) ? 'external_research_cloud' : 'external_research_manual_catalog',
+                'no_auto_send' => true,
+                'no_auto_publish' => true,
             ],
             'request_id' => $requestId,
         ];
@@ -372,6 +434,7 @@ final class ExternalResearchService
     private function buildContext(array $post): array
     {
         $sanitized = $this->sanitizePrompt((string) ($post['technical_summary'] ?? ''));
+        $providerSelection = $this->providerSelectionFromPost($post);
         $catalog = $this->loadCatalog();
         $urls = $this->parseSourceUrls((string) ($post['source_urls'] ?? ''));
         $validated = [];
@@ -397,6 +460,7 @@ final class ExternalResearchService
             'validated_sources' => $validated,
             'source_errors' => $errors,
             'source_conflicts' => $this->detectConflicts($validated),
+            'provider_selection' => $providerSelection,
         ];
 
         return [
@@ -431,6 +495,8 @@ final class ExternalResearchService
             'external_research_preview_v1',
             (string) ($context['sanitized']['input_hash'] ?? ''),
             (string) ($context['sanitized']['anonymized_payload_hash'] ?? ''),
+            (string) ($context['provider_selection']['provider'] ?? 'disabled'),
+            (string) ($context['provider_selection']['model'] ?? ''),
             implode("\n", $sourceUrls),
         ]));
     }
@@ -442,6 +508,8 @@ final class ExternalResearchService
     private function buildCandidate(array $context, string $requestId): array
     {
         $sources = $context['validated_sources'];
+        $cloudResult = is_array($context['cloud_result'] ?? null) ? $context['cloud_result'] : null;
+        $cloudSummary = $cloudResult !== null ? $this->sanitizeText((string) ($cloudResult['response_text'] ?? ''), 1600) : '';
         $confidences = array_map(static fn (array $source): int => (int) $source['confidence_score'], $sources);
         $average = $confidences === [] ? 0 : (int) round(array_sum($confidences) / count($confidences));
         $conflictPenalty = count($context['source_conflicts']) * 12;
@@ -471,6 +539,9 @@ final class ExternalResearchService
             '',
             '## Sintomas sanitizados',
             (string) $context['sanitized']['text'],
+            '',
+            '## Apoio IA selecionado',
+            $cloudSummary !== '' ? $cloudSummary : 'Sem consulta cloud; pesquisa baseada em preview sanitizado e fontes cadastradas.',
             '',
             '## Solução proposta para revisão humana',
             'Validar a documentação citada, conferir versões e adaptar o procedimento ao ambiente antes de publicar manualmente na KB nativa.',
@@ -508,9 +579,91 @@ final class ExternalResearchService
             'humanized_customer_explanation' => 'Vamos validar a orientação em fonte confiável e adaptar o procedimento antes de aplicar no atendimento.',
             'suggested_kb_article' => ['title' => $title, 'content_markdown' => $markdown, 'tags' => ['pesquisa-externa', 'revisao-humana'], 'category_suggestion' => 'Pesquisa externa controlada'],
             'content_markdown' => $markdown,
+            'cloud_research_summary' => $cloudSummary,
             'human_review_required' => true,
             'auto_publish' => false,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     * @return array{status: string, error_type: string, elapsed_ms: int, response_hash: string, response_text: string}
+     */
+    private function executeCloudResearch(array $context, int $userId): array
+    {
+        $providerSelection = is_array($context['provider_selection'] ?? null) ? $context['provider_selection'] : [];
+        $provider = (string) ($providerSelection['provider'] ?? '');
+        $model = (string) ($providerSelection['model'] ?? '');
+        if ($provider === '' || $provider === 'disabled' || empty($providerSelection['cloud'])) {
+            return ['status' => 'success', 'error_type' => 'none', 'elapsed_ms' => 0, 'response_hash' => '', 'response_text' => ''];
+        }
+
+        $prompt = $this->buildCloudResearchPrompt($context);
+        if ($prompt === '' || $this->containsSensitiveData($prompt)) {
+            $this->audit('EXTERNAL_RESEARCH_BLOCKED_PII', null, $userId, [
+                'provider' => $provider,
+                'model_hash' => hash('sha256', $model),
+                'reason' => 'pii_blocked',
+                'anonymized_payload_hash' => (string) ($context['sanitized']['anonymized_payload_hash'] ?? ''),
+            ]);
+
+            return ['status' => 'blocked', 'error_type' => 'pii_blocked', 'elapsed_ms' => 0, 'response_hash' => '', 'response_text' => ''];
+        }
+
+        try {
+            $result = (new AiSecretVaultService($this->pluginConfigService))->completeProvider($provider, $model, $prompt, 30000, 900);
+            $responseText = $this->sanitizeText((string) ($result['response_text'] ?? ''), 2200);
+            if ($responseText === '' || $this->containsSensitiveData($responseText)) {
+                return [
+                    'status' => 'invalid_response',
+                    'error_type' => $responseText === '' ? 'invalid_response' : 'pii_blocked',
+                    'elapsed_ms' => (int) ($result['elapsed_ms'] ?? 0),
+                    'response_hash' => (string) ($result['response_hash'] ?? ''),
+                    'response_text' => '',
+                ];
+            }
+
+            return [
+                'status' => 'success',
+                'error_type' => 'none',
+                'elapsed_ms' => (int) ($result['elapsed_ms'] ?? 0),
+                'response_hash' => (string) ($result['response_hash'] ?? ''),
+                'response_text' => $responseText,
+            ];
+        } catch (RuntimeException $exception) {
+            return [
+                'status' => 'failed',
+                'error_type' => $this->normalizeErrorType($exception->getMessage()),
+                'elapsed_ms' => 0,
+                'response_hash' => '',
+                'response_text' => '',
+            ];
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     */
+    private function buildCloudResearchPrompt(array $context): string
+    {
+        $sourceTitles = [];
+        foreach (array_slice((array) ($context['validated_sources'] ?? []), 0, self::MAX_SOURCES) as $source) {
+            if (!is_array($source)) {
+                continue;
+            }
+            $catalog = is_array($source['catalog'] ?? null) ? $source['catalog'] : [];
+            $sourceTitles[] = $this->sanitizeText((string) ($catalog['name'] ?? $source['url'] ?? ''), 180);
+        }
+
+        return $this->sanitizeText(implode("\n", [
+            'Você é apoio técnico para pesquisa externa controlada.',
+            'Use apenas o resumo sanitizado e as fontes oficiais citadas; não invente dados do cliente.',
+            'Retorne diagnóstico provável, passos técnicos, riscos, perguntas ao cliente e possibilidade de KB.',
+            'Resumo sanitizado:',
+            (string) ($context['sanitized']['text'] ?? ''),
+            'Fontes citadas:',
+            implode('; ', array_filter($sourceTitles)),
+        ]), self::MAX_PROMPT_CHARS);
     }
 
     /**
@@ -658,20 +811,24 @@ final class ExternalResearchService
      */
     private function insertRequest(string $requestId, int $userId, array $context, string $status, ?int $confidenceScore): void
     {
+        $providerSelection = is_array($context['provider_selection'] ?? null) ? $context['provider_selection'] : [];
+        $provider = (string) ($providerSelection['provider'] ?? 'disabled');
+        $cloudUsed = !empty($providerSelection['cloud']) && $provider !== 'disabled';
         $stmt = $this->getPdo()->prepare(
             'INSERT INTO public.' . self::REQUEST_TABLE . ' (
                 request_id, requested_by_glpi_user_id, sanitized_prompt_hash, anonymized_payload_hash,
                 provider, cloud_used, estimated_cost, status, blocked_reason, confidence_score, created_at, updated_at
             ) VALUES (
                 :request_id, :user_id, :prompt_hash, :payload_hash,
-                :provider, FALSE, 0, :status, :blocked_reason, :confidence_score, NOW(), NOW()
+                :provider, :cloud_used, 0, :status, :blocked_reason, :confidence_score, NOW(), NOW()
             )'
         );
         $stmt->bindValue(':request_id', $requestId);
         $stmt->bindValue(':user_id', $userId, PDO::PARAM_INT);
         $stmt->bindValue(':prompt_hash', (string) $context['sanitized']['input_hash']);
         $stmt->bindValue(':payload_hash', (string) $context['sanitized']['anonymized_payload_hash']);
-        $stmt->bindValue(':provider', 'disabled');
+        $stmt->bindValue(':provider', $provider);
+        $stmt->bindValue(':cloud_used', $cloudUsed, PDO::PARAM_BOOL);
         $stmt->bindValue(':status', $status);
         $stmt->bindValue(':blocked_reason', $context['sanitized']['blocked_reason']);
         $stmt->bindValue(':confidence_score', $confidenceScore, $confidenceScore === null ? PDO::PARAM_NULL : PDO::PARAM_INT);
@@ -994,6 +1151,135 @@ final class ExternalResearchService
         $stmt->execute();
 
         return (bool) $stmt->fetchColumn();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function loadOperationalProviderCatalog(): array
+    {
+        try {
+            return (new AiConfigViewService($this->pluginConfigService))->getOperationalProviderCatalog();
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][external_research][provider_catalog] ' . $this->sanitizeText($exception->getMessage(), 180));
+
+            return [
+                'local_ollama_available' => ['provider' => 'ollama', 'name' => 'Ollama local', 'models' => [], 'default_model' => '', 'ready' => false, 'blocked_reason' => 'provider_catalog_unavailable'],
+                'cloud_ready_providers' => [],
+                'cloud_blocked_providers' => [],
+                'external_research_default' => ['provider' => 'disabled', 'model' => '', 'source' => 'fallback'],
+                'p4_default' => ['provider' => 'ollama', 'model' => '', 'source' => 'fallback'],
+                'cloud_gates_ok' => false,
+            ];
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $post
+     * @return array<string, mixed>
+     */
+    private function providerSelectionFromPost(array $post): array
+    {
+        $catalog = $this->loadOperationalProviderCatalog();
+        $default = is_array($catalog['external_research_default'] ?? null)
+            ? $catalog['external_research_default']
+            : ['provider' => 'disabled', 'model' => ''];
+        $provider = strtolower(trim((string) ($post['ai_provider'] ?? $default['provider'] ?? 'disabled')));
+        $model = $this->sanitizeModel((string) ($post['ai_model'] ?? $default['model'] ?? ''));
+        if ($provider === '' || $provider === 'disabled') {
+            return [
+                'provider' => 'disabled',
+                'model' => '',
+                'label' => 'manual / sem provider IA',
+                'ready' => true,
+                'cloud' => false,
+                'blocked_reason' => '',
+            ];
+        }
+
+        if ($provider === 'local') {
+            $provider = 'ollama';
+        }
+        if ($provider === 'ollama') {
+            $local = is_array($catalog['local_ollama_available'] ?? null) ? $catalog['local_ollama_available'] : [];
+            $models = is_array($local['models'] ?? null) ? array_values(array_map('strval', $local['models'])) : [];
+            if ($model === '') {
+                $model = $this->sanitizeModel((string) ($local['default_model'] ?? ''));
+            }
+            $allowed = $model !== '' && ($models === [] || in_array($model, $models, true));
+
+            return [
+                'provider' => 'ollama',
+                'model' => $model,
+                'label' => 'Ollama local',
+                'ready' => $allowed && !empty($local['ready']),
+                'cloud' => false,
+                'blocked_reason' => $allowed && !empty($local['ready']) ? '' : 'local_model_not_available',
+            ];
+        }
+
+        $readyCloud = is_array($catalog['cloud_ready_providers'] ?? null) ? $catalog['cloud_ready_providers'] : [];
+        $blockedCloud = is_array($catalog['cloud_blocked_providers'] ?? null) ? $catalog['cloud_blocked_providers'] : [];
+        foreach ([$readyCloud, $blockedCloud] as $group) {
+            foreach ($group as $row) {
+                if (!is_array($row) || (string) ($row['id'] ?? '') !== $provider) {
+                    continue;
+                }
+                $models = is_array($row['models'] ?? null) ? array_values(array_map('strval', $row['models'])) : [];
+                if ($model === '' && $models !== []) {
+                    $model = (string) $models[0];
+                }
+                $modelAllowed = $model !== '' && in_array($model, $models, true);
+                $ready = !empty($row['ready_for_controlled_use']) && $modelAllowed;
+
+                return [
+                    'provider' => $provider,
+                    'model' => $model,
+                    'label' => (string) ($row['name'] ?? $provider),
+                    'ready' => $ready,
+                    'cloud' => true,
+                    'blocked_reason' => $ready ? '' : ($modelAllowed ? (string) ($row['blocked_reason'] ?? 'provider_not_ready') : 'model_not_allowed'),
+                    'last_test_status' => (string) ($row['last_test_status'] ?? 'not_tested'),
+                ];
+            }
+        }
+
+        return [
+            'provider' => 'disabled',
+            'model' => '',
+            'label' => 'manual / provider inválido',
+            'ready' => false,
+            'cloud' => false,
+            'blocked_reason' => 'provider_not_allowed',
+        ];
+    }
+
+    private function sanitizeModel(string $model): string
+    {
+        $model = trim($model);
+        if ($model === '' || strlen($model) > 120) {
+            return '';
+        }
+
+        return preg_match('/^[A-Za-z0-9_.:\/-]+$/', $model) === 1 ? $model : '';
+    }
+
+    private function containsSensitiveData(string $text): bool
+    {
+        return preg_match('/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/i', $text) === 1
+            || preg_match('/\b(?:\+?\d[\d .()\-]{7,}\d)\b/', $text) === 1
+            || preg_match('/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b|\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/', $text) === 1
+            || preg_match('/\bBearer\s+[A-Za-z0-9._~+\/=-]{12,}\b/i', $text) === 1
+            || preg_match('/(password|senha|token|bearer|api[_-]?key|app_secret|secret)\s*[:=]\s*\S+/i', $text) === 1;
+    }
+
+    private function normalizeErrorType(string $value): string
+    {
+        $value = strtolower(trim($value));
+        $value = preg_replace('/[^a-z0-9_:-]+/', '_', $value) ?? '';
+        $value = trim($value, '_');
+
+        return substr($value !== '' ? $value : 'provider_unavailable', 0, 80);
     }
 
     /**

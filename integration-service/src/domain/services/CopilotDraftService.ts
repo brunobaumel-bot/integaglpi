@@ -199,7 +199,7 @@ export class CopilotDraftService {
         title: article.title,
         internalUrl: article.internalUrl,
       })),
-      assumptions: ['Rascunho gerado em modo dry-run para revisão humana.'],
+      assumptions: ['Rascunho gerado em modo dry-run ativo para revisão humana.'],
       missingInformation: ['Confirmar evidências finais antes de enviar ao cliente.'],
       safetyWarnings: ['Nenhuma mensagem foi enviada automaticamente.'],
       technicianChecklist: [
@@ -312,7 +312,7 @@ export class CopilotDraftService {
       return `[IA Local - ${sanitizeAiQualityText(config.model).slice(0, 80)}]`;
     }
     if (config.provider === 'ollama' && config.dryRun) {
-      return '[Fallback local - IA indisponível]';
+      return '[Fallback local - dry-run ativo]';
     }
 
     return '[Fallback local - IA indisponível]';

@@ -465,6 +465,7 @@ $renderModelPicker = function (string $fieldName, string $label, string $current
                 </div>
                 <div class="card-footer text-muted small">
                     <?= $this->escape(__('Sem descoberta externa automática. API keys ficam somente em ambiente/ops e aparecem apenas como configured=true/false.', 'glpiintegaglpi')); ?>
+                    <?= $this->escape(__(' Providers prontos aparecem nos seletores das telas de Pesquisa Externa e P4; providers bloqueados não podem ser usados nos fluxos.', 'glpiintegaglpi')); ?>
                 </div>
             </div>
         </div>

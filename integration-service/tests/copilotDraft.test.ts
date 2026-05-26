@@ -96,7 +96,7 @@ describe('internal copilot draft', () => {
 
     const result = await service.requestDraft({ context, tone: 'friendly', requestedBy: 7 });
 
-    expect(result.draftResponse).toContain('[Fallback local - IA indisponível]');
+    expect(result.draftResponse).toContain('[Fallback local - dry-run ativo]');
     expect(result.draftResponse).toContain('Olá');
     expect(result.noAutoSend).toBe(true);
     expect(result.templateNotice).toContain('template aprovado');

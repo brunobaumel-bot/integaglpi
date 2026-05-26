@@ -15,6 +15,16 @@ $catalog = is_array($data['catalog'] ?? null) ? $data['catalog'] : [];
 $recentRequests = is_array($data['recent_requests'] ?? null) ? $data['recent_requests'] : [];
 $recentCandidates = is_array($data['recent_candidates'] ?? null) ? $data['recent_candidates'] : [];
 $internalContext = is_array($data['internal_context'] ?? null) ? $data['internal_context'] : ['query' => '', 'items' => [], 'message' => ''];
+$aiProviderCatalog = is_array($data['ai_provider_catalog'] ?? null) ? $data['ai_provider_catalog'] : [];
+$localProvider = is_array($aiProviderCatalog['local_ollama_available'] ?? null) ? $aiProviderCatalog['local_ollama_available'] : [];
+$readyCloudProviders = is_array($aiProviderCatalog['cloud_ready_providers'] ?? null) ? $aiProviderCatalog['cloud_ready_providers'] : [];
+$blockedCloudProviders = is_array($aiProviderCatalog['cloud_blocked_providers'] ?? null) ? $aiProviderCatalog['cloud_blocked_providers'] : [];
+$defaultProviderSelection = is_array($aiProviderCatalog['external_research_default'] ?? null)
+    ? $aiProviderCatalog['external_research_default']
+    : ['provider' => 'disabled', 'model' => ''];
+$previewProviderSelection = is_array($preview['provider_selection'] ?? null) ? $preview['provider_selection'] : [];
+$selectedAiProvider = trim((string) ($_POST['ai_provider'] ?? $previewProviderSelection['provider'] ?? $defaultProviderSelection['provider'] ?? 'disabled'));
+$selectedAiModel = trim((string) ($_POST['ai_model'] ?? $previewProviderSelection['model'] ?? $defaultProviderSelection['model'] ?? ''));
 $error = trim((string) ($data['error'] ?? ''));
 $csrf = GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
 $previewToken = is_array($preview) ? (string) ($preview['preview_token'] ?? '') : '';
@@ -71,10 +81,28 @@ $hasTicketPrefill = trim((string) ($_GET['q'] ?? '')) !== '';
                         <dd class="col-sm-8"><?php echo $this->escape((string) count($previewErrors)); ?></dd>
                         <dt class="col-sm-4"><?php echo $this->escape(__('PII/segredo detectado', 'glpiintegaglpi')); ?></dt>
                         <dd class="col-sm-8"><?php echo $this->escape(($previewSanitized['blocked'] ?? false) ? 'sim' : 'não'); ?></dd>
+                        <?php $providerSelection = is_array($preview['provider_selection'] ?? null) ? $preview['provider_selection'] : []; ?>
+                        <dt class="col-sm-4"><?php echo $this->escape(__('Provider/modelo selecionado', 'glpiintegaglpi')); ?></dt>
+                        <dd class="col-sm-8">
+                            <code><?php echo $this->escape((string) ($providerSelection['provider'] ?? 'disabled')); ?></code>
+                            /
+                            <code><?php echo $this->escape((string) ($providerSelection['model'] ?? '')); ?></code>
+                            <?php if (empty($providerSelection['ready'])) { ?>
+                                <span class="badge bg-warning text-dark"><?php echo $this->escape((string) ($providerSelection['blocked_reason'] ?? 'provider_not_ready')); ?></span>
+                            <?php } ?>
+                        </dd>
                     <?php } ?>
                     <?php if ($researchResult !== null) { ?>
                         <dt class="col-sm-4"><?php echo $this->escape(__('Confiança estimada', 'glpiintegaglpi')); ?></dt>
                         <dd class="col-sm-8"><?php echo $this->escape((string) ($researchResult['confidence_score'] ?? 0)); ?></dd>
+                        <dt class="col-sm-4"><?php echo $this->escape(__('Origem IA', 'glpiintegaglpi')); ?></dt>
+                        <dd class="col-sm-8">
+                            <code><?php echo $this->escape((string) ($researchResult['source'] ?? 'external_research_manual_catalog')); ?></code>
+                            · <code><?php echo $this->escape((string) ($researchResult['provider'] ?? 'disabled')); ?></code>
+                            <?php if (trim((string) ($researchResult['model'] ?? '')) !== '') { ?>
+                                / <code><?php echo $this->escape((string) ($researchResult['model'] ?? '')); ?></code>
+                            <?php } ?>
+                        </dd>
                     <?php } ?>
                     <dt class="col-sm-4"><?php echo $this->escape(__('Próximos passos', 'glpiintegaglpi')); ?></dt>
                     <dd class="col-sm-8">
@@ -114,6 +142,74 @@ $hasTicketPrefill = trim((string) ($_GET['q'] ?? '')) !== '';
                     <?php } ?>
                     <div class="form-text">
                         <?php echo $this->escape(__('Não cole e-mail, telefone, CPF/CNPJ, tokens, senhas, IPs internos, anexos ou histórico completo.', 'glpiintegaglpi')); ?>
+                    </div>
+
+                    <div class="row g-2 mt-3">
+                        <div class="col-md-6">
+                            <label class="form-label" for="ai_provider"><?php echo $this->escape(__('Provider IA para pesquisa', 'glpiintegaglpi')); ?></label>
+                            <select class="form-select" id="ai_provider" name="ai_provider">
+                                <option value="disabled" <?php echo $selectedAiProvider === 'disabled' ? 'selected' : ''; ?>>
+                                    <?php echo $this->escape(__('manual / sem provider IA', 'glpiintegaglpi')); ?>
+                                </option>
+                                <?php
+                                $localReady = !empty($localProvider['ready']);
+                                ?>
+                                <option value="ollama" <?php echo $selectedAiProvider === 'ollama' ? 'selected' : ''; ?> <?php echo $localReady ? '' : 'disabled'; ?>>
+                                    <?php echo $this->escape(__('Ollama local', 'glpiintegaglpi')); ?>
+                                    <?php echo $localReady ? '' : ' - ' . $this->escape((string) ($localProvider['blocked_reason'] ?? 'local_model_not_configured')); ?>
+                                </option>
+                                <?php foreach ($readyCloudProviders as $provider) {
+                                    if (!is_array($provider)) { continue; }
+                                    $providerId = (string) ($provider['id'] ?? '');
+                                    if ($providerId === '') { continue; }
+                                    ?>
+                                    <option value="<?php echo $this->escape($providerId); ?>" <?php echo $selectedAiProvider === $providerId ? 'selected' : ''; ?>>
+                                        <?php echo $this->escape((string) ($provider['name'] ?? $providerId)); ?>
+                                    </option>
+                                <?php } ?>
+                                <?php foreach ($blockedCloudProviders as $provider) {
+                                    if (!is_array($provider)) { continue; }
+                                    $providerId = (string) ($provider['id'] ?? '');
+                                    if ($providerId === '') { continue; }
+                                    ?>
+                                    <option value="<?php echo $this->escape($providerId); ?>" disabled>
+                                        <?php echo $this->escape((string) ($provider['name'] ?? $providerId) . ' - bloqueado: ' . (string) ($provider['blocked_reason'] ?? 'provider_not_ready')); ?>
+                                    </option>
+                                <?php } ?>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="ai_model"><?php echo $this->escape(__('Modelo IA', 'glpiintegaglpi')); ?></label>
+                            <select class="form-select" id="ai_model" name="ai_model">
+                                <?php $localModels = is_array($localProvider['models'] ?? null) ? array_map('strval', $localProvider['models']) : []; ?>
+                                <?php if ($localModels !== []) { ?>
+                                    <optgroup label="<?php echo $this->escape(__('Ollama local', 'glpiintegaglpi')); ?>">
+                                        <?php foreach ($localModels as $modelOption) { ?>
+                                            <option value="<?php echo $this->escape($modelOption); ?>" <?php echo $selectedAiModel === $modelOption ? 'selected' : ''; ?>><?php echo $this->escape($modelOption); ?></option>
+                                        <?php } ?>
+                                    </optgroup>
+                                <?php } elseif ($selectedAiModel !== '') { ?>
+                                    <option value="<?php echo $this->escape($selectedAiModel); ?>" selected><?php echo $this->escape($selectedAiModel); ?></option>
+                                <?php } ?>
+                                <?php foreach (array_merge($readyCloudProviders, $blockedCloudProviders) as $provider) {
+                                    if (!is_array($provider)) { continue; }
+                                    $models = is_array($provider['models'] ?? null) ? array_map('strval', $provider['models']) : [];
+                                    if ($models === []) { continue; }
+                                    ?>
+                                    <optgroup label="<?php echo $this->escape((string) ($provider['name'] ?? $provider['id'] ?? 'cloud')); ?>">
+                                        <?php foreach ($models as $modelOption) { ?>
+                                            <option value="<?php echo $this->escape($modelOption); ?>" <?php echo $selectedAiModel === $modelOption ? 'selected' : ''; ?>><?php echo $this->escape($modelOption); ?></option>
+                                        <?php } ?>
+                                    </optgroup>
+                                <?php } ?>
+                                <?php if ($selectedAiModel === '') { ?>
+                                    <option value="" selected><?php echo $this->escape(__('sem modelo selecionado', 'glpiintegaglpi')); ?></option>
+                                <?php } ?>
+                            </select>
+                            <div class="form-text">
+                                <?php echo $this->escape(__('Cloud só executa se provider estiver pronto, preview confirmado e PII guard OK. Gemini/Claude ficam bloqueados até last_test_status=success.', 'glpiintegaglpi')); ?>
+                            </div>
+                        </div>
                     </div>
 
                     <label class="form-label mt-3" for="source_urls"><?php echo $this->escape(__('Fontes permitidas avançadas/opcionais, uma URL por linha', 'glpiintegaglpi')); ?></label>

@@ -286,6 +286,102 @@ final class AiConfigViewService
     }
 
     /**
+     * Provider/model catalog for operational screens. It intentionally exposes
+     * only allowlisted IDs, readiness state and model names; secrets remain in
+     * env/Secret Vault and never leave the backend.
+     *
+     * @return array<string, mixed>
+     */
+    public function getOperationalProviderCatalog(): array
+    {
+        $settings = $this->loadAiSettings();
+        $secretVault = (new AiSecretVaultService($this->pluginConfigService))->status();
+        $cloudPilot = [
+            'dpo_approved' => $this->settingValue($settings, 'cloud_dpo_approved', $this->runtimeValue('AI_PILOT_DPO_APPROVED', 'false')),
+            'director_approved' => $this->settingValue($settings, 'cloud_director_approved', $this->runtimeValue('AI_PILOT_DIRECTOR_APPROVED', 'false')),
+            'admin_opt_in' => $this->settingValue($settings, 'cloud_admin_opt_in', $this->runtimeValue('AI_PILOT_ADMIN_OPT_IN', 'false')),
+            'incident_ack' => $this->settingValue($settings, 'cloud_incident_ack', $this->runtimeValue('AI_PILOT_INCIDENT_ACK', 'false')),
+            'synthetic_test_ok' => $this->settingValue($settings, 'cloud_synthetic_test_ok', $this->runtimeValue('AI_PILOT_SYNTHETIC_TEST_OK', 'false')),
+            'budget_configured' => $this->settingValue($settings, 'cloud_budget_configured', 'false'),
+            'monthly_budget_limit' => $this->settingValue($settings, 'cloud_budget_configured', 'false') === 'true'
+                ? $this->runtimeValue('AI_PILOT_MONTHLY_BUDGET_LIMIT', 'configured')
+                : $this->runtimeValue('AI_PILOT_MONTHLY_BUDGET_LIMIT', '0'),
+        ];
+        $cloudCatalog = $this->cloudProviderCatalog($cloudPilot, $secretVault, $this->latestCloudProviderTestErrors());
+        $readyCloud = [];
+        $blockedCloud = [];
+        foreach ($cloudCatalog as $provider) {
+            if (!is_array($provider)) {
+                continue;
+            }
+            if (!empty($provider['ready_for_controlled_use'])) {
+                $readyCloud[] = $provider;
+                continue;
+            }
+            $blockedCloud[] = $provider;
+        }
+
+        $localModels = $this->cachedOllamaModels();
+        foreach ([
+            $this->settingValue($settings, 'ai_supervisor_model', $this->runtimeValue('AI_SUPERVISOR_MODEL', '')),
+            $this->settingValue($settings, 'copilot_model', $this->runtimeValue('AI_SUPERVISOR_MODEL', '')),
+            $this->settingValue($settings, 'p4_candidate_review_model', $this->runtimeValue('AI_KB_CANDIDATE_REVIEW_MODEL', $this->runtimeValue('AI_SUPERVISOR_MODEL', ''))),
+        ] as $model) {
+            $model = $this->normalizeModelName((string) $model);
+            if ($model !== '' && !in_array($model, $localModels, true)) {
+                $localModels[] = $model;
+            }
+        }
+        $localModels = array_values(array_unique($localModels));
+        sort($localModels);
+        $localDefaultModel = $this->normalizeModelName($this->settingValue(
+            $settings,
+            'p4_candidate_review_model',
+            $this->runtimeValue('AI_KB_CANDIDATE_REVIEW_MODEL', $this->runtimeValue('AI_SUPERVISOR_MODEL', ''))
+        ));
+        if ($localDefaultModel === '' && $localModels !== []) {
+            $localDefaultModel = (string) $localModels[0];
+        }
+
+        $preferredCloud = ['deepseek', 'openai', 'xai'];
+        $externalDefault = ['provider' => 'disabled', 'model' => '', 'source' => 'manual_disabled'];
+        foreach ($preferredCloud as $preferredProvider) {
+            foreach ($readyCloud as $provider) {
+                if ((string) ($provider['id'] ?? '') !== $preferredProvider) {
+                    continue;
+                }
+                $models = is_array($provider['models'] ?? null) ? array_values(array_map('strval', $provider['models'])) : [];
+                $externalDefault = [
+                    'provider' => $preferredProvider,
+                    'model' => $models !== [] ? (string) $models[0] : '',
+                    'source' => 'ready_cloud_provider',
+                ];
+                break 2;
+            }
+        }
+
+        return [
+            'local_ollama_available' => [
+                'provider' => 'ollama',
+                'name' => 'Ollama local',
+                'models' => $localModels,
+                'default_model' => $localDefaultModel,
+                'ready' => $localDefaultModel !== '',
+                'blocked_reason' => $localDefaultModel !== '' ? '' : 'local_model_not_configured',
+            ],
+            'cloud_ready_providers' => $readyCloud,
+            'cloud_blocked_providers' => $blockedCloud,
+            'external_research_default' => $externalDefault,
+            'p4_default' => [
+                'provider' => 'ollama',
+                'model' => $localDefaultModel,
+                'source' => 'local_first',
+            ],
+            'cloud_gates_ok' => $this->cloudGatesOk($cloudPilot),
+        ];
+    }
+
+    /**
      * @param array<string, mixed> $post
      * @return array<string, mixed>
      */
