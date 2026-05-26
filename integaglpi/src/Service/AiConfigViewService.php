@@ -121,10 +121,10 @@ final class AiConfigViewService
             'id' => 'anthropic',
             'name' => 'Anthropic / Claude',
             'env_key' => 'ANTHROPIC_API_KEY',
-            'models' => ['claude-3-7-sonnet', 'claude-3-5-haiku'],
+            'models' => ['claude-3-5-haiku-20241022', 'claude-3-5-haiku-latest', 'claude-3-7-sonnet-20250219'],
         ],
         [
-            'id' => 'google',
+            'id' => 'gemini',
             'name' => 'Google / Gemini',
             'env_key' => 'GEMINI_API_KEY',
             'models' => ['gemini-2.5-pro', 'gemini-2.5-flash'],
@@ -218,6 +218,7 @@ final class AiConfigViewService
         $externalResearch = $this->externalResearchStatus($settings);
         $p4Review = $this->p4CandidateReviewStatus($settings);
         $secretVault = (new AiSecretVaultService($this->pluginConfigService))->status();
+        $cloudProviderTestErrors = $this->latestCloudProviderTestErrors();
         $embeddings = [
             'enabled' => $cloudPilot['embeddings_enabled'],
             'provider' => $this->runtimeValue('AI_PILOT_PROVIDER', 'disabled'),
@@ -243,7 +244,8 @@ final class AiConfigViewService
             'safe_settings_available' => $this->aiSettingsStorageAvailable(),
             'effective_config' => $this->effectiveConfig($settings, $aiSupervisor, $copilot, $p4Review, $externalResearch),
             'ollama_models' => $this->cachedOllamaModels(),
-            'cloud_provider_catalog' => $this->cloudProviderCatalog($cloudPilot, $secretVault),
+            'ollama_model_status' => $this->ollamaModelStatus(),
+            'cloud_provider_catalog' => $this->cloudProviderCatalog($cloudPilot, $secretVault, $cloudProviderTestErrors),
             'secret_vault' => $secretVault,
             'ai_supervisor' => $aiSupervisor,
             'copilot' => $copilot,
@@ -376,17 +378,25 @@ final class AiConfigViewService
 
             if ($action === 'refresh_ollama_models') {
                 $models = $this->refreshOllamaModels($userId);
+                $modelStatus = $this->ollamaModelStatus();
+                $errorType = (string) ($modelStatus['error_type'] ?? 'unknown_error');
 
                 return [
                     'type' => $models === [] ? 'warning' : 'success',
                     'message' => $models === []
-                        ? __('Não foi possível listar modelos locais agora. O modelo manual atual continua preservado.', 'glpiintegaglpi')
+                        ? sprintf(
+                            __('Não foi possível listar modelos Ollama: %s. Verifique a base_url local; o fallback manual continua preservado.', 'glpiintegaglpi'),
+                            $errorType
+                        )
                         : sprintf(__('Modelos locais atualizados: %s.', 'glpiintegaglpi'), implode(', ', $models)),
                 ];
             }
 
             if ($action === 'save_cloud_secret') {
-                $provider = trim((string) ($post['vault_provider'] ?? ''));
+                $provider = $this->normalizeCloudProvider((string) ($post['vault_provider'] ?? ''));
+                if ($provider === '') {
+                    throw new RuntimeException('provider_not_allowed');
+                }
                 $label = trim((string) ($post['vault_label'] ?? ''));
                 $secret = (string) ($post['vault_secret'] ?? '');
                 (new AiSecretVaultService($this->pluginConfigService))->storeSecret($provider, $secret, $label, $userId);
@@ -401,6 +411,72 @@ final class AiConfigViewService
                 return [
                     'type' => 'success',
                     'message' => __('Chave cloud armazenada no Secret Vault. O valor real não será exibido novamente.', 'glpiintegaglpi'),
+                ];
+            }
+
+            if ($action === 'test_cloud_provider') {
+                $provider = $this->normalizeCloudProvider((string) ($post['vault_provider'] ?? ''));
+                $model = $this->normalizeSafeText((string) ($post['vault_model'] ?? ''), 120);
+                if ($provider === '') {
+                    throw new RuntimeException('provider_not_allowed');
+                }
+                if (!$this->cloudModelAllowed($provider, $model)) {
+                    throw new RuntimeException('cloud_model_not_allowed');
+                }
+
+                $data = $this->getPageData();
+                $pilot = is_array($data['cloud_pilot'] ?? null) ? $data['cloud_pilot'] : [];
+                $missing = is_array($pilot['missing_gates'] ?? null) ? $pilot['missing_gates'] : [];
+                if ($missing !== []) {
+                    $this->audit('AI_CLOUD_PROVIDER_TESTED', 'blocked', [
+                        'glpi_user_id' => $userId,
+                        'provider' => $provider,
+                        'model' => $model,
+                        'error_type' => 'cloud_gates_incomplete',
+                        'missing_gates' => $missing,
+                        'synthetic_payload_only' => true,
+                    ]);
+
+                    return [
+                        'type' => 'warning',
+                        'message' => sprintf(__('Teste cloud bloqueado. Gates pendentes: %s.', 'glpiintegaglpi'), implode(', ', $missing)),
+                    ];
+                }
+
+                $vault = new AiSecretVaultService($this->pluginConfigService);
+                $vaultStatus = $vault->status();
+                $providers = is_array($vaultStatus['providers'] ?? null) ? $vaultStatus['providers'] : [];
+                $providerRow = is_array($providers[$provider] ?? null) ? $providers[$provider] : [];
+                if (!empty($vaultStatus['locked'])) {
+                    throw new RuntimeException('secret_vault_locked');
+                }
+                if (empty($providerRow['configured'])) {
+                    throw new RuntimeException('secret_not_configured');
+                }
+
+                $result = $vault->testProvider($provider, $model, $userId);
+                $this->audit('AI_CLOUD_PROVIDER_TESTED', (string) ($result['status'] ?? 'failed'), [
+                    'glpi_user_id' => $userId,
+                    'provider' => $provider,
+                    'model' => $model,
+                    'status' => (string) ($result['status'] ?? 'failed'),
+                    'elapsed_ms' => (int) ($result['elapsed_ms'] ?? 0),
+                    'error_type' => (string) ($result['error_type'] ?? 'unknown_error'),
+                    'response_hash' => (string) ($result['response_hash'] ?? ''),
+                    'synthetic_payload_only' => true,
+                    'payload_hash' => hash('sha256', 'cloud_provider_synthetic_ok_json_v1'),
+                    'secret_logged' => false,
+                ]);
+
+                return [
+                    'type' => (string) ($result['status'] ?? '') === 'success' ? 'success' : 'warning',
+                    'message' => sprintf(
+                        __('Teste sintético %s para %s/%s. error_type=%s. Nenhum dado real foi enviado.', 'glpiintegaglpi'),
+                        (string) ($result['status'] ?? 'failed'),
+                        $provider,
+                        $model,
+                        (string) ($result['error_type'] ?? 'unknown_error')
+                    ),
                 ];
             }
 
@@ -603,18 +679,12 @@ final class AiConfigViewService
      */
     private function cachedOllamaModels(): array
     {
-        $cache = $_SESSION[self::OLLAMA_MODEL_CACHE_KEY] ?? null;
-        if (!is_array($cache)) {
+        $cache = $this->validOllamaModelCache();
+        if ($cache === null) {
             return [];
         }
 
-        $expiresAt = (int) ($cache['expires_at'] ?? 0);
         $models = is_array($cache['models'] ?? null) ? $cache['models'] : [];
-        if ($expiresAt < time()) {
-            unset($_SESSION[self::OLLAMA_MODEL_CACHE_KEY]);
-
-            return [];
-        }
 
         return array_values(array_filter(array_map(function ($model): string {
             return $this->normalizeModelName((string) $model);
@@ -624,17 +694,71 @@ final class AiConfigViewService
     }
 
     /**
+     * @return array<string, mixed>
+     */
+    private function ollamaModelStatus(): array
+    {
+        $cache = $this->validOllamaModelCache();
+        if ($cache === null) {
+            $resolved = $this->resolveOllamaBaseUrl();
+
+            return [
+                'status' => 'not_refreshed',
+                'error_type' => empty($resolved['base_url']) ? 'base_url_missing' : 'manual_refresh_required',
+                'model_count' => 0,
+                'base_url_configured' => !empty($resolved['base_url']),
+                'base_url_source' => (string) ($resolved['source'] ?? 'default'),
+                'last_refresh_at' => '',
+            ];
+        }
+
+        return [
+            'status' => (string) ($cache['status'] ?? 'unknown'),
+            'error_type' => (string) ($cache['error_type'] ?? 'unknown_error'),
+            'model_count' => is_array($cache['models'] ?? null) ? count($cache['models']) : 0,
+            'base_url_configured' => !empty($cache['base_url_configured']),
+            'base_url_source' => (string) ($cache['base_url_source'] ?? 'unknown'),
+            'last_refresh_at' => (string) ($cache['last_refresh_at'] ?? ''),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function validOllamaModelCache(): ?array
+    {
+        $cache = $_SESSION[self::OLLAMA_MODEL_CACHE_KEY] ?? null;
+        if (!is_array($cache)) {
+            return null;
+        }
+
+        $expiresAt = (int) ($cache['expires_at'] ?? 0);
+        if ($expiresAt < time()) {
+            unset($_SESSION[self::OLLAMA_MODEL_CACHE_KEY]);
+
+            return null;
+        }
+
+        return $cache;
+    }
+
+    /**
      * @return list<string>
      */
     private function refreshOllamaModels(int $userId): array
     {
-        $baseUrl = $this->runtimeValue('AI_SUPERVISOR_BASE_URL', 'http://127.0.0.1:11434');
+        $resolvedBaseUrl = $this->resolveOllamaBaseUrl();
+        $baseUrl = (string) ($resolvedBaseUrl['base_url'] ?? '');
+        $baseUrlSource = (string) ($resolvedBaseUrl['source'] ?? 'unknown');
         $status = 'blocked';
-        $errorType = 'provider_url_not_allowed';
+        $errorType = $baseUrl === '' ? 'base_url_missing' : 'provider_url_not_allowed';
         $models = [];
         $startedAt = microtime(true);
 
         try {
+            if ($baseUrl === '') {
+                throw new RuntimeException('base_url_missing');
+            }
             if (!$this->isAllowedLocalOllamaUrl($baseUrl)) {
                 throw new RuntimeException('provider_url_not_allowed');
             }
@@ -683,14 +807,27 @@ final class AiConfigViewService
             sort($models);
             $_SESSION[self::OLLAMA_MODEL_CACHE_KEY] = [
                 'models' => $models,
+                'status' => $models === [] ? 'blocked' : 'success',
+                'error_type' => $models === [] ? 'no_models_returned' : 'none',
+                'base_url_configured' => true,
+                'base_url_source' => $baseUrlSource,
+                'last_refresh_at' => gmdate('c'),
                 'expires_at' => time() + self::OLLAMA_MODEL_CACHE_TTL_SECONDS,
             ];
             $status = $models === [] ? 'blocked' : 'success';
             $errorType = $models === [] ? 'no_models_returned' : 'none';
         } catch (Throwable $exception) {
-            unset($_SESSION[self::OLLAMA_MODEL_CACHE_KEY]);
             $models = [];
             $errorType = $this->sanitizeLog($exception->getMessage());
+            $_SESSION[self::OLLAMA_MODEL_CACHE_KEY] = [
+                'models' => [],
+                'status' => 'blocked',
+                'error_type' => $errorType !== '' ? $errorType : 'unknown_error',
+                'base_url_configured' => $baseUrl !== '',
+                'base_url_source' => $baseUrlSource,
+                'last_refresh_at' => gmdate('c'),
+                'expires_at' => time() + self::OLLAMA_MODEL_CACHE_TTL_SECONDS,
+            ];
             error_log('[integaglpi][ai_config][ollama_models] ' . $errorType);
         }
 
@@ -704,6 +841,48 @@ final class AiConfigViewService
         ]);
 
         return $models;
+    }
+
+    /**
+     * @return array{base_url: string, source: string}
+     */
+    private function resolveOllamaBaseUrl(): array
+    {
+        foreach ([
+            'AI_SUPERVISOR_BASE_URL',
+            'AI_KB_CANDIDATE_REVIEW_BASE_URL',
+            'OLLAMA_BASE_URL',
+            'AI_OLLAMA_BASE_URL',
+            'OLLAMA_HOST',
+        ] as $key) {
+            $value = $this->runtimeValue($key, '');
+            if ($value === '') {
+                continue;
+            }
+
+            return [
+                'base_url' => $this->normalizeOllamaBaseUrl($value),
+                'source' => $key,
+            ];
+        }
+
+        return [
+            'base_url' => 'http://127.0.0.1:11434',
+            'source' => 'default',
+        ];
+    }
+
+    private function normalizeOllamaBaseUrl(string $value): string
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return '';
+        }
+        if (strpos($value, 'http://') !== 0 && strpos($value, 'https://') !== 0) {
+            $value = 'http://' . $value;
+        }
+
+        return rtrim($value, '/');
     }
 
     private function normalizeModelName(string $value): string
@@ -729,13 +908,13 @@ final class AiConfigViewService
             return false;
         }
 
-        return in_array($host, ['127.0.0.1', 'localhost', '::1', 'ollama', 'ollama-local'], true);
+        return in_array($host, ['127.0.0.1', 'localhost', '::1', 'ollama', 'ollama-local', 'host.docker.internal'], true);
     }
 
     /**
      * @return list<array<string, mixed>>
      */
-    private function cloudProviderCatalog(array $cloudPilot, array $secretVault): array
+    private function cloudProviderCatalog(array $cloudPilot, array $secretVault, array $testErrors = []): array
     {
         $gatesOk = $this->cloudGatesOk($cloudPilot);
         $vaultProviders = is_array($secretVault['providers'] ?? null) ? $secretVault['providers'] : [];
@@ -755,6 +934,13 @@ final class AiConfigViewService
             if (!$gatesOk) {
                 $blockedReasons[] = 'cloud_gates_incomplete';
             }
+            $lastTestStatus = (string) ($vaultRow['last_test_status'] ?? 'not_tested');
+            $auditError = is_array($testErrors[$providerId] ?? null) ? $testErrors[$providerId] : [];
+            $lastErrorType = (string) ($auditError['error_type'] ?? $vaultRow['last_error_type'] ?? $lastTestStatus);
+            if ($lastTestStatus !== 'success') {
+                $blockedReasons[] = 'synthetic_test_not_passed';
+            }
+            $ready = !$vaultLocked && $secretConfigured && $gatesOk && $lastTestStatus === 'success';
 
             $catalog[] = [
                 'id' => $providerId,
@@ -763,13 +949,110 @@ final class AiConfigViewService
                 'secret_configured' => $secretConfigured,
                 'secret_fingerprint' => (string) ($vaultRow['fingerprint'] ?? ''),
                 'api_key_configured' => $secretConfigured,
+                'last_test_status' => $lastTestStatus,
+                'last_error_type' => $lastErrorType,
+                'last_tested_at' => (string) ($vaultRow['last_tested_at'] ?? ''),
+                'ready_for_controlled_use' => $ready,
                 'gates_ok' => $gatesOk,
                 'enabled' => false,
-                'blocked_reason' => $blockedReasons === [] ? 'cloud_disabled_by_default' : implode(',', $blockedReasons),
+                'blocked_reason' => $ready ? '' : implode(',', $blockedReasons),
             ];
         }
 
         return $catalog;
+    }
+
+    private function normalizeCloudProvider(string $value): string
+    {
+        $provider = strtolower(trim($value));
+        if ($provider === 'google' || $provider === 'google_gemini') {
+            $provider = 'gemini';
+        }
+        foreach (self::CLOUD_PROVIDER_CATALOG as $row) {
+            if ((string) $row['id'] === $provider) {
+                return $provider;
+            }
+        }
+
+        return '';
+    }
+
+    private function cloudModelAllowed(string $provider, string $model): bool
+    {
+        if ($model === '') {
+            return false;
+        }
+        foreach (self::CLOUD_PROVIDER_CATALOG as $row) {
+            if ((string) $row['id'] !== $provider) {
+                continue;
+            }
+
+            return in_array($model, array_map('strval', $row['models']), true);
+        }
+
+        return false;
+    }
+
+    /**
+     * @return array<string, array{error_type: string, status: string}>
+     */
+    private function latestCloudProviderTestErrors(): array
+    {
+        if (!$this->pluginConfigService->isConfigured()) {
+            return [];
+        }
+
+        try {
+            $pdo = ExternalDatabase::getConnection($this->pluginConfigService->getConnectionConfig());
+            $exists = $pdo->query("SELECT to_regclass('public.glpi_plugin_integaglpi_audit_events')");
+            if ($exists === false || !$exists->fetchColumn()) {
+                return [];
+            }
+
+            $statement = $pdo->query(
+                "SELECT DISTINCT ON (payload_json->>'provider')
+                        payload_json->>'provider' AS provider,
+                        payload_json->>'error_type' AS error_type,
+                        status
+                   FROM public.glpi_plugin_integaglpi_audit_events
+                  WHERE event_type = 'AI_CLOUD_PROVIDER_TESTED'
+                    AND payload_json ? 'provider'
+                  ORDER BY payload_json->>'provider', created_at DESC"
+            );
+            if ($statement === false) {
+                return [];
+            }
+
+            $errors = [];
+            while (($row = $statement->fetch(\PDO::FETCH_ASSOC)) !== false) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $provider = $this->normalizeCloudProvider((string) ($row['provider'] ?? ''));
+                if ($provider === '') {
+                    continue;
+                }
+                $errors[$provider] = [
+                    'error_type' => $this->normalizeAuditErrorType((string) ($row['error_type'] ?? '')),
+                    'status' => $this->normalizeAuditErrorType((string) ($row['status'] ?? '')),
+                ];
+            }
+
+            return $errors;
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][ai_config][cloud_test_errors] ' . $this->sanitizeLog($exception->getMessage()));
+
+            return [];
+        }
+    }
+
+    private function normalizeAuditErrorType(string $value): string
+    {
+        $value = strtolower(trim($value));
+        $value = preg_replace('/[^a-z0-9_:-]+/', '_', $value) ?? '';
+        $value = trim($value, '_');
+
+        return substr($value !== '' ? $value : 'unknown_error', 0, 80);
     }
 
     private function settingValue(array $settings, string $key, $fallback): string
@@ -976,7 +1259,7 @@ final class AiConfigViewService
             'director_approved' => 'direção',
             'admin_opt_in' => 'admin opt-in',
             'incident_ack' => 'incident ack',
-            'synthetic_test_ok' => 'synthetic test',
+            'synthetic_test_ok' => 'autorização para teste sintético',
         ] as $key => $label) {
             if (!$this->truthy($pilot[$key] ?? false)) {
                 $missing[] = $label;

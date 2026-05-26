@@ -24,10 +24,21 @@ $pendingSafeFields = is_array($data['pending_safe_fields'] ?? null) ? $data['pen
 $safeSettings = is_array($data['safe_settings'] ?? null) ? $data['safe_settings'] : [];
 $safeSettingsAvailable = (bool) ($data['safe_settings_available'] ?? false);
 $ollamaModels = is_array($data['ollama_models'] ?? null) ? array_values(array_map('strval', $data['ollama_models'])) : [];
+$ollamaModelStatus = is_array($data['ollama_model_status'] ?? null) ? $data['ollama_model_status'] : [];
 $cloudProviderCatalog = is_array($data['cloud_provider_catalog'] ?? null) ? $data['cloud_provider_catalog'] : [];
 $effectiveConfig = is_array($data['effective_config'] ?? null) ? $data['effective_config'] : [];
 $secretVault = is_array($data['secret_vault'] ?? null) ? $data['secret_vault'] : [];
 $secretVaultProviders = is_array($secretVault['providers'] ?? null) ? $secretVault['providers'] : [];
+$cloudProviderMap = [];
+foreach ($cloudProviderCatalog as $providerCatalogRow) {
+    if (!is_array($providerCatalogRow)) {
+        continue;
+    }
+    $providerId = (string) ($providerCatalogRow['id'] ?? '');
+    if ($providerId !== '') {
+        $cloudProviderMap[$providerId] = $providerCatalogRow;
+    }
+}
 $csrf = GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
 
 $renderRows = function (array $rows): void {
@@ -39,29 +50,38 @@ $renderRows = function (array $rows): void {
     <?php }
 };
 
-$renderModelPicker = function (string $fieldName, string $label, string $currentValue) use ($ollamaModels, $safeSettingsAvailable): void {
+$renderModelPicker = function (string $fieldName, string $label, string $currentValue) use ($ollamaModels, $ollamaModelStatus, $safeSettingsAvailable): void {
     $currentValue = trim($currentValue);
     $options = $ollamaModels;
-    $currentMissing = $currentValue !== '' && $options !== [] && !in_array($currentValue, $options, true);
-    if ($currentMissing) {
+    $currentMissing = $currentValue !== '' && !in_array($currentValue, $options, true);
+    if ($currentMissing && $currentValue !== '') {
         array_unshift($options, $currentValue);
     }
+    $status = (string) ($ollamaModelStatus['status'] ?? 'not_refreshed');
+    $errorType = (string) ($ollamaModelStatus['error_type'] ?? 'manual_refresh_required');
     ?>
     <label class="form-label mt-2"><?= $this->escape($label); ?></label>
-    <?php if ($options !== []) { ?>
-        <select class="form-select form-select-sm" name="<?= $this->escape($fieldName); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+    <select class="form-select form-select-sm" name="<?= $this->escape($fieldName); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+        <?php if ($options === []) { ?>
+            <option value="<?= $this->escape($currentValue); ?>" selected>
+                <?= $this->escape($currentValue !== '' ? $currentValue : __('Atualize modelos Ollama ou informe manualmente', 'glpiintegaglpi')); ?>
+            </option>
+        <?php } else { ?>
             <?php foreach ($options as $modelOption) { ?>
                 <option value="<?= $this->escape($modelOption); ?>" <?= $currentValue === $modelOption ? 'selected' : ''; ?>><?= $this->escape($modelOption); ?></option>
             <?php } ?>
-        </select>
-        <?php if ($currentMissing) { ?>
-            <div class="text-warning small mt-1"><?= $this->escape(__('Modelo salvo não apareceu em /api/tags nesta atualização.', 'glpiintegaglpi')); ?></div>
         <?php } ?>
-        <input class="form-control form-control-sm mt-1" name="<?= $this->escape($fieldName); ?>_manual" maxlength="120" value="" placeholder="<?= $this->escape(__('Modelo manual opcional se não estiver na lista', 'glpiintegaglpi')); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
-    <?php } else { ?>
-        <input class="form-control form-control-sm" name="<?= $this->escape($fieldName); ?>" maxlength="120" value="<?= $this->escape($currentValue); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
-        <div class="text-muted small mt-1"><?= $this->escape(__('Use “Atualizar modelos Ollama” para preencher o dropdown. O fallback manual fica preservado.', 'glpiintegaglpi')); ?></div>
-    <?php }
+    </select>
+    <?php if ($currentMissing && $ollamaModels !== []) { ?>
+        <div class="text-warning small mt-1"><?= $this->escape(__('Modelo salvo não apareceu em /api/tags nesta atualização.', 'glpiintegaglpi')); ?></div>
+    <?php } ?>
+    <?php if ($ollamaModels === []) { ?>
+        <div class="text-warning small mt-1">
+            <?= $this->escape(sprintf(__('Dropdown aguardando modelos Ollama. Status: %s; erro: %s.', 'glpiintegaglpi'), $status, $errorType)); ?>
+        </div>
+    <?php } ?>
+    <input class="form-control form-control-sm mt-1" name="<?= $this->escape($fieldName); ?>_manual" maxlength="120" value="" placeholder="<?= $this->escape(__('Modelo manual opcional se não estiver na lista', 'glpiintegaglpi')); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+    <?php
 };
 ?>
 
@@ -132,6 +152,15 @@ $renderModelPicker = function (string $fieldName, string $label, string $current
                         <?= $this->escape(__('Modelos locais em cache:', 'glpiintegaglpi')); ?>
                         <code><?= $this->escape(implode(', ', $ollamaModels)); ?></code>
                     </div>
+                <?php } else { ?>
+                    <div class="small text-warning mt-1">
+                        <?= $this->escape(sprintf(
+                            __('Modelos Ollama ainda não carregados. Status: %s; erro: %s; origem base_url: %s.', 'glpiintegaglpi'),
+                            (string) ($ollamaModelStatus['status'] ?? 'not_refreshed'),
+                            (string) ($ollamaModelStatus['error_type'] ?? 'manual_refresh_required'),
+                            (string) ($ollamaModelStatus['base_url_source'] ?? 'unknown')
+                        )); ?>
+                    </div>
                 <?php } ?>
             </form>
             <form method="post" action="<?= $this->escape($this->getAiConfigUrl()); ?>">
@@ -180,6 +209,11 @@ $renderModelPicker = function (string $fieldName, string $label, string $current
                             <input class="form-check-input" type="checkbox" name="copilot_dry_run" value="1" <?= ((string) ($safeSettings['copilot_dry_run'] ?? $copilot['dry_run'] ?? 'true') !== 'false') ? 'checked' : ''; ?> <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
                             <span class="form-check-label"><?= $this->escape(__('Copiloto dry-run', 'glpiintegaglpi')); ?></span>
                         </label>
+                        <?php if ((string) ($safeSettings['copilot_dry_run'] ?? $copilot['dry_run'] ?? 'true') !== 'false') { ?>
+                            <div class="alert alert-warning py-1 px-2 mt-2 mb-2 small">
+                                <?= $this->escape(__('Copiloto dry-run ativo: o rascunho será rotulado como [Fallback local - dry-run ativo]. Desmarque e salve para chamar o provider real.', 'glpiintegaglpi')); ?>
+                            </div>
+                        <?php } ?>
                         <label class="form-check">
                             <input class="form-check-input" type="checkbox" name="external_research_enabled" value="1" <?= ((string) ($safeSettings['external_research_enabled'] ?? $externalResearch['enabled'] ?? '') === 'true') ? 'checked' : ''; ?> <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
                             <span class="form-check-label"><?= $this->escape(__('Pesquisa externa manual', 'glpiintegaglpi')); ?></span>
@@ -246,13 +280,16 @@ $renderModelPicker = function (string $fieldName, string $label, string $current
                                 'cloud_admin_opt_in' => __('Admin opt-in', 'glpiintegaglpi'),
                                 'cloud_budget_configured' => __('Budget configurado', 'glpiintegaglpi'),
                                 'cloud_incident_ack' => __('Incidente ack', 'glpiintegaglpi'),
-                                'cloud_synthetic_test_ok' => __('Teste sintético OK', 'glpiintegaglpi'),
+                                'cloud_synthetic_test_ok' => __('Autorização para teste sintético cloud', 'glpiintegaglpi'),
                             ] as $gateName => $gateLabel) { ?>
                                 <label class="form-check">
                                     <input class="form-check-input" type="checkbox" name="<?= $this->escape($gateName); ?>" value="1" <?= ((string) ($safeSettings[$gateName] ?? 'false') === 'true') ? 'checked' : ''; ?> <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
                                     <span class="form-check-label"><?= $this->escape($gateLabel); ?></span>
                                 </label>
                             <?php } ?>
+                            <div class="text-muted small mt-2">
+                                <?= $this->escape(__('Esta autorização apenas libera o clique manual de teste. Provider só fica pronto quando Secret Vault está ativo, gates estão OK e last_test_status=success.', 'glpiintegaglpi')); ?>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -307,6 +344,8 @@ $renderModelPicker = function (string $fieldName, string $label, string $current
                                     <th><?= $this->escape(__('configured', 'glpiintegaglpi')); ?></th>
                                     <th><?= $this->escape(__('fingerprint', 'glpiintegaglpi')); ?></th>
                                     <th><?= $this->escape(__('last_test_status', 'glpiintegaglpi')); ?></th>
+                                    <th><?= $this->escape(__('last_error_type', 'glpiintegaglpi')); ?></th>
+                                    <th><?= $this->escape(__('Teste sintético', 'glpiintegaglpi')); ?></th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -314,12 +353,32 @@ $renderModelPicker = function (string $fieldName, string $label, string $current
                                     if (!is_array($providerRow)) {
                                         continue;
                                     }
+                                    $providerId = (string) ($providerRow['provider'] ?? '');
+                                    $catalogRow = is_array($cloudProviderMap[$providerId] ?? null) ? $cloudProviderMap[$providerId] : [];
+                                    $models = is_array($catalogRow['models'] ?? null) ? array_map('strval', $catalogRow['models']) : [];
+                                    $testDisabled = !empty($secretVault['locked']) || empty($providerRow['configured']) || empty($catalogRow['gates_ok']);
                                     ?>
                                     <tr>
-                                        <td><code><?= $this->escape((string) ($providerRow['provider'] ?? '')); ?></code></td>
+                                        <td><code><?= $this->escape($providerId); ?></code></td>
                                         <td><code><?= $this->escape(!empty($providerRow['configured']) ? 'true' : 'false'); ?></code></td>
                                         <td><code><?= $this->escape((string) ($providerRow['fingerprint'] ?? '')); ?></code></td>
                                         <td><code><?= $this->escape((string) ($providerRow['last_test_status'] ?? 'not_tested')); ?></code></td>
+                                        <td><code><?= $this->escape((string) ($catalogRow['last_error_type'] ?? $providerRow['last_error_type'] ?? 'not_tested')); ?></code></td>
+                                        <td>
+                                            <form method="post" action="<?= $this->escape($this->getAiConfigUrl()); ?>" class="d-flex gap-1 align-items-center">
+                                                <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
+                                                <input type="hidden" name="action" value="test_cloud_provider">
+                                                <input type="hidden" name="vault_provider" value="<?= $this->escape($providerId); ?>">
+                                                <select class="form-select form-select-sm" name="vault_model" <?= $testDisabled ? 'disabled' : ''; ?>>
+                                                    <?php foreach ($models as $modelOption) { ?>
+                                                        <option value="<?= $this->escape($modelOption); ?>"><?= $this->escape($modelOption); ?></option>
+                                                    <?php } ?>
+                                                </select>
+                                                <button class="btn btn-sm btn-outline-secondary" type="submit" <?= $testDisabled ? 'disabled' : ''; ?>>
+                                                    <?= $this->escape(__('Testar provider cloud', 'glpiintegaglpi')); ?>
+                                                </button>
+                                            </form>
+                                        </td>
                                     </tr>
                                 <?php } ?>
                             </tbody>
@@ -327,6 +386,9 @@ $renderModelPicker = function (string $fieldName, string $label, string $current
                     </div>
                     <div class="text-muted small mt-2">
                         <?= $this->escape(__('Write-only: a UI nunca renderiza API key, token, Bearer, senha ou segredo em HTML/JS/hidden input.', 'glpiintegaglpi')); ?>
+                    </div>
+                    <div class="text-muted small mt-1">
+                        <?= $this->escape(__('Teste manual usa somente payload sintético: Responda apenas OK em JSON {"ok":true}. Nenhum dado de chamado é enviado.', 'glpiintegaglpi')); ?>
                     </div>
                 </div>
             </div>
@@ -378,14 +440,23 @@ $renderModelPicker = function (string $fieldName, string $label, string $current
                                     continue;
                                 }
                                 $models = is_array($provider['models'] ?? null) ? array_map('strval', $provider['models']) : [];
+                                $ready = !empty($provider['ready_for_controlled_use']);
                                 ?>
                                 <tr>
                                     <td><?= $this->escape((string) ($provider['name'] ?? '')); ?></td>
                                     <td><code><?= $this->escape(implode(', ', $models)); ?></code></td>
                                     <td><code><?= $this->escape(!empty($provider['secret_configured']) ? 'configured=true' : 'configured=false'); ?></code></td>
                                     <td>
-                                        <span class="badge bg-warning text-dark"><?= $this->escape(__('bloqueado', 'glpiintegaglpi')); ?></span>
-                                        <code><?= $this->escape((string) ($provider['blocked_reason'] ?? 'cloud_disabled_by_default')); ?></code>
+                                        <?php if ($ready) { ?>
+                                            <span class="badge bg-success"><?= $this->escape(__('pronto para uso controlado', 'glpiintegaglpi')); ?></span>
+                                        <?php } else { ?>
+                                            <span class="badge bg-warning text-dark"><?= $this->escape(__('bloqueado', 'glpiintegaglpi')); ?></span>
+                                            <code><?= $this->escape((string) ($provider['blocked_reason'] ?? 'cloud_disabled_by_default')); ?></code>
+                                        <?php } ?>
+                                        <div class="small text-muted">
+                                            last_test_status=<code><?= $this->escape((string) ($provider['last_test_status'] ?? 'not_tested')); ?></code>
+                                            ; last_error_type=<code><?= $this->escape((string) ($provider['last_error_type'] ?? 'unknown_error')); ?></code>
+                                        </div>
                                     </td>
                                 </tr>
                             <?php } ?>
@@ -482,7 +553,7 @@ $renderModelPicker = function (string $fieldName, string $label, string $current
                                 'director_approved' => $pilot['director_approved'] ?? 'false',
                                 'admin_opt_in' => $pilot['admin_opt_in'] ?? 'false',
                                 'incident_ack' => $pilot['incident_ack'] ?? 'false',
-                                'synthetic_test_ok' => $pilot['synthetic_test_ok'] ?? 'false',
+                                'synthetic_test_authorization' => $pilot['synthetic_test_ok'] ?? 'false',
                                 'monthly_budget_limit' => $pilot['monthly_budget_limit'] ?? '0',
                                 'gates_ok' => $pilot['gates_ok'] ?? false,
                             ]); ?>

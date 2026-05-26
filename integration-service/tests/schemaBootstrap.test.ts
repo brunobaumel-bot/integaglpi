@@ -270,6 +270,24 @@ describe('database bootstrap hardening', () => {
     expect(migration).not.toContain('DELETE ');
   });
 
+  it('allows typed Secret Vault synthetic test statuses', async () => {
+    const migration = compactSql(await readProjectFile('schema-migrations/040_ai_secret_vault_test_statuses.sql'));
+
+    expect(migration).toContain('glpi_plugin_integaglpi_ai_secret_vault');
+    expect(migration).toContain('glpi_intega_ai_secret_provider_ck');
+    expect(migration).toContain('glpi_intega_ai_secret_test_status_ck');
+    expect(migration).toContain('CHECK constraint maintenance only');
+    expect(migration).toContain("provider = 'google'");
+    expect(migration).toContain("provider = 'gemini'");
+    expect(migration).toContain("'success'");
+    expect(migration).toContain("'failed'");
+    expect(migration).toContain("'timeout'");
+    expect(migration).toContain("'invalid_response'");
+    expect(migration).toContain("'unauthorized'");
+    expect(migration).not.toContain('TRUNCATE ');
+    expect(migration).not.toContain('DELETE ');
+  });
+
   it('keeps conversation_profile_snapshot idempotent for existing tables missing snapshot fields', async () => {
     const initDb = compactSql(await readProjectFile('init-db.sql'));
     const migration = compactSql(await readProjectFile('schema-migrations/009_conversation_profile_snapshot.sql'));
