@@ -249,6 +249,11 @@ $hasTicketPrefill = trim((string) ($_GET['q'] ?? '')) !== '';
                             <dt class="col-sm-4"><?php echo $this->escape(__('Sinais removidos', 'glpiintegaglpi')); ?></dt>
                             <dd class="col-sm-8"><?php echo $this->escape(implode(', ', (array) ($sanitized['detected_kinds'] ?? []))); ?></dd>
                         </dl>
+                        <?php if (!empty($sanitized['blocked'])) { ?>
+                            <div class="alert alert-warning mt-3 mb-0">
+                                <?php echo $this->escape(__('PII residual detectada no preview. O valor bruto não é exibido; remova dados pessoais do resumo e gere novo preview antes de confirmar a pesquisa.', 'glpiintegaglpi')); ?>
+                            </div>
+                        <?php } ?>
                     </div>
                 </div>
 

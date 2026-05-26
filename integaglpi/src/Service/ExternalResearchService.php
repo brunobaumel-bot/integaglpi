@@ -680,13 +680,17 @@ final class ExternalResearchService
             'secret' => ['/\b(password|passwd|senha|token|api[_-]?key|app[_-]?secret|secret|chave)\s*[:=]\s*[\'"]?[^\'"\s,;]{4,}/i', '$1=[redacted]'],
             'token_url' => ['#https?://[^\s<>"\']*(?:token|access_token|key|secret|sig|signature)=[^\s<>"\']+#i', '[token_url]'],
             'email' => ['/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/i', '[email]'],
+            'company' => ['/\b(?:empresa|cliente|companhia|organizacao|organização|razao social|razão social)\s*(?::|=|-)?\s*[A-ZÀ-Ý0-9][A-ZÀ-Ýa-zà-ÿ0-9 .&_-]{2,80}/iu', 'empresa: [empresa]'],
             'name' => ['/\b(nome|cliente|contato|solicitante|tecnico|técnico)\s*(?::|=)?\s*[A-ZÀ-Ý][a-zà-ÿ]+(?:\s+[A-ZÀ-Ý][a-zà-ÿ]+){0,3}/iu', '$1: [nome]'],
+            'proper_name' => ['/\b[A-ZÀ-Ý][a-zà-ÿ]{2,}(?:\s+[A-ZÀ-Ý][a-zà-ÿ]{2,}){1,4}\b/u', '[nome]'],
+            'uppercase_name' => ['/\b[A-ZÀ-Ý]{2,}(?:\s+[A-ZÀ-Ý]{2,}){1,5}\b/u', '[nome]'],
             'phone' => ['/\b(?:\+?55\s?)?(?:\(?\d{2}\)?\s?)?(?:9\s?)?\d{4}[-.\s]?\d{4}\b/', '[telefone]'],
             'cpf_cnpj' => ['/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b|\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/', '[documento]'],
             'ip' => ['/\b(?:10|172\.(?:1[6-9]|2\d|3[0-1])|192\.168)\.\d{1,3}\.\d{1,3}\b/', '[ip_privado]'],
             'domain' => ['/\b(?:[a-z0-9-]+\.)+(?:local|lan|corp|internal|intra|eticainformatica\.com\.br)\b/i', '[dominio_interno]'],
             'address' => ['/\b(?:rua|avenida|av\.|rodovia|travessa)\s+[A-ZÀ-Ýa-zà-ÿ0-9 .-]{5,}/iu', '[endereco]'],
             'server_name' => ['/\b(?:srv|server|host|vm|db)-[a-z0-9-]{3,}\b/i', '[servidor_interno]'],
+            'media' => ['/\b(?:anexo|arquivo|midia|mídia|imagem|audio|áudio|video|vídeo)\s*[:=]?\s*\S+/iu', '[midia]'],
             'base64' => ['/\b(?:[A-Za-z0-9+\/]{80,}={0,2})\b/', '[base64]'],
         ];
         foreach ($patterns as $kind => [$pattern, $replacement]) {

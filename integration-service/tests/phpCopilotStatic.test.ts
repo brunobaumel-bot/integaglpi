@@ -72,6 +72,13 @@ describe('PHP internal Copilot static safety', () => {
     expect(contextService).toContain('COPILOT_MAX_MESSAGES = 8');
     expect(contextService).toContain('COPILOT_MESSAGE_CHARS = 360');
     expect(contextService).toContain('COPILOT_MAX_KB_ARTICLES = 3');
+    expect(contextService).toContain('buildExternalResearchTicketSummary');
+    expect(contextService).toContain('sanitizeExternalResearchPrefillText');
+    expect(contextService).toContain('empresa: [empresa]');
+    expect(contextService).toContain('nome: [nome]');
+    expect(contextService).toContain('[dominio]');
+    expect(contextService).toContain('[id]');
+    expect(contextService).toContain('[midia]');
 
     const combined = `${front}\n${client}\n${ticketTab}\n${contextService}`;
     expect(combined).not.toMatch(/MetaClient|sendOutbound|sendTemplate|ticket\.whatsapp\.reply\.php.*copilot|KnowbaseItem::add|Publicar automaticamente|match \(|readonly|__construct\s*\(\s*(?:public|protected|private)\s/i);

@@ -425,7 +425,7 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                             <label class="form-label" for="ai_review_provider"><?= $this->escape(__('Provider IA P4', 'glpiintegaglpi')); ?></label>
                             <select class="form-select" id="ai_review_provider" name="ai_provider">
                                 <?php $localReady = !empty($localProvider['ready']); ?>
-                                <option value="ollama" <?= $selectedP4Provider === 'ollama' ? 'selected' : ''; ?> <?= $localReady ? '' : 'disabled'; ?>>
+                                <option value="ollama" data-source="local" <?= $selectedP4Provider === 'ollama' ? 'selected' : ''; ?> <?= $localReady ? '' : 'disabled'; ?>>
                                     <?= $this->escape(__('Ollama local', 'glpiintegaglpi')); ?>
                                     <?= $localReady ? '' : ' - ' . $this->escape((string) ($localProvider['blocked_reason'] ?? 'local_model_not_configured')); ?>
                                 </option>
@@ -434,7 +434,7 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                                     $providerId = (string) ($provider['id'] ?? '');
                                     if ($providerId === '') { continue; }
                                     ?>
-                                    <option value="<?= $this->escape($providerId); ?>" <?= $selectedP4Provider === $providerId ? 'selected' : ''; ?>>
+                                    <option value="<?= $this->escape($providerId); ?>" data-source="cloud" <?= $selectedP4Provider === $providerId ? 'selected' : ''; ?>>
                                         <?= $this->escape((string) ($provider['name'] ?? $providerId)); ?>
                                     </option>
                                 <?php } ?>
@@ -443,11 +443,12 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                                     $providerId = (string) ($provider['id'] ?? '');
                                     if ($providerId === '') { continue; }
                                     ?>
-                                    <option value="<?= $this->escape($providerId); ?>" disabled>
+                                    <option value="<?= $this->escape($providerId); ?>" data-source="cloud" disabled>
                                         <?= $this->escape((string) ($provider['name'] ?? $providerId) . ' - bloqueado: ' . (string) ($provider['blocked_reason'] ?? 'provider_not_ready')); ?>
                                     </option>
                                 <?php } ?>
                             </select>
+                            <input type="hidden" id="ai_review_provider_alias" name="ai_review_provider" value="<?= $this->escape($selectedP4Provider); ?>">
                         </div>
                         <div class="col-md-6">
                             <label class="form-label" for="ai_review_model"><?= $this->escape(__('Modelo IA P4', 'glpiintegaglpi')); ?></label>
@@ -456,20 +457,21 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                                 <?php if ($localModels !== []) { ?>
                                     <optgroup label="<?= $this->escape(__('Ollama local', 'glpiintegaglpi')); ?>">
                                         <?php foreach ($localModels as $modelOption) { ?>
-                                            <option value="<?= $this->escape($modelOption); ?>" <?= $selectedP4Model === $modelOption ? 'selected' : ''; ?>><?= $this->escape($modelOption); ?></option>
+                                            <option value="<?= $this->escape($modelOption); ?>" data-provider="ollama" <?= $selectedP4Model === $modelOption ? 'selected' : ''; ?>><?= $this->escape($modelOption); ?></option>
                                         <?php } ?>
                                     </optgroup>
                                 <?php } elseif ($selectedP4Model !== '') { ?>
-                                    <option value="<?= $this->escape($selectedP4Model); ?>" selected><?= $this->escape($selectedP4Model); ?></option>
+                                    <option value="<?= $this->escape($selectedP4Model); ?>" data-provider="<?= $this->escape($selectedP4Provider); ?>" selected><?= $this->escape($selectedP4Model); ?></option>
                                 <?php } ?>
                                 <?php foreach (array_merge($readyCloudProviders, $blockedCloudProviders) as $provider) {
                                     if (!is_array($provider)) { continue; }
+                                    $providerId = (string) ($provider['id'] ?? '');
                                     $models = is_array($provider['models'] ?? null) ? array_map('strval', $provider['models']) : [];
                                     if ($models === []) { continue; }
                                     ?>
                                     <optgroup label="<?= $this->escape((string) ($provider['name'] ?? $provider['id'] ?? 'cloud')); ?>">
                                         <?php foreach ($models as $modelOption) { ?>
-                                            <option value="<?= $this->escape($modelOption); ?>" <?= $selectedP4Model === $modelOption ? 'selected' : ''; ?>><?= $this->escape($modelOption); ?></option>
+                                            <option value="<?= $this->escape($modelOption); ?>" data-provider="<?= $this->escape($providerId); ?>" <?= $selectedP4Model === $modelOption ? 'selected' : ''; ?>><?= $this->escape($modelOption); ?></option>
                                         <?php } ?>
                                     </optgroup>
                                 <?php } ?>
@@ -477,6 +479,7 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                                     <option value="" selected><?= $this->escape(__('sem modelo selecionado', 'glpiintegaglpi')); ?></option>
                                 <?php } ?>
                             </select>
+                            <input type="hidden" id="ai_review_model_alias" name="ai_review_model" value="<?= $this->escape($selectedP4Model); ?>">
                             <div class="form-text">
                                 <?= $this->escape(__('Default local-first. Cloud só executa se provider estiver pronto, payload P4 sanitizado e last_test_status=success.', 'glpiintegaglpi')); ?>
                             </div>
@@ -803,6 +806,8 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                             <input type="hidden" name="max_candidates" value="<?= $previewMaxCandidates; ?>">
                             <input type="hidden" name="ai_provider" value="<?= $this->escape($previewProviderId); ?>">
                             <input type="hidden" name="ai_model" value="<?= $this->escape($previewModel); ?>">
+                            <input type="hidden" name="ai_review_provider" value="<?= $this->escape($previewProviderId); ?>">
+                            <input type="hidden" name="ai_review_model" value="<?= $this->escape($previewModel); ?>">
                             <input type="hidden" name="p4_preview_payload_hash" value="<?= $this->escape((string) ($aiReviewPreview['payload_hash'] ?? '')); ?>">
                             <div class="d-flex flex-wrap align-items-center justify-content-between gap-2">
                                 <div class="small">
@@ -915,3 +920,39 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
         </div>
     </div>
 </div>
+
+<script>
+(function () {
+    var provider = document.getElementById('ai_review_provider');
+    var model = document.getElementById('ai_review_model');
+    var providerAlias = document.getElementById('ai_review_provider_alias');
+    var modelAlias = document.getElementById('ai_review_model_alias');
+    if (!provider || !model) {
+        return;
+    }
+    function syncP4Model() {
+        var selectedProvider = provider.value || 'ollama';
+        var currentModel = model.value || '';
+        var currentOption = model.options[model.selectedIndex] || null;
+        if (!currentOption || currentOption.getAttribute('data-provider') !== selectedProvider) {
+            for (var index = 0; index < model.options.length; index += 1) {
+                var option = model.options[index];
+                if (option.getAttribute('data-provider') === selectedProvider) {
+                    model.selectedIndex = index;
+                    currentModel = option.value || '';
+                    break;
+                }
+            }
+        }
+        if (providerAlias) {
+            providerAlias.value = selectedProvider;
+        }
+        if (modelAlias) {
+            modelAlias.value = currentModel;
+        }
+    }
+    provider.addEventListener('change', syncP4Model);
+    model.addEventListener('change', syncP4Model);
+    syncP4Model();
+}());
+</script>

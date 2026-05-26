@@ -245,10 +245,10 @@ final class TicketContextService
      */
     private function buildExternalResearchTicketSummary(\Ticket $ticket, string $conversationId, array $kbItems): string
     {
-        $title = $this->sanitizeCopilotText((string) ($ticket->fields['name'] ?? ''), 120);
+        $title = $this->sanitizeExternalResearchPrefillText((string) ($ticket->fields['name'] ?? ''), 120);
         $rawContent = strip_tags((string) ($ticket->fields['content'] ?? ''));
-        $symptoms = $this->sanitizeCopilotText($rawContent, 400);
-        $latestMsg = $this->sanitizeCopilotText($this->latestMessageText($conversationId), 200);
+        $symptoms = $this->sanitizeExternalResearchPrefillText($rawContent, 400);
+        $latestMsg = $this->sanitizeExternalResearchPrefillText($this->latestMessageText($conversationId), 200);
 
         $parts = [];
         if ($title !== '') {
@@ -268,7 +268,7 @@ final class TicketContextService
             }
             $kbTitle = trim((string) ($kbItem['title'] ?? ''));
             if ($kbTitle !== '') {
-                $kbTitles[] = $kbTitle;
+                $kbTitles[] = $this->sanitizeExternalResearchPrefillText($kbTitle, 120);
             }
         }
         if ($kbTitles !== []) {
@@ -277,7 +277,7 @@ final class TicketContextService
 
         $parts[] = 'Objetivo: buscar solução técnica em documentação oficial sem expor dados pessoais ou internos.';
 
-        return $this->sanitizeCopilotText(implode("\n", $parts), 1800);
+        return $this->sanitizeExternalResearchPrefillText(implode("\n", $parts), 1800);
     }
 
     /**
@@ -934,6 +934,27 @@ final class TicketContextService
         $value = preg_replace('/\+?\d[\d\s().-]{7,}\d/', '[telefone]', $value) ?? $value;
         $value = preg_replace('/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b|\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/', '[documento]', $value) ?? $value;
         $value = preg_replace('/(password|token|bearer|api_key|app_secret|secret)\s*[:=]\s*\S+/i', '$1=[redacted]', $value) ?? $value;
+        $value = preg_replace('/\s+/u', ' ', $value) ?? $value;
+        $value = trim($value);
+
+        return mb_substr($value, 0, max(1, $limit), 'UTF-8');
+    }
+
+    private function sanitizeExternalResearchPrefillText(string $value, int $limit = 300): string
+    {
+        $value = $this->sanitizeCopilotText($value, max($limit * 2, 300));
+        $patterns = [
+            '/\b(?:empresa|cliente|companhia|organizacao|organização|razao social|razão social)\s*(?::|=|-)?\s*[A-ZÀ-Ý0-9][A-ZÀ-Ýa-zà-ÿ0-9 .&_-]{2,80}/iu' => 'empresa: [empresa]',
+            '/\b(?:nome|contato|solicitante|responsavel|responsável)\s*(?::|=|-)?\s*[A-ZÀ-Ý][A-ZÀ-Ýa-zà-ÿ]+(?:\s+[A-ZÀ-Ý][A-ZÀ-Ýa-zà-ÿ]+){0,4}/iu' => 'nome: [nome]',
+            '/\b(?:[A-ZÀ-Ý]{2,})(?:\s+[A-ZÀ-Ý]{2,}){1,5}\b/u' => '[nome]',
+            '/\b[A-ZÀ-Ý][a-zà-ÿ]{2,}(?:\s+[A-ZÀ-Ý][a-zà-ÿ]{2,}){1,4}\b/u' => '[nome]',
+            '/\b(?:[a-z0-9-]+\.)+(?:local|lan|corp|internal|intra|eticainformatica\.com\.br)\b/i' => '[dominio]',
+            '/\b(?:10|172\.(?:1[6-9]|2\d|3[0-1])|192\.168)\.\d{1,3}\.\d{1,3}\b/' => '[id]',
+            '/\b(?:anexo|arquivo|midia|mídia|imagem|audio|áudio|video|vídeo)\s*[:=]?\s*\S+/iu' => '[midia]',
+        ];
+        foreach ($patterns as $pattern => $replacement) {
+            $value = preg_replace($pattern, $replacement, $value) ?? $value;
+        }
         $value = preg_replace('/\s+/u', ' ', $value) ?? $value;
         $value = trim($value);
 

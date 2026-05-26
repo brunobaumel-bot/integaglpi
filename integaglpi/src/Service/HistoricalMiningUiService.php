@@ -23,6 +23,7 @@ final class HistoricalMiningUiService
     private const P4_CONFIDENCE_THRESHOLD = 70;
     private const P4_MAX_CANDIDATES = 10;
     private const P4_ELIGIBLE_CANDIDATE_STATUSES = ['suggested', 'in_review', 'low_confidence', 'possible_duplicate', 'approved'];
+    private const P4_CLOUD_PROVIDER_IDS = ['openai', 'anthropic', 'gemini', 'deepseek', 'xai'];
     private PluginConfigService $pluginConfigService;
     private IntegrationServiceClient $client;
 
@@ -1807,10 +1808,12 @@ final class HistoricalMiningUiService
     {
         $catalog = $this->loadOperationalProviderCatalog();
         $default = is_array($catalog['p4_default'] ?? null) ? $catalog['p4_default'] : ['provider' => 'ollama', 'model' => ''];
-        $hasExplicitProvider = array_key_exists('ai_provider', $post);
-        $hasExplicitModel = array_key_exists('ai_model', $post);
-        $provider = strtolower(trim((string) ($hasExplicitProvider ? $post['ai_provider'] : ($default['provider'] ?? 'ollama'))));
-        $model = $this->sanitizeModel((string) ($hasExplicitModel ? $post['ai_model'] : ($default['model'] ?? '')));
+        $rawProvider = $post['ai_provider'] ?? $post['ai_review_provider'] ?? null;
+        $rawModel = $post['ai_model'] ?? $post['ai_review_model'] ?? null;
+        $hasExplicitProvider = $rawProvider !== null;
+        $hasExplicitModel = $rawModel !== null;
+        $provider = strtolower(trim((string) ($hasExplicitProvider ? $rawProvider : ($default['provider'] ?? 'ollama'))));
+        $model = $this->sanitizeModel((string) ($hasExplicitModel ? $rawModel : ($default['model'] ?? '')));
         if ($provider === 'local') {
             $provider = 'ollama';
         }
@@ -1871,6 +1874,19 @@ final class HistoricalMiningUiService
                     'last_test_status' => (string) ($row['last_test_status'] ?? 'not_tested'),
                 ];
             }
+        }
+
+        if ($hasExplicitProvider && in_array($provider, self::P4_CLOUD_PROVIDER_IDS, true)) {
+            return [
+                'provider' => $provider,
+                'model' => $model,
+                'label' => $provider,
+                'ready' => false,
+                'cloud' => true,
+                'source' => 'cloud',
+                'blocked_reason' => $model === '' ? 'provider_selection_missing' : 'provider_not_ready',
+                'last_test_status' => 'unknown',
+            ];
         }
 
         return [
