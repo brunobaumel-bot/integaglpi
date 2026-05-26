@@ -789,6 +789,39 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                                 <?php } ?>
                             </div>
                         <?php } ?>
+                        <?php
+                        $previewProviderReady = !empty($previewProvider['ready']);
+                        $previewRunId = (string) ($aiReviewPreview['run_id'] ?? '');
+                        $previewMaxCandidates = (int) ($aiReviewPreview['max_candidates'] ?? 5);
+                        $previewProviderId = (string) ($previewProvider['provider'] ?? 'ollama');
+                        $previewModel = (string) ($previewProvider['model'] ?? '');
+                        ?>
+                        <form method="post" action="<?= $this->escape($this->getHistoricalMiningUrl()); ?>" class="border rounded p-2 mt-3">
+                            <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
+                            <input type="hidden" name="action" value="execute_ai_candidate_review">
+                            <input type="hidden" name="run_id" value="<?= $this->escape($previewRunId); ?>">
+                            <input type="hidden" name="max_candidates" value="<?= $previewMaxCandidates; ?>">
+                            <input type="hidden" name="ai_provider" value="<?= $this->escape($previewProviderId); ?>">
+                            <input type="hidden" name="ai_model" value="<?= $this->escape($previewModel); ?>">
+                            <input type="hidden" name="p4_preview_payload_hash" value="<?= $this->escape((string) ($aiReviewPreview['payload_hash'] ?? '')); ?>">
+                            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2">
+                                <div class="small">
+                                    <?= $this->escape(__('Execução confirmará a seleção do preview:', 'glpiintegaglpi')); ?>
+                                    <code><?= $this->escape($previewProviderId); ?></code>
+                                    /
+                                    <code><?= $this->escape($previewModel); ?></code>
+                                </div>
+                                <button class="btn btn-outline-secondary btn-sm" type="submit" <?= (!$aiReviewEnabled || !$previewProviderReady || $previewRunId === '') ? 'disabled' : ''; ?>>
+                                    <?= $this->escape(__('Executar revisão IA com este provider/modelo', 'glpiintegaglpi')); ?>
+                                </button>
+                            </div>
+                            <?php if (!$previewProviderReady) { ?>
+                                <div class="text-warning small mt-2">
+                                    <?= $this->escape(__('Provider/modelo do preview não está pronto:', 'glpiintegaglpi')); ?>
+                                    <code><?= $this->escape((string) ($previewProvider['blocked_reason'] ?? 'provider_not_ready')); ?></code>
+                                </div>
+                            <?php } ?>
+                        </form>
                     </div>
                 </div>
             <?php } ?>
@@ -808,6 +841,8 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                             <dd class="col-sm-8"><?= $this->escape((string) ($aiReviewResult['provider'] ?? '')); ?></dd>
                             <dt class="col-sm-4"><?= $this->escape(__('model', 'glpiintegaglpi')); ?></dt>
                             <dd class="col-sm-8"><?= $this->escape((string) ($aiReviewResult['model'] ?? '')); ?></dd>
+                            <dt class="col-sm-4"><?= $this->escape(__('source', 'glpiintegaglpi')); ?></dt>
+                            <dd class="col-sm-8"><?= $this->escape((string) ($aiReviewResult['source'] ?? '')); ?></dd>
                             <dt class="col-sm-4"><?= $this->escape(__('payload_hash', 'glpiintegaglpi')); ?></dt>
                             <dd class="col-sm-8"><code><?= $this->escape((string) ($aiReviewResult['payload_hash'] ?? '')); ?></code></dd>
                             <dt class="col-sm-4"><?= $this->escape(__('suggestion_hash', 'glpiintegaglpi')); ?></dt>

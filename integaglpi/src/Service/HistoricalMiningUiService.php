@@ -315,6 +315,9 @@ final class HistoricalMiningUiService
             'max_candidates' => $maxCandidates,
             'payload_hash' => $payloadHash,
             'provider_selection' => $providerSelection,
+            'provider' => (string) ($providerSelection['provider'] ?? 'disabled'),
+            'model' => (string) ($providerSelection['model'] ?? ''),
+            'source' => (string) ($providerSelection['source'] ?? 'local'),
             'candidates' => $payloads,
             'safety_flags' => [
                 'p4_ai_sanitized_candidates_only' => true,
@@ -336,6 +339,8 @@ final class HistoricalMiningUiService
             'feature_enabled' => (bool) $preview['enabled'],
             'provider' => (string) ($providerSelection['provider'] ?? 'disabled'),
             'model_hash' => hash('sha256', (string) ($providerSelection['model'] ?? '')),
+            'source' => (string) ($providerSelection['source'] ?? 'local'),
+            'ready' => !empty($providerSelection['ready']),
         ]);
 
         return [
@@ -357,11 +362,15 @@ final class HistoricalMiningUiService
         }
 
         if (!$this->isAiCandidateReviewEnabled()) {
+            $providerSelection = $this->selectedAiProviderForP4($post);
             $this->audit('KB_CANDIDATE_AI_REVIEW_BLOCKED', [
                 'glpi_user_id' => $userId,
                 'run_id' => $runId,
                 'reason' => 'feature_flag_disabled',
                 'feature_flag' => self::P4_AI_REVIEW_FEATURE_FLAG,
+                'provider' => (string) ($providerSelection['provider'] ?? 'disabled'),
+                'model_hash' => hash('sha256', (string) ($providerSelection['model'] ?? '')),
+                'source' => (string) ($providerSelection['source'] ?? 'local'),
             ]);
 
             return [
@@ -371,6 +380,9 @@ final class HistoricalMiningUiService
                     'status' => 'disabled',
                     'run_id' => $runId,
                     'feature_flag' => self::P4_AI_REVIEW_FEATURE_FLAG,
+                    'provider' => (string) ($providerSelection['provider'] ?? 'disabled'),
+                    'model' => (string) ($providerSelection['model'] ?? ''),
+                    'source' => (string) ($providerSelection['source'] ?? 'local'),
                     'no_auto_publish' => true,
                 ],
             ];
@@ -394,13 +406,18 @@ final class HistoricalMiningUiService
         }
 
         $providerConfig = $this->loadAiCandidateReviewProviderConfig($post);
+        $provider = (string) ($providerConfig['provider'] ?? 'disabled');
+        $providerModel = (string) ($providerConfig['model'] ?? '');
+        $providerSource = (string) ($providerConfig['source'] ?? (!empty($providerConfig['cloud']) ? 'cloud' : 'local'));
         if (empty($providerConfig['available'])) {
             $this->audit('KB_CANDIDATE_AI_REVIEW_BLOCKED', [
                 'glpi_user_id' => $userId,
                 'run_id' => $runId,
                 'reason' => (string) ($providerConfig['reason'] ?? 'provider_unavailable'),
                 'feature_flag' => self::P4_AI_REVIEW_FEATURE_FLAG,
-                'provider' => (string) ($providerConfig['provider'] ?? 'disabled'),
+                'provider' => $provider,
+                'model_hash' => hash('sha256', $providerModel),
+                'source' => $providerSource,
             ]);
 
             return [
@@ -411,7 +428,9 @@ final class HistoricalMiningUiService
                     'error_type' => (string) ($providerConfig['reason'] ?? 'provider_unavailable'),
                     'run_id' => $runId,
                     'reason' => (string) ($providerConfig['reason'] ?? 'provider_unavailable'),
-                    'provider' => (string) ($providerConfig['provider'] ?? 'disabled'),
+                    'provider' => $provider,
+                    'model' => $providerModel,
+                    'source' => $providerSource,
                     'no_auto_publish' => true,
                 ],
             ];
@@ -429,13 +448,15 @@ final class HistoricalMiningUiService
             $this->audit('KB_CANDIDATE_AI_REVIEW_COMPLETED', [
                 'glpi_user_id' => $userId,
                 'run_id' => $runId,
-                'provider' => (string) ($providerConfig['provider'] ?? 'ollama'),
-                'model_hash' => hash('sha256', (string) ($providerConfig['model'] ?? '')),
+                'provider' => $provider,
+                'model_hash' => hash('sha256', $providerModel),
+                'source' => $providerSource,
                 'payload_hash' => $payloadHash,
                 'suggestion_hash' => $suggestionHash,
                 'candidate_count' => count($payloads),
                 'suggestion_count' => count($suggestions),
                 'persisted_reviews' => $persisted,
+                'no_auto_publish' => true,
                 'recommended_actions' => array_map(static function (array $suggestion): string {
                     return (string) ($suggestion['recommended_action'] ?? '');
                 }, $suggestions),
@@ -450,8 +471,9 @@ final class HistoricalMiningUiService
                 'ai_review_result' => [
                     'status' => 'completed',
                     'run_id' => $runId,
-                    'provider' => (string) ($providerConfig['provider'] ?? 'ollama'),
-                    'model' => (string) ($providerConfig['model'] ?? ''),
+                    'provider' => $provider,
+                    'model' => $providerModel,
+                    'source' => $providerSource,
                     'payload_hash' => $payloadHash,
                     'suggestion_hash' => $suggestionHash,
                     'elapsed_ms' => (int) ($providerResponse['elapsed_ms'] ?? 0),
@@ -468,6 +490,9 @@ final class HistoricalMiningUiService
                 'glpi_user_id' => $userId,
                 'run_id' => $runId,
                 'reason' => $errorType,
+                'provider' => $provider,
+                'model_hash' => hash('sha256', $providerModel),
+                'source' => $providerSource,
                 'payload_hash' => $payloadHash,
                 'error_hash' => hash('sha256', $exception->getMessage()),
             ]);
@@ -479,6 +504,9 @@ final class HistoricalMiningUiService
                     'status' => 'error',
                     'error_type' => $errorType,
                     'run_id' => $runId,
+                    'provider' => $provider,
+                    'model' => $providerModel,
+                    'source' => $providerSource,
                     'payload_hash' => $payloadHash,
                     'human_review_required' => true,
                     'no_auto_publish' => true,
@@ -1670,6 +1698,9 @@ final class HistoricalMiningUiService
                     'available' => false,
                     'reason' => (string) ($selection['blocked_reason'] ?? 'provider_not_ready'),
                     'provider' => $selectedProvider !== '' ? $selectedProvider : 'disabled',
+                    'model' => (string) ($selection['model'] ?? ''),
+                    'source' => 'cloud',
+                    'cloud' => true,
                 ];
             }
 
@@ -1678,6 +1709,7 @@ final class HistoricalMiningUiService
                 'provider' => $selectedProvider,
                 'model' => (string) ($selection['model'] ?? ''),
                 'timeout_seconds' => max(15, min(120, (int) $this->runtimeConfigValue(self::P4_AI_REVIEW_TIMEOUT_SECONDS) ?: 75)),
+                'source' => 'cloud',
                 'cloud' => true,
             ];
         }
@@ -1691,6 +1723,8 @@ final class HistoricalMiningUiService
                 'available' => false,
                 'reason' => $provider === '' ? 'provider_disabled' : 'provider_not_local_ollama',
                 'provider' => $provider === '' ? 'disabled' : $provider,
+                'model' => (string) ($selection['model'] ?? ''),
+                'source' => 'local',
             ];
         }
 
@@ -1706,6 +1740,8 @@ final class HistoricalMiningUiService
                 'available' => false,
                 'reason' => 'model_not_configured',
                 'provider' => 'ollama',
+                'model' => '',
+                'source' => 'local',
             ];
         }
 
@@ -1721,6 +1757,8 @@ final class HistoricalMiningUiService
                 'available' => false,
                 'reason' => 'provider_url_not_allowed',
                 'provider' => 'ollama',
+                'model' => $model,
+                'source' => 'local',
             ];
         }
 
@@ -1736,6 +1774,7 @@ final class HistoricalMiningUiService
             'base_url' => rtrim($baseUrl, '/'),
             'model' => $model,
             'timeout_seconds' => $timeout,
+            'source' => 'local',
         ];
     }
 
@@ -1768,8 +1807,10 @@ final class HistoricalMiningUiService
     {
         $catalog = $this->loadOperationalProviderCatalog();
         $default = is_array($catalog['p4_default'] ?? null) ? $catalog['p4_default'] : ['provider' => 'ollama', 'model' => ''];
-        $provider = strtolower(trim((string) ($post['ai_provider'] ?? $default['provider'] ?? 'ollama')));
-        $model = $this->sanitizeModel((string) ($post['ai_model'] ?? $default['model'] ?? ''));
+        $hasExplicitProvider = array_key_exists('ai_provider', $post);
+        $hasExplicitModel = array_key_exists('ai_model', $post);
+        $provider = strtolower(trim((string) ($hasExplicitProvider ? $post['ai_provider'] : ($default['provider'] ?? 'ollama'))));
+        $model = $this->sanitizeModel((string) ($hasExplicitModel ? $post['ai_model'] : ($default['model'] ?? '')));
         if ($provider === 'local') {
             $provider = 'ollama';
         }
@@ -1788,6 +1829,7 @@ final class HistoricalMiningUiService
                 'label' => 'Ollama local',
                 'ready' => $modelAllowed && !empty($local['ready']),
                 'cloud' => false,
+                'source' => 'local',
                 'blocked_reason' => $modelAllowed && !empty($local['ready']) ? '' : 'local_model_not_available',
             ];
         }
@@ -1801,6 +1843,18 @@ final class HistoricalMiningUiService
                 }
                 $models = is_array($row['models'] ?? null) ? array_values(array_map('strval', $row['models'])) : [];
                 if ($model === '' && $models !== []) {
+                    if ($hasExplicitProvider) {
+                        return [
+                            'provider' => $provider,
+                            'model' => '',
+                            'label' => (string) ($row['name'] ?? $provider),
+                            'ready' => false,
+                            'cloud' => true,
+                            'source' => 'cloud',
+                            'blocked_reason' => 'provider_selection_missing',
+                            'last_test_status' => (string) ($row['last_test_status'] ?? 'not_tested'),
+                        ];
+                    }
                     $model = (string) $models[0];
                 }
                 $modelAllowed = $model !== '' && in_array($model, $models, true);
@@ -1812,6 +1866,7 @@ final class HistoricalMiningUiService
                     'label' => (string) ($row['name'] ?? $provider),
                     'ready' => $ready,
                     'cloud' => true,
+                    'source' => 'cloud',
                     'blocked_reason' => $ready ? '' : ($modelAllowed ? (string) ($row['blocked_reason'] ?? 'provider_not_ready') : 'model_not_allowed'),
                     'last_test_status' => (string) ($row['last_test_status'] ?? 'not_tested'),
                 ];
@@ -1824,6 +1879,7 @@ final class HistoricalMiningUiService
             'label' => 'provider inválido',
             'ready' => false,
             'cloud' => false,
+            'source' => 'local',
             'blocked_reason' => 'provider_not_allowed',
         ];
     }
@@ -2588,7 +2644,7 @@ final class HistoricalMiningUiService
     private function p4ProviderErrorType(string $message): string
     {
         $normalized = strtolower(trim($message));
-        if (in_array($normalized, ['provider_url_not_allowed', 'provider_unreachable', 'provider_unavailable', 'provider_disabled', 'provider_not_local_ollama', 'provider_not_ready', 'model_not_allowed', 'local_model_not_available', 'model_not_configured', 'timeout', 'invalid_json', 'schema_invalid', 'low_confidence', 'pii_blocked', 'secret_not_configured', 'secret_vault_locked'], true)) {
+        if (in_array($normalized, ['provider_url_not_allowed', 'provider_unreachable', 'provider_unavailable', 'provider_disabled', 'provider_not_local_ollama', 'provider_not_ready', 'provider_selection_missing', 'model_not_allowed', 'local_model_not_available', 'model_not_configured', 'timeout', 'invalid_json', 'schema_invalid', 'low_confidence', 'pii_blocked', 'secret_not_configured', 'secret_vault_locked'], true)) {
             return $normalized;
         }
         if (strpos($normalized, 'dado sensível') !== false || strpos($normalized, 'pii') !== false) {
@@ -2629,6 +2685,9 @@ final class HistoricalMiningUiService
         }
         if ($message === 'provider_not_ready') {
             return __('provider_not_ready: provider/modelo selecionado não passou gates, Secret Vault e teste sintético.', 'glpiintegaglpi');
+        }
+        if ($message === 'provider_selection_missing') {
+            return __('provider_selection_missing: selecione provider e modelo antes de executar P4 cloud.', 'glpiintegaglpi');
         }
         if ($message === 'model_not_allowed') {
             return __('model_not_allowed: modelo selecionado não está no catálogo allowlist do provider.', 'glpiintegaglpi');

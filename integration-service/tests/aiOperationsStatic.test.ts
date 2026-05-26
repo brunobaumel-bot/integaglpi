@@ -385,8 +385,16 @@ describe('AI operations console static safety', () => {
     expect(externalService).toContain('external_research_cloud');
     expect(historicalService).toContain('selectedAiProviderForP4');
     expect(historicalService).toContain('callCloudProviderForCandidateReview');
+    expect(historicalService).toContain("array_key_exists('ai_provider', $post)");
+    expect(historicalService).toContain('provider_selection_missing');
+    expect(historicalService).toContain("'source' => 'cloud'");
+    expect(historicalService).toContain('model_hash');
     expect(historicalTemplate).toContain('Provider IA P4');
     expect(historicalTemplate).toContain('Modelo IA P4');
+    expect(historicalTemplate).toContain('Executar revisão IA com este provider/modelo');
+    expect(historicalTemplate).toContain('name="ai_provider"');
+    expect(historicalTemplate).toContain('name="ai_model"');
+    expect(historicalTemplate).toContain('p4_preview_payload_hash');
     expect(ticketTab).toContain('Provider efetivo:');
     expect(ticketTab).toContain('Rascunho técnico:');
     expect(`${externalService}\n${historicalService}\n${ticketTab}`).not.toMatch(/sendOutbound|MetaClient|KnowbaseItem::add|auto_publish\s*=\s*true/i);
