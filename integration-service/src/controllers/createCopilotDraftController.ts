@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import { randomUUID } from 'node:crypto';
 
 import { COPILOT_TONES, COPILOT_WINDOW_NOTICES, type CopilotContext, type CopilotTone } from '../ai/copilotTypes.js';
-import type { CopilotDraftService } from '../domain/services/CopilotDraftService.js';
+import type { CopilotDraftRuntimeConfig, CopilotDraftService } from '../domain/services/CopilotDraftService.js';
 import { logger } from '../infra/logger/logger.js';
 
 function safeString(value: unknown, max: number): string {
@@ -71,6 +71,67 @@ function normalizeContext(value: unknown): CopilotContext {
   };
 }
 
+function boolOrUndefined(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+  return undefined;
+}
+
+function boundedNumberOrUndefined(value: unknown, min: number, max: number): number | undefined {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return undefined;
+  }
+  return Math.max(min, Math.min(max, Math.trunc(parsed)));
+}
+
+function normalizeRuntimeConfig(value: unknown): CopilotDraftRuntimeConfig | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const providerRaw = safeString(record.provider, 20).toLowerCase();
+  const provider = providerRaw === 'ollama' ? 'ollama' : providerRaw === 'disabled' ? 'disabled' : undefined;
+  const model = safeString(record.model, 120);
+  const runtimeConfig: CopilotDraftRuntimeConfig = {};
+  const enabled = boolOrUndefined(record.enabled);
+  const dryRun = boolOrUndefined(record.dry_run ?? record.dryRun);
+  const maxChars = boundedNumberOrUndefined(record.max_chars ?? record.maxChars, 1_000, 12_000);
+  const timeoutMs = boundedNumberOrUndefined(record.timeout_ms ?? record.timeoutMs, 15_000, 120_000);
+
+  if (enabled !== undefined) {
+    runtimeConfig.enabled = enabled;
+  }
+  if (provider !== undefined) {
+    runtimeConfig.provider = provider;
+  }
+  if (model !== '') {
+    runtimeConfig.model = model;
+  }
+  if (dryRun !== undefined) {
+    runtimeConfig.dryRun = dryRun;
+  }
+  if (maxChars !== undefined) {
+    runtimeConfig.maxChars = maxChars;
+  }
+  if (timeoutMs !== undefined) {
+    runtimeConfig.timeoutMs = timeoutMs;
+  }
+
+  return Object.keys(runtimeConfig).length > 0 ? runtimeConfig : undefined;
+}
+
 function payloadSize(req: Request): number {
   const contentLength = Number(req.headers['content-length'] ?? 0);
   if (Number.isFinite(contentLength) && contentLength > 0) {
@@ -120,6 +181,7 @@ export function createCopilotDraftController(service: CopilotDraftService) {
           context: normalizeContext(body.context),
           tone: normalizeTone(body.tone),
           requestedBy: Number.isFinite(userId) ? userId : null,
+          runtimeConfig: normalizeRuntimeConfig(body.runtime_config ?? body.runtimeConfig),
         });
         logger.info({
           request_id: requestId,

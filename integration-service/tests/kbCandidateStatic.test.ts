@@ -79,5 +79,9 @@ describe('KB candidate P3 static safety', () => {
     expect(template).not.toMatch(/Enviar WhatsApp|Acionar template|Publicar automaticamente|Ollama|Copiloto/i);
     expect(service).not.toMatch(/INSERT\s+INTO\s+.*glpi_knowbaseitems|UPDATE\s+.*glpi_knowbaseitems/i);
     expect(service).not.toMatch(/DROP\s+|TRUNCATE\s+|DELETE\s+FROM/i);
+    expect(service).toContain('createKbCandidateFromSolution');
+    expect(service).toContain('KB_CANDIDATE_CREATED_FROM_SOLUTION');
+    expect(service).toContain("'edit_note'");
+    expect(service).toContain('Nenhuma publicação automática foi executada');
   });
 });

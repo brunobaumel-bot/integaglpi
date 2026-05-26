@@ -11,6 +11,8 @@ use GlpiPlugin\Integaglpi\Service\TicketContextService;
 Session::checkLoginUser();
 
 header('Content-Type: application/json; charset=UTF-8');
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
 
 /**
  * @param array<string, mixed> $payload
@@ -75,7 +77,13 @@ try {
     }
 
     if (!Plugin::isCsrfValid($_POST)) {
-        integaglpiCopilotJsonResponse(['success' => false, 'message' => __('Token CSRF inválido.', 'glpiintegaglpi')], 403);
+        error_log('[integaglpi][copilot][csrf] csrf_denied');
+        integaglpiCopilotJsonResponse([
+            'success' => false,
+            'message' => 'csrf_denied',
+            'display_message' => __('Sessão/token expirado. Recarregue a página e tente novamente.', 'glpiintegaglpi'),
+            'error_type' => 'csrf_denied',
+        ], 403);
         exit;
     }
 

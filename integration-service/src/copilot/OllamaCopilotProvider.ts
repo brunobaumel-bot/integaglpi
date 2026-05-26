@@ -7,7 +7,7 @@ interface OllamaGenerateResponse {
 }
 
 export interface CopilotDraftProvider {
-  generate(prompt: string): Promise<CopilotDraftResult>;
+  generate(prompt: string, runtimeConfig?: { model?: string; timeoutMs?: number }): Promise<CopilotDraftResult>;
 }
 
 export class OllamaCopilotProvider implements CopilotDraftProvider {
@@ -18,16 +18,22 @@ export class OllamaCopilotProvider implements CopilotDraftProvider {
     private readonly httpClient = new ResilientHttpClient(),
   ) {}
 
-  public async generate(prompt: string): Promise<CopilotDraftResult> {
+  public async generate(prompt: string, runtimeConfig: { model?: string; timeoutMs?: number } = {}): Promise<CopilotDraftResult> {
+    const model = typeof runtimeConfig.model === 'string' && runtimeConfig.model.trim() !== ''
+      ? runtimeConfig.model.trim()
+      : this.model;
+    const timeoutMs = typeof runtimeConfig.timeoutMs === 'number' && Number.isFinite(runtimeConfig.timeoutMs) && runtimeConfig.timeoutMs > 0
+      ? runtimeConfig.timeoutMs
+      : this.timeoutMs;
     const response = await this.httpClient.request(`${this.baseUrl.replace(/\/+$/, '')}/api/generate`, {
       method: 'POST',
-      timeoutMs: this.timeoutMs,
+      timeoutMs,
       retries: 0,
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: this.model,
+        model,
         prompt,
         stream: false,
         format: 'json',

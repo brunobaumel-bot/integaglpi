@@ -92,6 +92,9 @@ final class HistoricalMiningUiService
             if ($action === 'execute_ai_candidate_review') {
                 return $this->executeAiCandidateReview($post, $userId);
             }
+            if ($action === 'create_kb_from_solution') {
+                return $this->handleCreateKbFromSolution($post, $userId);
+            }
 
             return ['type' => 'danger', 'message' => __('Ação inválida.', 'glpiintegaglpi')];
         } catch (RuntimeException $exception) {
@@ -452,19 +455,21 @@ final class HistoricalMiningUiService
                 ],
             ];
         } catch (RuntimeException $exception) {
+            $errorType = $this->p4ProviderErrorType($exception->getMessage());
             $this->audit('KB_CANDIDATE_AI_REVIEW_BLOCKED', [
                 'glpi_user_id' => $userId,
                 'run_id' => $runId,
-                'reason' => 'provider_or_response_error',
+                'reason' => $errorType,
                 'payload_hash' => $payloadHash,
                 'error_hash' => hash('sha256', $exception->getMessage()),
             ]);
 
             return [
                 'type' => 'warning',
-                'message' => $this->publicError($exception->getMessage()),
+                'message' => $this->publicError($errorType),
                 'ai_review_result' => [
                     'status' => 'error',
+                    'error_type' => $errorType,
                     'run_id' => $runId,
                     'payload_hash' => $payloadHash,
                     'human_review_required' => true,
@@ -472,6 +477,29 @@ final class HistoricalMiningUiService
                 ],
             ];
         }
+    }
+
+    /**
+     * Handles creation of a KB candidate from a ticket solution submitted from the ticket tab.
+     * Delegates sanitization and persistence to KbCandidateService.
+     * No automatic publish. No WhatsApp send. Human gate required.
+     *
+     * @param array<string, mixed> $post
+     * @return array{type: string, message: string}
+     */
+    private function handleCreateKbFromSolution(array $post, int $userId): array
+    {
+        $ticketId = (int) ($post['ticket_id'] ?? 0);
+        if ($ticketId <= 0) {
+            throw new RuntimeException(__('ID de chamado inválido para criar candidato KB.', 'glpiintegaglpi'));
+        }
+
+        $solutionText = mb_substr(strip_tags((string) ($post['solution_text'] ?? '')), 0, 4000);
+        $ticketTitle = mb_substr(strip_tags((string) ($post['ticket_title'] ?? '')), 0, 240);
+
+        $service = new KbCandidateService($this->pluginConfigService);
+
+        return $service->createKbCandidateFromSolution($ticketId, $solutionText, $ticketTitle, $userId);
     }
 
     /**
@@ -1660,7 +1688,7 @@ final class HistoricalMiningUiService
         if (!$this->isAllowedLocalOllamaUrl($baseUrl)) {
             return [
                 'available' => false,
-                'reason' => 'provider_url_not_local',
+                'reason' => 'provider_url_not_allowed',
                 'provider' => 'ollama',
             ];
         }
@@ -1801,20 +1829,20 @@ final class HistoricalMiningUiService
         $elapsedMs = (int) round((microtime(true) - $startedAt) * 1000);
         if (!is_string($raw) || $raw === '') {
             error_log('[integaglpi][historical_mining_ui][p4_ai_review] provider_empty elapsed_ms=' . $elapsedMs . ' error=' . $this->sanitizeLog($error));
-            throw new RuntimeException(__('Provider local/Ollama não respondeu à revisão P4. Tente novamente ou revise manualmente.', 'glpiintegaglpi'));
+            throw new RuntimeException($error !== '' && preg_match('/timed out|timeout/i', $error) === 1 ? 'timeout' : 'provider_unreachable');
         }
         if ($status < 200 || $status >= 300) {
             error_log('[integaglpi][historical_mining_ui][p4_ai_review] provider_http_' . $status . ' elapsed_ms=' . $elapsedMs);
-            throw new RuntimeException(__('Provider local/Ollama retornou erro na revisão P4. Revise manualmente ou tente novamente.', 'glpiintegaglpi'));
+            throw new RuntimeException('provider_unreachable');
         }
 
         $decoded = json_decode($raw, true);
         if (!is_array($decoded)) {
-            throw new RuntimeException(__('Provider local/Ollama respondeu em formato inválido.', 'glpiintegaglpi'));
+            throw new RuntimeException('invalid_json');
         }
         $responseText = trim((string) ($decoded['response'] ?? ''));
         if ($responseText === '') {
-            throw new RuntimeException(__('Provider local/Ollama não retornou sugestão estruturada.', 'glpiintegaglpi'));
+            throw new RuntimeException('schema_invalid');
         }
 
         return [
@@ -2386,8 +2414,55 @@ final class HistoricalMiningUiService
         return preg_match('/^\d{4}-\d{2}-\d{2}(?:[T ][0-9:.+-Z]*)?$/', $value) ? $value : '';
     }
 
+    private function p4ProviderErrorType(string $message): string
+    {
+        $normalized = strtolower(trim($message));
+        if (in_array($normalized, ['provider_url_not_allowed', 'provider_unreachable', 'timeout', 'invalid_json', 'schema_invalid', 'low_confidence', 'pii_blocked'], true)) {
+            return $normalized;
+        }
+        if (strpos($normalized, 'dado sensível') !== false || strpos($normalized, 'pii') !== false) {
+            return 'pii_blocked';
+        }
+        if (strpos($normalized, 'confidence_below_threshold') !== false || strpos($normalized, 'low_confidence') !== false || strpos($normalized, 'confiança abaixo') !== false) {
+            return 'low_confidence';
+        }
+        if (strpos($normalized, 'json') !== false) {
+            return 'invalid_json';
+        }
+        if (strpos($normalized, 'timeout') !== false || strpos($normalized, 'timed out') !== false) {
+            return 'timeout';
+        }
+        if (strpos($normalized, 'schema') !== false || strpos($normalized, 'sugest') !== false) {
+            return 'schema_invalid';
+        }
+
+        return 'provider_unreachable';
+    }
+
     private function publicError(string $message): string
     {
+        if ($message === 'provider_url_not_allowed') {
+            return __('provider_url_not_allowed: base_url do provider P4 não está na allowlist local.', 'glpiintegaglpi');
+        }
+        if ($message === 'provider_unreachable') {
+            return __('provider_unreachable: Provider local/Ollama indisponível para revisão P4.', 'glpiintegaglpi');
+        }
+        if ($message === 'timeout') {
+            return __('timeout: Provider local/Ollama demorou mais que o esperado na revisão P4.', 'glpiintegaglpi');
+        }
+        if ($message === 'invalid_json') {
+            return __('invalid_json: Provider local/Ollama respondeu em formato inválido.', 'glpiintegaglpi');
+        }
+        if ($message === 'schema_invalid') {
+            return __('schema_invalid: IA não retornou sugestão P4 no schema esperado.', 'glpiintegaglpi');
+        }
+        if ($message === 'low_confidence') {
+            return __('low_confidence: sugestão P4 abaixo do limite; revisão humana obrigatória.', 'glpiintegaglpi');
+        }
+        if ($message === 'pii_blocked') {
+            return __('pii_blocked: P4 bloqueado por dado sensível residual no payload ou sugestão.', 'glpiintegaglpi');
+        }
+
         return mb_substr($this->sanitizeLog($message), 0, 240);
     }
 

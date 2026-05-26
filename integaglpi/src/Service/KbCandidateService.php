@@ -30,8 +30,11 @@ final class KbCandidateService
 
     private ?PDO $pdo = null;
 
-    public function __construct(private readonly PluginConfigService $pluginConfigService)
+    private PluginConfigService $pluginConfigService;
+
+    public function __construct(PluginConfigService $pluginConfigService)
     {
+        $this->pluginConfigService = $pluginConfigService;
     }
 
     /**
@@ -93,13 +96,19 @@ final class KbCandidateService
         }
 
         try {
-            return match (trim((string) ($post['action'] ?? ''))) {
-                'mark_in_review' => $this->reviewCandidate((int) ($post['candidate_id'] ?? 0), 'in_review', $userId, $post),
-                'approve' => $this->reviewCandidate((int) ($post['candidate_id'] ?? 0), 'approved', $userId, $post),
-                'reject' => $this->reviewCandidate((int) ($post['candidate_id'] ?? 0), 'rejected', $userId, $post),
-                'copy_markdown' => $this->recordCopyMarkdown((int) ($post['candidate_id'] ?? 0), $userId),
-                default => ['type' => 'danger', 'message' => __('Ação inválida.', 'glpiintegaglpi')],
-            };
+            $action = trim((string) ($post['action'] ?? ''));
+            switch ($action) {
+                case 'mark_in_review':
+                    return $this->reviewCandidate((int) ($post['candidate_id'] ?? 0), 'in_review', $userId, $post);
+                case 'approve':
+                    return $this->reviewCandidate((int) ($post['candidate_id'] ?? 0), 'approved', $userId, $post);
+                case 'reject':
+                    return $this->reviewCandidate((int) ($post['candidate_id'] ?? 0), 'rejected', $userId, $post);
+                case 'copy_markdown':
+                    return $this->recordCopyMarkdown((int) ($post['candidate_id'] ?? 0), $userId);
+                default:
+                    return ['type' => 'danger', 'message' => __('Ação inválida.', 'glpiintegaglpi')];
+            }
         } catch (Throwable $exception) {
             error_log('[integaglpi][kb_candidates][post] user=' . $userId . ' ' . $exception->getMessage());
 
@@ -108,6 +117,109 @@ final class KbCandidateService
                 'message' => $exception instanceof RuntimeException
                     ? $exception->getMessage()
                     : __('Falha ao revisar candidato de KB.', 'glpiintegaglpi'),
+            ];
+        }
+    }
+
+    /**
+     * Creates a KB candidate from a ticket solution text.
+     * The candidate is stored with status 'suggested' and must be manually reviewed/published.
+     * No automatic KB publish. No WhatsApp send. Human gate required.
+     *
+     * @return array{type: string, message: string}
+     */
+    public function createKbCandidateFromSolution(
+        int $ticketId,
+        string $solutionText,
+        string $ticketTitle,
+        int $userId
+    ): array {
+        if (!$this->pluginConfigService->isConfigured()) {
+            return ['type' => 'danger', 'message' => __('PostgreSQL externo ainda não está configurado.', 'glpiintegaglpi')];
+        }
+
+        if ($ticketId <= 0) {
+            return ['type' => 'danger', 'message' => __('ID de chamado inválido.', 'glpiintegaglpi')];
+        }
+
+        $cleanSolution = $this->cleanText($solutionText, 2000);
+        if ($cleanSolution === '') {
+            return ['type' => 'danger', 'message' => __('Texto da solução não pode ser vazio.', 'glpiintegaglpi')];
+        }
+
+        $cleanTitle = $this->cleanText($ticketTitle, 120);
+        if ($cleanTitle === '') {
+            $cleanTitle = __('Solução do chamado #', 'glpiintegaglpi') . $ticketId;
+        }
+
+        try {
+            if (!$this->tableExists(self::CANDIDATES_TABLE) || !$this->tableExists(self::REVIEWS_TABLE)) {
+                return ['type' => 'danger', 'message' => __('Tabelas de candidatos de KB ainda não existem. Execute a migration 030 em TESTE.', 'glpiintegaglpi')];
+            }
+
+            $candidateKey = 'solution:' . $ticketId . ':' . bin2hex(random_bytes(8));
+            $inputHash = hash('sha256', 'ticket_solution:' . $ticketId . ':' . $cleanSolution);
+
+            $pdo = $this->getPdo();
+            $pdo->beginTransaction();
+            try {
+                $stmt = $pdo->prepare(
+                    'INSERT INTO public.' . self::CANDIDATES_TABLE . ' (
+                        candidate_key,
+                        input_hash,
+                        status,
+                        article_type,
+                        title,
+                        content_markdown,
+                        confidence_score,
+                        created_by_glpi_user_id
+                    ) VALUES (
+                        :candidate_key,
+                        :input_hash,
+                        :status,
+                        :article_type,
+                        :title,
+                        :content_markdown,
+                        :confidence_score,
+                        :created_by_glpi_user_id
+                    ) RETURNING id'
+                );
+                $stmt->bindValue(':candidate_key', $candidateKey, PDO::PARAM_STR);
+                $stmt->bindValue(':input_hash', $inputHash, PDO::PARAM_STR);
+                $stmt->bindValue(':status', 'suggested', PDO::PARAM_STR);
+                $stmt->bindValue(':article_type', 'solucao_comum', PDO::PARAM_STR);
+                $stmt->bindValue(':title', $cleanTitle, PDO::PARAM_STR);
+                $stmt->bindValue(':content_markdown', $cleanSolution, PDO::PARAM_STR);
+                $stmt->bindValue(':confidence_score', 60, PDO::PARAM_INT);
+                $stmt->bindValue(':created_by_glpi_user_id', $userId, PDO::PARAM_INT);
+                $stmt->execute();
+
+                $newId = (int) $stmt->fetchColumn();
+                if ($newId <= 0) {
+                    throw new RuntimeException(__('Falha ao criar candidato de KB: ID inválido retornado.', 'glpiintegaglpi'));
+                }
+
+                $creationNote = __('Candidato criado a partir da solução do chamado #', 'glpiintegaglpi') . $ticketId . '.';
+                $this->insertReview($newId, 'edit_note', $userId, $creationNote, '', 'suggested');
+
+                $candidate = $this->findCandidateById($newId);
+                $this->audit('KB_CANDIDATE_CREATED_FROM_SOLUTION', $candidate, $userId);
+
+                $pdo->commit();
+
+                return ['type' => 'success', 'message' => __('Candidato KB criado. Nenhuma publicação automática foi executada. Acesse "Mineração Histórica" para revisar.', 'glpiintegaglpi')];
+            } catch (Throwable $exceptionInner) {
+                $pdo->rollBack();
+                throw $exceptionInner;
+            }
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][kb_candidates][create_from_solution] ticket=' . $ticketId . ' user=' . $userId . ' ' . $exception->getMessage());
+
+            return [
+                'type' => 'danger',
+                'message' => $exception instanceof RuntimeException
+                    ? $exception->getMessage()
+                    : __('Falha ao criar candidato de KB a partir da solução.', 'glpiintegaglpi'),
             ];
         }
     }
@@ -372,20 +484,26 @@ final class KbCandidateService
 
     private function actionForStatus(string $status): string
     {
-        return match ($status) {
-            'approved' => 'approve',
-            'rejected' => 'reject',
-            default => 'mark_in_review',
-        };
+        if ($status === 'approved') {
+            return 'approve';
+        }
+        if ($status === 'rejected') {
+            return 'reject';
+        }
+
+        return 'mark_in_review';
     }
 
     private function eventForStatus(string $status): string
     {
-        return match ($status) {
-            'approved' => 'KB_CANDIDATE_APPROVED',
-            'rejected' => 'KB_CANDIDATE_REJECTED',
-            default => 'KB_CANDIDATE_REVIEWED',
-        };
+        if ($status === 'approved') {
+            return 'KB_CANDIDATE_APPROVED';
+        }
+        if ($status === 'rejected') {
+            return 'KB_CANDIDATE_REJECTED';
+        }
+
+        return 'KB_CANDIDATE_REVIEWED';
     }
 
     private function getPdo(): PDO
@@ -420,14 +538,14 @@ final class KbCandidateService
     /**
      * @param list<string> $allowlist
      */
-    private function normalizeOptionalAllowlist(mixed $value, array $allowlist): string
+    private function normalizeOptionalAllowlist($value, array $allowlist): string
     {
         $normalized = strtolower(trim((string) $value));
 
         return in_array($normalized, $allowlist, true) ? $normalized : '';
     }
 
-    private function cleanText(mixed $value, int $maxLength): string
+    private function cleanText($value, int $maxLength): string
     {
         $text = trim((string) $value);
         $text = (string) preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $text);

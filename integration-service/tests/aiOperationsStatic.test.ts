@@ -29,7 +29,9 @@ describe('AI operations console static safety', () => {
   it('keeps AI configuration gated and masks sensitive values', async () => {
     const front = await readProjectFile('integaglpi/front/ai.config.php');
     const service = await readProjectFile('integaglpi/src/Service/AiConfigViewService.php');
+    const vaultService = await readProjectFile('integaglpi/src/Service/AiSecretVaultService.php');
     const template = await readProjectFile('integaglpi/templates/ai_config.php');
+    const migration = await readProjectFile('integration-service/schema-migrations/039_ai_secret_vault.sql');
 
     expect(front).toContain('Plugin::requireAiOperationsRead()');
     expect(front).toContain('Plugin::isCsrfValid($_POST)');
@@ -42,6 +44,9 @@ describe('AI operations console static safety', () => {
     expect(service).toContain('AI_CONFIG_UPDATED');
     expect(service).toContain('AI_CLOUD_GATE_UPDATED');
     expect(service).toContain('AI_LOCAL_SYNTHETIC_TEST_RUN');
+    expect(service).toContain('AI_LOCAL_MODELS_REFRESHED');
+    expect(service).toContain('/api/tags');
+    expect(service).toContain('CLOUD_PROVIDER_CATALOG');
     expect(service).toContain("AI_SETTINGS_CONTEXT = 'ai_settings'");
     expect(service).toContain('normalizeAiSettingsPost');
     expect(service).toContain('saveAiSettings');
@@ -49,9 +54,30 @@ describe('AI operations console static safety', () => {
     expect(service).toContain('Storage de configurações IA não está pronto');
     expect(service).toContain('externalResearchStatus');
     expect(service).toContain('p4CandidateReviewStatus');
-    expect(service).toContain('secrets_in_env_only');
+    expect(service).toContain('cloud_keys_in_secret_vault');
+    expect(service).toContain('AI_SECRET_VAULT_UPDATED');
     expect(service).toContain('no_raw_ticket_to_ai');
+    expect(vaultService).toContain("CIPHER = 'aes-256-gcm'");
+    expect(vaultService).toContain('INTEGAGLPI_AI_VAULT_MASTER_KEY');
+    expect(vaultService).toContain('storeSecret');
+    expect(vaultService).toContain('encrypted_secret');
+    expect(vaultService).toContain('secret_fingerprint');
+    expect(vaultService).not.toMatch(/echo|print_r|var_dump/);
+    expect(vaultService).toContain("':encrypted_secret' => $encrypted");
+    expect(vaultService).not.toContain("':encrypted_secret' => $secret");
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_ai_secret_vault');
+    expect(migration).toContain('encrypted_secret TEXT NOT NULL');
+    expect(migration).toContain('secret_fingerprint TEXT NOT NULL');
+    expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS glpi_intega_ai_secret_active_provider_uq');
+    expect(migration).not.toMatch(/\b(?:DROP|TRUNCATE|DELETE)\b/i);
     expect(template).toContain('Configurações não sensíveis');
+    expect(template).toContain('Secret Vault cloud');
+    expect(template).toContain('Salvar segredo no cofre');
+    expect(template).toContain('Write-only');
+    expect(template).toContain('configured=true');
+    expect(template).toContain('Atualizar modelos Ollama');
+    expect(template).toContain('Config efetiva');
+    expect(template).toContain('Catálogo cloud seguro');
     expect(template).toContain('name="copilot_enabled"');
     expect(template).toContain('name="external_research_enabled"');
     expect(template).toContain('name="p4_candidate_review_enabled"');
@@ -61,6 +87,8 @@ describe('AI operations console static safety', () => {
     expect(template).toContain('Validar gates para habilitar cloud');
     expect(template).toContain('Validar configuração local sem dados reais');
     expect(template).toContain('IA Supervisora habilitada');
+      expect(template).toContain('Modelo manual opcional se não estiver na lista');
+      expect(service).toContain("$manualKey = $key . '_manual'");
     expect(template).toContain('kb_local_first');
     expect(template).toContain('Pesquisa Externa Controlada');
     expect(template).toContain('manual_trigger_required');
@@ -205,7 +233,13 @@ describe('AI operations console static safety', () => {
     expect(phpService).toContain("'stream' => false");
     expect(phpService).toContain("'format' => 'json'");
     expect(phpService).toContain("'edit_note'");
-    expect(phpService).toContain('provider_url_not_local');
+    expect(phpService).toContain('create_kb_from_solution');
+    expect(phpService).toContain('handleCreateKbFromSolution');
+    expect(phpService).toContain('provider_url_not_allowed');
+    expect(phpService).toContain('provider_unreachable');
+    expect(phpService).toContain('schema_invalid');
+    expect(phpService).toContain('low_confidence');
+    expect(phpService).toContain('pii_blocked');
     expect(phpService).toContain('glpi_plugin_integaglpi_kb_candidates');
     expect(phpService).toContain('glpi_plugin_integaglpi_kb_candidate_reviews');
     expect(phpService).toContain('glpi_plugin_integaglpi_hist_mining_runs');
@@ -247,6 +281,9 @@ describe('AI operations console static safety', () => {
     expect(ticketTab).toContain('Consultar KB Local');
     expect(ticketTab).toContain('Gerar rascunho com IA');
     expect(ticketTab).toContain('Pesquisar fora');
+    expect(ticketTab).toContain('Criar candidato KB');
+    expect(ticketTab).toContain('Feedback supervisor online read-only');
+    expect(ticketTab).toContain('Solução aceita ou pesquisa aprovada pode virar candidato KB revisável');
     expect(ticketTab).toContain('KB local exibida. Nenhuma IA externa foi chamada.');
     expect(ticketTab).toContain('sessionStorage');
     expect(ticketTab).toContain('refreshCsrfToken');
@@ -259,5 +296,11 @@ describe('AI operations console static safety', () => {
     expect(contextService).toContain('buildTicketAiAssistant');
     expect(contextService).toContain('TICKET_AI_ASSISTANT_KB_LOCAL_PREPARED');
     expect(contextService).toContain('payload_policy');
+    expect(contextService).toContain('ticket_summary_for_research');
+    expect(contextService).toContain('buildExternalResearchTicketSummary');
+    expect(ticketTab).toContain('ticket_summary_for_research');
+    expect(ticketTab).toContain('create_kb_from_solution');
+    expect(ticketTab).toContain('Criar candidato KB da solução');
+    expect(ticketTab).toContain('glpi_itilsolutions');
   });
 });

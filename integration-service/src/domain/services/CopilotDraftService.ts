@@ -18,10 +18,20 @@ export interface CopilotDraftConfig {
   maxChars: number;
 }
 
+export interface CopilotDraftRuntimeConfig {
+  enabled?: boolean;
+  provider?: 'disabled' | 'ollama';
+  model?: string;
+  dryRun?: boolean;
+  maxChars?: number;
+  timeoutMs?: number;
+}
+
 export interface RequestCopilotDraftInput {
   context: CopilotContext;
   tone: CopilotTone;
   requestedBy: number | null;
+  runtimeConfig?: CopilotDraftRuntimeConfig;
 }
 
 type SupportIssueKey = 'printer' | 'formatting' | 'outlook';
@@ -48,35 +58,62 @@ export class CopilotDraftService {
   ) {}
 
   public async requestDraft(input: RequestCopilotDraftInput): Promise<CopilotDraftResult & { draftHash: string }> {
-    if (!this.config.enabled || this.config.provider === 'disabled') {
+    const effectiveConfig = this.resolveRuntimeConfig(input.runtimeConfig);
+    if (!effectiveConfig.enabled || effectiveConfig.provider === 'disabled') {
       throw new Error('COPILOT_DISABLED');
     }
 
     const context = this.normalizeContext(input.context);
-    await this.audit('COPILOT_DRAFT_REQUESTED', 'pending', 'info', context, input.requestedBy);
+    await this.audit('COPILOT_DRAFT_REQUESTED', 'pending', 'info', context, input.requestedBy, effectiveConfig);
 
-    const result = this.config.dryRun
+    const result = effectiveConfig.dryRun
       ? this.createDryRunDraft(context, input.tone)
       : await this.provider.generate(buildCopilotDraftPrompt(
         context,
         input.tone,
-        Math.min(this.config.maxChars, COPILOT_MAX_CONTEXT_CHARS),
-      ));
-    const qualityResult = this.applyLocalKnowledgeFirst(
+        Math.min(effectiveConfig.maxChars, COPILOT_MAX_CONTEXT_CHARS),
+      ), {
+        model: effectiveConfig.model,
+        timeoutMs: effectiveConfig.timeoutMs,
+      });
+    const qualityResult = this.applyDraftSourceLabel(effectiveConfig, this.applyLocalKnowledgeFirst(
       context,
       this.applySupportResponseQuality(context, result, input.tone),
-    );
+    ));
     const draftHash = this.hash(qualityResult.draftResponse);
 
-    await this.audit('COPILOT_DRAFT_GENERATED', 'success', 'info', context, input.requestedBy, {
+    await this.audit('COPILOT_DRAFT_GENERATED', 'success', 'info', context, input.requestedBy, effectiveConfig, {
       draft_hash: draftHash,
       tone: qualityResult.tone,
       confidence_score: qualityResult.confidenceScore,
       window_notice: qualityResult.windowNotice,
       kb_reference_count: qualityResult.kbReferences.length,
+      draft_source: this.draftSourceLabel(effectiveConfig),
     });
 
     return { ...qualityResult, draftHash };
+  }
+
+  private resolveRuntimeConfig(runtimeConfig?: CopilotDraftRuntimeConfig): Required<CopilotDraftConfig> & { timeoutMs?: number } {
+    const provider = runtimeConfig?.provider === 'ollama' ? 'ollama' : runtimeConfig?.provider === 'disabled' ? 'disabled' : this.config.provider;
+    const model = typeof runtimeConfig?.model === 'string' && runtimeConfig.model.trim() !== ''
+      ? runtimeConfig.model.trim().slice(0, 120)
+      : this.config.model;
+    const maxChars = typeof runtimeConfig?.maxChars === 'number' && Number.isFinite(runtimeConfig.maxChars)
+      ? Math.max(1_000, Math.min(12_000, Math.trunc(runtimeConfig.maxChars)))
+      : this.config.maxChars;
+    const timeoutMs = typeof runtimeConfig?.timeoutMs === 'number' && Number.isFinite(runtimeConfig.timeoutMs)
+      ? Math.max(15_000, Math.min(120_000, Math.trunc(runtimeConfig.timeoutMs)))
+      : undefined;
+
+    return {
+      enabled: typeof runtimeConfig?.enabled === 'boolean' ? runtimeConfig.enabled : this.config.enabled,
+      provider,
+      model,
+      dryRun: typeof runtimeConfig?.dryRun === 'boolean' ? runtimeConfig.dryRun : this.config.dryRun,
+      maxChars,
+      timeoutMs,
+    };
   }
 
   public async recordUsage(
@@ -250,6 +287,35 @@ export class CopilotDraftService {
       ], result.technicianChecklist, 8),
       noAutoSend: true,
     };
+  }
+
+  private applyDraftSourceLabel(
+    config: Required<CopilotDraftConfig> & { timeoutMs?: number },
+    result: CopilotDraftResult,
+  ): CopilotDraftResult {
+    const source = this.draftSourceLabel(config);
+    const draftResponse = result.draftResponse.startsWith('[')
+      ? result.draftResponse
+      : `${source} ${result.draftResponse}`;
+
+    return {
+      ...result,
+      draftResponse,
+      safetyWarnings: this.mergeUnique([
+        `Origem do rascunho: ${source}`,
+      ], result.safetyWarnings, 6),
+    };
+  }
+
+  private draftSourceLabel(config: Required<CopilotDraftConfig> & { timeoutMs?: number }): string {
+    if (config.provider === 'ollama' && !config.dryRun && config.model.trim() !== '') {
+      return `[IA Local - ${sanitizeAiQualityText(config.model).slice(0, 80)}]`;
+    }
+    if (config.provider === 'ollama' && config.dryRun) {
+      return '[Fallback local - IA indisponível]';
+    }
+
+    return '[Fallback local - IA indisponível]';
   }
 
   /**
@@ -483,6 +549,7 @@ export class CopilotDraftService {
     severity: 'info' | 'warning' | 'error',
     context: CopilotContext,
     requestedBy: number | null,
+    config: Required<CopilotDraftConfig> & { timeoutMs?: number },
     payload: Record<string, unknown> = {},
   ): Promise<void> {
     await this.auditService?.recordAuditEventSafe({
@@ -493,8 +560,9 @@ export class CopilotDraftService {
       conversationId: context.conversationId,
       ticketId: context.glpiTicketId,
       payload: {
-        provider: this.config.provider,
-        model: this.config.model,
+        provider: config.provider,
+        model: config.model,
+        timeout_ms: config.timeoutMs ?? null,
         requested_by: requestedBy,
         message_count: context.messages.length,
         kb_article_count: context.kbArticles.length,

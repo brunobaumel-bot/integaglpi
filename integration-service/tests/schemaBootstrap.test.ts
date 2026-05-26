@@ -252,6 +252,24 @@ describe('database bootstrap hardening', () => {
     }
   });
 
+  it('keeps AI secret vault additive, idempotent and encrypted-only', async () => {
+    const migration = compactSql(await readProjectFile('schema-migrations/039_ai_secret_vault.sql'));
+
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_ai_secret_vault');
+    expect(migration).toContain('id BIGSERIAL PRIMARY KEY');
+    expect(migration).toContain('provider TEXT NOT NULL');
+    expect(migration).toContain('encrypted_secret TEXT NOT NULL');
+    expect(migration).toContain('secret_fingerprint TEXT NOT NULL');
+    expect(migration).toContain('is_active BOOLEAN NOT NULL DEFAULT TRUE');
+    expect(migration).toContain("CHECK (provider IN ('openai', 'anthropic', 'gemini', 'deepseek', 'xai'))");
+    expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS glpi_intega_ai_secret_active_provider_uq');
+    expect(migration).not.toContain('plaintext');
+    expect(migration).not.toContain('api_key');
+    expect(migration).not.toContain('DROP ');
+    expect(migration).not.toContain('TRUNCATE ');
+    expect(migration).not.toContain('DELETE ');
+  });
+
   it('keeps conversation_profile_snapshot idempotent for existing tables missing snapshot fields', async () => {
     const initDb = compactSql(await readProjectFile('init-db.sql'));
     const migration = compactSql(await readProjectFile('schema-migrations/009_conversation_profile_snapshot.sql'));

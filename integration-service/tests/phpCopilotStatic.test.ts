@@ -22,6 +22,9 @@ describe('PHP internal Copilot static safety', () => {
     expect(front).toContain('Plugin::isCsrfValid($_POST)');
     expect(front).toContain("($_GET['csrf_token'] ?? '') === '1'");
     expect(front).toContain("$payload['csrf_token'] = Plugin::getCsrfToken()");
+    expect(front).toContain('csrf_denied');
+    expect(front).toContain('Sessão/token expirado. Recarregue a página e tente novamente.');
+    expect(front).toContain('error_type');
     expect(front).toContain('integaglpiCopilotUserMessage');
     expect(front).toContain('O Copiloto demorou mais que o esperado');
     expect(front).toContain('Serviço de IA indisponível no momento');
@@ -29,6 +32,10 @@ describe('PHP internal Copilot static safety', () => {
     expect(front).toContain('buildCopilotContext');
     expect(client).toContain('/internal/glpi/copilot/draft');
     expect(client).toContain('COPILOT_DRAFT_TIMEOUT_MS = 90000');
+    expect(client).toContain('effectiveCopilotRuntimeConfig');
+    expect(client).toContain('runtime_config');
+    expect(client).toContain('copilot_model');
+    expect(client).toContain('copilot_timeout_ms');
     expect(client).toContain('CURLOPT_TIMEOUT_MS');
     expect(client).toContain('payload_size');
     expect(client).not.toMatch(/__construct\s*\(\s*(?:public|protected|private)\s/i);
@@ -42,13 +49,15 @@ describe('PHP internal Copilot static safety', () => {
     expect(ticketTab).toContain('Sugerir resposta');
     expect(ticketTab).toContain('refreshCsrfToken');
     expect(ticketTab).toContain('updateCsrfToken');
+    expect(ticketTab).toContain('isCsrfFailure');
+    expect(ticketTab).toContain('copilotMessage');
     expect(ticketTab).toContain('Rascunho gerado por IA. Revise antes de enviar. Nenhuma mensagem é enviada automaticamente.');
     expect(ticketTab).toContain('Usar rascunho');
     expect(ticketTab).toContain('Copiar rascunho');
     expect(ticketTab).toContain('Pesquisa externa controlada');
     expect(ticketTab).toContain('getExternalResearchUrl');
     expect(ticketTab).toContain('canExternalResearchRead');
-    expect(ticketTab).toContain('setTimeout(function () { button.disabled = false; }, 2500)');
+    expect(ticketTab).not.toContain("payload.set('copilot_action', 'use')");
     expect(contextService).toContain('NativeKnowledgeBaseService');
     expect(contextService).toContain('buildTicketAiAssistant');
     expect(contextService).toContain('TICKET_AI_ASSISTANT_KB_LOCAL_PREPARED');
@@ -59,6 +68,6 @@ describe('PHP internal Copilot static safety', () => {
     expect(contextService).toContain('COPILOT_MAX_KB_ARTICLES = 3');
 
     const combined = `${front}\n${client}\n${ticketTab}\n${contextService}`;
-    expect(combined).not.toMatch(/MetaClient|sendOutbound|sendTemplate|ticket\.whatsapp\.reply\.php.*copilot|KnowbaseItem::add|Publicar automaticamente/i);
+    expect(combined).not.toMatch(/MetaClient|sendOutbound|sendTemplate|ticket\.whatsapp\.reply\.php.*copilot|KnowbaseItem::add|Publicar automaticamente|match \(|readonly|__construct\s*\(\s*(?:public|protected|private)\s/i);
   });
 });

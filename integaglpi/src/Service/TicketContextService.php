@@ -157,7 +157,7 @@ final class TicketContextService
             $this->latestMessageText($conversationId),
             (string) ($conversation['queue_name'] ?? ''),
         ];
-        $query = $this->sanitizeCopilotText(implode(' ', array_filter($queryParts, static fn (string $value): bool => trim($value) !== '')), 360);
+        $query = $this->sanitizeCopilotText(implode(' ', array_filter($queryParts, static function (string $value): bool { return trim($value) !== ''; })), 360);
         $items = [];
         try {
             foreach ((new NativeKnowledgeBaseService())->buildRelatedArticlesContext(['summary' => $query], 3) as $article) {
@@ -185,6 +185,7 @@ final class TicketContextService
         }
 
         $items = array_slice($items, 0, 6);
+        $ticketSummaryForResearch = $this->buildExternalResearchTicketSummary($ticket, $conversationId, $items);
         $this->auditTicketAiAssistant('TICKET_AI_ASSISTANT_KB_LOCAL_PREPARED', (int) $ticket->getID(), $conversationId, [
             'query_hash' => hash('sha256', $query),
             'result_count' => count($items),
@@ -198,6 +199,7 @@ final class TicketContextService
                 'message' => $items === []
                     ? __('Nenhum artigo/candidato/insight interno encontrado. Use o Copiloto apenas como rascunho revisável.', 'glpiintegaglpi')
                     : __('KB local consultada antes de qualquer IA externa.', 'glpiintegaglpi'),
+                'ticket_summary_for_research' => $ticketSummaryForResearch,
             ],
             'external_research' => $this->ticketExternalResearchStatus(),
             'p4' => [
@@ -205,6 +207,49 @@ final class TicketContextService
                 'message' => __('P4 revisa apenas candidatos P3 sanitizados e nunca publica KB automaticamente.', 'glpiintegaglpi'),
             ],
         ];
+    }
+
+    /**
+     * Builds a structured sanitized technical summary for external research prefill.
+     * No PII, no ticket raw content, no internal IPs, no tokens.
+     *
+     * @param list<array<string, mixed>> $kbItems
+     */
+    private function buildExternalResearchTicketSummary(\Ticket $ticket, string $conversationId, array $kbItems): string
+    {
+        $title = $this->sanitizeCopilotText((string) ($ticket->fields['name'] ?? ''), 120);
+        $rawContent = strip_tags((string) ($ticket->fields['content'] ?? ''));
+        $symptoms = $this->sanitizeCopilotText($rawContent, 400);
+        $latestMsg = $this->sanitizeCopilotText($this->latestMessageText($conversationId), 200);
+
+        $parts = [];
+        if ($title !== '') {
+            $parts[] = 'Título: ' . $title;
+        }
+        if ($symptoms !== '') {
+            $parts[] = 'Sintomas: ' . $symptoms;
+        }
+        if ($latestMsg !== '') {
+            $parts[] = 'Última mensagem do cliente: ' . $latestMsg;
+        }
+
+        $kbTitles = [];
+        foreach (array_slice($kbItems, 0, 3) as $kbItem) {
+            if (!is_array($kbItem)) {
+                continue;
+            }
+            $kbTitle = trim((string) ($kbItem['title'] ?? ''));
+            if ($kbTitle !== '') {
+                $kbTitles[] = $kbTitle;
+            }
+        }
+        if ($kbTitles !== []) {
+            $parts[] = 'KB local relacionada: ' . implode(', ', $kbTitles);
+        }
+
+        $parts[] = 'Objetivo: buscar solução técnica em documentação oficial sem expor dados pessoais ou internos.';
+
+        return $this->sanitizeCopilotText(implode("\n", $parts), 1800);
     }
 
     /**
@@ -339,7 +384,7 @@ final class TicketContextService
                     ? ''
                     : __('A janela de 24h está fechada. Use um template aprovado antes de enviar texto livre.', 'glpiintegaglpi'),
             ];
-        } catch (Throwable) {
+        } catch (Throwable $exception) {
             return [
                 'is_open' => false,
                 'label' => __('Janela fechada — use template', 'glpiintegaglpi'),
@@ -351,14 +396,20 @@ final class TicketContextService
 
     public static function deliveryStatusLabel(string $status): string
     {
-        return match (strtolower(trim($status))) {
-            'pending' => __('Pendente', 'glpiintegaglpi'),
-            'sent' => __('Enviada', 'glpiintegaglpi'),
-            'delivered' => __('Entregue', 'glpiintegaglpi'),
-            'read' => __('Lida', 'glpiintegaglpi'),
-            'failed' => __('Falhou', 'glpiintegaglpi'),
-            default => '',
-        };
+        switch (strtolower(trim($status))) {
+            case 'pending':
+                return __('Pendente', 'glpiintegaglpi');
+            case 'sent':
+                return __('Enviada', 'glpiintegaglpi');
+            case 'delivered':
+                return __('Entregue', 'glpiintegaglpi');
+            case 'read':
+                return __('Lida', 'glpiintegaglpi');
+            case 'failed':
+                return __('Falhou', 'glpiintegaglpi');
+            default:
+                return '';
+        }
     }
 
     /**
@@ -425,7 +476,7 @@ final class TicketContextService
      * @param mixed $value
      * @return list<string>
      */
-    private function normalizeStringList(mixed $value): array
+    private function normalizeStringList($value): array
     {
         if (!is_array($value)) {
             return [];
@@ -441,7 +492,7 @@ final class TicketContextService
      * @param mixed $value
      * @return list<array<string, mixed>>
      */
-    private function normalizeKbArticles(mixed $value): array
+    private function normalizeKbArticles($value): array
     {
         if (!is_array($value)) {
             return [];

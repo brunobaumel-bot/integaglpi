@@ -20,6 +20,7 @@ $csrf = GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
 $previewToken = is_array($preview) ? (string) ($preview['preview_token'] ?? '') : '';
 $requestId = trim((string) ($flash['request_id'] ?? $candidate['request_id'] ?? $_POST['request_id'] ?? ''));
 $prefillTechnicalSummary = (string) ($_POST['technical_summary'] ?? $_GET['q'] ?? '');
+$hasTicketPrefill = trim((string) ($_GET['q'] ?? '')) !== '';
 ?>
 
 <div class="container-fluid plugin-integaglpi-external-research">
@@ -106,14 +107,19 @@ $prefillTechnicalSummary = (string) ($_POST['technical_summary'] ?? $_GET['q'] ?
                     <?php } ?>
                     <label class="form-label" for="technical_summary"><?php echo $this->escape(__('Resumo técnico sem dados pessoais', 'glpiintegaglpi')); ?></label>
                     <textarea class="form-control" id="technical_summary" name="technical_summary" rows="6" maxlength="4000"><?php echo $this->escape($prefillTechnicalSummary); ?></textarea>
+                    <?php if ($hasTicketPrefill) { ?>
+                        <div class="alert alert-info py-2 mt-2">
+                            <?php echo $this->escape(__('Resumo técnico sanitizado importado do chamado. Revise o preview antes de confirmar qualquer pesquisa externa.', 'glpiintegaglpi')); ?>
+                        </div>
+                    <?php } ?>
                     <div class="form-text">
                         <?php echo $this->escape(__('Não cole e-mail, telefone, CPF/CNPJ, tokens, senhas, IPs internos, anexos ou histórico completo.', 'glpiintegaglpi')); ?>
                     </div>
 
-                    <label class="form-label mt-3" for="source_urls"><?php echo $this->escape(__('Fontes permitidas, uma URL por linha', 'glpiintegaglpi')); ?></label>
+                    <label class="form-label mt-3" for="source_urls"><?php echo $this->escape(__('Fontes permitidas avançadas/opcionais, uma URL por linha', 'glpiintegaglpi')); ?></label>
                     <textarea class="form-control" id="source_urls" name="source_urls" rows="4" maxlength="2500"><?php echo $this->escape((string) ($_POST['source_urls'] ?? '')); ?></textarea>
                     <div class="form-text">
-                        <?php echo $this->escape(__('SourceValidator bloqueia fonte fora do catálogo. Documentação oficial tem prioridade.', 'glpiintegaglpi')); ?>
+                        <?php echo $this->escape(__('Use fontes oficiais allowlisted quando a pesquisa externa for confirmada. SourceValidator bloqueia fonte fora do catálogo.', 'glpiintegaglpi')); ?>
                     </div>
 
                     <div class="d-flex flex-wrap gap-2 mt-3">

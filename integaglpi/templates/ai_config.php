@@ -23,6 +23,11 @@ $riskAlerts = is_array($data['risk_alerts'] ?? null) ? $data['risk_alerts'] : []
 $pendingSafeFields = is_array($data['pending_safe_fields'] ?? null) ? $data['pending_safe_fields'] : [];
 $safeSettings = is_array($data['safe_settings'] ?? null) ? $data['safe_settings'] : [];
 $safeSettingsAvailable = (bool) ($data['safe_settings_available'] ?? false);
+$ollamaModels = is_array($data['ollama_models'] ?? null) ? array_values(array_map('strval', $data['ollama_models'])) : [];
+$cloudProviderCatalog = is_array($data['cloud_provider_catalog'] ?? null) ? $data['cloud_provider_catalog'] : [];
+$effectiveConfig = is_array($data['effective_config'] ?? null) ? $data['effective_config'] : [];
+$secretVault = is_array($data['secret_vault'] ?? null) ? $data['secret_vault'] : [];
+$secretVaultProviders = is_array($secretVault['providers'] ?? null) ? $secretVault['providers'] : [];
 $csrf = GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
 
 $renderRows = function (array $rows): void {
@@ -31,6 +36,31 @@ $renderRows = function (array $rows): void {
             <th style="width: 280px;"><?= $this->escape((string) $label); ?></th>
             <td><code><?= $this->escape(is_bool($value) ? ($value ? 'true' : 'false') : (string) $value); ?></code></td>
         </tr>
+    <?php }
+};
+
+$renderModelPicker = function (string $fieldName, string $label, string $currentValue) use ($ollamaModels, $safeSettingsAvailable): void {
+    $currentValue = trim($currentValue);
+    $options = $ollamaModels;
+    $currentMissing = $currentValue !== '' && $options !== [] && !in_array($currentValue, $options, true);
+    if ($currentMissing) {
+        array_unshift($options, $currentValue);
+    }
+    ?>
+    <label class="form-label mt-2"><?= $this->escape($label); ?></label>
+    <?php if ($options !== []) { ?>
+        <select class="form-select form-select-sm" name="<?= $this->escape($fieldName); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+            <?php foreach ($options as $modelOption) { ?>
+                <option value="<?= $this->escape($modelOption); ?>" <?= $currentValue === $modelOption ? 'selected' : ''; ?>><?= $this->escape($modelOption); ?></option>
+            <?php } ?>
+        </select>
+        <?php if ($currentMissing) { ?>
+            <div class="text-warning small mt-1"><?= $this->escape(__('Modelo salvo não apareceu em /api/tags nesta atualização.', 'glpiintegaglpi')); ?></div>
+        <?php } ?>
+        <input class="form-control form-control-sm mt-1" name="<?= $this->escape($fieldName); ?>_manual" maxlength="120" value="" placeholder="<?= $this->escape(__('Modelo manual opcional se não estiver na lista', 'glpiintegaglpi')); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+    <?php } else { ?>
+        <input class="form-control form-control-sm" name="<?= $this->escape($fieldName); ?>" maxlength="120" value="<?= $this->escape($currentValue); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+        <div class="text-muted small mt-1"><?= $this->escape(__('Use “Atualizar modelos Ollama” para preencher o dropdown. O fallback manual fica preservado.', 'glpiintegaglpi')); ?></div>
     <?php }
 };
 ?>
@@ -47,7 +77,7 @@ $renderRows = function (array $rows): void {
     </div>
 
     <div class="alert alert-info">
-        <?= $this->escape(__('Esta tela não edita .env, não mostra tokens/API keys e não habilita cloud/embeddings por padrão.', 'glpiintegaglpi')); ?>
+        <?= $this->escape(__('Esta tela não edita .env, não mostra tokens/API keys e não habilita cloud/embeddings por padrão. Chaves cloud são write-only no Secret Vault.', 'glpiintegaglpi')); ?>
     </div>
 
     <div class="card mb-3">
@@ -88,6 +118,22 @@ $renderRows = function (array $rows): void {
                     <?= $this->escape(__('Storage de configurações IA ainda não está pronto. Execute a migration 038 antes de editar pela UI.', 'glpiintegaglpi')); ?>
                 </div>
             <?php } ?>
+            <form method="post" action="<?= $this->escape($this->getAiConfigUrl()); ?>" class="mb-3">
+                <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
+                <input type="hidden" name="action" value="refresh_ollama_models">
+                <button class="btn btn-sm btn-outline-secondary" type="submit">
+                    <?= $this->escape(__('Atualizar modelos Ollama', 'glpiintegaglpi')); ?>
+                </button>
+                <span class="text-muted small ms-2">
+                    <?= $this->escape(__('Consulta manual local em /api/tags, sem prompt e sem rede externa.', 'glpiintegaglpi')); ?>
+                </span>
+                <?php if ($ollamaModels !== []) { ?>
+                    <div class="small text-success mt-1">
+                        <?= $this->escape(__('Modelos locais em cache:', 'glpiintegaglpi')); ?>
+                        <code><?= $this->escape(implode(', ', $ollamaModels)); ?></code>
+                    </div>
+                <?php } ?>
+            </form>
             <form method="post" action="<?= $this->escape($this->getAiConfigUrl()); ?>">
                 <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
                 <input type="hidden" name="action" value="save_safe_config">
@@ -108,8 +154,7 @@ $renderRows = function (array $rows): void {
                                 <option value="<?= $this->escape($providerOption); ?>" <?= (string) ($safeSettings['ai_supervisor_provider'] ?? $ai['provider'] ?? 'disabled') === $providerOption ? 'selected' : ''; ?>><?= $this->escape($providerOption); ?></option>
                             <?php } ?>
                         </select>
-                        <label class="form-label mt-2"><?= $this->escape(__('Modelo local', 'glpiintegaglpi')); ?></label>
-                        <input class="form-control form-control-sm" name="ai_supervisor_model" maxlength="120" value="<?= $this->escape((string) ($safeSettings['ai_supervisor_model'] ?? $ai['model'] ?? '')); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                        <?php $renderModelPicker('ai_supervisor_model', __('Modelo local', 'glpiintegaglpi'), (string) ($safeSettings['ai_supervisor_model'] ?? $ai['model'] ?? '')); ?>
                         <div class="row g-2 mt-1">
                             <div class="col-4">
                                 <label class="form-label small"><?= $this->escape(__('Timeout s', 'glpiintegaglpi')); ?></label>
@@ -149,8 +194,7 @@ $renderRows = function (array $rows): void {
                                 <option value="<?= $this->escape($providerOption); ?>" <?= (string) ($safeSettings['copilot_provider'] ?? $copilot['provider'] ?? 'disabled') === $providerOption ? 'selected' : ''; ?>><?= $this->escape($providerOption); ?></option>
                             <?php } ?>
                         </select>
-                        <label class="form-label mt-2"><?= $this->escape(__('Modelo Copiloto', 'glpiintegaglpi')); ?></label>
-                        <input class="form-control form-control-sm" name="copilot_model" maxlength="120" value="<?= $this->escape((string) ($safeSettings['copilot_model'] ?? $copilot['model'] ?? '')); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                        <?php $renderModelPicker('copilot_model', __('Modelo Copiloto', 'glpiintegaglpi'), (string) ($safeSettings['copilot_model'] ?? $copilot['model'] ?? '')); ?>
                         <div class="row g-2 mt-1">
                             <div class="col-4">
                                 <label class="form-label small"><?= $this->escape(__('Timeout ms', 'glpiintegaglpi')); ?></label>
@@ -184,8 +228,7 @@ $renderRows = function (array $rows): void {
                                 <option value="<?= $this->escape($providerOption); ?>" <?= (string) ($safeSettings['p4_candidate_review_provider'] ?? $p4CandidateReview['provider'] ?? 'disabled') === $providerOption ? 'selected' : ''; ?>><?= $this->escape($providerOption); ?></option>
                             <?php } ?>
                         </select>
-                        <label class="form-label mt-2"><?= $this->escape(__('Modelo P4', 'glpiintegaglpi')); ?></label>
-                        <input class="form-control form-control-sm" name="p4_candidate_review_model" maxlength="120" value="<?= $this->escape((string) ($safeSettings['p4_candidate_review_model'] ?? $p4CandidateReview['model'] ?? '')); ?>" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
+                        <?php $renderModelPicker('p4_candidate_review_model', __('Modelo P4', 'glpiintegaglpi'), (string) ($safeSettings['p4_candidate_review_model'] ?? $p4CandidateReview['model'] ?? '')); ?>
                         <div class="row g-2 mt-1">
                             <div class="col-6">
                                 <label class="form-label small"><?= $this->escape(__('Confiança', 'glpiintegaglpi')); ?></label>
@@ -217,9 +260,142 @@ $renderRows = function (array $rows): void {
                     <button class="btn btn-primary" type="submit" <?= !$safeSettingsAvailable ? 'disabled' : ''; ?>>
                         <?= $this->escape(__('Salvar configurações não sensíveis', 'glpiintegaglpi')); ?>
                     </button>
-                    <span class="text-muted small"><?= $this->escape(__('Segredos, base_url sensível, API keys e .env permanecem somente em ambiente/ops.', 'glpiintegaglpi')); ?></span>
+                    <span class="text-muted small"><?= $this->escape(__('Base_url sensível e chave mestra ficam em ambiente/ops. API keys cloud ficam apenas no Secret Vault criptografado.', 'glpiintegaglpi')); ?></span>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header"><?= $this->escape(__('Secret Vault cloud', 'glpiintegaglpi')); ?></div>
+        <div class="card-body">
+            <?php if (!empty($secretVault['locked'])) { ?>
+                <div class="alert alert-warning py-2">
+                    <?= $this->escape(__('Secret Vault bloqueado ou indisponível. Configure INTEGAGLPI_AI_VAULT_MASTER_KEY no ambiente/ops e aplique a migration 039.', 'glpiintegaglpi')); ?>
+                </div>
+            <?php } ?>
+            <div class="row g-3">
+                <div class="col-lg-5">
+                    <form method="post" action="<?= $this->escape($this->getAiConfigUrl()); ?>">
+                        <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
+                        <input type="hidden" name="action" value="save_cloud_secret">
+                        <label class="form-label"><?= $this->escape(__('Provider cloud', 'glpiintegaglpi')); ?></label>
+                        <select class="form-select form-select-sm" name="vault_provider" <?= !empty($secretVault['locked']) ? 'disabled' : ''; ?>>
+                            <?php foreach ($cloudProviderCatalog as $provider) {
+                                if (!is_array($provider)) {
+                                    continue;
+                                }
+                                ?>
+                                <option value="<?= $this->escape((string) ($provider['id'] ?? '')); ?>"><?= $this->escape((string) ($provider['name'] ?? '')); ?></option>
+                            <?php } ?>
+                        </select>
+                        <label class="form-label mt-2"><?= $this->escape(__('API key cloud', 'glpiintegaglpi')); ?></label>
+                        <input class="form-control form-control-sm" type="password" name="vault_secret" autocomplete="new-password" maxlength="4096" placeholder="<?= $this->escape(__('Cole para substituir. O valor não será exibido novamente.', 'glpiintegaglpi')); ?>" <?= !empty($secretVault['locked']) ? 'disabled' : ''; ?>>
+                        <label class="form-label mt-2"><?= $this->escape(__('Rótulo interno opcional', 'glpiintegaglpi')); ?></label>
+                        <input class="form-control form-control-sm" type="text" name="vault_label" maxlength="120" placeholder="<?= $this->escape(__('Ex.: homologação OpenAI', 'glpiintegaglpi')); ?>" <?= !empty($secretVault['locked']) ? 'disabled' : ''; ?>>
+                        <button class="btn btn-sm btn-outline-primary mt-3" type="submit" <?= !empty($secretVault['locked']) ? 'disabled' : ''; ?>>
+                            <?= $this->escape(__('Salvar segredo no cofre', 'glpiintegaglpi')); ?>
+                        </button>
+                    </form>
+                </div>
+                <div class="col-lg-7">
+                    <div class="table-responsive">
+                        <table class="table table-sm mb-0">
+                            <thead>
+                                <tr>
+                                    <th><?= $this->escape(__('Provider', 'glpiintegaglpi')); ?></th>
+                                    <th><?= $this->escape(__('configured', 'glpiintegaglpi')); ?></th>
+                                    <th><?= $this->escape(__('fingerprint', 'glpiintegaglpi')); ?></th>
+                                    <th><?= $this->escape(__('last_test_status', 'glpiintegaglpi')); ?></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($secretVaultProviders as $providerRow) {
+                                    if (!is_array($providerRow)) {
+                                        continue;
+                                    }
+                                    ?>
+                                    <tr>
+                                        <td><code><?= $this->escape((string) ($providerRow['provider'] ?? '')); ?></code></td>
+                                        <td><code><?= $this->escape(!empty($providerRow['configured']) ? 'true' : 'false'); ?></code></td>
+                                        <td><code><?= $this->escape((string) ($providerRow['fingerprint'] ?? '')); ?></code></td>
+                                        <td><code><?= $this->escape((string) ($providerRow['last_test_status'] ?? 'not_tested')); ?></code></td>
+                                    </tr>
+                                <?php } ?>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="text-muted small mt-2">
+                        <?= $this->escape(__('Write-only: a UI nunca renderiza API key, token, Bearer, senha ou segredo em HTML/JS/hidden input.', 'glpiintegaglpi')); ?>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-lg-6">
+            <div class="card h-100">
+                <div class="card-header"><?= $this->escape(__('Config efetiva', 'glpiintegaglpi')); ?></div>
+                <div class="table-responsive">
+                    <table class="table table-sm mb-0">
+                        <tbody>
+                            <?php foreach ($effectiveConfig as $feature => $configRows) {
+                                if (!is_array($configRows)) {
+                                    continue;
+                                }
+                                foreach ($configRows as $key => $value) { ?>
+                                    <tr>
+                                        <th style="width: 280px;"><?= $this->escape((string) $feature . '.' . (string) $key); ?></th>
+                                        <td><code><?= $this->escape(is_bool($value) ? ($value ? 'true' : 'false') : (string) $value); ?></code></td>
+                                    </tr>
+                                <?php }
+                            } ?>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="card-footer text-muted small">
+                    <?= $this->escape(__('Ordem: ai_settings no PostgreSQL para campos não sensíveis; segredos/base_url continuam em ambiente/ops.', 'glpiintegaglpi')); ?>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-6">
+            <div class="card h-100">
+                <div class="card-header"><?= $this->escape(__('Catálogo cloud seguro', 'glpiintegaglpi')); ?></div>
+                <div class="table-responsive">
+                    <table class="table table-sm mb-0">
+                        <thead>
+                            <tr>
+                                <th><?= $this->escape(__('Provider', 'glpiintegaglpi')); ?></th>
+                                <th><?= $this->escape(__('Modelos allowlist', 'glpiintegaglpi')); ?></th>
+                                <th><?= $this->escape(__('Secret', 'glpiintegaglpi')); ?></th>
+                                <th><?= $this->escape(__('Status', 'glpiintegaglpi')); ?></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($cloudProviderCatalog as $provider) {
+                                if (!is_array($provider)) {
+                                    continue;
+                                }
+                                $models = is_array($provider['models'] ?? null) ? array_map('strval', $provider['models']) : [];
+                                ?>
+                                <tr>
+                                    <td><?= $this->escape((string) ($provider['name'] ?? '')); ?></td>
+                                    <td><code><?= $this->escape(implode(', ', $models)); ?></code></td>
+                                    <td><code><?= $this->escape(!empty($provider['secret_configured']) ? 'configured=true' : 'configured=false'); ?></code></td>
+                                    <td>
+                                        <span class="badge bg-warning text-dark"><?= $this->escape(__('bloqueado', 'glpiintegaglpi')); ?></span>
+                                        <code><?= $this->escape((string) ($provider['blocked_reason'] ?? 'cloud_disabled_by_default')); ?></code>
+                                    </td>
+                                </tr>
+                            <?php } ?>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="card-footer text-muted small">
+                    <?= $this->escape(__('Sem descoberta externa automática. API keys ficam somente em ambiente/ops e aparecem apenas como configured=true/false.', 'glpiintegaglpi')); ?>
+                </div>
+            </div>
         </div>
     </div>
 

@@ -96,6 +96,7 @@ describe('internal copilot draft', () => {
 
     const result = await service.requestDraft({ context, tone: 'friendly', requestedBy: 7 });
 
+    expect(result.draftResponse).toContain('[Fallback local - IA indisponível]');
     expect(result.draftResponse).toContain('Olá');
     expect(result.noAutoSend).toBe(true);
     expect(result.templateNotice).toContain('template aprovado');
@@ -121,6 +122,60 @@ describe('internal copilot draft', () => {
 
     expect(unauthorized.status).toBe(401);
     expect(response.status).toBe(201);
+    expect(response.body.draft.noAutoSend).toBe(true);
+  });
+
+  it('uses effective runtime config received from the plugin for model, timeout and dry-run', async () => {
+    let runtimeOptions: { model?: string; timeoutMs?: number } | undefined;
+    const provider = {
+      generate: vi.fn(async (_prompt: string, options?: { model?: string; timeoutMs?: number }) => {
+        runtimeOptions = options;
+        return parseCopilotDraftResult(JSON.stringify({
+          draft_response: 'Rascunho gerado com configuração efetiva para revisão humana.',
+          tone: 'neutral',
+          kb_references: [],
+          assumptions: [],
+          missing_information: [],
+          safety_warnings: ['revise antes de enviar'],
+          technician_checklist: ['confirmar dados'],
+          confidence_score: 60,
+          window_notice: 'open_24h',
+          template_notice: '',
+          no_auto_send: true,
+        }));
+      }),
+    };
+    const service = new CopilotDraftService(provider, {
+      enabled: false,
+      provider: 'disabled',
+      model: 'env-disabled',
+      dryRun: true,
+      maxChars: 8_000,
+    }, createAudit() as never);
+    const app = createTestApp(service);
+
+    const response = await request(app)
+      .post('/internal/glpi/copilot/draft')
+      .set('Authorization', `Bearer ${apiKey}`)
+      .send({
+        action: 'generate',
+        tone: 'technical',
+        context,
+        glpi_user_id: 7,
+        runtime_config: {
+          enabled: true,
+          provider: 'ollama',
+          model: 'gemma3:12b',
+          dry_run: false,
+          max_chars: 5000,
+          timeout_ms: 90000,
+        },
+      });
+
+    expect(response.status).toBe(201);
+    expect(provider.generate).toHaveBeenCalledOnce();
+    expect(runtimeOptions).toEqual({ model: 'gemma3:12b', timeoutMs: 90000 });
+    expect(response.body.draft.draftResponse).toContain('[IA Local - gemma3:12b]');
     expect(response.body.draft.noAutoSend).toBe(true);
   });
 

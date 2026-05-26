@@ -4,14 +4,18 @@ declare(strict_types=1);
 
 namespace GlpiPlugin\Integaglpi\Service;
 
+use GlpiPlugin\Integaglpi\External\ExternalDatabase;
 use GlpiPlugin\Integaglpi\Plugin;
 use RuntimeException;
+use Throwable;
 
 final class CopilotDraftClient
 {
     private const PATH_COPILOT_DRAFT = '/internal/glpi/copilot/draft';
     private const COPILOT_DRAFT_TIMEOUT_MS = 90000;
     private const COPILOT_DRAFT_CONNECT_TIMEOUT_MS = 10000;
+    private const AI_SETTINGS_CONTEXT = 'ai_settings';
+    private const AI_SETTINGS_TABLE = 'glpi_plugin_integaglpi_configs';
 
     private ?PluginConfigService $pluginConfigService;
 
@@ -26,6 +30,10 @@ final class CopilotDraftClient
      */
     public function post(array $payload): array
     {
+        if ((string) ($payload['action'] ?? '') === 'generate' && !isset($payload['runtime_config'])) {
+            $payload['runtime_config'] = $this->effectiveCopilotRuntimeConfig();
+        }
+
         return $this->postJson($this->endpoint(self::PATH_COPILOT_DRAFT), $payload);
     }
 
@@ -129,5 +137,133 @@ final class CopilotDraftClient
             $status,
             preg_replace('/[^a-z0-9_:-]/i', '', $errorType) ?: 'unknown'
         ));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function effectiveCopilotRuntimeConfig(): array
+    {
+        $supervisorTimeout = (int) $this->runtimeValue('AI_SUPERVISOR_TIMEOUT_SECONDS', '90');
+        $provider = $this->normalizeProvider($this->aiSettingValue(
+            'copilot_provider',
+            $this->runtimeValue('COPILOT_PROVIDER', $this->runtimeValue('AI_SUPERVISOR_PROVIDER', 'disabled'))
+        ));
+
+        return [
+            'enabled' => $this->truthy($this->aiSettingValue(
+                'copilot_enabled',
+                $this->runtimeValue('COPILOT_ENABLED', $this->runtimeValue('AI_SUPERVISOR_ENABLED', 'false'))
+            )),
+            'provider' => $provider,
+            'model' => $this->normalizeSafeText($this->aiSettingValue(
+                'copilot_model',
+                $this->runtimeValue('AI_SUPERVISOR_MODEL', '')
+            ), 120),
+            'dry_run' => $this->truthy($this->aiSettingValue(
+                'copilot_dry_run',
+                $this->runtimeValue('COPILOT_DRY_RUN', $this->runtimeValue('AI_SUPERVISOR_DRY_RUN', 'true'))
+            )),
+            'max_chars' => $this->boundedInteger($this->aiSettingValue(
+                'copilot_max_context_chars',
+                $this->runtimeValue('AI_SUPERVISOR_MAX_CHARS', '6000')
+            ), 1000, 12000, 6000),
+            'timeout_ms' => $this->boundedInteger($this->aiSettingValue(
+                'copilot_timeout_ms',
+                (string) max(15000, $supervisorTimeout * 1000)
+            ), 15000, 120000, self::COPILOT_DRAFT_TIMEOUT_MS),
+            'source' => 'ai_settings_or_env',
+            'no_auto_send' => true,
+        ];
+    }
+
+    private function aiSettingValue(string $column, string $fallback): string
+    {
+        if (!preg_match('/^[a-z0-9_]+$/', $column)) {
+            return trim($fallback);
+        }
+
+        $configService = $this->pluginConfigService ?? new PluginConfigService();
+        if (!$configService->isConfigured()) {
+            return trim($fallback);
+        }
+
+        try {
+            $pdo = ExternalDatabase::getConnection($configService->getConnectionConfig());
+            $exists = $pdo->prepare(
+                'SELECT 1 FROM information_schema.columns
+                  WHERE table_schema = current_schema()
+                    AND table_name = :table
+                    AND column_name = :column
+                  LIMIT 1'
+            );
+            $exists->execute([
+                ':table' => self::AI_SETTINGS_TABLE,
+                ':column' => $column,
+            ]);
+            if (!$exists->fetchColumn()) {
+                return trim($fallback);
+            }
+
+            $stmt = $pdo->prepare(
+                'SELECT "' . $column . '" FROM public.' . self::AI_SETTINGS_TABLE . ' WHERE context = :context LIMIT 1'
+            );
+            $stmt->execute([':context' => self::AI_SETTINGS_CONTEXT]);
+            $value = $stmt->fetchColumn();
+
+            return $value === false || $value === null || trim((string) $value) === '' ? trim($fallback) : trim((string) $value);
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][copilot][runtime_config] ' . $this->sanitizeLog($exception->getMessage()));
+
+            return trim($fallback);
+        }
+    }
+
+    private function runtimeValue(string $key, string $fallback): string
+    {
+        $value = Plugin::getRuntimeConfigValue($key);
+
+        return $value !== '' ? $value : $fallback;
+    }
+
+    private function normalizeProvider(string $value): string
+    {
+        $provider = strtolower(trim($value));
+        if ($provider === 'local') {
+            return 'ollama';
+        }
+
+        return $provider === 'ollama' ? 'ollama' : 'disabled';
+    }
+
+    private function normalizeSafeText(string $value, int $limit): string
+    {
+        $value = trim(strip_tags($value));
+        $value = preg_replace('/(password|senha|token|secret|bearer|api_key)\s*[:=]\s*\S+/i', '$1=[redacted]', $value) ?? '';
+        $value = preg_replace('/[^A-Za-z0-9_.:\/-]+/', '', $value) ?? '';
+
+        return substr($value, 0, $limit);
+    }
+
+    private function boundedInteger(string $value, int $min, int $max, int $default): int
+    {
+        $integer = (int) $value;
+        if ($integer < $min || $integer > $max) {
+            return $default;
+        }
+
+        return $integer;
+    }
+
+    private function truthy(string $value): bool
+    {
+        return in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
+    }
+
+    private function sanitizeLog(string $message): string
+    {
+        $message = preg_replace('/(password|senha|token|secret|bearer|api_key)\s*[:=]\s*\S+/i', '$1=[redacted]', $message) ?? '';
+
+        return mb_substr($message, 0, 220, 'UTF-8');
     }
 }

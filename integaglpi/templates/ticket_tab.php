@@ -66,25 +66,35 @@ if ($canViewTechnical) {
 $localTemplates = [];
 try {
     $localTemplates = (new \GlpiPlugin\Integaglpi\Service\PluginConfigService())->getActiveLocalTemplates();
-} catch (\Throwable) {
+} catch (\Throwable $exception) {
     $localTemplates = [];
 }
-$statusBadge = static function (mixed $status): string {
-    return match (strtolower((string) $status)) {
-        'open', 'ok', 'success' => 'success',
-        'closed', 'critical', 'error', 'failed', 'danger' => 'danger',
-        'awaiting_queue_selection', 'awaiting_entity_selection', 'collecting_contact_profile', 'warning' => 'warning',
-        default => 'secondary',
-    };
+$statusBadge = static function ($status): string {
+    $status = strtolower((string) $status);
+    if (in_array($status, ['open', 'ok', 'success'], true)) {
+        return 'success';
+    }
+    if (in_array($status, ['closed', 'critical', 'error', 'failed', 'danger'], true)) {
+        return 'danger';
+    }
+    if (in_array($status, ['awaiting_queue_selection', 'awaiting_entity_selection', 'collecting_contact_profile', 'warning'], true)) {
+        return 'warning';
+    }
+
+    return 'secondary';
 };
-$riskBadge = static function (mixed $level): string {
-    return match ((string) $level) {
-        'critical' => 'danger',
-        'warning' => 'warning',
-        default => 'success',
-    };
+$riskBadge = static function ($level): string {
+    $level = (string) $level;
+    if ($level === 'critical') {
+        return 'danger';
+    }
+    if ($level === 'warning') {
+        return 'warning';
+    }
+
+    return 'success';
 };
-$short = static function (mixed $value, int $max = 44): string {
+$short = static function ($value, int $max = 44): string {
     $text = trim((string) $value);
     if ($text === '') {
         return '-';
@@ -94,25 +104,37 @@ $short = static function (mixed $value, int $max = 44): string {
 };
 $attachmentActionUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/front/attachment.action.php';
 $attachmentStatusLabel = static function (string $status): string {
-    return match ($status) {
-        'received' => __('recebido', 'glpiintegaglpi'),
-        'validated' => __('validado', 'glpiintegaglpi'),
-        'blocked' => __('bloqueado', 'glpiintegaglpi'),
-        'synced' => __('sincronizado', 'glpiintegaglpi'),
-        'failed' => __('falhou', 'glpiintegaglpi'),
-        'deleted' => __('excluído logicamente', 'glpiintegaglpi'),
-        default => $status,
-    };
+    switch ($status) {
+        case 'received':
+            return __('recebido', 'glpiintegaglpi');
+        case 'validated':
+            return __('validado', 'glpiintegaglpi');
+        case 'blocked':
+            return __('bloqueado', 'glpiintegaglpi');
+        case 'synced':
+            return __('sincronizado', 'glpiintegaglpi');
+        case 'failed':
+            return __('falhou', 'glpiintegaglpi');
+        case 'deleted':
+            return __('excluído logicamente', 'glpiintegaglpi');
+        default:
+            return $status;
+    }
 };
 $attachmentStatusBadge = static function (string $status): string {
-    return match ($status) {
-        'synced', 'validated' => 'success',
-        'blocked', 'failed' => 'danger',
-        'deleted' => 'secondary',
-        default => 'info',
-    };
+    if (in_array($status, ['synced', 'validated'], true)) {
+        return 'success';
+    }
+    if (in_array($status, ['blocked', 'failed'], true)) {
+        return 'danger';
+    }
+    if ($status === 'deleted') {
+        return 'secondary';
+    }
+
+    return 'info';
 };
-$shortHash = static function (mixed $value): string {
+$shortHash = static function ($value): string {
     $hash = trim((string) $value);
     if ($hash === '') {
         return '';
@@ -390,7 +412,7 @@ $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
                         <div>
                             <strong><?= $this->escape(__('Análise IA — revisão humana obrigatória', 'glpiintegaglpi')); ?></strong>
                             <div class="small text-muted">
-                                <?= $this->escape(__('Sugestão gerada por IA. Técnico deve revisar. Nenhuma ação é executada automaticamente.', 'glpiintegaglpi')); ?>
+                                <?= $this->escape(__('Feedback supervisor online read-only: qualidade, risco de reabertura, dados faltantes e próxima ação. Nenhuma ação é executada automaticamente.', 'glpiintegaglpi')); ?>
                             </div>
                         </div>
                         <?php if ($aiStatus !== '') { ?>
@@ -1071,13 +1093,32 @@ if ($auditPanelOk) {
         . '/plugins/integaglpi/front/ticket.whatsapp.reply.php';
     $copilotPostUrl = rtrim($CFG_GLPI['root_doc'] ?? '', '/')
         . '/plugins/integaglpi/front/copilot.draft.php';
-    $assistantExternalQuery = trim((string) ($aiAssistantKnowledge['query'] ?? ''));
+    $assistantExternalQuery = trim((string) ($aiAssistantKnowledge['ticket_summary_for_research'] ?? $aiAssistantKnowledge['query'] ?? ''));
     $assistantExternalUrl = \GlpiPlugin\Integaglpi\Plugin::getExternalResearchUrl()
         . ($assistantExternalQuery !== '' ? '?' . http_build_query(['q' => $assistantExternalQuery]) : '');
     $assistantExternalAvailable = \GlpiPlugin\Integaglpi\Plugin::canExternalResearchRead()
         && (string) ($aiAssistantExternal['status'] ?? '') === 'available';
     $replyCsrfToken = \GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
     $replyDomId    = 'integaglpi-reply-' . $replyTicketId;
+    $historicalMiningUrl = rtrim($CFG_GLPI['root_doc'] ?? '', '/')
+        . '/plugins/integaglpi/front/historical.mining.php';
+    // Read latest accepted ticket solution for "Criar candidato KB da solução" form (manual, no auto-publish).
+    $solutionText = '';
+    $solutionTitle = (string) ($ticket->fields['name'] ?? '');
+    if (isset($DB) && is_object($DB)) {
+        foreach ($DB->request([
+            'SELECT' => ['content'],
+            'FROM' => 'glpi_itilsolutions',
+            'WHERE' => ['itemtype' => 'Ticket', 'items_id' => $replyTicketId],
+            'ORDER' => 'date_creation DESC',
+            'LIMIT' => 1,
+        ]) as $solRow) {
+            $solutionText = trim(strip_tags((string) ($solRow['content'] ?? '')));
+            break;
+        }
+    }
+    $solutionText = (string) preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $solutionText);
+    $solutionText = mb_substr($solutionText, 0, 2000);
     // Phase 7.4C regression fix: previous version used window.location.href to a GET
     // endpoint (debug_get=1). 7.4C blocked GET on ticket.whatsapp.reply.php with HTTP 405,
     // so the WhatsApp tab needs to POST through fetch with CSRF, like the Central does.
@@ -1159,8 +1200,23 @@ if ($auditPanelOk) {
                                     <code><?= $this->escape((string) ($aiAssistantExternal['blocked_reason'] ?? 'feature_flag_disabled')); ?></code>
                                 </div>
                             <?php } ?>
+                            <?php if ($solutionText !== '') { ?>
+                                <form method="post" action="<?= $this->escape($historicalMiningUrl); ?>" target="_blank" class="mt-1">
+                                    <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($replyCsrfToken); ?>">
+                                    <input type="hidden" name="action" value="create_kb_from_solution">
+                                    <input type="hidden" name="ticket_id" value="<?= (int) $replyTicketId; ?>">
+                                    <input type="hidden" name="solution_text" value="<?= $this->escape(mb_substr($solutionText, 0, 2000)); ?>">
+                                    <input type="hidden" name="ticket_title" value="<?= $this->escape(mb_substr($solutionTitle, 0, 120)); ?>">
+                                    <button type="submit" class="btn btn-sm btn-outline-success">
+                                        <?= $this->escape(__('Criar candidato KB da solução', 'glpiintegaglpi')); ?>
+                                    </button>
+                                </form>
+                            <?php } ?>
                             <div class="small text-muted mt-2">
                                 <?= $this->escape((string) ($aiAssistantP4['message'] ?? __('P4 permanece manual na tela de Mineração Histórica.', 'glpiintegaglpi'))); ?>
+                            </div>
+                            <div class="small text-muted mt-1">
+                                <?= $this->escape(__('Solução aceita ou pesquisa aprovada pode virar candidato KB revisável; publicação continua manual.', 'glpiintegaglpi')); ?>
                             </div>
                         </div>
                     </div>
@@ -1308,10 +1364,11 @@ if ($auditPanelOk) {
         }
 
         function refreshCsrfToken() {
-            return fetch(copilotEndpoint + '?csrf_token=1', {
+            return fetch(copilotEndpoint + '?csrf_token=1&_=' + String(Date.now()), {
                 method: 'GET',
                 credentials: 'same-origin',
-                headers: { 'Accept': 'application/json' }
+                cache: 'no-store',
+                headers: { 'Accept': 'application/json', 'Cache-Control': 'no-store' }
             })
                 .then(parseJsonResponse)
                 .then(function (result) {
@@ -1321,6 +1378,21 @@ if ($auditPanelOk) {
                 .catch(function () {
                     return { status: 0, body: null };
                 });
+        }
+
+        function copilotMessage(result, fallback) {
+            if (!result || !result.body) { return fallback; }
+            return result.body.display_message || result.body.message || fallback;
+        }
+
+        function isCsrfFailure(result) {
+            if (!result || result.status !== 403) { return false; }
+            if (!result.body) { return true; }
+            return result.body.error_type === 'csrf_failed'
+                || result.body.error_type === 'csrf_denied'
+                || result.body.message === 'csrf_denied'
+                || result.body.message === 'csrf_failed_reload_page'
+                || !result.body.csrf_token;
         }
 
         function setCopilotStatus(message, kind) {
@@ -1346,8 +1418,9 @@ if ($auditPanelOk) {
             });
         });
 
-        function postCopilot(payload) {
-            return refreshCsrfToken().then(function () {
+        function postCopilot(payload, retryAllowed) {
+            retryAllowed = retryAllowed !== false;
+            function send() {
                 payload.set('_glpi_csrf_token', csrfToken);
                 payload.set('ticket_id', String(button.dataset.ticketId || ''));
                 payload.set('conversation_id', String(button.dataset.conversationId || ''));
@@ -1358,8 +1431,15 @@ if ($auditPanelOk) {
                     headers: { 'Accept': 'application/json' },
                     body: payload
                 });
-            }).then(parseJsonResponse).then(function (result) {
+            }
+
+            return send().then(parseJsonResponse).then(function (result) {
                 updateCsrfToken(result.body);
+                if (retryAllowed && isCsrfFailure(result)) {
+                    return refreshCsrfToken().then(function () {
+                        return postCopilot(payload, false);
+                    });
+                }
                 return result;
             });
         }
@@ -1411,11 +1491,11 @@ if ($auditPanelOk) {
                     var responseBody = result.body && (result.body.body || result.body);
                     var draft = responseBody && responseBody.draft ? responseBody.draft : null;
                     if (!result.body || result.body.success !== true || !draft) {
-                        if (result.status === 403 && (!result.body || !result.body.csrf_token)) {
+                        if (isCsrfFailure(result)) {
                             setCopilotStatus(<?= json_encode(__('Token de segurança expirado. Atualize a página e tente novamente.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
                             return;
                         }
-                        setCopilotStatus((result.body && result.body.message) || <?= json_encode(__('Não foi possível gerar o rascunho.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
+                        setCopilotStatus(copilotMessage(result, <?= json_encode(__('Não foi possível gerar o rascunho.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>), 'error');
                         return;
                     }
                     var draftText = draft.draftResponse || draft.draft_response || '';
@@ -1456,12 +1536,6 @@ if ($auditPanelOk) {
             useButton.addEventListener('click', function () {
                 if (!copilotDraft || !textarea || !copilotDraft.value.trim()) { return; }
                 textarea.value = copilotDraft.value;
-                var payload = new FormData();
-                payload.set('copilot_action', 'use');
-                payload.set('draft_hash', copilotBox ? (copilotBox.dataset.draftHash || '') : '');
-                postCopilot(payload);
-                button.disabled = true;
-                window.setTimeout(function () { button.disabled = false; }, 2500);
                 saveCopilotDraft(copilotDraft.value, copilotBox ? (copilotBox.dataset.draftHash || '') : '', copilotMeta ? copilotMeta.textContent : '');
                 setCopilotStatus(<?= json_encode(__('Rascunho aplicado. Revise antes de enviar manualmente.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'success');
             });
@@ -1492,7 +1566,7 @@ if ($auditPanelOk) {
                 payload.set('notes', copilotNotes ? copilotNotes.value : '');
                 postCopilot(payload).then(function (result) {
                     if (!result.body || result.body.success !== true) {
-                        setCopilotStatus((result.body && result.body.message) || <?= json_encode(__('Não foi possível registrar feedback.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
+                        setCopilotStatus(copilotMessage(result, <?= json_encode(__('Não foi possível registrar feedback.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>), 'error');
                         return;
                     }
                     setCopilotStatus(<?= json_encode(__('Feedback registrado.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'success');
