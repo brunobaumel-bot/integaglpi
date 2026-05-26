@@ -271,21 +271,37 @@ describe('database bootstrap hardening', () => {
   });
 
   it('allows typed Secret Vault synthetic test statuses', async () => {
-    const migration = compactSql(await readProjectFile('schema-migrations/040_ai_secret_vault_test_statuses.sql'));
+    const rawMigration = await readProjectFile('schema-migrations/040_ai_secret_vault_test_statuses.sql');
+    const migration = compactSql(rawMigration);
 
     expect(migration).toContain('glpi_plugin_integaglpi_ai_secret_vault');
+    expect(migration).toContain('DROP CONSTRAINT IF EXISTS glpi_intega_ai_secret_provider_ck');
     expect(migration).toContain('glpi_intega_ai_secret_provider_ck');
+    expect(migration).toContain('ADD CONSTRAINT glpi_intega_ai_secret_provider_ck');
+    expect(migration).toContain('DROP CONSTRAINT IF EXISTS glpi_intega_ai_secret_test_status_ck');
     expect(migration).toContain('glpi_intega_ai_secret_test_status_ck');
-    expect(migration).toContain('CHECK constraint maintenance only');
+    expect(migration).toContain('ADD CONSTRAINT glpi_intega_ai_secret_test_status_ck');
+    expect(migration).toContain('Compativel com aplicador simples');
     expect(migration).toContain("provider = 'google'");
     expect(migration).toContain("provider = 'gemini'");
+    for (const provider of ["'openai'", "'anthropic'", "'gemini'", "'deepseek'", "'xai'"]) {
+      expect(migration).toContain(provider);
+    }
+    expect(migration).toContain("'not_tested'");
     expect(migration).toContain("'success'");
     expect(migration).toContain("'failed'");
+    expect(migration).toContain("'blocked'");
     expect(migration).toContain("'timeout'");
     expect(migration).toContain("'invalid_response'");
     expect(migration).toContain("'unauthorized'");
+    expect(rawMigration).not.toMatch(/DO\s+\$\$/i);
+    expect(rawMigration).not.toMatch(/\bBEGIN\b/i);
+    expect(rawMigration).not.toMatch(/\bEND IF\b/i);
+    expect(rawMigration).not.toMatch(/\bEND\s+\$\$/i);
+    expect(migration).not.toContain('DROP TABLE');
     expect(migration).not.toContain('TRUNCATE ');
-    expect(migration).not.toContain('DELETE ');
+    expect(migration).not.toContain('DELETE FROM');
+    expect(migration).not.toMatch(/plaintext|api_key|token|bearer|password|secret\s*=/i);
   });
 
   it('keeps conversation_profile_snapshot idempotent for existing tables missing snapshot fields', async () => {
