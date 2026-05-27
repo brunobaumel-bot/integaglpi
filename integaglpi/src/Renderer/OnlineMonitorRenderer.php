@@ -5,16 +5,19 @@ declare(strict_types=1);
 namespace GlpiPlugin\Integaglpi\Renderer;
 
 use GlpiPlugin\Integaglpi\Plugin;
+use GlpiPlugin\Integaglpi\Service\AiOnlineAlertService;
 use GlpiPlugin\Integaglpi\Service\OnlineMonitorService;
 use Html;
 
 final class OnlineMonitorRenderer
 {
     private OnlineMonitorService $service;
+    private ?AiOnlineAlertService $alertService;
 
-    public function __construct(OnlineMonitorService $service)
+    public function __construct(OnlineMonitorService $service, ?AiOnlineAlertService $alertService = null)
     {
         $this->service = $service;
+        $this->alertService = $alertService;
     }
 
     /**
@@ -23,6 +26,19 @@ final class OnlineMonitorRenderer
     public function render(array $query, int $userId, bool $supervisor): void
     {
         $data = $this->service->getPageData($query, $userId, $supervisor);
+        $alertData = $this->alertService !== null
+            ? $this->alertService->getPanelData($query, $supervisor)
+            : ['visible' => false, 'rows' => [], 'filters' => [], 'options' => [], 'error' => ''];
+        $alertBadgeCounts = [];
+        if ($this->alertService !== null && $supervisor && is_array($data['rows'] ?? null)) {
+            $conversationIds = [];
+            foreach ($data['rows'] as $row) {
+                if (is_array($row) && (string) ($row['conversation_id'] ?? '') !== '') {
+                    $conversationIds[] = (string) $row['conversation_id'];
+                }
+            }
+            $alertBadgeCounts = $this->alertService->loadOpenBadgeCounts($conversationIds, $supervisor);
+        }
         $template = PLUGIN_INTEGAGLPI_ROOT . '/templates/online_monitor.php';
 
         require $template;
@@ -62,5 +78,10 @@ final class OnlineMonitorRenderer
                 return $value !== '' && $value !== 0 && $value !== null && $value !== [];
             }
         ));
+    }
+
+    public function renderCsrfToken(): string
+    {
+        return Plugin::renderCsrfToken();
     }
 }

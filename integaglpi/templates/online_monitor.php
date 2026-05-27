@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 /** @var \GlpiPlugin\Integaglpi\Renderer\OnlineMonitorRenderer $this */
 /** @var array<string, mixed> $data */
+/** @var array<string, mixed> $alertData */
+/** @var array<string, int> $alertBadgeCounts */
 
 $filters = is_array($data['filters'] ?? null) ? $data['filters'] : [];
 $kpis = is_array($data['kpis'] ?? null) ? $data['kpis'] : [];
@@ -16,6 +18,13 @@ $hasPrevious = (bool) ($data['has_previous'] ?? false);
 $lastUpdatedAt = (string) ($data['last_updated_at'] ?? '');
 $error = trim((string) ($data['error'] ?? ''));
 $supervisor = (bool) ($data['supervisor'] ?? false);
+$alertData = is_array($alertData ?? null) ? $alertData : ['visible' => false, 'rows' => [], 'filters' => [], 'options' => [], 'error' => ''];
+$alertRows = is_array($alertData['rows'] ?? null) ? $alertData['rows'] : [];
+$alertFilters = is_array($alertData['filters'] ?? null) ? $alertData['filters'] : [];
+$alertOptions = is_array($alertData['options'] ?? null) ? $alertData['options'] : [];
+$alertError = trim((string) ($alertData['error'] ?? ''));
+$alertVisible = (bool) ($alertData['visible'] ?? false);
+$alertBadgeCounts = is_array($alertBadgeCounts ?? null) ? $alertBadgeCounts : [];
 
 $queues = is_array($options['queues'] ?? null) ? $options['queues'] : [];
 $technicians = is_array($options['technicians'] ?? null) ? $options['technicians'] : [];
@@ -78,6 +87,11 @@ $kpiCards = [
     ['label' => __('Falhas 24h', 'glpiintegaglpi'), 'value' => (int) ($kpis['failures_24h'] ?? 0), 'class' => 'danger'],
     ['label' => __('Pré-ticket / entidade', 'glpiintegaglpi'), 'value' => (int) ($kpis['pre_ticket_or_entity'] ?? 0), 'class' => 'secondary'],
 ];
+
+$activeTab = (string) ($_GET['tab'] ?? 'monitor');
+if (!in_array($activeTab, ['monitor', 'ai_alerts'], true)) {
+    $activeTab = 'monitor';
+}
 ?>
 
 <div class="d-flex flex-wrap align-items-start justify-content-between gap-3 mb-3">
@@ -108,6 +122,208 @@ $kpiCards = [
     <div class="alert alert-warning"><?= $this->escape($error); ?></div>
 <?php endif; ?>
 
+<ul class="nav nav-tabs mb-3">
+    <li class="nav-item">
+        <a class="nav-link <?= $activeTab === 'monitor' ? 'active' : ''; ?>" href="<?= $this->escape($this->getPageUrl(array_merge($filters, ['tab' => 'monitor']), $page)); ?>">
+            <?= $this->escape(__('Monitor operacional', 'glpiintegaglpi')); ?>
+        </a>
+    </li>
+    <?php if ($alertVisible) : ?>
+        <li class="nav-item">
+            <a class="nav-link <?= $activeTab === 'ai_alerts' ? 'active' : ''; ?>" href="<?= $this->escape($this->getPageUrl(array_merge($filters, ['tab' => 'ai_alerts']), $page)); ?>">
+                <?= $this->escape(__('Alertas de IA', 'glpiintegaglpi')); ?>
+                <?php if ($alertRows !== []) : ?>
+                    <span class="badge bg-warning text-dark ms-1"><?= count($alertRows); ?></span>
+                <?php endif; ?>
+            </a>
+        </li>
+    <?php endif; ?>
+</ul>
+
+<?php if ($alertVisible) : ?>
+    <div class="card mb-3 <?= $activeTab === 'ai_alerts' ? '' : 'd-none'; ?>">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <span><?= $this->escape(__('Alertas de IA', 'glpiintegaglpi')); ?></span>
+            <span class="badge bg-secondary"><?= $this->escape(__('revisão humana obrigatória', 'glpiintegaglpi')); ?></span>
+        </div>
+        <div class="card-body">
+            <div class="alert alert-info">
+                <?= $this->escape(__('Alertas gerados por IA são sinais de apoio à supervisão e melhoria contínua. Não representam decisão disciplinar automática.', 'glpiintegaglpi')); ?>
+            </div>
+            <?php if ($alertError !== '') : ?>
+                <div class="alert alert-warning"><?= $this->escape($alertError); ?></div>
+            <?php endif; ?>
+            <?php
+            $alertTypeOptions = is_array($alertOptions['alert_types'] ?? null) ? $alertOptions['alert_types'] : [];
+            $alertSeverityOptions = is_array($alertOptions['severities'] ?? null) ? $alertOptions['severities'] : [];
+            $alertStatusOptions = is_array($alertOptions['statuses'] ?? null) ? $alertOptions['statuses'] : [];
+            ?>
+            <form class="row g-2 mb-3" method="get" action="<?= $this->escape($this->getOnlineMonitorUrl()); ?>">
+                <input type="hidden" name="tab" value="ai_alerts">
+                <div class="col-md-3">
+                    <label class="form-label"><?= $this->escape(__('Severidade', 'glpiintegaglpi')); ?></label>
+                    <select class="form-select form-select-sm" name="ai_alert_severity">
+                        <?php foreach ($alertSeverityOptions as $value => $label) : ?>
+                            <option value="<?= $this->escape((string) $value); ?>" <?= ((string) ($alertFilters['severity'] ?? '') === (string) $value) ? 'selected' : ''; ?>>
+                                <?= $this->escape((string) $label); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label"><?= $this->escape(__('Tipo', 'glpiintegaglpi')); ?></label>
+                    <select class="form-select form-select-sm" name="ai_alert_type">
+                        <option value=""><?= $this->escape(__('Todos', 'glpiintegaglpi')); ?></option>
+                        <?php foreach ($alertTypeOptions as $value => $label) : ?>
+                            <option value="<?= $this->escape((string) $value); ?>" <?= ((string) ($alertFilters['alert_type'] ?? '') === (string) $value) ? 'selected' : ''; ?>>
+                                <?= $this->escape((string) $label); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label"><?= $this->escape(__('Fila ID', 'glpiintegaglpi')); ?></label>
+                    <input class="form-control form-control-sm" type="number" min="1" name="ai_alert_queue_id" value="<?= (int) ($alertFilters['queue_id'] ?? 0) ?: ''; ?>">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label"><?= $this->escape(__('Status', 'glpiintegaglpi')); ?></label>
+                    <select class="form-select form-select-sm" name="ai_alert_status">
+                        <?php foreach ($alertStatusOptions as $value => $label) : ?>
+                            <option value="<?= $this->escape((string) $value); ?>" <?= ((string) ($alertFilters['status'] ?? 'open') === (string) $value) ? 'selected' : ''; ?>>
+                                <?= $this->escape((string) $label); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-md-2 d-flex align-items-end gap-2">
+                    <button class="btn btn-sm btn-primary" type="submit"><?= $this->escape(__('Filtrar', 'glpiintegaglpi')); ?></button>
+                    <a class="btn btn-sm btn-outline-secondary" href="<?= $this->escape($this->getOnlineMonitorUrl() . '?tab=ai_alerts'); ?>">
+                        <?= $this->escape(__('Limpar', 'glpiintegaglpi')); ?>
+                    </a>
+                </div>
+            </form>
+            <?php if ($alertRows === []) : ?>
+                <div class="text-muted"><?= $this->escape(__('Nenhum alerta de IA para os filtros atuais.', 'glpiintegaglpi')); ?></div>
+            <?php else : ?>
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover align-middle">
+                        <thead class="table-light">
+                            <tr>
+                                <th><?= $this->escape(__('Severidade', 'glpiintegaglpi')); ?></th>
+                                <th><?= $this->escape(__('Tipo', 'glpiintegaglpi')); ?></th>
+                                <th><?= $this->escape(__('Ticket / Conversa', 'glpiintegaglpi')); ?></th>
+                                <th><?= $this->escape(__('Evidência sanitizada', 'glpiintegaglpi')); ?></th>
+                                <th><?= $this->escape(__('Ação humana sugerida', 'glpiintegaglpi')); ?></th>
+                                <th><?= $this->escape(__('Ações', 'glpiintegaglpi')); ?></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($alertRows as $alert) : ?>
+                                <?php
+                                $alertId = (string) ($alert['alert_id'] ?? '');
+                                $modalId = 'ai-online-alert-' . preg_replace('/[^A-Za-z0-9_-]+/', '-', $alertId);
+                                $ticketId = (int) ($alert['glpi_ticket_id'] ?? 0);
+                                $severity = (string) ($alert['severity'] ?? 'low');
+                                $severityClass = $severity === 'high' ? 'danger' : ($severity === 'medium' ? 'warning text-dark' : 'secondary');
+                                ?>
+                                <tr>
+                                    <td>
+                                        <span class="badge bg-<?= $this->escape($severityClass); ?>">
+                                            <?= $this->escape($severity); ?> · <?= (int) ($alert['confidence_score'] ?? 0); ?>%
+                                        </span>
+                                    </td>
+                                    <td><?= $this->escape((string) ($alertTypeOptions[(string) ($alert['alert_type'] ?? '')] ?? $alert['alert_type'] ?? '')); ?></td>
+                                    <td>
+                                        <?php if ($ticketId > 0) : ?>
+                                            <a href="<?= $this->escape($this->getTicketUrl($ticketId)); ?>">#<?= $ticketId; ?></a>
+                                        <?php else : ?>
+                                            <span class="text-muted"><?= $this->escape(__('sem ticket', 'glpiintegaglpi')); ?></span>
+                                        <?php endif; ?>
+                                        <div class="text-muted small"><?= $this->escape((string) ($alert['conversation_id'] ?? '')); ?></div>
+                                    </td>
+                                    <td><?= $this->escape((string) ($alert['evidence_summary_sanitized'] ?? '')); ?></td>
+                                    <td><?= $this->escape((string) ($alert['recommended_human_action'] ?? '')); ?></td>
+                                    <td>
+                                        <button class="btn btn-sm btn-outline-primary" type="button" data-bs-toggle="modal" data-bs-target="#<?= $this->escape($modalId); ?>">
+                                            <?= $this->escape(__('Detalhes', 'glpiintegaglpi')); ?>
+                                        </button>
+                                    </td>
+                                </tr>
+                                <tr class="d-none">
+                                    <td colspan="6">
+                                        <div class="modal fade" id="<?= $this->escape($modalId); ?>" tabindex="-1" aria-hidden="true">
+                                            <div class="modal-dialog modal-lg modal-dialog-scrollable">
+                                                <div class="modal-content">
+                                                    <div class="modal-header">
+                                                        <h5 class="modal-title"><?= $this->escape(__('Detalhe do alerta de IA', 'glpiintegaglpi')); ?></h5>
+                                                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="<?= $this->escape(__('Fechar', 'glpiintegaglpi')); ?>"></button>
+                                                    </div>
+                                                    <div class="modal-body">
+                                                        <div class="alert alert-info">
+                                                            <?= $this->escape(__('Este alerta é um apoio supervisório read-only. Revise contexto e evidências antes de orientar qualquer ação humana.', 'glpiintegaglpi')); ?>
+                                                        </div>
+                                                        <dl class="row">
+                                                            <dt class="col-sm-3"><?= $this->escape(__('Tipo', 'glpiintegaglpi')); ?></dt>
+                                                            <dd class="col-sm-9"><?= $this->escape((string) ($alert['alert_type'] ?? '')); ?></dd>
+                                                            <dt class="col-sm-3"><?= $this->escape(__('Severidade', 'glpiintegaglpi')); ?></dt>
+                                                            <dd class="col-sm-9"><?= $this->escape($severity); ?></dd>
+                                                            <dt class="col-sm-3"><?= $this->escape(__('Confiança', 'glpiintegaglpi')); ?></dt>
+                                                            <dd class="col-sm-9"><?= (int) ($alert['confidence_score'] ?? 0); ?>%</dd>
+                                                            <dt class="col-sm-3"><?= $this->escape(__('Evidência', 'glpiintegaglpi')); ?></dt>
+                                                            <dd class="col-sm-9"><?= $this->escape((string) ($alert['evidence_summary_sanitized'] ?? '')); ?></dd>
+                                                            <dt class="col-sm-3"><?= $this->escape(__('Ação sugerida', 'glpiintegaglpi')); ?></dt>
+                                                            <dd class="col-sm-9"><?= $this->escape((string) ($alert['recommended_human_action'] ?? '')); ?></dd>
+                                                        </dl>
+                                                        <?php $signals = is_array($alert['source_signals_json'] ?? null) ? $alert['source_signals_json'] : []; ?>
+                                                        <?php if ($signals !== []) : ?>
+                                                            <div class="mb-3">
+                                                                <strong><?= $this->escape(__('Sinais de origem', 'glpiintegaglpi')); ?></strong>
+                                                                <ul class="mb-0">
+                                                                    <?php foreach ($signals as $key => $value) : ?>
+                                                                        <li><?= $this->escape((string) $key . ': ' . (is_scalar($value) ? (string) $value : json_encode($value))); ?></li>
+                                                                    <?php endforeach; ?>
+                                                                </ul>
+                                                            </div>
+                                                        <?php endif; ?>
+                                                        <form method="<?= $this->escape('post'); ?>" action="<?= $this->escape($this->getOnlineMonitorUrl()); ?>">
+                                                            <?= $this->renderCsrfToken(); ?>
+                                                            <input type="hidden" name="ai_alert_action" value="feedback">
+                                                            <input type="hidden" name="alert_id" value="<?= $this->escape($alertId); ?>">
+                                                            <div class="mb-2">
+                                                                <label class="form-label"><?= $this->escape(__('Feedback do supervisor', 'glpiintegaglpi')); ?></label>
+                                                                <select class="form-select" name="feedback_value" required>
+                                                                    <option value="useful"><?= $this->escape(__('Útil', 'glpiintegaglpi')); ?></option>
+                                                                    <option value="false_positive"><?= $this->escape(__('Falso positivo', 'glpiintegaglpi')); ?></option>
+                                                                    <option value="not_applicable"><?= $this->escape(__('Não aplicável', 'glpiintegaglpi')); ?></option>
+                                                                    <option value="real_risk"><?= $this->escape(__('Risco real', 'glpiintegaglpi')); ?></option>
+                                                                    <option value="dismiss"><?= $this->escape(__('Descartar', 'glpiintegaglpi')); ?></option>
+                                                                    <option value="silence_24h"><?= $this->escape(__('Silenciar por 24h', 'glpiintegaglpi')); ?></option>
+                                                                </select>
+                                                            </div>
+                                                            <div class="mb-3">
+                                                                <label class="form-label"><?= $this->escape(__('Observação sanitizada', 'glpiintegaglpi')); ?></label>
+                                                                <textarea class="form-control" name="feedback_notes" rows="2" maxlength="500"></textarea>
+                                                            </div>
+                                                            <button class="btn btn-primary" type="submit">
+                                                                <?= $this->escape(__('Registrar feedback', 'glpiintegaglpi')); ?>
+                                                            </button>
+                                                        </form>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            <?php endif; ?>
+        </div>
+    </div>
+<?php endif; ?>
+
+<?php if ($activeTab === 'monitor') : ?>
 <div class="d-flex flex-wrap gap-2 mb-3">
     <?php foreach ($views as $viewKey => $viewLabel) : ?>
         <?php
@@ -337,6 +553,8 @@ $kpiCards = [
                         <?php foreach ($rows as $row) : ?>
                             <?php
                             $ticketId = (int) ($row['ticket_id'] ?? 0);
+                            $conversationId = (string) ($row['conversation_id'] ?? '');
+                            $openAlertCount = (int) ($alertBadgeCounts[$conversationId] ?? 0);
                             $waitingState = (string) ($row['waiting_state'] ?? '');
                             $waitingBadge = $waitingState === 'waiting_technician'
                                 ? ['class' => 'warning text-dark', 'label' => __('Aguardando técnico', 'glpiintegaglpi')]
@@ -352,6 +570,13 @@ $kpiCards = [
                                 <td>
                                     <div class="fw-semibold"><?= $this->escape((string) ($row['conversation_short'] ?? '')); ?></div>
                                     <div class="text-muted small"><?= $this->escape((string) ($row['phone_masked'] ?? '')); ?></div>
+                                    <?php if ($openAlertCount > 0) : ?>
+                                        <div class="mt-1">
+                                            <span class="badge bg-warning text-dark">
+                                                <?= $this->escape(__('IA', 'glpiintegaglpi')); ?> <?= $openAlertCount; ?>
+                                            </span>
+                                        </div>
+                                    <?php endif; ?>
                                 </td>
                                 <td>
                                     <?php if ($ticketId > 0) : ?>
@@ -444,6 +669,8 @@ $kpiCards = [
         </div>
     </div>
 </div>
+
+<?php endif; ?>
 
 <script>
 (function () {
