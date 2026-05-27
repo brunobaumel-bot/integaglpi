@@ -94,6 +94,12 @@ final class OnlineMonitorService
         if ($view === '') {
             $view = $supervisor ? 'all' : 'mine';
         }
+        $ticketStatus = max(0, (int) ($query['ticket_status'] ?? 0));
+        $ticketLink = $this->safeToken((string) ($query['ticket_link'] ?? ''));
+        $ticketStatusQuick = $this->safeToken((string) ($query['ticket_status_quick'] ?? ''));
+        if (!in_array($ticketStatusQuick, ['active', 'new', 'processing', 'pending', 'solved', 'closed', 'without_ticket', 'all'], true)) {
+            $ticketStatusQuick = ($ticketStatus > 0 || $ticketLink !== '') ? 'all' : 'active';
+        }
 
         return [
             'view' => $view,
@@ -103,9 +109,10 @@ final class OnlineMonitorService
             'technician_id' => max(0, (int) ($query['technician_id'] ?? 0)),
             'entity_id' => max(0, (int) ($query['entity_id'] ?? 0)),
             'conversation_status' => $this->safeToken((string) ($query['conversation_status'] ?? '')),
-            'ticket_status' => max(0, (int) ($query['ticket_status'] ?? 0)),
+            'ticket_status' => $ticketStatus,
+            'ticket_status_quick' => $ticketStatusQuick,
             'waiting' => $this->safeToken((string) ($query['waiting'] ?? '')),
-            'ticket_link' => $this->safeToken((string) ($query['ticket_link'] ?? '')),
+            'ticket_link' => $ticketLink,
             'search' => $this->safeSearch((string) ($query['search'] ?? '')),
             'order_by' => in_array((string) ($query['order_by'] ?? ''), ['updated_at', 'stalled_time'], true)
                 ? (string) $query['order_by']
@@ -230,7 +237,7 @@ final class OnlineMonitorService
         $rows = array_slice($rows, 0, $limit);
 
         return [
-            'rows' => $this->decorateRows($rows, (int) $filters['ticket_status']),
+            'rows' => $this->decorateRows($rows, (int) $filters['ticket_status'], (string) $filters['ticket_status_quick']),
             'has_next' => $hasNext,
         ];
     }
@@ -401,11 +408,16 @@ final class OnlineMonitorService
                 $where[] = "lm.direction = 'outbound'";
             }
 
+            $ticketStatusQuick = (string) ($filters['ticket_status_quick'] ?? 'active');
             $ticketLink = (string) ($filters['ticket_link'] ?? '');
-            if ($ticketLink === 'with_ticket') {
-                $where[] = 'c.glpi_ticket_id IS NOT NULL AND c.glpi_ticket_id > 0';
-            } elseif ($ticketLink === 'without_ticket') {
+            if ($ticketStatusQuick === 'without_ticket') {
                 $where[] = '(c.glpi_ticket_id IS NULL OR c.glpi_ticket_id = 0)';
+            } elseif ($ticketStatusQuick === 'all') {
+                if ($ticketLink === 'with_ticket') {
+                    $where[] = 'c.glpi_ticket_id IS NOT NULL AND c.glpi_ticket_id > 0';
+                } elseif ($ticketLink === 'without_ticket') {
+                    $where[] = '(c.glpi_ticket_id IS NULL OR c.glpi_ticket_id = 0)';
+                }
             }
 
             $search = (string) ($filters['search'] ?? '');
@@ -423,7 +435,7 @@ final class OnlineMonitorService
      * @param list<array<string, mixed>> $rows
      * @return list<array<string, mixed>>
      */
-    private function decorateRows(array $rows, int $ticketStatusFilter): array
+    private function decorateRows(array $rows, int $ticketStatusFilter, string $ticketStatusQuick): array
     {
         $ticketIds = [];
         $userIds = [];
@@ -451,6 +463,9 @@ final class OnlineMonitorService
             $ticketId = (int) ($row['glpi_ticket_id'] ?? 0);
             $ticket = $tickets[$ticketId] ?? [];
             $ticketStatus = (int) ($ticket['status'] ?? 0);
+            if (!$this->matchesQuickTicketStatus($ticketId, $ticketStatus, $ticketStatusQuick)) {
+                continue;
+            }
             if ($ticketStatusFilter > 0 && $ticketStatus !== $ticketStatusFilter) {
                 continue;
             }
@@ -495,6 +510,39 @@ final class OnlineMonitorService
         }
 
         return $decorated;
+    }
+
+    private function matchesQuickTicketStatus(int $ticketId, int $ticketStatus, string $quickFilter): bool
+    {
+        if ($quickFilter === 'all') {
+            return true;
+        }
+        if ($quickFilter === 'without_ticket') {
+            return $ticketId <= 0;
+        }
+        if ($ticketId <= 0) {
+            return $quickFilter === 'active';
+        }
+        if ($quickFilter === 'active') {
+            return !in_array($ticketStatus, [5, 6], true);
+        }
+        if ($quickFilter === 'new') {
+            return $ticketStatus === 1;
+        }
+        if ($quickFilter === 'processing') {
+            return in_array($ticketStatus, [2, 3], true);
+        }
+        if ($quickFilter === 'pending') {
+            return $ticketStatus === 4;
+        }
+        if ($quickFilter === 'solved') {
+            return $ticketStatus === 5;
+        }
+        if ($quickFilter === 'closed') {
+            return $ticketStatus === 6;
+        }
+
+        return true;
     }
 
     /**

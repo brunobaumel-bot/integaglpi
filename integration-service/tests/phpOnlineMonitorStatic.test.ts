@@ -46,12 +46,16 @@ describe('PHP Online Monitor static safety', () => {
     expect(service).toContain('stalled_seconds');
     expect(service).toContain('last_inbound_at');
     expect(service).toContain('last_delivery_status');
+    expect(service).toContain('ticket_status_quick');
+    expect(service).toContain('matchesQuickTicketStatus');
+    expect(service).toContain("'active'");
+    expect(service).toContain("'without_ticket'");
     expect(service).not.toMatch(/SELECT\s+\*/i);
     expect(service).not.toMatch(/\braw_payload\b/i);
     expect(service).not.toMatch(/\bDROP\s+TABLE\b|\bTRUNCATE\b|\bDELETE\s+FROM\b|\bINSERT\s+INTO\b|\bUPDATE\s+/i);
   });
 
-  it('renders operational filters, KPIs, manual refresh and no mutable actions', async () => {
+  it('renders quick filters, collapsed advanced filters, KPIs, manual refresh and no mutable actions', async () => {
     const template = await readProjectFile('integaglpi/templates/online_monitor.php');
 
     expect(template).toContain('Monitor Online WhatsApp');
@@ -61,11 +65,20 @@ describe('PHP Online Monitor static safety', () => {
     expect(template).toContain('Conversas abertas');
     expect(template).toContain('Aguardando técnico');
     expect(template).toContain('Aguardando cliente');
-    expect(template).toContain('Pré-ticket / sem chamado');
+    expect(template).toContain('Pré-ticket');
     expect(template).toContain('Falhas');
+    expect(template).toContain('Filtros avançados');
+    expect(template).toContain('integaglpi-online-advanced-filters');
+    expect(template).toContain('Filtros avançados ativos');
+    expect(template).toContain('ticket_status_quick');
+    expect(template).toContain('Ativos');
+    expect(template).toContain('Em atendimento');
+    expect(template).toContain('Sem ticket');
     expect(template).toContain('Itens por página');
     expect(template).toContain('Contexto WhatsApp');
+    expect(template).toContain('localStorage');
     expect(template).toContain('$this->escape(');
+    expect(template).not.toMatch(/method=["']post["']/i);
     expect(template).not.toMatch(/Enviar WhatsApp|Assumir atendimento|Transferir atendimento|Publicar KB|Salvar solução/i);
   });
 

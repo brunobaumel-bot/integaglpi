@@ -25,15 +25,36 @@ $ticketStatuses = is_array($options['ticket_statuses'] ?? null) ? $options['tick
 
 $views = [
     'all' => __('Fila geral', 'glpiintegaglpi'),
-    'mine' => __('Meus atendimentos', 'glpiintegaglpi'),
+    'mine' => __('Meus', 'glpiintegaglpi'),
     'pending_technician' => __('Aguardando técnico', 'glpiintegaglpi'),
     'pending_customer' => __('Aguardando cliente', 'glpiintegaglpi'),
-    'pre_ticket' => __('Pré-ticket / sem chamado', 'glpiintegaglpi'),
-    'awaiting_entity' => __('Aguardando entidade', 'glpiintegaglpi'),
+    'pre_ticket' => __('Pré-ticket', 'glpiintegaglpi'),
+    'awaiting_entity' => __('Entidade pendente', 'glpiintegaglpi'),
     'failures' => __('Falhas', 'glpiintegaglpi'),
-    'tickets_open' => __('Tickets abertos com WhatsApp', 'glpiintegaglpi'),
-    'tickets_solved_recent' => __('Solucionados recentes', 'glpiintegaglpi'),
+    'tickets_open' => __('Abertos WhatsApp', 'glpiintegaglpi'),
+    'tickets_solved_recent' => __('Solucionados', 'glpiintegaglpi'),
 ];
+
+$ticketStatusQuickOptions = [
+    'active' => __('Ativos', 'glpiintegaglpi'),
+    'new' => __('Novo', 'glpiintegaglpi'),
+    'processing' => __('Em atendimento', 'glpiintegaglpi'),
+    'pending' => __('Pendente', 'glpiintegaglpi'),
+    'solved' => __('Solucionado', 'glpiintegaglpi'),
+    'closed' => __('Fechado', 'glpiintegaglpi'),
+    'without_ticket' => __('Sem ticket', 'glpiintegaglpi'),
+    'all' => __('Todos', 'glpiintegaglpi'),
+];
+$advancedFilterActive = ((int) ($filters['queue_id'] ?? 0) > 0)
+    || ((int) ($filters['technician_id'] ?? 0) > 0)
+    || ((int) ($filters['entity_id'] ?? 0) > 0)
+    || ((string) ($filters['conversation_status'] ?? '') !== '')
+    || ((int) ($filters['ticket_status'] ?? 0) > 0)
+    || ((string) ($filters['waiting'] ?? '') !== '')
+    || ((string) ($filters['ticket_link'] ?? '') !== '')
+    || ((string) ($filters['search'] ?? '') !== '')
+    || ((string) ($filters['order_by'] ?? 'stalled_time') !== 'stalled_time')
+    || ((int) ($filters['limit'] ?? 50) !== 50);
 
 $waitingOptions = [
     '' => __('Todos', 'glpiintegaglpi'),
@@ -102,6 +123,40 @@ $kpiCards = [
     <?php endforeach; ?>
 </div>
 
+<form class="d-flex flex-wrap align-items-end gap-2 mb-3" method="get" action="<?= $this->escape($this->getOnlineMonitorUrl()); ?>">
+    <input type="hidden" name="view" value="<?= $this->escape((string) ($filters['view'] ?? '')); ?>">
+    <input type="hidden" name="queue_id" value="<?= (int) ($filters['queue_id'] ?? 0) ?: ''; ?>">
+    <input type="hidden" name="technician_id" value="<?= (int) ($filters['technician_id'] ?? 0) ?: ''; ?>">
+    <input type="hidden" name="entity_id" value="<?= (int) ($filters['entity_id'] ?? 0) ?: ''; ?>">
+    <input type="hidden" name="conversation_status" value="<?= $this->escape((string) ($filters['conversation_status'] ?? '')); ?>">
+    <input type="hidden" name="ticket_status" value="<?= (int) ($filters['ticket_status'] ?? 0) ?: ''; ?>">
+    <input type="hidden" name="waiting" value="<?= $this->escape((string) ($filters['waiting'] ?? '')); ?>">
+    <input type="hidden" name="ticket_link" value="<?= $this->escape((string) ($filters['ticket_link'] ?? '')); ?>">
+    <input type="hidden" name="search" value="<?= $this->escape((string) ($filters['search'] ?? '')); ?>">
+    <input type="hidden" name="order_by" value="<?= $this->escape((string) ($filters['order_by'] ?? 'stalled_time')); ?>">
+    <input type="hidden" name="limit" value="<?= (int) ($filters['limit'] ?? 50); ?>">
+    <div>
+        <label class="form-label mb-1"><?= $this->escape(__('Status ticket', 'glpiintegaglpi')); ?></label>
+        <select class="form-select form-select-sm" name="ticket_status_quick" onchange="this.form.submit()">
+            <?php foreach ($ticketStatusQuickOptions as $value => $label) : ?>
+                <option value="<?= $this->escape($value); ?>" <?= ((string) ($filters['ticket_status_quick'] ?? 'active') === $value) ? 'selected' : ''; ?>>
+                    <?= $this->escape($label); ?>
+                </option>
+            <?php endforeach; ?>
+        </select>
+    </div>
+    <noscript>
+        <button type="submit" class="btn btn-sm btn-outline-primary">
+            <?= $this->escape(__('Aplicar', 'glpiintegaglpi')); ?>
+        </button>
+    </noscript>
+    <?php if ($advancedFilterActive) : ?>
+        <span class="badge bg-warning text-dark align-self-center">
+            <?= $this->escape(__('Filtros avançados ativos', 'glpiintegaglpi')); ?>
+        </span>
+    <?php endif; ?>
+</form>
+
 <div class="row g-3 mb-3">
     <?php foreach ($kpiCards as $card) : ?>
         <div class="col-md-4 col-xl">
@@ -115,11 +170,19 @@ $kpiCards = [
     <?php endforeach; ?>
 </div>
 
-<div class="card mb-3">
-    <div class="card-header"><?= $this->escape(__('Filtros', 'glpiintegaglpi')); ?></div>
+<details class="card mb-3" id="integaglpi-online-advanced-filters">
+    <summary class="card-header d-flex align-items-center justify-content-between" style="cursor: pointer;">
+        <span><?= $this->escape(__('Filtros avançados', 'glpiintegaglpi')); ?></span>
+        <?php if ($advancedFilterActive) : ?>
+            <span class="badge bg-warning text-dark"><?= $this->escape(__('Filtros avançados ativos', 'glpiintegaglpi')); ?></span>
+        <?php else : ?>
+            <span class="text-muted small"><?= $this->escape(__('recolhido por padrão', 'glpiintegaglpi')); ?></span>
+        <?php endif; ?>
+    </summary>
     <div class="card-body">
         <form method="get" action="<?= $this->escape($this->getOnlineMonitorUrl()); ?>">
             <input type="hidden" name="view" value="<?= $this->escape((string) ($filters['view'] ?? '')); ?>">
+            <input type="hidden" name="ticket_status_quick" value="<?= $this->escape((string) ($filters['ticket_status_quick'] ?? 'active')); ?>">
             <div class="row g-3">
                 <div class="col-md-2">
                     <label class="form-label"><?= $this->escape(__('Fila', 'glpiintegaglpi')); ?></label>
@@ -239,7 +302,7 @@ $kpiCards = [
             </div>
         </form>
     </div>
-</div>
+</details>
 
 <div class="card">
     <div class="card-header d-flex align-items-center justify-content-between">
@@ -385,6 +448,14 @@ $kpiCards = [
 <script>
 (function () {
     var checkbox = document.getElementById('integaglpi-online-auto-refresh');
+    var advancedFilters = document.getElementById('integaglpi-online-advanced-filters');
+    var advancedFiltersKey = 'integaglpi.online_monitor.advanced_filters_open';
+    if (advancedFilters && window.localStorage) {
+        advancedFilters.open = window.localStorage.getItem(advancedFiltersKey) === '1';
+        advancedFilters.addEventListener('toggle', function () {
+            window.localStorage.setItem(advancedFiltersKey, advancedFilters.open ? '1' : '0');
+        });
+    }
     if (!checkbox || !window.localStorage) {
         return;
     }
