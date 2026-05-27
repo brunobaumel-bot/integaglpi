@@ -16,6 +16,8 @@ describe('PHP internal Copilot static safety', () => {
     const client = await readProjectFile('integaglpi/src/Service/CopilotDraftClient.php');
     const ticketTab = await readProjectFile('integaglpi/templates/ticket_tab.php');
     const contextService = await readProjectFile('integaglpi/src/Service/TicketContextService.php');
+    const env = await readProjectFile('integration-service/src/config/env.ts');
+    const dependencies = await readProjectFile('integration-service/src/buildDependencies.ts');
 
     expect(front).toContain('Session::checkLoginUser();');
     expect(front).toContain('Plugin::canUpdate()');
@@ -87,6 +89,12 @@ describe('PHP internal Copilot static safety', () => {
     expect(contextService).toContain('[dominio]');
     expect(contextService).toContain('[id]');
     expect(contextService).toContain('[midia]');
+    expect(env).toContain('COPILOT_DRAFT_MODEL');
+    expect(env).toContain('COPILOT_TIMEOUT_SECONDS');
+    expect(dependencies).toContain('copilotDraftModel');
+    expect(dependencies).toContain('copilotTimeoutSeconds');
+    expect(dependencies).toContain('env.COPILOT_DRAFT_MODEL.trim()');
+    expect(dependencies).toContain('env.COPILOT_TIMEOUT_SECONDS > 0');
 
     const combined = `${front}\n${client}\n${ticketTab}\n${contextService}`;
     expect(combined).not.toMatch(/MetaClient|sendOutbound|sendTemplate|ticket\.whatsapp\.reply\.php.*copilot|KnowbaseItem::add|Publicar automaticamente|match \(|readonly|__construct\s*\(\s*(?:public|protected|private)\s/i);

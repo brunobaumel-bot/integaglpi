@@ -67,6 +67,15 @@ const envSchema = z.object({
     .union([z.literal('true'), z.literal('false')])
     .default('true')
     .transform((value) => value === 'true'),
+  COPILOT_DRAFT_MODEL: z.string().default(''),
+  COPILOT_TIMEOUT_SECONDS: z.coerce.number().int().min(0).default(0),
+  AI_ONLINE_ALERT_MODEL: z.string().default(''),
+  AI_ONLINE_ALERT_TIMEOUT_SECONDS: z.coerce.number().int().min(0).default(0),
+  AI_ONLINE_ALERT_WORKER_LOOP: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  AI_ONLINE_ALERT_WORKER_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
   AI_PILOT_CLOUD_ENABLED: z
     .union([z.literal('true'), z.literal('false')])
     .default('false')

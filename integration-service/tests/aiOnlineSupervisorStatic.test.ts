@@ -30,8 +30,11 @@ describe('AI online supervisor observer static safety', () => {
   });
 
   it('keeps the worker bounded, locked, rate-limited and off the webhook path', async () => {
+    const env = await readProjectFile('integration-service/src/config/env.ts');
+    const dependencies = await readProjectFile('integration-service/src/buildDependencies.ts');
     const service = await readProjectFile('integration-service/src/domain/services/AiOnlineSupervisorAlertService.ts');
     const worker = await readProjectFile('integration-service/src/jobs/aiOnlineSupervisorAlertWorker.ts');
+    const compose = await readProjectFile('docker-compose.dev.yml');
 
     for (const alertType of [
       'long_waiting_client',
@@ -58,9 +61,23 @@ describe('AI online supervisor observer static safety', () => {
     expect(worker).toContain('runAiOnlineSupervisorAlertWorker');
     expect(worker).toContain('AI_ONLINE_ALERT_WORKER_LOOP');
     expect(worker).toContain('AI_ONLINE_ALERT_WORKER_INTERVAL_SECONDS');
+    expect(worker).toContain('loop_started');
+    expect(worker).toContain('loop_tick');
+    expect(worker).toContain('alerts_created');
+    expect(worker).toContain('alerts_suppressed');
+    expect(worker).toContain('errors_sanitized');
     expect(worker).toContain('RedisKeyLock');
-    expect(`${service}\n${worker}`).not.toMatch(/sendOutbound|MetaClient|KnowbaseItem::add|Ticket::update/i);
-    expect(`${service}\n${worker}`).not.toMatch(/whatsapp\.send|sendTemplate|publishKb/i);
+    expect(env).toContain('AI_ONLINE_ALERT_MODEL');
+    expect(env).toContain('AI_ONLINE_ALERT_TIMEOUT_SECONDS');
+    expect(dependencies).toContain('aiOnlineAlertModel');
+    expect(dependencies).toContain('aiOnlineAlertTimeoutSeconds');
+    expect(dependencies).toContain('aiOnlineAlertSupervisorService');
+    expect(compose).toContain('integaglpi-ai-online-alert-worker');
+    expect(compose).toContain('node", "/app/dist/jobs/aiOnlineSupervisorAlertWorker.js", "--loop"');
+    expect(compose).toContain('AI_ONLINE_ALERT_WORKER_LOOP=true');
+    expect(compose).toContain('AI_ONLINE_ALERT_WORKER_INTERVAL_SECONDS=60');
+    expect(`${service}\n${worker}\n${compose}`).not.toMatch(/sendOutbound|MetaClient|KnowbaseItem::add|Ticket::update/i);
+    expect(`${service}\n${worker}\n${compose}`).not.toMatch(/whatsapp\.send|sendTemplate|publishKb/i);
   });
 
   it('adds supervisor-only read-only UI with human feedback and no ticket mutation', async () => {

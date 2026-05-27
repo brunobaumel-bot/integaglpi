@@ -24,9 +24,18 @@ Ollama:
 - Se `SMOKE_TEST_SKIP_OLLAMA=true`, o smoke deve seguir sem falhar por IA local ausente.
 - Health nao deve gerar resposta de IA nem chamar cloud.
 
+Worker IA Observadora Online em TESTE/HOMOLOGACAO:
+- Subir pelo compose de teste: `docker compose -f docker-compose.dev.yml up -d integaglpi-ai-online-alert-worker`.
+- Confirmar logs com `[integration-service][ai_online_alerts][loop_started]` e `[integration-service][ai_online_alerts][loop_tick]`.
+- Confirmar que `AI_ONLINE_ALERT_WORKER_INTERVAL_SECONDS=60` esta aplicado no servico de teste.
+- Para Copiloto, usar `COPILOT_DRAFT_MODEL` e `COPILOT_TIMEOUT_SECONDS` quando precisar de modelo/timeout menor que `AI_SUPERVISOR_MODEL`.
+- Para Alertas Online, usar `AI_ONLINE_ALERT_MODEL` e `AI_ONLINE_ALERT_TIMEOUT_SECONDS` quando precisar de modelo/timeout proprio.
+- Se as variaveis especificas nao existirem, o fallback seguro continua sendo `AI_SUPERVISOR_MODEL` e `AI_SUPERVISOR_TIMEOUT_SECONDS`.
+- Gerar mensagem de teste com termo forte, por exemplo "supervisor" ou "procon", e validar alerta interno no Monitor Online em ate 1-2 minutos.
+- Confirmar que o alerta e interno/read-only, sem envio de WhatsApp, sem alteracao de ticket e sem escrita de KB.
+
 Abortar se:
 - Qualquer WhatsApp/template for enviado automaticamente.
 - Qualquer ticket/status/prioridade for alterado pela IA.
 - Qualquer escrita na KB nativa ocorrer automaticamente.
 - Logs exibirem PII, segredo ou prompt bruto.
-

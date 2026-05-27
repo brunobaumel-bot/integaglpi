@@ -45,6 +45,25 @@ services:
       - postgres
       - redis
 
+  integaglpi-ai-online-alert-worker:
+    build:
+      context: ./integration-service
+      dockerfile: Dockerfile
+    container_name: glpi-integaglpi-ai-online-alert-worker
+    restart: unless-stopped
+    command: ["node", "/app/dist/jobs/aiOnlineSupervisorAlertWorker.js", "--loop"]
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=development
+      - DB_HOST=postgres
+      - REDIS_HOST=redis
+      - AI_ONLINE_ALERT_WORKER_LOOP=true
+      - AI_ONLINE_ALERT_WORKER_INTERVAL_SECONDS=60
+    depends_on:
+      - postgres
+      - redis
+
   ai-service:
     build:
       context: ./ai-service

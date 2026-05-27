@@ -155,6 +155,23 @@ export function buildDependencies() {
     env.AI_SUPERVISOR_MODEL,
     env.AI_SUPERVISOR_TIMEOUT_SECONDS * 1000,
   );
+  const copilotDraftModel = env.COPILOT_DRAFT_MODEL.trim() !== ''
+    ? env.COPILOT_DRAFT_MODEL.trim()
+    : env.AI_SUPERVISOR_MODEL;
+  const copilotTimeoutSeconds = env.COPILOT_TIMEOUT_SECONDS > 0
+    ? env.COPILOT_TIMEOUT_SECONDS
+    : env.AI_SUPERVISOR_TIMEOUT_SECONDS;
+  const aiOnlineAlertModel = env.AI_ONLINE_ALERT_MODEL.trim() !== ''
+    ? env.AI_ONLINE_ALERT_MODEL.trim()
+    : env.AI_SUPERVISOR_MODEL;
+  const aiOnlineAlertTimeoutSeconds = env.AI_ONLINE_ALERT_TIMEOUT_SECONDS > 0
+    ? env.AI_ONLINE_ALERT_TIMEOUT_SECONDS
+    : env.AI_SUPERVISOR_TIMEOUT_SECONDS;
+  const aiOnlineAlertOllamaClient = new OllamaClient(
+    env.AI_SUPERVISOR_BASE_URL,
+    aiOnlineAlertModel,
+    aiOnlineAlertTimeoutSeconds * 1000,
+  );
   const aiSupervisorService = new AiSupervisorService(
     aiQualityAnalysisRepository,
     ollamaClient,
@@ -168,17 +185,30 @@ export function buildDependencies() {
     },
     auditService,
   );
+  const aiOnlineAlertSupervisorService = new AiSupervisorService(
+    aiQualityAnalysisRepository,
+    aiOnlineAlertOllamaClient,
+    {
+      enabled: env.AI_SUPERVISOR_ENABLED,
+      provider: env.AI_SUPERVISOR_PROVIDER,
+      model: aiOnlineAlertModel,
+      maxMessages: env.AI_SUPERVISOR_MAX_MESSAGES,
+      maxChars: env.AI_SUPERVISOR_MAX_CHARS,
+      dryRun: env.AI_SUPERVISOR_DRY_RUN,
+    },
+    auditService,
+  );
   const copilotDraftProvider = new OllamaCopilotProvider(
     env.AI_SUPERVISOR_BASE_URL,
-    env.AI_SUPERVISOR_MODEL,
-    env.AI_SUPERVISOR_TIMEOUT_SECONDS * 1000,
+    copilotDraftModel,
+    copilotTimeoutSeconds * 1000,
   );
   const copilotDraftService = new CopilotDraftService(
     copilotDraftProvider,
     {
       enabled: env.AI_SUPERVISOR_ENABLED,
       provider: env.AI_SUPERVISOR_PROVIDER,
-      model: env.AI_SUPERVISOR_MODEL,
+      model: copilotDraftModel,
       dryRun: env.AI_SUPERVISOR_DRY_RUN,
       maxChars: env.AI_SUPERVISOR_MAX_CHARS,
     },
@@ -235,6 +265,7 @@ export function buildDependencies() {
     operationalIntegrityAuditService,
     inactivityAutomationService,
     aiSupervisorService,
+    aiOnlineAlertSupervisorService,
     copilotDraftService,
     aiPilotService,
     aiOperationsService,
