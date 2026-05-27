@@ -31,6 +31,7 @@ describe('PHP internal Copilot static safety', () => {
     expect(front).toContain('O Copiloto demorou mais que o esperado');
     expect(front).toContain('Serviço de IA indisponível no momento');
     expect(front).toContain('A IA respondeu em formato inválido');
+    expect(front).toContain('A IA retornou um rascunho sem checklist técnico obrigatório');
     expect(front).toContain('buildCopilotContext');
     expect(client).toContain('/internal/glpi/copilot/draft');
     expect(client).toContain('COPILOT_DRAFT_TIMEOUT_MS = 8000');

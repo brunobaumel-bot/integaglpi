@@ -25,6 +25,7 @@ export interface CopilotDraftRuntimeConfig {
   dryRun?: boolean;
   maxChars?: number;
   timeoutMs?: number;
+  source?: string;
 }
 
 export interface RequestCopilotDraftInput {
@@ -33,6 +34,8 @@ export interface RequestCopilotDraftInput {
   requestedBy: number | null;
   runtimeConfig?: CopilotDraftRuntimeConfig;
 }
+
+export type CopilotDraftRuntimeConfigLoader = () => Promise<CopilotDraftRuntimeConfig | undefined>;
 
 type SupportIssueKey = 'printer' | 'formatting' | 'outlook';
 
@@ -55,10 +58,12 @@ export class CopilotDraftService {
     private readonly provider: CopilotDraftProvider,
     private readonly config: CopilotDraftConfig,
     private readonly auditService?: AuditService,
+    private readonly runtimeConfigLoader?: CopilotDraftRuntimeConfigLoader,
   ) {}
 
   public async requestDraft(input: RequestCopilotDraftInput): Promise<CopilotDraftResult & { draftHash: string }> {
-    const effectiveConfig = this.resolveRuntimeConfig(input.runtimeConfig);
+    const loadedRuntimeConfig = input.runtimeConfig ?? await this.loadRuntimeConfig();
+    const effectiveConfig = this.resolveRuntimeConfig(loadedRuntimeConfig);
     if (!effectiveConfig.enabled || effectiveConfig.provider === 'disabled') {
       throw new Error('COPILOT_DISABLED');
     }
@@ -94,7 +99,15 @@ export class CopilotDraftService {
     return { ...qualityResult, draftHash };
   }
 
-  private resolveRuntimeConfig(runtimeConfig?: CopilotDraftRuntimeConfig): Required<CopilotDraftConfig> & { timeoutMs?: number } {
+  private async loadRuntimeConfig(): Promise<CopilotDraftRuntimeConfig | undefined> {
+    try {
+      return await this.runtimeConfigLoader?.();
+    } catch {
+      return undefined;
+    }
+  }
+
+  private resolveRuntimeConfig(runtimeConfig?: CopilotDraftRuntimeConfig): Required<CopilotDraftConfig> & { timeoutMs?: number; source?: string } {
     const provider = runtimeConfig?.provider === 'ollama' ? 'ollama' : runtimeConfig?.provider === 'disabled' ? 'disabled' : this.config.provider;
     const model = typeof runtimeConfig?.model === 'string' && runtimeConfig.model.trim() !== ''
       ? runtimeConfig.model.trim().slice(0, 120)
@@ -113,6 +126,7 @@ export class CopilotDraftService {
       dryRun: typeof runtimeConfig?.dryRun === 'boolean' ? runtimeConfig.dryRun : this.config.dryRun,
       maxChars,
       timeoutMs,
+      source: typeof runtimeConfig?.source === 'string' && runtimeConfig.source !== '' ? runtimeConfig.source : 'env_or_request',
     };
   }
 
@@ -318,7 +332,7 @@ export class CopilotDraftService {
   }
 
   private applyDraftSourceLabel(
-    config: Required<CopilotDraftConfig> & { timeoutMs?: number },
+    config: Required<CopilotDraftConfig> & { timeoutMs?: number; source?: string },
     result: CopilotDraftResult,
   ): CopilotDraftResult {
     const source = this.draftSourceLabel(config);
@@ -577,7 +591,7 @@ export class CopilotDraftService {
     severity: 'info' | 'warning' | 'error',
     context: CopilotContext,
     requestedBy: number | null,
-    config: Required<CopilotDraftConfig> & { timeoutMs?: number },
+    config: Required<CopilotDraftConfig> & { timeoutMs?: number; source?: string },
     payload: Record<string, unknown> = {},
   ): Promise<void> {
     await this.auditService?.recordAuditEventSafe({
@@ -591,6 +605,7 @@ export class CopilotDraftService {
         provider: config.provider,
         model: config.model,
         timeout_ms: config.timeoutMs ?? null,
+        config_source: config.source ?? 'env_or_request',
         requested_by: requestedBy,
         message_count: context.messages.length,
         kb_article_count: context.kbArticles.length,

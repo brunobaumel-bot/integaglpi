@@ -116,6 +116,180 @@ async function safeQueryRows<T extends Record<string, unknown>>(
   }
 }
 
+const AI_RUNTIME_SETTING_KEYS = [
+  'ai_supervisor_enabled',
+  'ai_supervisor_provider',
+  'ai_supervisor_model',
+  'ai_supervisor_timeout_seconds',
+  'ai_supervisor_max_messages',
+  'ai_supervisor_max_chars',
+  'ai_supervisor_dry_run',
+  'copilot_enabled',
+  'copilot_provider',
+  'copilot_model',
+  'copilot_dry_run',
+  'copilot_timeout_ms',
+  'copilot_max_context_chars',
+  'p4_candidate_review_provider',
+  'p4_candidate_review_model',
+] as const;
+
+function aiSetting(settings: Map<string, unknown>, key: string): string {
+  const value = settings.get(key);
+  return value === undefined || value === null ? '' : String(value).trim();
+}
+
+function aiBool(settings: Map<string, unknown>, key: string, fallback: boolean): boolean {
+  const value = aiSetting(settings, key).toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(value)) {
+    return true;
+  }
+  if (['0', 'false', 'no', 'off'].includes(value)) {
+    return false;
+  }
+  return fallback;
+}
+
+function aiProvider(settings: Map<string, unknown>, key: string, fallback: string): string {
+  const value = aiSetting(settings, key).toLowerCase();
+  if (value === 'local') {
+    return 'ollama';
+  }
+  return ['ollama', 'disabled'].includes(value) ? value : fallback;
+}
+
+function aiModel(settings: Map<string, unknown>, key: string, fallback: string): string {
+  const value = aiSetting(settings, key).replace(/[^A-Za-z0-9_.:/-]+/g, '').slice(0, 120);
+  return value !== '' ? value : fallback;
+}
+
+function aiInteger(settings: Map<string, unknown>, key: string, fallback: number, min: number, max: number): number {
+  const parsed = Number(aiSetting(settings, key));
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, Math.trunc(parsed)));
+}
+
+async function loadAiRuntimeConfigDiagnostics(pool: Pick<Pool, 'query'>): Promise<Record<string, unknown>> {
+  const refreshedAt = new Date().toISOString();
+  const columnRows = await safeQueryRows<{ column_name: string }>(
+    pool,
+    `
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = $1
+        AND column_name = ANY($2::text[])
+    `,
+    ['glpi_plugin_integaglpi_configs', ['context', 'updated_at', ...AI_RUNTIME_SETTING_KEYS]],
+  );
+  const columns = columnRows.map((row) => row.column_name);
+  if (!columns.includes('context')) {
+    return {
+      cache: { strategy: 'no_cache', refreshed_at: refreshedAt, source: 'env', database_available: false },
+      ai_supervisor: { origin: 'env', effective: { model: env.AI_SUPERVISOR_MODEL, timeout_ms: env.AI_SUPERVISOR_TIMEOUT_SECONDS * 1000 } },
+      copilot: { origin: 'env', effective: { model: env.COPILOT_DRAFT_MODEL || env.AI_SUPERVISOR_MODEL, timeout_ms: (env.COPILOT_TIMEOUT_SECONDS || env.AI_SUPERVISOR_TIMEOUT_SECONDS) * 1000 } },
+      ai_online_alerts: { origin: 'env', effective: { model: env.AI_ONLINE_ALERT_MODEL || env.AI_SUPERVISOR_MODEL, timeout_ms: (env.AI_ONLINE_ALERT_TIMEOUT_SECONDS || env.AI_SUPERVISOR_TIMEOUT_SECONDS) * 1000 } },
+    };
+  }
+
+  const projectionColumns = columns.filter((column) => column !== 'context');
+  const settings = new Map<string, unknown>();
+  if (projectionColumns.length > 0) {
+    const rows = await safeQueryRows<Record<string, unknown>>(
+      pool,
+      `
+        SELECT ${projectionColumns.map((column) => `"${column}"`).join(', ')}
+        FROM glpi_plugin_integaglpi_configs
+        WHERE context = 'ai_settings'
+        LIMIT 1
+      `,
+    );
+    const row = rows[0] ?? {};
+    for (const key of projectionColumns) {
+      const value = row[key];
+      if (value !== undefined && value !== null && String(value).trim() !== '') {
+        settings.set(key, value);
+      }
+    }
+  }
+
+  const hasDb = [...settings.keys()].some((key) => key !== 'updated_at');
+  const supervisorModel = aiModel(settings, 'ai_supervisor_model', env.AI_SUPERVISOR_MODEL);
+  const supervisorTimeoutMs = aiInteger(settings, 'ai_supervisor_timeout_seconds', env.AI_SUPERVISOR_TIMEOUT_SECONDS, 15, 180) * 1000;
+  const copilotModelFallback = env.COPILOT_DRAFT_MODEL.trim() !== '' ? env.COPILOT_DRAFT_MODEL.trim() : supervisorModel;
+  const copilotTimeoutFallback = env.COPILOT_TIMEOUT_SECONDS > 0 ? env.COPILOT_TIMEOUT_SECONDS * 1000 : supervisorTimeoutMs;
+  const alertModel = env.AI_ONLINE_ALERT_MODEL.trim() !== '' ? env.AI_ONLINE_ALERT_MODEL.trim() : supervisorModel;
+  const alertTimeoutMs = env.AI_ONLINE_ALERT_TIMEOUT_SECONDS > 0 ? env.AI_ONLINE_ALERT_TIMEOUT_SECONDS * 1000 : supervisorTimeoutMs;
+
+  return {
+    cache: {
+      strategy: 'no_cache_db_read_per_request',
+      refreshed_at: refreshedAt,
+      source: hasDb ? 'db_ai_settings' : 'env',
+      database_available: true,
+      settings_updated_at: aiSetting(settings, 'updated_at'),
+    },
+    ai_supervisor: {
+      origin: hasDb ? 'db' : 'env',
+      saved: {
+        model: aiSetting(settings, 'ai_supervisor_model'),
+        timeout_seconds: aiSetting(settings, 'ai_supervisor_timeout_seconds'),
+      },
+      effective: {
+        enabled: aiBool(settings, 'ai_supervisor_enabled', env.AI_SUPERVISOR_ENABLED),
+        provider: aiProvider(settings, 'ai_supervisor_provider', env.AI_SUPERVISOR_PROVIDER),
+        model: supervisorModel,
+        timeout_ms: supervisorTimeoutMs,
+        max_messages: aiInteger(settings, 'ai_supervisor_max_messages', env.AI_SUPERVISOR_MAX_MESSAGES, 1, 30),
+        max_chars: aiInteger(settings, 'ai_supervisor_max_chars', env.AI_SUPERVISOR_MAX_CHARS, 500, 12_000),
+        dry_run: aiBool(settings, 'ai_supervisor_dry_run', env.AI_SUPERVISOR_DRY_RUN),
+      },
+    },
+    copilot: {
+      origin: hasDb ? 'db' : 'env',
+      saved: {
+        model: aiSetting(settings, 'copilot_model'),
+        timeout_ms: aiSetting(settings, 'copilot_timeout_ms'),
+      },
+      effective: {
+        enabled: aiBool(settings, 'copilot_enabled', aiBool(settings, 'ai_supervisor_enabled', env.AI_SUPERVISOR_ENABLED)),
+        provider: aiProvider(settings, 'copilot_provider', aiProvider(settings, 'ai_supervisor_provider', env.AI_SUPERVISOR_PROVIDER)),
+        model: aiModel(settings, 'copilot_model', copilotModelFallback),
+        timeout_ms: aiInteger(settings, 'copilot_timeout_ms', copilotTimeoutFallback, 15_000, 120_000),
+        max_chars: aiInteger(settings, 'copilot_max_context_chars', env.AI_SUPERVISOR_MAX_CHARS, 1_000, 12_000),
+        dry_run: aiBool(settings, 'copilot_dry_run', aiBool(settings, 'ai_supervisor_dry_run', env.AI_SUPERVISOR_DRY_RUN)),
+      },
+    },
+    ai_online_alerts: {
+      origin: env.AI_ONLINE_ALERT_MODEL.trim() !== '' || env.AI_ONLINE_ALERT_TIMEOUT_SECONDS > 0 ? 'env_function_override' : (hasDb ? 'db' : 'env'),
+      effective: {
+        provider: aiProvider(settings, 'ai_supervisor_provider', env.AI_SUPERVISOR_PROVIDER),
+        model: alertModel,
+        timeout_ms: alertTimeoutMs,
+        dry_run: aiBool(settings, 'ai_supervisor_dry_run', env.AI_SUPERVISOR_DRY_RUN),
+      },
+    },
+    p4_candidate_review: {
+      origin: hasDb ? 'db' : 'env',
+      saved: {
+        provider: aiSetting(settings, 'p4_candidate_review_provider'),
+        model: aiSetting(settings, 'p4_candidate_review_model'),
+      },
+      effective: {
+        provider: aiProvider(settings, 'p4_candidate_review_provider', 'disabled'),
+        model: aiModel(settings, 'p4_candidate_review_model', supervisorModel),
+      },
+    },
+    ai_online_alert_worker: {
+      loop_env: env.AI_ONLINE_ALERT_WORKER_LOOP,
+      interval_seconds: env.AI_ONLINE_ALERT_WORKER_INTERVAL_SECONDS,
+      status_source: 'worker_process_or_compose',
+    },
+  };
+}
+
 export function createOpsDiagnosticsController(
   pool: Pick<Pool, 'query'>,
   glpiClient?: Pick<GlpiClient, 'checkApiHealth'>,
@@ -132,7 +306,7 @@ export function createOpsDiagnosticsController(
       postgresOk = false;
     }
 
-    const [schemaRows, attemptRows, deliveryRows, inactivityRows] = await Promise.all([
+    const [schemaRows, attemptRows, deliveryRows, inactivityRows, aiRuntimeConfig] = await Promise.all([
       safeQueryRows<{ table_name: string; column_name: string }>(
         pool,
         `
@@ -197,6 +371,7 @@ export function createOpsDiagnosticsController(
           LIMIT 10
         `,
       ),
+      loadAiRuntimeConfigDiagnostics(pool),
     ]);
 
     const columns = new Set(schemaRows.map((row) => `${row.table_name}.${row.column_name}`));
@@ -245,6 +420,7 @@ export function createOpsDiagnosticsController(
         dry_run: env.AI_SUPERVISOR_DRY_RUN,
         base_url_configured: env.AI_SUPERVISOR_BASE_URL.trim() !== '',
       },
+      ai_runtime_config: aiRuntimeConfig,
       readiness: {
         webhook_guard: {
           signature_secret_configured: Boolean(env.META_APP_SECRET),

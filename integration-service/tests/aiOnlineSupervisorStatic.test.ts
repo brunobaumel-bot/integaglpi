@@ -32,6 +32,7 @@ describe('AI online supervisor observer static safety', () => {
   it('keeps the worker bounded, locked, rate-limited and off the webhook path', async () => {
     const env = await readProjectFile('integration-service/src/config/env.ts');
     const dependencies = await readProjectFile('integration-service/src/buildDependencies.ts');
+    const healthController = await readProjectFile('integration-service/src/controllers/healthController.ts');
     const service = await readProjectFile('integration-service/src/domain/services/AiOnlineSupervisorAlertService.ts');
     const worker = await readProjectFile('integration-service/src/jobs/aiOnlineSupervisorAlertWorker.ts');
     const compose = await readProjectFile('docker-compose.dev.yml');
@@ -69,9 +70,13 @@ describe('AI online supervisor observer static safety', () => {
     expect(worker).toContain('RedisKeyLock');
     expect(env).toContain('AI_ONLINE_ALERT_MODEL');
     expect(env).toContain('AI_ONLINE_ALERT_TIMEOUT_SECONDS');
+    expect(dependencies).toContain('loadAiSettingsFromDatabase');
     expect(dependencies).toContain('aiOnlineAlertModel');
     expect(dependencies).toContain('aiOnlineAlertTimeoutSeconds');
+    expect(dependencies).toContain('loadAiOnlineAlertRuntimeConfig');
     expect(dependencies).toContain('aiOnlineAlertSupervisorService');
+    expect(healthController).toContain('ai_runtime_config');
+    expect(healthController).toContain('no_cache_db_read_per_request');
     expect(compose).toContain('integaglpi-ai-online-alert-worker');
     expect(compose).toContain('node", "/app/dist/jobs/aiOnlineSupervisorAlertWorker.js", "--loop"');
     expect(compose).toContain('AI_ONLINE_ALERT_WORKER_LOOP=true');

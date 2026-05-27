@@ -41,6 +41,10 @@ function integaglpiCopilotUserMessage(string $message): string
         return __('A IA respondeu em formato inválido. Tente novamente.', 'glpiintegaglpi');
     }
 
+    if ($message === 'COPILOT_DRAFT_CHECKLIST_REQUIRED') {
+        return __('A IA retornou um rascunho sem checklist técnico obrigatório. Gere novamente ou revise o contexto antes de usar.', 'glpiintegaglpi');
+    }
+
     if ($message === 'COPILOT_DISABLED') {
         return __('Copiloto desabilitado no momento.', 'glpiintegaglpi');
     }

@@ -290,7 +290,7 @@ export class AiOnlineSupervisorAlertService {
     }
 
     const aiCandidates = drafts.filter((draft) => draft.requiresAi);
-    if (aiCandidates.length > 0 && this.aiSupervisorService?.isEnabled() && (conversation.glpiTicketId ?? 0) > 0) {
+    if (aiCandidates.length > 0 && this.aiSupervisorService && (conversation.glpiTicketId ?? 0) > 0) {
       const aiDraft = await this.buildAiDraft(conversation, now);
       if (aiDraft !== null) {
         drafts.push(aiDraft);
@@ -421,7 +421,7 @@ export class AiOnlineSupervisorAlertService {
   }
 
   private async buildAiDraft(conversation: ConversationCandidate, now: Date): Promise<AlertDraft | null> {
-    if (!this.aiSupervisorService || !this.aiSupervisorService.isEnabled() || (conversation.glpiTicketId ?? 0) <= 0) {
+    if (!this.aiSupervisorService || (conversation.glpiTicketId ?? 0) <= 0) {
       return null;
     }
 

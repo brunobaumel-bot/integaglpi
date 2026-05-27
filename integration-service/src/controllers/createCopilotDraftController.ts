@@ -186,6 +186,9 @@ function classifyCopilotError(error: unknown): { code: string; status: number; e
   if (/COPILOT_DRAFT_(INVALID_JSON|INVALID_SHAPE|INVALID_ENUM|EMPTY)/.test(message)) {
     return { code: 'COPILOT_DRAFT_INVALID_JSON', status: 502, errorType: 'invalid_provider_response' };
   }
+  if (message === 'COPILOT_DRAFT_CHECKLIST_REQUIRED') {
+    return { code: 'COPILOT_DRAFT_CHECKLIST_REQUIRED', status: 422, errorType: 'checklist_required' };
+  }
 
   return { code: message || 'COPILOT_DRAFT_FAILED', status: 400, errorType: 'validation' };
 }

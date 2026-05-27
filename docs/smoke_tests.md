@@ -28,6 +28,8 @@ Worker IA Observadora Online em TESTE/HOMOLOGACAO:
 - Subir pelo compose de teste: `docker compose -f docker-compose.dev.yml up -d integaglpi-ai-online-alert-worker`.
 - Confirmar logs com `[integration-service][ai_online_alerts][loop_started]` e `[integration-service][ai_online_alerts][loop_tick]`.
 - Confirmar que `AI_ONLINE_ALERT_WORKER_INTERVAL_SECONDS=60` esta aplicado no servico de teste.
+- Na Central IA, salvar modelo/timeout de IA Supervisora e Copiloto; abrir Diagnostico/Config efetiva e confirmar `node_runtime_cache.strategy=no_cache_db_read_per_request`.
+- Confirmar que o runtime efetivo do Node mostra origem `db`, modelo salvo e timeout salvo sem exigir rebuild.
 - Para Copiloto, usar `COPILOT_DRAFT_MODEL` e `COPILOT_TIMEOUT_SECONDS` quando precisar de modelo/timeout menor que `AI_SUPERVISOR_MODEL`.
 - Para Alertas Online, usar `AI_ONLINE_ALERT_MODEL` e `AI_ONLINE_ALERT_TIMEOUT_SECONDS` quando precisar de modelo/timeout proprio.
 - Se as variaveis especificas nao existirem, o fallback seguro continua sendo `AI_SUPERVISOR_MODEL` e `AI_SUPERVISOR_TIMEOUT_SECONDS`.

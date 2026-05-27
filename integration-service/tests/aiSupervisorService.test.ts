@@ -333,6 +333,58 @@ describe('AiSupervisorService', () => {
     });
   });
 
+  it('uses database runtime config for model, timeout and prompt limits when available', async () => {
+    let runtimeOptions: { model?: string; timeoutMs?: number } | undefined;
+    let prompt = '';
+    const repository = new FakeRepository();
+    repository.context = makeContext({
+      messages: Array.from({ length: 12 }, (_, index) => ({
+        direction: 'inbound',
+        messageType: 'text',
+        messageText: `Mensagem ${index} com detalhes de atendimento.`,
+        createdAt: now,
+      })),
+    });
+    const provider = {
+      analyze: vi.fn(async (value: string, options?: { model?: string; timeoutMs?: number }) => {
+        prompt = value;
+        runtimeOptions = options;
+        return makeAiResult();
+      }),
+    };
+    const service = new AiSupervisorService(repository, provider, {
+      enabled: false,
+      provider: 'disabled',
+      model: 'qwen3-coder:30b',
+      maxMessages: 30,
+      maxChars: 12_000,
+      dryRun: true,
+      timeoutMs: 60_000,
+      source: 'env',
+    }, { recordAuditEventSafe: vi.fn().mockResolvedValue(undefined) } as never, async () => ({
+      enabled: true,
+      provider: 'ollama',
+      model: 'deepseek-r1:8b',
+      maxMessages: 4,
+      maxChars: 4_000,
+      dryRun: false,
+      timeoutMs: 45_000,
+      source: 'db_ai_settings',
+    }));
+
+    const result = await service.requestAnalysis({
+      conversationId: 'conv-1',
+      glpiTicketId: 123,
+      createdBy: 7,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(repository.pendingInputs[0]).toMatchObject({ provider: 'ollama', model: 'deepseek-r1:8b' });
+    expect(provider.analyze).toHaveBeenCalledOnce();
+    expect(runtimeOptions).toEqual({ model: 'deepseek-r1:8b', timeoutMs: 45_000 });
+    expect(prompt.length).toBeLessThan(5_000);
+  });
+
   it('marks provider errors as failed without throwing', async () => {
     const provider = { analyze: vi.fn().mockRejectedValue(new Error('ollama offline token=secret123')) };
     const { service, repository } = createService({ provider, dryRun: false });

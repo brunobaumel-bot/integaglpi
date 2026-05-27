@@ -170,6 +170,7 @@ final class AiConfigViewService
         }
 
         $aiSupervisorDiagnostics = is_array($diagnostics['ai_supervisor'] ?? null) ? $diagnostics['ai_supervisor'] : [];
+        $nodeRuntimeConfig = is_array($diagnostics['ai_runtime_config'] ?? null) ? $diagnostics['ai_runtime_config'] : [];
         $settings = $this->loadAiSettings();
         $integrationUrl = $this->pluginConfigService->getIntegrationServiceUrl();
 
@@ -242,7 +243,7 @@ final class AiConfigViewService
             'secret_fields' => ['api_key', 'token', 'bearer', 'password', 'secret', 'client_secret'],
             'safe_settings' => $settings,
             'safe_settings_available' => $this->aiSettingsStorageAvailable(),
-            'effective_config' => $this->effectiveConfig($settings, $aiSupervisor, $copilot, $p4Review, $externalResearch),
+            'effective_config' => $this->effectiveConfig($settings, $aiSupervisor, $copilot, $p4Review, $externalResearch, $nodeRuntimeConfig),
             'ollama_models' => $this->cachedOllamaModels(),
             'ollama_model_status' => $this->ollamaModelStatus(),
             'cloud_provider_catalog' => $this->cloudProviderCatalog($cloudPilot, $secretVault, $cloudProviderTestErrors),
@@ -737,9 +738,9 @@ final class AiConfigViewService
     /**
      * @return array<string, mixed>
      */
-    private function effectiveConfig(array $settings, array $aiSupervisor, array $copilot, array $p4Review, array $externalResearch): array
+    private function effectiveConfig(array $settings, array $aiSupervisor, array $copilot, array $p4Review, array $externalResearch, array $nodeRuntimeConfig = []): array
     {
-        return [
+        $config = [
             'ai_supervisor' => [
                 'provider' => (string) ($aiSupervisor['provider'] ?? 'disabled'),
                 'model' => (string) ($aiSupervisor['model'] ?? ''),
@@ -768,6 +769,52 @@ final class AiConfigViewService
                 'source' => 'secret_vault_and_ai_settings',
             ],
         ];
+
+        $cache = is_array($nodeRuntimeConfig['cache'] ?? null) ? $nodeRuntimeConfig['cache'] : [];
+        if ($cache !== []) {
+            $config['node_runtime_cache'] = [
+                'source' => (string) ($cache['source'] ?? 'unknown'),
+                'strategy' => (string) ($cache['strategy'] ?? 'unknown'),
+                'refreshed_at' => (string) ($cache['refreshed_at'] ?? ''),
+                'settings_updated_at' => (string) ($cache['settings_updated_at'] ?? ''),
+            ];
+        }
+
+        foreach (['ai_supervisor', 'copilot', 'ai_online_alerts', 'p4_candidate_review'] as $feature) {
+            $runtimeRow = is_array($nodeRuntimeConfig[$feature] ?? null) ? $nodeRuntimeConfig[$feature] : [];
+            if ($runtimeRow === []) {
+                continue;
+            }
+            $effective = is_array($runtimeRow['effective'] ?? null) ? $runtimeRow['effective'] : [];
+            $saved = is_array($runtimeRow['saved'] ?? null) ? $runtimeRow['saved'] : [];
+            $rows = [
+                'origin' => (string) ($runtimeRow['origin'] ?? 'unknown'),
+            ];
+            foreach (['provider', 'model', 'timeout_ms', 'max_messages', 'max_chars', 'dry_run', 'enabled'] as $key) {
+                if (array_key_exists($key, $effective)) {
+                    $rows['effective_' . $key] = is_bool($effective[$key])
+                        ? ($effective[$key] ? 'true' : 'false')
+                        : (string) $effective[$key];
+                }
+            }
+            foreach (['provider', 'model', 'timeout_ms', 'timeout_seconds'] as $key) {
+                if (array_key_exists($key, $saved)) {
+                    $rows['saved_' . $key] = (string) $saved[$key];
+                }
+            }
+            $config['node_' . $feature] = $rows;
+        }
+
+        $worker = is_array($nodeRuntimeConfig['ai_online_alert_worker'] ?? null) ? $nodeRuntimeConfig['ai_online_alert_worker'] : [];
+        if ($worker !== []) {
+            $config['node_ai_online_alert_worker'] = [
+                'loop_env' => !empty($worker['loop_env']) ? 'true' : 'false',
+                'interval_seconds' => (string) ($worker['interval_seconds'] ?? ''),
+                'status_source' => (string) ($worker['status_source'] ?? 'unknown'),
+            ];
+        }
+
+        return $config;
     }
 
     /**

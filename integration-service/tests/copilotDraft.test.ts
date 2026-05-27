@@ -244,6 +244,71 @@ describe('internal copilot draft', () => {
     expect(response.body.draft.noAutoSend).toBe(true);
   });
 
+  it('loads database runtime config when the plugin does not send an override', async () => {
+    let runtimeOptions: { model?: string; timeoutMs?: number } | undefined;
+    const provider = {
+      generate: vi.fn(async (_prompt: string, options?: { model?: string; timeoutMs?: number }) => {
+        runtimeOptions = options;
+        return parseCopilotDraftResult(JSON.stringify({
+          draft_response: 'Rascunho gerado com modelo salvo no banco para revisão humana.',
+          tone: 'technical',
+          kb_references: [],
+          assumptions: [],
+          missing_information: [],
+          safety_warnings: ['revise antes de enviar'],
+          technician_checklist: ['confirmar dados'],
+          confidence_score: 67,
+          window_notice: 'open_24h',
+          template_notice: '',
+          no_auto_send: true,
+        }));
+      }),
+    };
+    const service = new CopilotDraftService(provider, {
+      enabled: false,
+      provider: 'disabled',
+      model: 'qwen3-coder:30b',
+      dryRun: true,
+      maxChars: 12_000,
+    }, createAudit() as never, async () => ({
+      enabled: true,
+      provider: 'ollama',
+      model: 'command-r7b:latest',
+      dryRun: false,
+      maxChars: 4_000,
+      timeoutMs: 45_000,
+      source: 'db_ai_settings',
+    }));
+
+    const result = await service.requestDraft({ context, tone: 'technical', requestedBy: 7 });
+
+    expect(provider.generate).toHaveBeenCalledOnce();
+    expect(runtimeOptions).toEqual({ model: 'command-r7b:latest', timeoutMs: 45_000 });
+    expect(result.draftResponse).toContain('[IA Local - command-r7b:latest]');
+    expect(result.noAutoSend).toBe(true);
+  });
+
+  it('classifies missing provider checklist as an operational validation error', async () => {
+    const service = {
+      requestDraft: vi.fn(async () => {
+        throw new Error('COPILOT_DRAFT_CHECKLIST_REQUIRED');
+      }),
+      recordUsage: vi.fn(),
+      recordFeedback: vi.fn(),
+      recordJobEvent: vi.fn(),
+    };
+    const app = createTestApp(service as never);
+
+    const response = await request(app)
+      .post('/internal/glpi/copilot/draft')
+      .set('Authorization', `Bearer ${apiKey}`)
+      .send({ action: 'generate', tone: 'technical', context, glpi_user_id: 7 });
+
+    expect(response.status).toBe(422);
+    expect(response.body.message).toBe('COPILOT_DRAFT_CHECKLIST_REQUIRED');
+    expect(response.body.error_type).toBe('checklist_required');
+  });
+
   it('returns a clear operational timeout error for slow provider calls', async () => {
     const service = {
       requestDraft: vi.fn(async () => {

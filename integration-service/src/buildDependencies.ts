@@ -22,8 +22,8 @@ import { ContactAgendaImportService } from './domain/services/ContactAgendaImpor
 import { ManualTicketWhatsappLinkService } from './domain/services/ManualTicketWhatsappLinkService.js';
 import { EntitySelectionService } from './domain/services/EntitySelectionService.js';
 import { ConversationSoftCloseService } from './domain/services/ConversationSoftCloseService.js';
-import { AiSupervisorService } from './domain/services/AiSupervisorService.js';
-import { CopilotDraftService } from './domain/services/CopilotDraftService.js';
+import { AiSupervisorService, type AiSupervisorConfig } from './domain/services/AiSupervisorService.js';
+import { CopilotDraftService, type CopilotDraftRuntimeConfig } from './domain/services/CopilotDraftService.js';
 import { AiPilotService } from './domain/services/AiPilotService.js';
 import { AiOperationsService } from './domain/services/AiOperationsService.js';
 import { OllamaCopilotProvider } from './copilot/OllamaCopilotProvider.js';
@@ -50,6 +50,108 @@ import { PostgresMessageFlowRepository } from './repositories/postgres/PostgresM
 import { redisClient } from './cache/redisClient.js';
 import { QualityDashboardService } from './services/QualityDashboardService.js';
 import { ObservabilityService } from './services/ObservabilityService.js';
+
+const AI_SETTINGS_KEYS = [
+  'ai_supervisor_enabled',
+  'ai_supervisor_provider',
+  'ai_supervisor_model',
+  'ai_supervisor_timeout_seconds',
+  'ai_supervisor_max_messages',
+  'ai_supervisor_max_chars',
+  'ai_supervisor_dry_run',
+  'copilot_enabled',
+  'copilot_provider',
+  'copilot_model',
+  'copilot_dry_run',
+  'copilot_timeout_ms',
+  'copilot_max_context_messages',
+  'copilot_max_context_chars',
+] as const;
+
+function settingText(settings: Map<string, unknown>, key: string): string {
+  const value = settings.get(key);
+  return value === undefined || value === null ? '' : String(value).trim();
+}
+
+function settingBool(settings: Map<string, unknown>, key: string, fallback: boolean): boolean {
+  const value = settingText(settings, key).toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(value)) {
+    return true;
+  }
+  if (['0', 'false', 'no', 'off'].includes(value)) {
+    return false;
+  }
+  return fallback;
+}
+
+function settingInt(settings: Map<string, unknown>, key: string, fallback: number, min: number, max: number): number {
+  const parsed = Number(settingText(settings, key));
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, Math.trunc(parsed)));
+}
+
+function settingProvider(settings: Map<string, unknown>, key: string, fallback: 'disabled' | 'ollama'): 'disabled' | 'ollama' {
+  const value = settingText(settings, key).toLowerCase();
+  if (value === 'ollama' || value === 'local') {
+    return 'ollama';
+  }
+  if (value === 'disabled') {
+    return 'disabled';
+  }
+  return fallback;
+}
+
+function settingModel(settings: Map<string, unknown>, key: string, fallback: string): string {
+  const value = settingText(settings, key).replace(/[^A-Za-z0-9_.:/-]+/g, '').slice(0, 120);
+  return value !== '' ? value : fallback;
+}
+
+function hasDbAiSettings(settings: Map<string, unknown>): boolean {
+  return [...settings.keys()].some((key) => key !== 'updated_at');
+}
+
+async function loadAiSettingsFromDatabase(): Promise<Map<string, unknown>> {
+  const columnsResult = await postgresPool.query<{ column_name: string }>(
+    `
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = $1
+        AND column_name = ANY($2::text[])
+    `,
+    ['glpi_plugin_integaglpi_configs', ['context', 'updated_at', ...AI_SETTINGS_KEYS]],
+  );
+  const columns = columnsResult.rows.map((row) => row.column_name);
+  if (!columns.includes('context')) {
+    return new Map();
+  }
+
+  const projectionColumns = columns.filter((column) => column !== 'context');
+  if (projectionColumns.length === 0) {
+    return new Map();
+  }
+
+  const result = await postgresPool.query<Record<string, unknown>>(
+    `
+      SELECT ${projectionColumns.map((column) => `"${column}"`).join(', ')}
+      FROM glpi_plugin_integaglpi_configs
+      WHERE context = 'ai_settings'
+      LIMIT 1
+    `,
+  );
+  const row = result.rows[0] ?? {};
+  const settings = new Map<string, unknown>();
+  for (const key of projectionColumns) {
+    const value = row[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      settings.set(key, value);
+    }
+  }
+
+  return settings;
+}
 
 export function buildDependencies() {
   const httpClient = new ResilientHttpClient();
@@ -150,11 +252,6 @@ export function buildDependencies() {
     env.META_MEDIA_MAX_BYTES,
     auditService,
   );
-  const ollamaClient = new OllamaClient(
-    env.AI_SUPERVISOR_BASE_URL,
-    env.AI_SUPERVISOR_MODEL,
-    env.AI_SUPERVISOR_TIMEOUT_SECONDS * 1000,
-  );
   const copilotDraftModel = env.COPILOT_DRAFT_MODEL.trim() !== ''
     ? env.COPILOT_DRAFT_MODEL.trim()
     : env.AI_SUPERVISOR_MODEL;
@@ -167,14 +264,97 @@ export function buildDependencies() {
   const aiOnlineAlertTimeoutSeconds = env.AI_ONLINE_ALERT_TIMEOUT_SECONDS > 0
     ? env.AI_ONLINE_ALERT_TIMEOUT_SECONDS
     : env.AI_SUPERVISOR_TIMEOUT_SECONDS;
-  const aiOnlineAlertOllamaClient = new OllamaClient(
-    env.AI_SUPERVISOR_BASE_URL,
-    aiOnlineAlertModel,
-    aiOnlineAlertTimeoutSeconds * 1000,
-  );
+  const aiSupervisorProvider = {
+    analyze: async (prompt: string, runtimeConfig: { model?: string; timeoutMs?: number } = {}) => {
+      const model = typeof runtimeConfig.model === 'string' && runtimeConfig.model.trim() !== ''
+        ? runtimeConfig.model.trim()
+        : env.AI_SUPERVISOR_MODEL;
+      const timeoutMs = typeof runtimeConfig.timeoutMs === 'number' && Number.isFinite(runtimeConfig.timeoutMs) && runtimeConfig.timeoutMs > 0
+        ? runtimeConfig.timeoutMs
+        : env.AI_SUPERVISOR_TIMEOUT_SECONDS * 1000;
+      return new OllamaClient(env.AI_SUPERVISOR_BASE_URL, model, timeoutMs).analyze(prompt);
+    },
+  };
+  const aiOnlineAlertProvider = {
+    analyze: async (prompt: string, runtimeConfig: { model?: string; timeoutMs?: number } = {}) => {
+      const model = typeof runtimeConfig.model === 'string' && runtimeConfig.model.trim() !== ''
+        ? runtimeConfig.model.trim()
+        : aiOnlineAlertModel;
+      const timeoutMs = typeof runtimeConfig.timeoutMs === 'number' && Number.isFinite(runtimeConfig.timeoutMs) && runtimeConfig.timeoutMs > 0
+        ? runtimeConfig.timeoutMs
+        : aiOnlineAlertTimeoutSeconds * 1000;
+      return new OllamaClient(env.AI_SUPERVISOR_BASE_URL, model, timeoutMs).analyze(prompt);
+    },
+  };
+  const loadAiSupervisorRuntimeConfig = async (): Promise<Partial<AiSupervisorConfig> | undefined> => {
+    const settings = await loadAiSettingsFromDatabase();
+    if (!hasDbAiSettings(settings)) {
+      return undefined;
+    }
+
+    return {
+      enabled: settingBool(settings, 'ai_supervisor_enabled', env.AI_SUPERVISOR_ENABLED),
+      provider: settingProvider(settings, 'ai_supervisor_provider', env.AI_SUPERVISOR_PROVIDER),
+      model: settingModel(settings, 'ai_supervisor_model', env.AI_SUPERVISOR_MODEL),
+      maxMessages: settingInt(settings, 'ai_supervisor_max_messages', env.AI_SUPERVISOR_MAX_MESSAGES, 1, 30),
+      maxChars: settingInt(settings, 'ai_supervisor_max_chars', env.AI_SUPERVISOR_MAX_CHARS, 500, 12_000),
+      dryRun: settingBool(settings, 'ai_supervisor_dry_run', env.AI_SUPERVISOR_DRY_RUN),
+      timeoutMs: settingInt(settings, 'ai_supervisor_timeout_seconds', env.AI_SUPERVISOR_TIMEOUT_SECONDS, 15, 180) * 1000,
+      source: 'db_ai_settings',
+    };
+  };
+  const loadCopilotRuntimeConfig = async (): Promise<CopilotDraftRuntimeConfig | undefined> => {
+    const settings = await loadAiSettingsFromDatabase();
+    if (!hasDbAiSettings(settings)) {
+      return undefined;
+    }
+
+    const supervisorProvider = settingProvider(settings, 'ai_supervisor_provider', env.AI_SUPERVISOR_PROVIDER);
+    const supervisorModel = settingModel(settings, 'ai_supervisor_model', env.AI_SUPERVISOR_MODEL);
+    const envCopilotModel = env.COPILOT_DRAFT_MODEL.trim() !== '' ? env.COPILOT_DRAFT_MODEL.trim() : supervisorModel;
+    const supervisorTimeoutMs = settingInt(settings, 'ai_supervisor_timeout_seconds', env.AI_SUPERVISOR_TIMEOUT_SECONDS, 15, 180) * 1000;
+    const envCopilotTimeoutMs = env.COPILOT_TIMEOUT_SECONDS > 0 ? env.COPILOT_TIMEOUT_SECONDS * 1000 : supervisorTimeoutMs;
+
+    return {
+      enabled: settingBool(settings, 'copilot_enabled', settingBool(settings, 'ai_supervisor_enabled', env.AI_SUPERVISOR_ENABLED)),
+      provider: settingProvider(settings, 'copilot_provider', supervisorProvider),
+      model: settingModel(settings, 'copilot_model', envCopilotModel),
+      dryRun: settingBool(settings, 'copilot_dry_run', settingBool(settings, 'ai_supervisor_dry_run', env.AI_SUPERVISOR_DRY_RUN)),
+      maxChars: settingInt(settings, 'copilot_max_context_chars', env.AI_SUPERVISOR_MAX_CHARS, 1_000, 12_000),
+      timeoutMs: settingInt(settings, 'copilot_timeout_ms', envCopilotTimeoutMs, 15_000, 120_000),
+      source: 'db_ai_settings',
+    };
+  };
+  const loadAiOnlineAlertRuntimeConfig = async (): Promise<Partial<AiSupervisorConfig> | undefined> => {
+    const settings = await loadAiSettingsFromDatabase();
+    const base = await loadAiSupervisorRuntimeConfig();
+    if (base === undefined && !hasDbAiSettings(settings) && env.AI_ONLINE_ALERT_MODEL.trim() === '' && env.AI_ONLINE_ALERT_TIMEOUT_SECONDS <= 0) {
+      return undefined;
+    }
+
+    const fallbackModel = typeof base?.model === 'string' && base.model.trim() !== '' ? base.model : env.AI_SUPERVISOR_MODEL;
+    const fallbackTimeoutMs = typeof base?.timeoutMs === 'number' && base.timeoutMs > 0
+      ? base.timeoutMs
+      : env.AI_SUPERVISOR_TIMEOUT_SECONDS * 1000;
+
+    return {
+      enabled: typeof base?.enabled === 'boolean' ? base.enabled : env.AI_SUPERVISOR_ENABLED,
+      provider: base?.provider ?? env.AI_SUPERVISOR_PROVIDER,
+      model: env.AI_ONLINE_ALERT_MODEL.trim() !== '' ? env.AI_ONLINE_ALERT_MODEL.trim() : fallbackModel,
+      maxMessages: base?.maxMessages ?? env.AI_SUPERVISOR_MAX_MESSAGES,
+      maxChars: base?.maxChars ?? env.AI_SUPERVISOR_MAX_CHARS,
+      dryRun: typeof base?.dryRun === 'boolean' ? base.dryRun : env.AI_SUPERVISOR_DRY_RUN,
+      timeoutMs: env.AI_ONLINE_ALERT_TIMEOUT_SECONDS > 0
+        ? env.AI_ONLINE_ALERT_TIMEOUT_SECONDS * 1000
+        : fallbackTimeoutMs,
+      source: env.AI_ONLINE_ALERT_MODEL.trim() !== '' || env.AI_ONLINE_ALERT_TIMEOUT_SECONDS > 0
+        ? 'env_function_override'
+        : 'db_ai_settings',
+    };
+  };
   const aiSupervisorService = new AiSupervisorService(
     aiQualityAnalysisRepository,
-    ollamaClient,
+    aiSupervisorProvider,
     {
       enabled: env.AI_SUPERVISOR_ENABLED,
       provider: env.AI_SUPERVISOR_PROVIDER,
@@ -182,12 +362,15 @@ export function buildDependencies() {
       maxMessages: env.AI_SUPERVISOR_MAX_MESSAGES,
       maxChars: env.AI_SUPERVISOR_MAX_CHARS,
       dryRun: env.AI_SUPERVISOR_DRY_RUN,
+      timeoutMs: env.AI_SUPERVISOR_TIMEOUT_SECONDS * 1000,
+      source: 'env',
     },
     auditService,
+    loadAiSupervisorRuntimeConfig,
   );
   const aiOnlineAlertSupervisorService = new AiSupervisorService(
     aiQualityAnalysisRepository,
-    aiOnlineAlertOllamaClient,
+    aiOnlineAlertProvider,
     {
       enabled: env.AI_SUPERVISOR_ENABLED,
       provider: env.AI_SUPERVISOR_PROVIDER,
@@ -195,8 +378,11 @@ export function buildDependencies() {
       maxMessages: env.AI_SUPERVISOR_MAX_MESSAGES,
       maxChars: env.AI_SUPERVISOR_MAX_CHARS,
       dryRun: env.AI_SUPERVISOR_DRY_RUN,
+      timeoutMs: aiOnlineAlertTimeoutSeconds * 1000,
+      source: env.AI_ONLINE_ALERT_MODEL.trim() !== '' || env.AI_ONLINE_ALERT_TIMEOUT_SECONDS > 0 ? 'env_function_override' : 'env',
     },
     auditService,
+    loadAiOnlineAlertRuntimeConfig,
   );
   const copilotDraftProvider = new OllamaCopilotProvider(
     env.AI_SUPERVISOR_BASE_URL,
@@ -213,6 +399,7 @@ export function buildDependencies() {
       maxChars: env.AI_SUPERVISOR_MAX_CHARS,
     },
     auditService,
+    loadCopilotRuntimeConfig,
   );
   const aiPilotService = new AiPilotService(
     {
