@@ -120,7 +120,7 @@ function containsSupervisorRequest(text: string): boolean {
 }
 
 function containsFrustrationSignal(text: string): boolean {
-  return /\b(absurdo|insatisfeito|insatisfeita|reclama[cç][aã]o|demora|sem retorno|cancelar|frustrad[oa]|irritad[oa])\b/i.test(text);
+  return /\b(absurdo|insatisfeito|insatisfeita|reclama[cç][aã]o|demora|sem retorno|cancelar|frustrad[oa]|irritad[oa]|n[aã]o gostei|p[eé]ssim[oa]|vou reclamar|procon)\b/i.test(text);
 }
 
 export class AiOnlineSupervisorAlertService {
@@ -228,7 +228,12 @@ export class AiOnlineSupervisorAlertService {
           WHERE m.conversation_id = c.id
         ) mc ON TRUE
         WHERE c.status NOT IN ('closed', 'cancelled')
-        ORDER BY COALESCE(lm.created_at, c.last_message_at, c.updated_at, c.created_at) ASC NULLS FIRST
+        ORDER BY
+          CASE
+            WHEN COALESCE(lm.created_at, c.last_message_at, c.updated_at, c.created_at) >= NOW() - INTERVAL '2 hours' THEN 0
+            ELSE 1
+          END ASC,
+          COALESCE(lm.created_at, c.last_message_at, c.updated_at, c.created_at) DESC NULLS LAST
         LIMIT $1
       `,
       [this.config.maxConversationsPerRun],
@@ -447,6 +452,13 @@ export class AiOnlineSupervisorAlertService {
         return null;
       }
 
+      await this.audit('AI_ONLINE_ALERT_ENRICHED', 'success', conversation, {
+        ai_analysis_id: analysis.id,
+        provider: analysis.provider,
+        model_hash: hash(analysis.model).slice(0, 16),
+        confidence_score: confidence,
+      });
+
       return this.makeDraft(
         sentiment === 'frustrated' ? 'possible_frustration' : 'high_risk_reopen',
         riskLevel === 'high' || satisfactionRisk === 'high' ? 'high' : 'medium',
@@ -490,14 +502,19 @@ export class AiOnlineSupervisorAlertService {
   }
 
   private uniqueDrafts(drafts: AlertDraft[]): AlertDraft[] {
-    const seen = new Set<AlertType>();
-    return drafts.filter((draft) => {
-      if (seen.has(draft.alertType)) {
-        return false;
+    const severityRank: Record<AlertSeverity, number> = { low: 1, medium: 2, high: 3 };
+    const byType = new Map<AlertType, AlertDraft>();
+    for (const draft of drafts) {
+      const current = byType.get(draft.alertType);
+      if (current === undefined
+        || severityRank[draft.severity] > severityRank[current.severity]
+        || (severityRank[draft.severity] === severityRank[current.severity]
+          && draft.confidenceScore > current.confidenceScore)) {
+        byType.set(draft.alertType, draft);
       }
-      seen.add(draft.alertType);
-      return true;
-    });
+    }
+
+    return [...byType.values()];
   }
 
   private async persistOrSuppress(conversation: ConversationCandidate, draft: AlertDraft, now: Date): Promise<boolean> {

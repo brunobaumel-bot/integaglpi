@@ -1461,6 +1461,91 @@ if ($auditPanelOk) {
             });
         }
 
+        var copilotPollingTimer = null;
+        var copilotPollingAttempts = 0;
+
+        function setCopilotGenerateDisabled(disabled) {
+            card.querySelectorAll('.js-integaglpi-copilot-generate').forEach(function (item) {
+                item.disabled = !!disabled;
+            });
+        }
+
+        function draftFromResponseBody(responseBody) {
+            return responseBody && responseBody.draft ? responseBody.draft : null;
+        }
+
+        function applyCopilotDraft(draft) {
+            if (!draft) {
+                setCopilotStatus(<?= json_encode(__('O Copiloto não retornou rascunho para revisão.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
+                return false;
+            }
+            var draftText = draft.draftResponse || draft.draft_response || '';
+            if (!draftText.trim()) {
+                setCopilotStatus(<?= json_encode(__('O Copiloto retornou um rascunho vazio.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
+                return false;
+            }
+            copilotDraft.value = draftText;
+            copilotBox.dataset.draftHash = draft.draftHash || draft.draft_hash || '';
+            var metaText = '';
+            if (copilotMeta) {
+                var notices = [];
+                if (draft.templateNotice || draft.template_notice) { notices.push(draft.templateNotice || draft.template_notice); }
+                if (draft.source || draft.provider || draft.model) {
+                    notices.push(String(draft.source || <?= json_encode((string) ($aiAssistantCopilot['origin_label'] ?? ''), JSON_UNESCAPED_UNICODE); ?> || 'provider efetivo'));
+                }
+                if (draft.confidenceScore || draft.confidence_score) { notices.push('confiança ' + String(draft.confidenceScore || draft.confidence_score) + '%'); }
+                metaText = notices.join(' · ');
+                copilotMeta.textContent = metaText;
+            }
+            saveCopilotDraft(copilotDraft.value, copilotBox.dataset.draftHash || '', metaText, '', 'completed');
+            setCopilotStatus(<?= json_encode(__('Rascunho pronto para revisão.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'success');
+            return true;
+        }
+
+        function pollCopilotDraft(jobId) {
+            if (!jobId) { return; }
+            if (copilotPollingTimer) {
+                window.clearTimeout(copilotPollingTimer);
+                copilotPollingTimer = null;
+            }
+            var payload = new FormData();
+            payload.set('copilot_action', 'status');
+            payload.set('job_id', jobId);
+            postCopilot(payload).then(function (result) {
+                var responseBody = result.body && (result.body.body || result.body);
+                if (!result.body || result.body.success !== true || !responseBody) {
+                    setCopilotGenerateDisabled(false);
+                    setCopilotStatus(copilotMessage(result, <?= json_encode(__('Não foi possível consultar o status do Copiloto.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>), 'error');
+                    return;
+                }
+                if (responseBody.status === 'completed') {
+                    setCopilotGenerateDisabled(false);
+                    if (applyCopilotDraft(draftFromResponseBody(responseBody))) {
+                        saveCopilotDraft(copilotDraft.value, copilotBox.dataset.draftHash || '', copilotMeta ? copilotMeta.textContent : '', '', 'completed');
+                    }
+                    return;
+                }
+                if (responseBody.status === 'failed' || responseBody.ok === false) {
+                    setCopilotGenerateDisabled(false);
+                    saveCopilotDraft('', '', '', '', 'failed');
+                    setCopilotStatus(responseBody.message || <?= json_encode(__('IA local indisponível no momento.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
+                    return;
+                }
+                copilotPollingAttempts += 1;
+                if (copilotPollingAttempts >= 36) {
+                    setCopilotGenerateDisabled(false);
+                    saveCopilotDraft('', '', '', jobId, 'failed');
+                    setCopilotStatus(<?= json_encode(__('O rascunho ainda está em processamento. Tente atualizar o status em instantes.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
+                    return;
+                }
+                saveCopilotDraft('', '', copilotMeta ? copilotMeta.textContent : '', jobId, 'pending');
+                copilotPollingTimer = window.setTimeout(function () { pollCopilotDraft(jobId); }, 2500);
+            }).catch(function () {
+                setCopilotGenerateDisabled(false);
+                setCopilotStatus(<?= json_encode(__('Erro de rede ao consultar o status do Copiloto.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
+            });
+        }
+
         function restoreCopilotDraft() {
             if (!copilotDraft || !copilotBox || !window.sessionStorage) { return; }
             var raw = window.sessionStorage.getItem(copilotStorageKey);
@@ -1470,6 +1555,13 @@ if ($auditPanelOk) {
                 copilotDraft.value = saved.text || '';
                 copilotBox.dataset.draftHash = saved.hash || '';
                 if (copilotMeta) { copilotMeta.textContent = saved.meta || ''; }
+                if (saved.jobId && saved.jobStatus === 'pending') {
+                    copilotPollingAttempts = 0;
+                    setCopilotGenerateDisabled(true);
+                    setCopilotStatus(<?= json_encode(__('Gerando rascunho em segundo plano...', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'muted');
+                    pollCopilotDraft(saved.jobId);
+                    return;
+                }
                 if (copilotDraft.value.trim()) {
                     setCopilotStatus(<?= json_encode(__('Rascunho restaurado para revisão.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'success');
                 }
@@ -1478,12 +1570,14 @@ if ($auditPanelOk) {
             }
         }
 
-        function saveCopilotDraft(text, hash, meta) {
+        function saveCopilotDraft(text, hash, meta, jobId, jobStatus) {
             if (!window.sessionStorage) { return; }
             window.sessionStorage.setItem(copilotStorageKey, JSON.stringify({
                 text: text || '',
                 hash: hash || '',
-                meta: meta || ''
+                meta: meta || '',
+                jobId: jobId || '',
+                jobStatus: jobStatus || ''
             }));
         }
 
@@ -1501,13 +1595,14 @@ if ($auditPanelOk) {
                 var payload = new FormData();
                 payload.set('copilot_action', 'generate');
                 payload.set('tone', String(copilotButton.dataset.tone || 'neutral'));
-                copilotButton.disabled = true;
-                setCopilotStatus(<?= json_encode(__('Gerando rascunho...', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'muted');
+                copilotPollingAttempts = 0;
+                setCopilotGenerateDisabled(true);
+                setCopilotStatus(<?= json_encode(__('Gerando rascunho em segundo plano...', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'muted');
                 postCopilot(payload).then(function (result) {
-                    copilotButton.disabled = false;
                     var responseBody = result.body && (result.body.body || result.body);
-                    var draft = responseBody && responseBody.draft ? responseBody.draft : null;
-                    if (!result.body || result.body.success !== true || !draft) {
+                    var jobId = responseBody && (responseBody.job_id || responseBody.jobId) ? String(responseBody.job_id || responseBody.jobId) : '';
+                    if (!result.body || result.body.success !== true || !jobId) {
+                        setCopilotGenerateDisabled(false);
                         if (isCsrfFailure(result)) {
                             setCopilotStatus(<?= json_encode(__('Token de segurança expirado. Atualize a página e tente novamente.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
                             return;
@@ -1515,28 +1610,10 @@ if ($auditPanelOk) {
                         setCopilotStatus(copilotMessage(result, <?= json_encode(__('Não foi possível gerar o rascunho.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>), 'error');
                         return;
                     }
-                    var draftText = draft.draftResponse || draft.draft_response || '';
-                    if (!draftText.trim()) {
-                        setCopilotStatus(<?= json_encode(__('O Copiloto retornou um rascunho vazio.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
-                        return;
-                    }
-                    copilotDraft.value = draftText;
-                    copilotBox.dataset.draftHash = draft.draftHash || draft.draft_hash || '';
-                    var metaText = '';
-                    if (copilotMeta) {
-                        var notices = [];
-                        if (draft.templateNotice || draft.template_notice) { notices.push(draft.templateNotice || draft.template_notice); }
-                        if (draft.source || draft.provider || draft.model) {
-                            notices.push(String(draft.source || <?= json_encode((string) ($aiAssistantCopilot['origin_label'] ?? ''), JSON_UNESCAPED_UNICODE); ?> || 'provider efetivo'));
-                        }
-                        if (draft.confidenceScore || draft.confidence_score) { notices.push('confiança ' + String(draft.confidenceScore || draft.confidence_score) + '%'); }
-                        metaText = notices.join(' · ');
-                        copilotMeta.textContent = metaText;
-                    }
-                    saveCopilotDraft(copilotDraft.value, copilotBox.dataset.draftHash || '', metaText);
-                    setCopilotStatus(<?= json_encode(__('Rascunho pronto para revisão.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'success');
+                    saveCopilotDraft('', '', copilotMeta ? copilotMeta.textContent : '', jobId, 'pending');
+                    pollCopilotDraft(jobId);
                 }).catch(function () {
-                    copilotButton.disabled = false;
+                    setCopilotGenerateDisabled(false);
                     setCopilotStatus(<?= json_encode(__('Erro de rede ao chamar o Copiloto.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
                 });
             });

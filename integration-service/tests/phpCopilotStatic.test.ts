@@ -31,7 +31,12 @@ describe('PHP internal Copilot static safety', () => {
     expect(front).toContain('A IA respondeu em formato inválido');
     expect(front).toContain('buildCopilotContext');
     expect(client).toContain('/internal/glpi/copilot/draft');
-    expect(client).toContain('COPILOT_DRAFT_TIMEOUT_MS = 90000');
+    expect(client).toContain('COPILOT_DRAFT_TIMEOUT_MS = 8000');
+    expect(front).toContain('session_write_close();');
+    expect(front).toContain('createDraftJob');
+    expect(front).toContain('getDraftJobStatus');
+    expect(client).toContain("$payload['action'] = 'generate_async';");
+    expect(client).toContain("$payload['action'] = 'status';");
     expect(client).toContain('effectiveCopilotRuntimeConfig');
     expect(client).toContain('runtime_config');
     expect(client).toContain('copilot_model');
@@ -50,6 +55,9 @@ describe('PHP internal Copilot static safety', () => {
     expect(ticketTab).toContain('origin_label');
     expect(ticketTab).toContain('Pesquisar fora');
     expect(ticketTab).toContain('Sugerir resposta');
+    expect(ticketTab).toContain("payload.set('copilot_action', 'status')");
+    expect(ticketTab).toContain('Gerando rascunho em segundo plano');
+    expect(ticketTab).toContain('pollCopilotDraft');
     expect(ticketTab).toContain('refreshCsrfToken');
     expect(ticketTab).toContain('updateCsrfToken');
     expect(ticketTab).toContain('isCsrfFailure');

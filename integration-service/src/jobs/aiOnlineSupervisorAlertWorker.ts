@@ -47,9 +47,19 @@ export async function runAiOnlineSupervisorAlertWorker(): Promise<void> {
   );
 }
 
+async function runLoop(): Promise<void> {
+  const intervalSeconds = Math.max(60, Math.min(120, Number(process.env.AI_ONLINE_ALERT_WORKER_INTERVAL_SECONDS ?? 60)));
+  while (true) {
+    await runAiOnlineSupervisorAlertWorker();
+    await new Promise((resolve) => setTimeout(resolve, intervalSeconds * 1000));
+  }
+}
+
 if (process.argv[1]?.endsWith('aiOnlineSupervisorAlertWorker.ts') === true
   || process.argv[1]?.endsWith('aiOnlineSupervisorAlertWorker.js') === true) {
-  runAiOnlineSupervisorAlertWorker()
+  const loopEnabled = process.argv.includes('--loop') || process.env.AI_ONLINE_ALERT_WORKER_LOOP === 'true';
+  const runner = loopEnabled ? runLoop : runAiOnlineSupervisorAlertWorker;
+  runner()
     .catch((error: unknown) => {
       logger.error({ error }, '[integration-service][ai_online_alerts][run_failed]');
       process.exitCode = 1;

@@ -125,6 +125,71 @@ describe('internal copilot draft', () => {
     expect(response.body.draft.noAutoSend).toBe(true);
   });
 
+  it('creates an async draft job and lets the UI poll completion without waiting for the provider', async () => {
+    let resolveProvider: ((value: ReturnType<typeof parseCopilotDraftResult>) => void) | undefined;
+    const provider = {
+      generate: vi.fn(async () => new Promise<ReturnType<typeof parseCopilotDraftResult>>((resolve) => {
+        resolveProvider = resolve;
+      })),
+    };
+    const service = new CopilotDraftService(provider, {
+      enabled: true,
+      provider: 'ollama',
+      model: 'gemma3:12b',
+      dryRun: false,
+      maxChars: 8_000,
+    }, createAudit() as never);
+    const app = createTestApp(service);
+    const started = Date.now();
+
+    const created = await request(app)
+      .post('/internal/glpi/copilot/draft')
+      .set('Authorization', `Bearer ${apiKey}`)
+      .send({ action: 'generate_async', tone: 'technical', context, glpi_user_id: 7 });
+
+    expect(created.status).toBe(202);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(created.body.status).toBe('pending');
+    expect(created.body.job_id).toMatch(/[a-f0-9-]{36}/i);
+
+    const pending = await request(app)
+      .post('/internal/glpi/copilot/draft')
+      .set('Authorization', `Bearer ${apiKey}`)
+      .send({ action: 'status', job_id: created.body.job_id });
+
+    expect(pending.status).toBe(200);
+    expect(['pending', 'completed']).toContain(pending.body.status);
+    resolveProvider?.(parseCopilotDraftResult(JSON.stringify({
+      draft_response: 'Rascunho assíncrono para revisão humana.',
+      tone: 'technical',
+      kb_references: [],
+      assumptions: [],
+      missing_information: [],
+      safety_warnings: ['revise antes de enviar'],
+      technician_checklist: ['confirmar dados'],
+      confidence_score: 65,
+      window_notice: 'closed_24h',
+      template_notice: '',
+      no_auto_send: true,
+    })));
+
+    let completed = pending;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      completed = await request(app)
+        .post('/internal/glpi/copilot/draft')
+        .set('Authorization', `Bearer ${apiKey}`)
+        .send({ action: 'status', job_id: created.body.job_id });
+      if (completed.body.status === 'completed') {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    expect(completed.body.status).toBe('completed');
+    expect(completed.body.draft.draftResponse).toContain('[IA Local - gemma3:12b]');
+    expect(completed.body.draft.noAutoSend).toBe(true);
+  });
+
   it('uses effective runtime config received from the plugin for model, timeout and dry-run', async () => {
     let runtimeOptions: { model?: string; timeoutMs?: number } | undefined;
     const provider = {

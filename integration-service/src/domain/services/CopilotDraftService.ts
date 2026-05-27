@@ -158,6 +158,34 @@ export class CopilotDraftService {
     });
   }
 
+  public async recordJobEvent(input: {
+    eventType: 'COPILOT_DRAFT_JOB_CREATED' | 'COPILOT_DRAFT_JOB_COMPLETED' | 'COPILOT_DRAFT_JOB_FAILED';
+    status: 'success' | 'failed' | 'pending';
+    severity: 'info' | 'warning' | 'error';
+    conversationId: string;
+    glpiTicketId: number;
+    userId: number | null;
+    jobId: string;
+    errorType?: string;
+    draftHash?: string;
+  }): Promise<void> {
+    await this.auditService?.recordAuditEventSafe({
+      eventType: input.eventType,
+      status: input.status,
+      severity: input.severity,
+      source: 'CopilotDraftService',
+      conversationId: sanitizeAiQualityText(input.conversationId).slice(0, 80),
+      ticketId: input.glpiTicketId,
+      payload: {
+        job_id: sanitizeAiQualityText(input.jobId).slice(0, 80),
+        user_id: input.userId,
+        error_type: sanitizeAiQualityText(input.errorType ?? '').slice(0, 80),
+        draft_hash: sanitizeAiQualityText(input.draftHash ?? '').slice(0, 80),
+        no_auto_send: true,
+      },
+    });
+  }
+
   private normalizeContext(context: CopilotContext): CopilotContext {
     return {
       conversationId: sanitizeAiQualityText(context.conversationId).slice(0, 80),

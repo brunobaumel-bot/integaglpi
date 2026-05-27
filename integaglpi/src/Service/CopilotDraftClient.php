@@ -12,8 +12,8 @@ use Throwable;
 final class CopilotDraftClient
 {
     private const PATH_COPILOT_DRAFT = '/internal/glpi/copilot/draft';
-    private const COPILOT_DRAFT_TIMEOUT_MS = 90000;
-    private const COPILOT_DRAFT_CONNECT_TIMEOUT_MS = 10000;
+    private const COPILOT_DRAFT_TIMEOUT_MS = 8000;
+    private const COPILOT_DRAFT_CONNECT_TIMEOUT_MS = 3000;
     private const AI_SETTINGS_CONTEXT = 'ai_settings';
     private const AI_SETTINGS_TABLE = 'glpi_plugin_integaglpi_configs';
 
@@ -33,6 +33,31 @@ final class CopilotDraftClient
         if ((string) ($payload['action'] ?? '') === 'generate' && !isset($payload['runtime_config'])) {
             $payload['runtime_config'] = $this->effectiveCopilotRuntimeConfig();
         }
+
+        return $this->postJson($this->endpoint(self::PATH_COPILOT_DRAFT), $payload);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function createDraftJob(array $payload): array
+    {
+        $payload['action'] = 'generate_async';
+        if (!isset($payload['runtime_config'])) {
+            $payload['runtime_config'] = $this->effectiveCopilotRuntimeConfig();
+        }
+
+        return $this->postJson($this->endpoint(self::PATH_COPILOT_DRAFT), $payload);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function getDraftJobStatus(array $payload): array
+    {
+        $payload['action'] = 'status';
 
         return $this->postJson($this->endpoint(self::PATH_COPILOT_DRAFT), $payload);
     }

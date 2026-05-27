@@ -52,6 +52,13 @@ function integaglpiCopilotUserMessage(string $message): string
     return __('Não foi possível usar o Copiloto agora.', 'glpiintegaglpi');
 }
 
+function integaglpiCopilotReleaseSession(): void
+{
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_write_close();
+    }
+}
+
 try {
     if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string) ($_GET['csrf_token'] ?? '') === '1') {
         if (!Plugin::canUpdate()) {
@@ -111,11 +118,27 @@ try {
 
     if ($action === 'generate') {
         $context = (new TicketContextService())->buildCopilotContext($ticket, $conversationId);
-        $response = $client->post($basePayload + [
+        integaglpiCopilotReleaseSession();
+        $response = $client->createDraftJob($basePayload + [
             'tone' => $tone,
             'context' => $context,
         ]);
+    } elseif ($action === 'status') {
+        $jobId = trim((string) ($_POST['job_id'] ?? ''));
+        if ($jobId === '' || preg_match('/^[A-Za-z0-9_.:-]{8,120}$/', $jobId) !== 1) {
+            integaglpiCopilotJsonResponse([
+                'success' => false,
+                'message' => __('Job do Copiloto inválido.', 'glpiintegaglpi'),
+                'error_type' => 'job_not_found',
+            ], 400);
+            exit;
+        }
+        integaglpiCopilotReleaseSession();
+        $response = $client->getDraftJobStatus($basePayload + [
+            'job_id' => $jobId,
+        ]);
     } elseif (in_array($action, ['use', 'discard', 'feedback'], true)) {
+        integaglpiCopilotReleaseSession();
         $response = $client->post($basePayload + [
             'draft_hash' => trim((string) ($_POST['draft_hash'] ?? '')),
             'feedback' => trim((string) ($_POST['feedback'] ?? '')),
@@ -132,7 +155,7 @@ try {
         'message' => $response['success']
             ? (string) ($response['body']['message'] ?? '')
             : integaglpiCopilotUserMessage((string) ($response['body']['message'] ?? '')),
-    ], $response['success'] ? 200 : max(400, (int) $response['status']));
+    ], $response['success'] ? max(200, (int) $response['status']) : max(400, (int) $response['status']));
 } catch (Throwable $exception) {
     error_log('[integaglpi][copilot][error] ' . preg_replace('/(password|token|secret|bearer)\s*[:=]\s*\S+/i', '$1=[redacted]', $exception->getMessage()));
     $isTimeout = $exception->getMessage() === 'COPILOT_TIMEOUT'

@@ -9,6 +9,32 @@ function safeString(value: unknown, max: number): string {
   return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
+type CopilotDraftJobStatus = 'pending' | 'completed' | 'failed';
+
+interface CopilotDraftJob {
+  id: string;
+  status: CopilotDraftJobStatus;
+  createdAt: number;
+  updatedAt: number;
+  conversationId: string;
+  glpiTicketId: number;
+  requestedBy: number | null;
+  draft?: Awaited<ReturnType<CopilotDraftService['requestDraft']>>;
+  message?: string;
+  errorType?: string;
+}
+
+const COPILOT_JOB_TTL_MS = 15 * 60 * 1000;
+const copilotDraftJobs = new Map<string, CopilotDraftJob>();
+
+function cleanupCopilotJobs(now = Date.now()): void {
+  for (const [jobId, job] of copilotDraftJobs.entries()) {
+    if (now - job.updatedAt > COPILOT_JOB_TTL_MS) {
+      copilotDraftJobs.delete(jobId);
+    }
+  }
+}
+
 function normalizeTone(value: unknown): CopilotTone {
   return COPILOT_TONES.includes(value as CopilotTone) ? value as CopilotTone : 'neutral';
 }
@@ -175,6 +201,120 @@ export function createCopilotDraftController(service: CopilotDraftService) {
       const conversationId = safeString(body.conversation_id ?? body.conversationId, 80);
       const glpiTicketId = Number(body.glpi_ticket_id ?? body.glpiTicketId);
       const userId = body.glpi_user_id === null || body.glpi_user_id === undefined ? null : Number(body.glpi_user_id);
+
+      if (action === 'generate_async') {
+        cleanupCopilotJobs();
+        const context = normalizeContext(body.context);
+        const jobId = randomUUID();
+        const requestedBy = Number.isFinite(userId) ? userId : null;
+        const job: CopilotDraftJob = {
+          id: jobId,
+          status: 'pending',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          conversationId: context.conversationId,
+          glpiTicketId: context.glpiTicketId,
+          requestedBy,
+        };
+        copilotDraftJobs.set(jobId, job);
+        void service.recordJobEvent({
+          eventType: 'COPILOT_DRAFT_JOB_CREATED',
+          status: 'pending',
+          severity: 'info',
+          conversationId: context.conversationId,
+          glpiTicketId: context.glpiTicketId,
+          userId: requestedBy,
+          jobId,
+        }).catch(() => undefined);
+
+        void (async () => {
+          try {
+            const draft = await service.requestDraft({
+              context,
+              tone: normalizeTone(body.tone),
+              requestedBy,
+              runtimeConfig: normalizeRuntimeConfig(body.runtime_config ?? body.runtimeConfig),
+            });
+            copilotDraftJobs.set(jobId, {
+              ...job,
+              status: 'completed',
+              updatedAt: Date.now(),
+              draft,
+            });
+            await service.recordJobEvent({
+              eventType: 'COPILOT_DRAFT_JOB_COMPLETED',
+              status: 'success',
+              severity: 'info',
+              conversationId: context.conversationId,
+              glpiTicketId: context.glpiTicketId,
+              userId: requestedBy,
+              jobId,
+              draftHash: draft.draftHash,
+            }).catch(() => undefined);
+          } catch (error: unknown) {
+            const classified = classifyCopilotError(error);
+            copilotDraftJobs.set(jobId, {
+              ...job,
+              status: 'failed',
+              updatedAt: Date.now(),
+              message: classified.code,
+              errorType: classified.errorType,
+            });
+            await service.recordJobEvent({
+              eventType: 'COPILOT_DRAFT_JOB_FAILED',
+              status: 'failed',
+              severity: classified.errorType === 'timeout' ? 'warning' : 'error',
+              conversationId: context.conversationId,
+              glpiTicketId: context.glpiTicketId,
+              userId: requestedBy,
+              jobId,
+              errorType: classified.errorType,
+            }).catch(() => undefined);
+            logger.warn({
+              request_id: requestId,
+              job_id: jobId,
+              elapsed_ms: Date.now() - startedAt,
+              payload_size: size,
+              provider_mode: 'copilot_async',
+              error_type: classified.errorType,
+            }, '[integration-service][copilot][draft_job_failed]');
+          }
+        })();
+
+        logger.info({
+          request_id: requestId,
+          job_id: jobId,
+          elapsed_ms: Date.now() - startedAt,
+          payload_size: size,
+          provider_mode: 'copilot_async',
+          error_type: 'none',
+        }, '[integration-service][copilot][draft_job_created]');
+        res.status(202).json({ ok: true, status: 'pending', job_id: jobId });
+        return;
+      }
+
+      if (action === 'status') {
+        cleanupCopilotJobs();
+        const jobId = safeString(body.job_id ?? body.jobId, 80);
+        const job = copilotDraftJobs.get(jobId);
+        if (job === undefined) {
+          res.status(404).json({ ok: false, status: 'failed', message: 'COPILOT_DRAFT_JOB_NOT_FOUND', error_type: 'job_not_found' });
+          return;
+        }
+
+        if (job.status === 'completed') {
+          res.json({ ok: true, status: job.status, job_id: job.id, draft: job.draft });
+          return;
+        }
+
+        if (job.status === 'failed') {
+          res.json({ ok: false, status: job.status, job_id: job.id, message: job.message ?? 'COPILOT_DRAFT_FAILED', error_type: job.errorType ?? 'failed' });
+          return;
+        }
+
+        res.json({ ok: true, status: job.status, job_id: job.id });
+        return;
+      }
 
       if (action === 'generate') {
         const result = await service.requestDraft({

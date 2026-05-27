@@ -188,6 +188,29 @@ describe('AiOnlineSupervisorAlertService', () => {
     expect(second.suppressed).toBe(1);
   });
 
+  it('creates a deterministic supervisor alert for strong escalation language without waiting for AI', async () => {
+    const executor = new FakeExecutor([candidate({
+      conversation_id: 'conv-supervisor-now',
+      last_message_text: 'Quero falar com supervisor, estou insatisfeito e vou reclamar no procon.',
+      stalled_minutes: 2,
+    })]);
+    const service = new AiOnlineSupervisorAlertService(
+      executor,
+      new FakeRedis(),
+      lock,
+      lowRiskScoring,
+      undefined,
+    );
+
+    const result = await service.runOnce(new Date('2026-05-27T16:00:00Z'));
+
+    expect(result.created).toBeGreaterThan(0);
+    const serialized = JSON.stringify(executor.inserted);
+    expect(serialized).toContain('supervisor_requested');
+    expect(serialized).toContain('possible_frustration');
+    expect(serialized).toContain('Sugestão para revisão humana');
+  });
+
   it('respects global rate limit and max conversations per run', async () => {
     const rows = Array.from({ length: 100 }, (_value, index) => candidate({
       conversation_id: `conv-${index}`,
