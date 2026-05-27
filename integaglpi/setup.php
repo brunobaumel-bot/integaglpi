@@ -12,6 +12,7 @@ use GlpiPlugin\Integaglpi\ExternalResearchMenu;
 use GlpiPlugin\Integaglpi\Install\Installer;
 use GlpiPlugin\Integaglpi\KnowledgeBaseMenu;
 use GlpiPlugin\Integaglpi\KbCandidatesMenu;
+use GlpiPlugin\Integaglpi\OnlineMonitorMenu;
 use GlpiPlugin\Integaglpi\OperationLogMenu;
 use GlpiPlugin\Integaglpi\OperationalDiagnosticsMenu;
 use GlpiPlugin\Integaglpi\ObservabilityMenu;
@@ -172,6 +173,7 @@ function plugin_init_integaglpi(): void
             RoutingSafetyMenu::class,
             ContactAgendaImportMenu::class,
             AttendanceCenterMenu::class,
+            OnlineMonitorMenu::class,
             SupervisorBackofficeMenu::class,
             AiOperationsMenu::class,
             QualityDashboardMenu::class,
@@ -221,6 +223,7 @@ function plugin_init_integaglpi(): void
     \Plugin::registerClass(RoutingOptionsMenu::class);
     \Plugin::registerClass(ContactAgendaImportMenu::class);
     \Plugin::registerClass(AttendanceCenterMenu::class);
+    \Plugin::registerClass(OnlineMonitorMenu::class);
     \Plugin::registerClass(SupervisorBackofficeMenu::class);
     \Plugin::registerClass(AiOperationsMenu::class);
     \Plugin::registerClass(QualityDashboardMenu::class);

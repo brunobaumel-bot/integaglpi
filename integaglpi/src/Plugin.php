@@ -160,6 +160,11 @@ final class Plugin
         return self::getWebBasePath() . '/front/supervisor.php';
     }
 
+    public static function getOnlineMonitorUrl(): string
+    {
+        return self::getWebBasePath() . '/front/online.monitor.php';
+    }
+
     public static function getQualityDashboardUrl(): string
     {
         return self::getWebBasePath() . '/front/quality.dashboard.php';
@@ -278,6 +283,21 @@ final class Plugin
         }
 
         Session::checkRight('config', READ);
+    }
+
+    public static function canOnlineMonitorRead(): bool
+    {
+        return self::hasRightBool(self::RIGHT_NAME, READ);
+    }
+
+    public static function requireOnlineMonitorRead(): void
+    {
+        Session::checkRight(self::RIGHT_NAME, READ);
+    }
+
+    public static function canOnlineMonitorSupervisorRead(): bool
+    {
+        return self::canSupervisorRead();
     }
 
     public static function canQualityDashboardRead(): bool
