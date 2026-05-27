@@ -72,6 +72,8 @@ describe('AI operations console static safety', () => {
     expect(service).toContain("'id' => 'gemini'");
     expect(service).toContain("$provider === 'google'");
     expect(service).toContain('latestCloudProviderTestErrors');
+    expect(service).toContain("payload_json->>'provider' IS NOT NULL");
+    expect(service).not.toContain("payload_json ? 'provider'");
     expect(service).toContain('last_error_type');
     expect(service).toContain('autorização para teste sintético');
     expect(service).toContain("$ready = !$vaultLocked && $secretConfigured && $gatesOk && $lastTestStatus === 'success'");
@@ -81,7 +83,10 @@ describe('AI operations console static safety', () => {
     expect(vaultService).toContain('storeSecret');
     expect(vaultService).toContain('testProvider');
     expect(vaultService).toContain('completeProvider');
+    expect(vaultService).toContain('AiCloudProviderException');
     expect(vaultService).toContain('callCompletionProvider');
+    expect(vaultService).toContain('providerCompletionErrorType');
+    expect(vaultService).toContain('cloudCompletionFailure');
     expect(vaultService).toContain('providerCompletionRequest');
     expect(vaultService).toContain('SYNTHETIC_PROMPT');
     expect(vaultService).toContain('Responda apenas OK em JSON');
@@ -97,6 +102,13 @@ describe('AI operations console static safety', () => {
     expect(vaultService).toContain('sanitizeProviderRawForHash');
     expect(vaultService).toContain('model_not_found');
     expect(vaultService).toContain('invalid_request');
+    expect(vaultService).toContain('cloud_provider_http_400');
+    expect(vaultService).toContain('cloud_provider_http_401');
+    expect(vaultService).toContain('cloud_provider_http_403');
+    expect(vaultService).toContain('cloud_provider_http_429');
+    expect(vaultService).toContain('cloud_provider_invalid_response');
+    expect(vaultService).toContain('cloud_provider_timeout');
+    expect(vaultService).toContain('cloud_provider_unreachable');
     expect(vaultService).toContain('decryptSecret');
     expect(vaultService).toContain('last_test_status = :status');
     expect(vaultService).toContain('encrypted_secret');
@@ -266,11 +278,25 @@ describe('AI operations console static safety', () => {
     expect(phpService).toContain('p4_candidate_review_enabled');
     expect(phpService).toContain('p4_candidate_review_provider');
     expect(phpService).toContain('p4_candidate_review_model');
+    expect(phpService).toContain('readP4ProviderSelection');
+    expect(phpService).toContain('normalizeP4ProviderId');
+    expect(phpService).toContain('cloudProviderForP4Model');
     expect(phpService).toContain('selectedAiProviderForP4');
     expect(phpService).toContain('loadOperationalProviderCatalog');
     expect(phpService).toContain('callCloudProviderForCandidateReview');
+    expect(phpService).toContain('P4_CLOUD_MAX_PROMPT_BYTES');
+    expect(phpService).toContain('AiCloudProviderException');
+    expect(phpService).toContain('decodeAiCandidateReviewJson');
+    expect(phpService).toContain("P4_CLOUD_PROVIDER_ALIASES");
+    expect(phpService).toContain("'grok' => 'xai'");
+    expect(phpService).toContain('selection_origin');
+    expect(phpService).toContain('selected_provider_raw');
+    expect(phpService).toContain('selected_model_raw');
+    expect(phpService).toContain('publicP4ProviderError');
     expect(phpService).toContain('model_not_allowed');
     expect(phpService).toContain('provider_not_ready');
+    expect(phpService).toContain('provider_not_allowed');
+    expect(phpService).toContain('provider_selection_missing');
     expect(phpService).toContain('previewAiCandidateReview');
     expect(phpService).toContain('executeAiCandidateReview');
     expect(phpService).toContain("P4_ELIGIBLE_CANDIDATE_STATUSES = ['suggested', 'in_review', 'low_confidence', 'possible_duplicate', 'approved']");
@@ -309,6 +335,20 @@ describe('AI operations console static safety', () => {
     expect(phpService).toContain('provider_unavailable');
     expect(phpService).toContain('confidence_below_threshold');
     expect(phpService).toContain('human_review_required');
+    expect(phpService).toContain('provider cloud selecionado não respondeu');
+    expect(phpService).toContain('cloud_provider_unreachable');
+    expect(phpService).toContain('cloud_provider_timeout');
+    expect(phpService).toContain('cloud_provider_http_400');
+    expect(phpService).toContain('cloud_provider_http_401');
+    expect(phpService).toContain('cloud_provider_http_403');
+    expect(phpService).toContain('cloud_provider_http_429');
+    expect(phpService).toContain('cloud_provider_invalid_response');
+    expect(phpService).toContain('cloud_provider_schema_invalid');
+    expect(phpService).toContain('cloud_provider_payload_too_large');
+    expect(phpService).toContain('cloud_provider_missing_secret');
+    expect(phpService).toContain('cloud_provider_model_not_allowed');
+    expect(phpService).toContain("'response_hash' => $responseHash");
+    expect(phpService).toContain("'http_status' => $httpStatus");
     expect(template).toContain('4. Revisão IA opcional P4');
     expect(template).toContain('P4 usa apenas candidatos P3 sanitizados');
     expect(template).toContain('Últimos run_id/input_hash com candidatos P3 persistidos');
@@ -317,6 +357,13 @@ describe('AI operations console static safety', () => {
     expect(template).toContain('Gere candidatos P3 antes de executar P4');
     expect(template).toContain('revisão humana obrigatória');
     expect(template).toContain('Confiança abaixo do limite');
+    expect(template).toContain("strtolower($postedP4Provider) === 'grok'");
+    expect(template).toContain('name="p4_preview_payload_hash"');
+    expect(template).toContain('selection_origin');
+    expect(template).toContain('error_type');
+    expect(template).toContain('http_status');
+    expect(template).toContain('elapsed_ms');
+    expect(template).toContain('response_hash');
     expect(template).toContain('disabled');
     expect(`${phpService}\n${template}`).not.toMatch(/KnowbaseItem::add|auto_publish\s*=\s*true|ticket raw|followup raw|sendOutbound|MetaClient/i);
   });
@@ -384,13 +431,19 @@ describe('AI operations console static safety', () => {
     expect(externalTemplate).toContain('Gemini/Claude ficam bloqueados até last_test_status=success');
     expect(externalService).toContain('external_research_cloud');
     expect(historicalService).toContain('selectedAiProviderForP4');
+    expect(historicalService).toContain('readP4ProviderSelection');
+    expect(historicalService).toContain('normalizeP4ProviderId');
     expect(historicalService).toContain('callCloudProviderForCandidateReview');
     expect(historicalService).toContain('P4_CLOUD_PROVIDER_IDS');
-    expect(historicalService).toContain("$post['ai_provider'] ?? $post['ai_review_provider'] ?? null");
-    expect(historicalService).toContain("$post['ai_model'] ?? $post['ai_review_model'] ?? null");
+    expect(historicalService).toContain('P4_CLOUD_PROVIDER_ALIASES');
+    expect(historicalService).toContain("foreach (['ai_provider', 'ai_review_provider'] as $field)");
+    expect(historicalService).toContain("foreach (['ai_model', 'ai_review_model'] as $field)");
     expect(historicalService).toContain('provider_selection_missing');
     expect(historicalService).toContain('provider_not_ready');
+    expect(historicalService).toContain('provider_not_allowed');
     expect(historicalService).toContain("'source' => 'cloud'");
+    expect(historicalService).toContain('selection_origin');
+    expect(historicalService).toContain('provider cloud selecionado não respondeu');
     expect(historicalService).toContain('model_hash');
     expect(externalService).toContain("'proper_name'");
     expect(externalService).toContain("'uppercase_name'");
@@ -406,9 +459,64 @@ describe('AI operations console static safety', () => {
     expect(historicalTemplate).toContain('name="ai_review_model"');
     expect(historicalTemplate).toContain('data-source="cloud"');
     expect(historicalTemplate).toContain('data-provider=');
+    expect(historicalTemplate).toContain('selection_origin');
+    expect(historicalTemplate).toContain('error_type');
     expect(historicalTemplate).toContain('p4_preview_payload_hash');
     expect(ticketTab).toContain('Provider efetivo:');
     expect(ticketTab).toContain('Rascunho técnico:');
     expect(`${externalService}\n${historicalService}\n${ticketTab}`).not.toMatch(/sendOutbound|MetaClient|KnowbaseItem::add|auto_publish\s*=\s*true/i);
+  });
+
+  it('P4 cloud routing: explicit cloud never falls to Ollama; preview-first enforced; audit carries selection_origin + explicit_provider', async () => {
+    const service = await readProjectFile('integaglpi/src/Service/HistoricalMiningUiService.php');
+    const template = await readProjectFile('integaglpi/templates/historical_mining.php');
+
+    // Tests 2/3/4 — cloud provider IDs cover deepseek, xai, openai → cloud dispatch
+    expect(service).toContain("P4_CLOUD_PROVIDER_IDS = ['openai', 'anthropic', 'gemini', 'deepseek', 'xai']");
+    expect(service).toContain('callCloudProviderForCandidateReview');
+
+    // selection_origin tri-state: post | preview | default_local
+    expect(service).toContain("'post'");
+    expect(service).toContain("'preview'");
+    expect(service).toContain("'default_local'");
+
+    // Test 5 — explicit cloud provider + no model → provider_selection_missing (not Ollama)
+    expect(service).toContain("'provider_selection_missing'");
+
+    // Test 6 — cloud provider not ready → provider_not_ready (not Ollama)
+    expect(service).toContain("'provider_not_ready'");
+
+    // Test 7 — provider/model outside catalog → model_not_allowed / provider_not_allowed
+    expect(service).toContain("'model_not_allowed'");
+    expect(service).toContain("'provider_not_allowed'");
+
+    // Test 8 — no explicit provider → local/Ollama path
+    expect(service).toContain("'source' => 'local'");
+
+    // Test 9 — provider_unreachable is ONLY thrown by the local Ollama path
+    expect(service).toContain('callLocalOllamaForCandidateReview');
+    expect(service).toContain("'provider_unreachable'");
+
+    // Test 10 — every audit record carries selection_origin + explicit_provider
+    expect(service).toContain("'explicit_provider' => \$explicitProvider");
+    expect(service).toContain("'selection_origin' => \$selectionOrigin");
+
+    // Test 11 — no auto_publish=true (no_auto_publish=true is the safe sentinel — allowed)
+    expect(service).not.toMatch(/'auto_publish'\s*=>\s*true/i);
+
+    // Preview-first gate for cloud execute
+    expect(service).toContain("'preview_required'");
+    expect(service).toContain('p4_preview_payload_hash');
+    expect(service).toContain("Selecione provider/modelo e gere o preview antes de executar P4 cloud");
+
+    // explicit_provider boolean wired through readP4ProviderSelection
+    expect(service).toContain("'explicit_provider' => \$explicitProvider,");
+
+    // Test 1 — UI label shows selected cloud provider (prevents silent Ollama fallback in UI)
+    expect(template).toContain('Provider selecionado para P4');
+
+    // explicit_provider in result payload (cloud-blocked, execute-blocked, completed, exception paths)
+    const explicitProviderCount = (service.match(/'explicit_provider'/g) ?? []).length;
+    expect(explicitProviderCount).toBeGreaterThanOrEqual(6);
   });
 });

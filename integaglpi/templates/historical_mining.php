@@ -27,8 +27,13 @@ $p4DefaultProvider = is_array($aiProviderCatalog['p4_default'] ?? null) ? $aiPro
 $previewProviderSelection = is_array($aiReviewPreview['provider_selection'] ?? null) ? $aiReviewPreview['provider_selection'] : [];
 $resultP4Provider = trim((string) ($aiReviewResult['provider'] ?? ''));
 $resultP4Model = trim((string) ($aiReviewResult['model'] ?? ''));
-$selectedP4Provider = trim((string) ($_POST['ai_provider'] ?? $previewProviderSelection['provider'] ?? ($resultP4Provider !== '' ? $resultP4Provider : ($p4DefaultProvider['provider'] ?? 'ollama'))));
-$selectedP4Model = trim((string) ($_POST['ai_model'] ?? $previewProviderSelection['model'] ?? ($resultP4Model !== '' ? $resultP4Model : ($p4DefaultProvider['model'] ?? ''))));
+$postedP4Provider = trim((string) ($_POST['ai_provider'] ?? $_POST['ai_review_provider'] ?? ''));
+$postedP4Model = trim((string) ($_POST['ai_model'] ?? $_POST['ai_review_model'] ?? ''));
+if (strtolower($postedP4Provider) === 'grok') {
+    $postedP4Provider = 'xai';
+}
+$selectedP4Provider = trim((string) ($postedP4Provider !== '' ? $postedP4Provider : ($previewProviderSelection['provider'] ?? ($resultP4Provider !== '' ? $resultP4Provider : ($p4DefaultProvider['provider'] ?? 'ollama')))));
+$selectedP4Model = trim((string) ($postedP4Model !== '' ? $postedP4Model : ($previewProviderSelection['model'] ?? ($resultP4Model !== '' ? $resultP4Model : ($p4DefaultProvider['model'] ?? '')))));
 $entities = is_array($exportOptions['entities'] ?? null) ? $exportOptions['entities'] : [];
 $groups = is_array($exportOptions['groups'] ?? null) ? $exportOptions['groups'] : [];
 $categories = is_array($exportOptions['categories'] ?? null) ? $exportOptions['categories'] : [];
@@ -344,6 +349,7 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                 <div class="card-header"><?= $this->escape(__('4. Revisão IA opcional P4', 'glpiintegaglpi')); ?></div>
                 <div class="card-body">
                     <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
+                    <input type="hidden" name="p4_preview_payload_hash" value="<?= $this->escape((string) ($aiReviewPreview['payload_hash'] ?? '')); ?>">
                     <label class="form-label" for="ai_review_run_id"><?= $this->escape(__('run_id com candidatos P3', 'glpiintegaglpi')); ?></label>
                     <input class="form-control" type="text" id="ai_review_run_id" name="run_id" value="<?= $this->escape($runId); ?>" list="ai_review_run_id_options" placeholder="<?= $this->escape(__('Cole o run_id ou escolha um candidato recente abaixo', 'glpiintegaglpi')); ?>">
                     <datalist id="ai_review_run_id_options">
@@ -485,7 +491,16 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                             </div>
                         </div>
                     </div>
-                    <div class="d-flex flex-wrap gap-2">
+                    <?php if ($selectedP4Provider !== '' && $selectedP4Provider !== 'ollama') { ?>
+                        <div class="small text-info mt-2">
+                            <?= $this->escape(sprintf(
+                                __('Provider selecionado para P4: %s / %s / cloud', 'glpiintegaglpi'),
+                                $selectedP4Provider,
+                                $selectedP4Model !== '' ? $selectedP4Model : __('sem modelo', 'glpiintegaglpi')
+                            )); ?>
+                        </div>
+                    <?php } ?>
+                    <div class="d-flex flex-wrap gap-2 mt-2">
                         <button class="btn btn-outline-primary" type="submit" name="action" value="preview_ai_candidate_review" <?= $p4KnownSelectedWithoutEligibleCandidates ? 'disabled' : ''; ?>>
                             <?= $this->escape(__('Pré-visualizar payload P4', 'glpiintegaglpi')); ?>
                         </button>
@@ -817,7 +832,12 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                                     <code><?= $this->escape($previewModel); ?></code>
                                 </div>
                                 <button class="btn btn-outline-secondary btn-sm" type="submit" <?= (!$aiReviewEnabled || !$previewProviderReady || $previewRunId === '') ? 'disabled' : ''; ?>>
-                                    <?= $this->escape(__('Executar revisão IA com este provider/modelo', 'glpiintegaglpi')); ?>
+                                    <?php
+                                    $btnProviderLabel = ($previewProviderId !== '' && $previewProviderId !== 'ollama')
+                                        ? ' ' . $previewProviderId . ($previewModel !== '' ? ' / ' . $previewModel : '')
+                                        : '';
+                                    ?>
+                                    <?= $this->escape(__('Executar revisão IA com este provider/modelo', 'glpiintegaglpi') . $btnProviderLabel); ?>
                                 </button>
                             </div>
                             <?php if (!$previewProviderReady) { ?>
@@ -848,8 +868,26 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                             <dd class="col-sm-8"><?= $this->escape((string) ($aiReviewResult['model'] ?? '')); ?></dd>
                             <dt class="col-sm-4"><?= $this->escape(__('source', 'glpiintegaglpi')); ?></dt>
                             <dd class="col-sm-8"><?= $this->escape((string) ($aiReviewResult['source'] ?? '')); ?></dd>
+                            <dt class="col-sm-4"><?= $this->escape(__('selection_origin', 'glpiintegaglpi')); ?></dt>
+                            <dd class="col-sm-8"><?= $this->escape((string) ($aiReviewResult['selection_origin'] ?? '')); ?></dd>
+                            <?php if (!empty($aiReviewResult['error_type'])) { ?>
+                                <dt class="col-sm-4"><?= $this->escape(__('error_type', 'glpiintegaglpi')); ?></dt>
+                                <dd class="col-sm-8"><code><?= $this->escape((string) ($aiReviewResult['error_type'] ?? '')); ?></code></dd>
+                            <?php } ?>
+                            <?php if (array_key_exists('http_status', $aiReviewResult)) { ?>
+                                <dt class="col-sm-4"><?= $this->escape(__('http_status', 'glpiintegaglpi')); ?></dt>
+                                <dd class="col-sm-8"><?= (int) ($aiReviewResult['http_status'] ?? 0); ?></dd>
+                            <?php } ?>
+                            <?php if (array_key_exists('elapsed_ms', $aiReviewResult)) { ?>
+                                <dt class="col-sm-4"><?= $this->escape(__('elapsed_ms', 'glpiintegaglpi')); ?></dt>
+                                <dd class="col-sm-8"><?= (int) ($aiReviewResult['elapsed_ms'] ?? 0); ?></dd>
+                            <?php } ?>
                             <dt class="col-sm-4"><?= $this->escape(__('payload_hash', 'glpiintegaglpi')); ?></dt>
                             <dd class="col-sm-8"><code><?= $this->escape((string) ($aiReviewResult['payload_hash'] ?? '')); ?></code></dd>
+                            <?php if (!empty($aiReviewResult['response_hash'])) { ?>
+                                <dt class="col-sm-4"><?= $this->escape(__('response_hash', 'glpiintegaglpi')); ?></dt>
+                                <dd class="col-sm-8"><code><?= $this->escape((string) ($aiReviewResult['response_hash'] ?? '')); ?></code></dd>
+                            <?php } ?>
                             <dt class="col-sm-4"><?= $this->escape(__('suggestion_hash', 'glpiintegaglpi')); ?></dt>
                             <dd class="col-sm-8"><code><?= $this->escape((string) ($aiReviewResult['suggestion_hash'] ?? '')); ?></code></dd>
                             <dt class="col-sm-4"><?= $this->escape(__('Revisões persistidas', 'glpiintegaglpi')); ?></dt>

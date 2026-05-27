@@ -9,6 +9,29 @@ use GlpiPlugin\Integaglpi\Plugin;
 use RuntimeException;
 use Throwable;
 
+final class AiCloudProviderException extends RuntimeException
+{
+    /** @var array<string, mixed> */
+    private array $diagnostics;
+
+    /**
+     * @param array<string, mixed> $diagnostics
+     */
+    public function __construct(string $errorType, array $diagnostics = [])
+    {
+        parent::__construct($errorType);
+        $this->diagnostics = $diagnostics;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function diagnostics(): array
+    {
+        return $this->diagnostics;
+    }
+}
+
 final class AiSecretVaultService
 {
     private const TABLE = 'glpi_plugin_integaglpi_ai_secret_vault';
@@ -238,34 +261,34 @@ final class AiSecretVaultService
      * payload prepared by the caller. This method never logs prompt/response
      * bodies and never returns the secret.
      *
-     * @return array{provider: string, model: string, status: string, error_type: string, elapsed_ms: int, response_hash: string, response_text: string}
+     * @return array{provider: string, model: string, status: string, error_type: string, elapsed_ms: int, http_status: int, response_hash: string, response_text: string}
      */
     public function completeProvider(string $provider, string $model, string $prompt, int $timeoutMs = 30000, int $maxTokens = 900): array
     {
         $provider = $this->normalizeProvider($provider);
         if ($provider === '') {
-            throw new RuntimeException('provider_not_allowed');
+            throw new AiCloudProviderException('provider_not_allowed', $this->cloudProviderDiagnostics('', $model, 'provider_not_allowed'));
         }
         if (!$this->tableExists()) {
-            throw new RuntimeException('secret_vault_table_missing');
+            throw new AiCloudProviderException('secret_vault_table_missing', $this->cloudProviderDiagnostics($provider, $model, 'secret_vault_table_missing'));
         }
         $masterKey = $this->masterKey();
         if ($masterKey === null) {
-            throw new RuntimeException('secret_vault_locked');
+            throw new AiCloudProviderException('secret_vault_locked', $this->cloudProviderDiagnostics($provider, $model, 'secret_vault_locked'));
         }
 
         $row = $this->activeSecretRow($provider);
         if ($row === []) {
-            throw new RuntimeException('secret_not_configured');
+            throw new AiCloudProviderException('cloud_provider_missing_secret', $this->cloudProviderDiagnostics($provider, $model, 'cloud_provider_missing_secret'));
         }
 
         $model = $this->normalizeModel($model);
         if ($model === '') {
-            throw new RuntimeException('model_not_configured');
+            throw new AiCloudProviderException('cloud_provider_model_not_allowed', $this->cloudProviderDiagnostics($provider, '', 'cloud_provider_model_not_allowed'));
         }
         $prompt = trim($prompt);
         if ($prompt === '' || strlen($prompt) > 12000) {
-            throw new RuntimeException('payload_invalid');
+            throw new AiCloudProviderException('cloud_provider_payload_too_large', $this->cloudProviderDiagnostics($provider, $model, 'cloud_provider_payload_too_large'));
         }
 
         $secret = $this->decryptSecret((string) ($row['encrypted_secret'] ?? ''), $masterKey);
@@ -278,7 +301,16 @@ final class AiSecretVaultService
             max(64, min(1600, $maxTokens))
         );
         if ((string) ($result['status'] ?? '') !== 'success') {
-            throw new RuntimeException((string) ($result['error_type'] ?? 'provider_unavailable'));
+            $errorType = (string) ($result['error_type'] ?? 'cloud_provider_unreachable');
+            throw new AiCloudProviderException($errorType, [
+                'provider' => $provider,
+                'model' => $model,
+                'error_type' => $errorType,
+                'elapsed_ms' => (int) ($result['elapsed_ms'] ?? 0),
+                'http_status' => (int) ($result['http_status'] ?? 0),
+                'response_hash' => (string) ($result['response_hash'] ?? ''),
+                'error_hash' => (string) ($result['error_hash'] ?? hash('sha256', $provider . ':' . $model . ':' . $errorType)),
+            ]);
         }
 
         return [
@@ -287,6 +319,7 @@ final class AiSecretVaultService
             'status' => (string) $result['status'],
             'error_type' => (string) $result['error_type'],
             'elapsed_ms' => (int) $result['elapsed_ms'],
+            'http_status' => (int) ($result['http_status'] ?? 0),
             'response_hash' => (string) $result['response_hash'],
             'response_text' => (string) $result['response_text'],
         ];
@@ -430,31 +463,19 @@ final class AiSecretVaultService
     }
 
     /**
-     * @return array{status: string, error_type: string, elapsed_ms: int, response_hash: string, response_text: string}
+     * @return array{status: string, error_type: string, elapsed_ms: int, http_status: int, response_hash: string, error_hash: string, response_text: string}
      */
     private function callCompletionProvider(string $provider, string $model, string $secret, string $prompt, int $timeoutMs, int $maxTokens): array
     {
         if (!function_exists('curl_init')) {
-            return [
-                'status' => 'failed',
-                'error_type' => 'curl_unavailable',
-                'elapsed_ms' => 0,
-                'response_hash' => '',
-                'response_text' => '',
-            ];
+            return $this->cloudCompletionFailure('failed', 'cloud_provider_unreachable', 0, 0);
         }
 
         $request = $this->providerCompletionRequest($provider, $model, $secret, $prompt, $maxTokens);
         $startedAt = microtime(true);
         $handle = curl_init((string) $request['url']);
         if ($handle === false) {
-            return [
-                'status' => 'failed',
-                'error_type' => 'curl_init_failed',
-                'elapsed_ms' => 0,
-                'response_hash' => '',
-                'response_text' => '',
-            ];
+            return $this->cloudCompletionFailure('failed', 'cloud_provider_unreachable', 0, 0);
         }
 
         curl_setopt_array($handle, [
@@ -472,41 +493,68 @@ final class AiSecretVaultService
         $elapsedMs = (int) round((microtime(true) - $startedAt) * 1000);
 
         if ($curlErrNo === CURLE_OPERATION_TIMEDOUT) {
-            return ['status' => 'timeout', 'error_type' => 'timeout', 'elapsed_ms' => $elapsedMs, 'response_hash' => '', 'response_text' => ''];
+            return $this->cloudCompletionFailure('timeout', 'cloud_provider_timeout', $elapsedMs, $httpStatus);
         }
         if ($curlErrNo !== 0) {
-            return ['status' => 'failed', 'error_type' => 'provider_unreachable', 'elapsed_ms' => $elapsedMs, 'response_hash' => '', 'response_text' => ''];
+            return $this->cloudCompletionFailure('failed', 'cloud_provider_unreachable', $elapsedMs, $httpStatus);
         }
         if (!is_string($raw) || $raw === '') {
-            return ['status' => 'failed', 'error_type' => 'provider_unreachable', 'elapsed_ms' => $elapsedMs, 'response_hash' => '', 'response_text' => ''];
-        }
-        $rawHash = hash('sha256', $this->sanitizeProviderRawForHash($raw));
-        if ($httpStatus === 401 || $httpStatus === 403) {
-            return ['status' => 'unauthorized', 'error_type' => 'unauthorized', 'elapsed_ms' => $elapsedMs, 'response_hash' => $rawHash, 'response_text' => ''];
+            return $this->cloudCompletionFailure('failed', 'cloud_provider_unreachable', $elapsedMs, $httpStatus);
         }
         if ($httpStatus < 200 || $httpStatus >= 300) {
-            $errorType = $this->providerErrorType($provider, $raw, $httpStatus);
+            $errorType = $this->providerCompletionErrorType($provider, $raw, $httpStatus);
+            $status = $errorType === 'cloud_provider_timeout' ? 'timeout' : ($errorType === 'cloud_provider_http_401' || $errorType === 'cloud_provider_http_403' ? 'unauthorized' : 'failed');
 
-            return [
-                'status' => in_array($errorType, ['unauthorized', 'timeout', 'invalid_response'], true) ? $errorType : 'failed',
-                'error_type' => $errorType,
-                'elapsed_ms' => $elapsedMs,
-                'response_hash' => $rawHash,
-                'response_text' => '',
-            ];
+            return $this->cloudCompletionFailure($status, $errorType, $elapsedMs, $httpStatus, $raw);
         }
 
         $responseText = trim($this->extractSyntheticResponseText($provider, $raw));
         if ($responseText === '') {
-            return ['status' => 'invalid_response', 'error_type' => 'invalid_response', 'elapsed_ms' => $elapsedMs, 'response_hash' => $rawHash, 'response_text' => ''];
+            return $this->cloudCompletionFailure('invalid_response', 'cloud_provider_invalid_response', $elapsedMs, $httpStatus, $raw);
         }
 
         return [
             'status' => 'success',
             'error_type' => 'none',
             'elapsed_ms' => $elapsedMs,
+            'http_status' => $httpStatus,
             'response_hash' => hash('sha256', $this->sanitizeProviderRawForHash($responseText)),
+            'error_hash' => '',
             'response_text' => mb_substr($responseText, 0, 8000, 'UTF-8'),
+        ];
+    }
+
+    /**
+     * @return array{status: string, error_type: string, elapsed_ms: int, http_status: int, response_hash: string, error_hash: string, response_text: string}
+     */
+    private function cloudCompletionFailure(string $status, string $errorType, int $elapsedMs, int $httpStatus, string $raw = ''): array
+    {
+        $responseHash = $raw !== '' ? hash('sha256', $this->sanitizeProviderRawForHash($raw)) : '';
+
+        return [
+            'status' => $status,
+            'error_type' => $errorType,
+            'elapsed_ms' => $elapsedMs,
+            'http_status' => $httpStatus,
+            'response_hash' => $responseHash,
+            'error_hash' => $responseHash !== '' ? $responseHash : hash('sha256', $errorType . ':' . (string) $httpStatus),
+            'response_text' => '',
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function cloudProviderDiagnostics(string $provider, string $model, string $errorType): array
+    {
+        return [
+            'provider' => $this->normalizeProvider($provider),
+            'model' => $this->normalizeModel($model),
+            'error_type' => $errorType,
+            'elapsed_ms' => 0,
+            'http_status' => 0,
+            'response_hash' => '',
+            'error_hash' => hash('sha256', $provider . ':' . $model . ':' . $errorType),
         ];
     }
 
@@ -894,6 +942,41 @@ final class AiSecretVaultService
         }
 
         return 'provider_http_' . $httpStatus;
+    }
+
+    private function providerCompletionErrorType(string $provider, string $raw, int $httpStatus): string
+    {
+        if ($httpStatus === 400) {
+            return 'cloud_provider_http_400';
+        }
+        if ($httpStatus === 401) {
+            return 'cloud_provider_http_401';
+        }
+        if ($httpStatus === 403) {
+            return 'cloud_provider_http_403';
+        }
+        if ($httpStatus === 429) {
+            return 'cloud_provider_http_429';
+        }
+        if ($httpStatus === 408 || $httpStatus === 504) {
+            return 'cloud_provider_timeout';
+        }
+
+        $typed = $this->providerErrorType($provider, $raw, $httpStatus);
+        if (in_array($typed, ['model_not_found', 'invalid_request'], true)) {
+            return 'cloud_provider_model_not_allowed';
+        }
+        if ($typed === 'timeout') {
+            return 'cloud_provider_timeout';
+        }
+        if ($typed === 'rate_limited') {
+            return 'cloud_provider_http_429';
+        }
+        if ($typed === 'unauthorized') {
+            return $httpStatus === 403 ? 'cloud_provider_http_403' : 'cloud_provider_http_401';
+        }
+
+        return 'cloud_provider_http_' . (string) $httpStatus;
     }
 
     private function sanitizeProviderRawForHash(string $raw): string

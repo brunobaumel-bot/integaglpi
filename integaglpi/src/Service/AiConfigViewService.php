@@ -1110,9 +1110,9 @@ final class AiConfigViewService
                         payload_json->>'provider' AS provider,
                         payload_json->>'error_type' AS error_type,
                         status
-                   FROM public.glpi_plugin_integaglpi_audit_events
+                  FROM public.glpi_plugin_integaglpi_audit_events
                   WHERE event_type = 'AI_CLOUD_PROVIDER_TESTED'
-                    AND payload_json ? 'provider'
+                    AND payload_json->>'provider' IS NOT NULL
                   ORDER BY payload_json->>'provider', created_at DESC"
             );
             if ($statement === false) {

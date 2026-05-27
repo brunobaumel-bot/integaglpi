@@ -22,8 +22,19 @@ final class HistoricalMiningUiService
     private const P4_AI_REVIEW_TIMEOUT_SECONDS = 'AI_KB_CANDIDATE_REVIEW_TIMEOUT_SECONDS';
     private const P4_CONFIDENCE_THRESHOLD = 70;
     private const P4_MAX_CANDIDATES = 10;
+    private const P4_CLOUD_MAX_PROMPT_BYTES = 12000;
     private const P4_ELIGIBLE_CANDIDATE_STATUSES = ['suggested', 'in_review', 'low_confidence', 'possible_duplicate', 'approved'];
     private const P4_CLOUD_PROVIDER_IDS = ['openai', 'anthropic', 'gemini', 'deepseek', 'xai'];
+    private const P4_CLOUD_PROVIDER_ALIASES = [
+        'chatgpt' => 'openai',
+        'open_ai' => 'openai',
+        'claude' => 'anthropic',
+        'google' => 'gemini',
+        'google_gemini' => 'gemini',
+        'grok' => 'xai',
+        'x.ai' => 'xai',
+        'x-ai' => 'xai',
+    ];
     private PluginConfigService $pluginConfigService;
     private IntegrationServiceClient $client;
 
@@ -319,6 +330,7 @@ final class HistoricalMiningUiService
             'provider' => (string) ($providerSelection['provider'] ?? 'disabled'),
             'model' => (string) ($providerSelection['model'] ?? ''),
             'source' => (string) ($providerSelection['source'] ?? 'local'),
+            'selection_origin' => (string) ($providerSelection['selection_origin'] ?? 'default'),
             'candidates' => $payloads,
             'safety_flags' => [
                 'p4_ai_sanitized_candidates_only' => true,
@@ -341,6 +353,8 @@ final class HistoricalMiningUiService
             'provider' => (string) ($providerSelection['provider'] ?? 'disabled'),
             'model_hash' => hash('sha256', (string) ($providerSelection['model'] ?? '')),
             'source' => (string) ($providerSelection['source'] ?? 'local'),
+            'selection_origin' => (string) ($providerSelection['selection_origin'] ?? 'default_local'),
+            'explicit_provider' => !empty($providerSelection['explicit_provider']),
             'ready' => !empty($providerSelection['ready']),
         ]);
 
@@ -372,6 +386,9 @@ final class HistoricalMiningUiService
                 'provider' => (string) ($providerSelection['provider'] ?? 'disabled'),
                 'model_hash' => hash('sha256', (string) ($providerSelection['model'] ?? '')),
                 'source' => (string) ($providerSelection['source'] ?? 'local'),
+                'selection_origin' => (string) ($providerSelection['selection_origin'] ?? 'default_local'),
+                'explicit_provider' => !empty($providerSelection['explicit_provider']),
+                'no_auto_publish' => true,
             ]);
 
             return [
@@ -384,6 +401,8 @@ final class HistoricalMiningUiService
                     'provider' => (string) ($providerSelection['provider'] ?? 'disabled'),
                     'model' => (string) ($providerSelection['model'] ?? ''),
                     'source' => (string) ($providerSelection['source'] ?? 'local'),
+                    'selection_origin' => (string) ($providerSelection['selection_origin'] ?? 'default_local'),
+                    'explicit_provider' => !empty($providerSelection['explicit_provider']),
                     'no_auto_publish' => true,
                 ],
             ];
@@ -406,24 +425,32 @@ final class HistoricalMiningUiService
             ];
         }
 
+        $payloadHash = hash('sha256', json_encode($payloads, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '');
         $providerConfig = $this->loadAiCandidateReviewProviderConfig($post);
         $provider = (string) ($providerConfig['provider'] ?? 'disabled');
         $providerModel = (string) ($providerConfig['model'] ?? '');
         $providerSource = (string) ($providerConfig['source'] ?? (!empty($providerConfig['cloud']) ? 'cloud' : 'local'));
+        $selectionOrigin = (string) ($providerConfig['selection_origin'] ?? 'default_local');
+        $explicitProvider = !empty($providerConfig['explicit_provider']);
         if (empty($providerConfig['available'])) {
             $this->audit('KB_CANDIDATE_AI_REVIEW_BLOCKED', [
                 'glpi_user_id' => $userId,
                 'run_id' => $runId,
                 'reason' => (string) ($providerConfig['reason'] ?? 'provider_unavailable'),
+                'error_type' => (string) ($providerConfig['reason'] ?? 'provider_unavailable'),
                 'feature_flag' => self::P4_AI_REVIEW_FEATURE_FLAG,
                 'provider' => $provider,
                 'model_hash' => hash('sha256', $providerModel),
                 'source' => $providerSource,
+                'selection_origin' => $selectionOrigin,
+                'explicit_provider' => $explicitProvider,
+                'payload_hash' => $payloadHash,
+                'no_auto_publish' => true,
             ]);
 
             return [
                 'type' => 'warning',
-                'message' => $this->publicError((string) ($providerConfig['reason'] ?? 'provider_unavailable')),
+                'message' => $this->publicP4ProviderError((string) ($providerConfig['reason'] ?? 'provider_unavailable'), $providerSource),
                 'ai_review_result' => [
                     'status' => 'error',
                     'error_type' => (string) ($providerConfig['reason'] ?? 'provider_unavailable'),
@@ -432,12 +459,51 @@ final class HistoricalMiningUiService
                     'provider' => $provider,
                     'model' => $providerModel,
                     'source' => $providerSource,
+                    'selection_origin' => $selectionOrigin,
+                    'explicit_provider' => $explicitProvider,
+                    'payload_hash' => $payloadHash,
                     'no_auto_publish' => true,
                 ],
             ];
         }
 
-        $payloadHash = hash('sha256', json_encode($payloads, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '');
+        if (!empty($providerConfig['cloud'])) {
+            $previewPayloadHash = trim((string) ($post['p4_preview_payload_hash'] ?? ''));
+            if ($previewPayloadHash === '') {
+                $this->audit('KB_CANDIDATE_AI_REVIEW_BLOCKED', [
+                    'glpi_user_id' => $userId,
+                    'run_id' => $runId,
+                    'reason' => 'preview_required',
+                    'error_type' => 'preview_required',
+                    'feature_flag' => self::P4_AI_REVIEW_FEATURE_FLAG,
+                    'provider' => $provider,
+                    'model_hash' => hash('sha256', $providerModel),
+                    'source' => $providerSource,
+                    'selection_origin' => $selectionOrigin,
+                    'explicit_provider' => $explicitProvider,
+                    'payload_hash' => $payloadHash,
+                    'no_auto_publish' => true,
+                ]);
+
+                return [
+                    'type' => 'warning',
+                    'message' => $this->publicP4ProviderError('preview_required', $providerSource),
+                    'ai_review_result' => [
+                        'status' => 'error',
+                        'error_type' => 'preview_required',
+                        'run_id' => $runId,
+                        'provider' => $provider,
+                        'model' => $providerModel,
+                        'source' => $providerSource,
+                        'selection_origin' => $selectionOrigin,
+                        'explicit_provider' => $explicitProvider,
+                        'payload_hash' => $payloadHash,
+                        'no_auto_publish' => true,
+                    ],
+                ];
+            }
+        }
+
         try {
             $providerResponse = !empty($providerConfig['cloud'])
                 ? $this->callCloudProviderForCandidateReview($providerConfig, $payloads)
@@ -452,7 +518,13 @@ final class HistoricalMiningUiService
                 'provider' => $provider,
                 'model_hash' => hash('sha256', $providerModel),
                 'source' => $providerSource,
+                'selection_origin' => $selectionOrigin,
+                'explicit_provider' => $explicitProvider,
                 'payload_hash' => $payloadHash,
+                'response_hash' => (string) ($providerResponse['response_hash'] ?? ''),
+                'elapsed_ms' => (int) ($providerResponse['elapsed_ms'] ?? 0),
+                'http_status' => (int) ($providerResponse['http_status'] ?? 0),
+                'error_type' => (string) ($providerResponse['error_type'] ?? 'none'),
                 'suggestion_hash' => $suggestionHash,
                 'candidate_count' => count($payloads),
                 'suggestion_count' => count($suggestions),
@@ -475,9 +547,13 @@ final class HistoricalMiningUiService
                     'provider' => $provider,
                     'model' => $providerModel,
                     'source' => $providerSource,
+                    'selection_origin' => $selectionOrigin,
+                    'explicit_provider' => $explicitProvider,
                     'payload_hash' => $payloadHash,
+                    'response_hash' => (string) ($providerResponse['response_hash'] ?? ''),
                     'suggestion_hash' => $suggestionHash,
                     'elapsed_ms' => (int) ($providerResponse['elapsed_ms'] ?? 0),
+                    'http_status' => (int) ($providerResponse['http_status'] ?? 0),
                     'persisted_reviews' => $persisted,
                     'confidence_threshold' => self::P4_CONFIDENCE_THRESHOLD,
                     'suggestions' => $suggestions,
@@ -485,22 +561,34 @@ final class HistoricalMiningUiService
                     'no_auto_publish' => true,
                 ],
             ];
-        } catch (RuntimeException $exception) {
-            $errorType = $this->p4ProviderErrorType($exception->getMessage());
+        } catch (AiCloudProviderException $exception) {
+            $diagnostics = $exception->diagnostics();
+            $errorType = $this->p4ProviderErrorType($exception->getMessage(), $providerSource);
+            $elapsedMs = (int) ($diagnostics['elapsed_ms'] ?? 0);
+            $httpStatus = (int) ($diagnostics['http_status'] ?? 0);
+            $responseHash = (string) ($diagnostics['response_hash'] ?? '');
+            $errorHash = (string) ($diagnostics['error_hash'] ?? hash('sha256', $exception->getMessage()));
             $this->audit('KB_CANDIDATE_AI_REVIEW_BLOCKED', [
                 'glpi_user_id' => $userId,
                 'run_id' => $runId,
                 'reason' => $errorType,
+                'error_type' => $errorType,
                 'provider' => $provider,
                 'model_hash' => hash('sha256', $providerModel),
                 'source' => $providerSource,
+                'selection_origin' => $selectionOrigin,
+                'explicit_provider' => $explicitProvider,
                 'payload_hash' => $payloadHash,
-                'error_hash' => hash('sha256', $exception->getMessage()),
+                'response_hash' => $responseHash,
+                'error_hash' => $errorHash,
+                'elapsed_ms' => $elapsedMs,
+                'http_status' => $httpStatus,
+                'no_auto_publish' => true,
             ]);
 
             return [
                 'type' => 'warning',
-                'message' => $this->publicError($errorType),
+                'message' => $this->publicP4ProviderError($errorType, $providerSource),
                 'ai_review_result' => [
                     'status' => 'error',
                     'error_type' => $errorType,
@@ -508,7 +596,50 @@ final class HistoricalMiningUiService
                     'provider' => $provider,
                     'model' => $providerModel,
                     'source' => $providerSource,
+                    'selection_origin' => $selectionOrigin,
+                    'explicit_provider' => $explicitProvider,
                     'payload_hash' => $payloadHash,
+                    'response_hash' => $responseHash,
+                    'elapsed_ms' => $elapsedMs,
+                    'http_status' => $httpStatus,
+                    'human_review_required' => true,
+                    'no_auto_publish' => true,
+                ],
+            ];
+        } catch (RuntimeException $exception) {
+            $errorType = $this->p4ProviderErrorType($exception->getMessage(), $providerSource);
+            $this->audit('KB_CANDIDATE_AI_REVIEW_BLOCKED', [
+                'glpi_user_id' => $userId,
+                'run_id' => $runId,
+                'reason' => $errorType,
+                'error_type' => $errorType,
+                'provider' => $provider,
+                'model_hash' => hash('sha256', $providerModel),
+                'source' => $providerSource,
+                'selection_origin' => $selectionOrigin,
+                'explicit_provider' => $explicitProvider,
+                'payload_hash' => $payloadHash,
+                'error_hash' => hash('sha256', $exception->getMessage()),
+                'elapsed_ms' => 0,
+                'http_status' => 0,
+                'no_auto_publish' => true,
+            ]);
+
+            return [
+                'type' => 'warning',
+                'message' => $this->publicP4ProviderError($errorType, $providerSource),
+                'ai_review_result' => [
+                    'status' => 'error',
+                    'error_type' => $errorType,
+                    'run_id' => $runId,
+                    'provider' => $provider,
+                    'model' => $providerModel,
+                    'source' => $providerSource,
+                    'selection_origin' => $selectionOrigin,
+                    'explicit_provider' => $explicitProvider,
+                    'payload_hash' => $payloadHash,
+                    'elapsed_ms' => 0,
+                    'http_status' => 0,
                     'human_review_required' => true,
                     'no_auto_publish' => true,
                 ],
@@ -1693,6 +1824,8 @@ final class HistoricalMiningUiService
     {
         $selection = $this->selectedAiProviderForP4($post);
         $selectedProvider = strtolower((string) ($selection['provider'] ?? ''));
+        $selectionOrigin = (string) ($selection['selection_origin'] ?? 'default_local');
+        $explicitProvider = !empty($selection['explicit_provider']);
         if (!empty($selection['cloud'])) {
             if (empty($selection['ready'])) {
                 return [
@@ -1702,6 +1835,8 @@ final class HistoricalMiningUiService
                     'model' => (string) ($selection['model'] ?? ''),
                     'source' => 'cloud',
                     'cloud' => true,
+                    'selection_origin' => $selectionOrigin,
+                    'explicit_provider' => $explicitProvider,
                 ];
             }
 
@@ -1712,6 +1847,8 @@ final class HistoricalMiningUiService
                 'timeout_seconds' => max(15, min(120, (int) $this->runtimeConfigValue(self::P4_AI_REVIEW_TIMEOUT_SECONDS) ?: 75)),
                 'source' => 'cloud',
                 'cloud' => true,
+                'selection_origin' => $selectionOrigin,
+                'explicit_provider' => $explicitProvider,
             ];
         }
 
@@ -1726,6 +1863,8 @@ final class HistoricalMiningUiService
                 'provider' => $provider === '' ? 'disabled' : $provider,
                 'model' => (string) ($selection['model'] ?? ''),
                 'source' => 'local',
+                'selection_origin' => $selectionOrigin,
+                'explicit_provider' => $explicitProvider,
             ];
         }
 
@@ -1743,6 +1882,8 @@ final class HistoricalMiningUiService
                 'provider' => 'ollama',
                 'model' => '',
                 'source' => 'local',
+                'selection_origin' => $selectionOrigin,
+                'explicit_provider' => $explicitProvider,
             ];
         }
 
@@ -1760,6 +1901,8 @@ final class HistoricalMiningUiService
                 'provider' => 'ollama',
                 'model' => $model,
                 'source' => 'local',
+                'selection_origin' => $selectionOrigin,
+                'explicit_provider' => $explicitProvider,
             ];
         }
 
@@ -1776,6 +1919,8 @@ final class HistoricalMiningUiService
             'model' => $model,
             'timeout_seconds' => $timeout,
             'source' => 'local',
+            'selection_origin' => $selectionOrigin,
+            'explicit_provider' => $explicitProvider,
         ];
     }
 
@@ -1804,18 +1949,173 @@ final class HistoricalMiningUiService
      * @param array<string, mixed> $post
      * @return array<string, mixed>
      */
+    private function readP4ProviderSelection(array $post, array $catalog): array
+    {
+        $rawProvider = '';
+        $rawProviderOrigin = 'default';
+        foreach (['ai_provider', 'ai_review_provider'] as $field) {
+            if (!array_key_exists($field, $post)) {
+                continue;
+            }
+            $candidate = trim((string) $post[$field]);
+            if ($candidate !== '') {
+                $rawProvider = $candidate;
+                $rawProviderOrigin = $field;
+                break;
+            }
+            if ($rawProviderOrigin === 'default') {
+                $rawProviderOrigin = $field;
+            }
+        }
+
+        $rawModel = '';
+        $rawModelOrigin = 'default';
+        foreach (['ai_model', 'ai_review_model'] as $field) {
+            if (!array_key_exists($field, $post)) {
+                continue;
+            }
+            $candidate = trim((string) $post[$field]);
+            if ($candidate !== '') {
+                $rawModel = $candidate;
+                $rawModelOrigin = $field;
+                break;
+            }
+            if ($rawModelOrigin === 'default') {
+                $rawModelOrigin = $field;
+            }
+        }
+
+        $provider = $this->normalizeP4ProviderId($rawProvider);
+        $model = $this->sanitizeModel($rawModel);
+        $modelCloudProvider = $this->cloudProviderForP4Model($model, $catalog);
+        $explicitProvider = $rawProvider !== '';
+        $explicitModel = $rawModel !== '';
+        $explicitCloud = $explicitProvider && in_array($provider, self::P4_CLOUD_PROVIDER_IDS, true);
+        $cloudIntent = $explicitCloud || ($explicitModel && $modelCloudProvider !== '' && ($provider === '' || $provider === $modelCloudProvider));
+        $previewHash = trim((string) ($post['p4_preview_payload_hash'] ?? ''));
+        $selectionOrigin = $previewHash !== '' ? 'preview' : ($explicitProvider ? 'post' : 'default_local');
+
+        return [
+            'selected_provider_raw' => $this->sanitizeLog($rawProvider),
+            'selected_model_raw' => $model,
+            'selected_model_raw_hash' => $rawModel !== '' ? hash('sha256', $rawModel) : '',
+            'resolved_provider' => $provider,
+            'resolved_model' => $model,
+            'model_cloud_provider' => $modelCloudProvider,
+            'source' => $cloudIntent ? 'cloud' : ($provider === 'ollama' || $provider === '' ? 'local' : 'unknown'),
+            'selection_origin' => $selectionOrigin,
+            'explicit_provider' => $explicitProvider,
+            'has_explicit_provider' => $explicitProvider,
+            'has_explicit_model' => $explicitModel,
+            'cloud_intent' => $cloudIntent,
+        ];
+    }
+
+    private function normalizeP4ProviderId(string $provider): string
+    {
+        $provider = strtolower(trim($provider));
+        if ($provider === '') {
+            return '';
+        }
+        if ($provider === 'local') {
+            return 'ollama';
+        }
+        if (isset(self::P4_CLOUD_PROVIDER_ALIASES[$provider])) {
+            return self::P4_CLOUD_PROVIDER_ALIASES[$provider];
+        }
+        if (strpos($provider, 'grok') !== false || strpos($provider, 'xai') !== false) {
+            return 'xai';
+        }
+        if (strpos($provider, 'chatgpt') !== false || strpos($provider, 'openai') !== false) {
+            return 'openai';
+        }
+        if (strpos($provider, 'claude') !== false || strpos($provider, 'anthropic') !== false) {
+            return 'anthropic';
+        }
+        if (in_array($provider, array_merge(['ollama'], self::P4_CLOUD_PROVIDER_IDS), true)) {
+            return $provider;
+        }
+
+        return '';
+    }
+
+    private function cloudProviderForP4Model(string $model, array $catalog): string
+    {
+        if ($model === '') {
+            return '';
+        }
+        $groups = [
+            is_array($catalog['cloud_ready_providers'] ?? null) ? $catalog['cloud_ready_providers'] : [],
+            is_array($catalog['cloud_blocked_providers'] ?? null) ? $catalog['cloud_blocked_providers'] : [],
+        ];
+        foreach ($groups as $group) {
+            foreach ($group as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $provider = $this->normalizeP4ProviderId((string) ($row['id'] ?? ''));
+                $models = is_array($row['models'] ?? null) ? array_values(array_map('strval', $row['models'])) : [];
+                if ($provider !== '' && in_array($model, $models, true)) {
+                    return $provider;
+                }
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * @param array<string, mixed> $post
+     * @return array<string, mixed>
+     */
     private function selectedAiProviderForP4(array $post): array
     {
         $catalog = $this->loadOperationalProviderCatalog();
         $default = is_array($catalog['p4_default'] ?? null) ? $catalog['p4_default'] : ['provider' => 'ollama', 'model' => ''];
-        $rawProvider = $post['ai_provider'] ?? $post['ai_review_provider'] ?? null;
-        $rawModel = $post['ai_model'] ?? $post['ai_review_model'] ?? null;
-        $hasExplicitProvider = $rawProvider !== null;
-        $hasExplicitModel = $rawModel !== null;
-        $provider = strtolower(trim((string) ($hasExplicitProvider ? $rawProvider : ($default['provider'] ?? 'ollama'))));
-        $model = $this->sanitizeModel((string) ($hasExplicitModel ? $rawModel : ($default['model'] ?? '')));
-        if ($provider === 'local') {
-            $provider = 'ollama';
+        $selection = $this->readP4ProviderSelection($post, $catalog);
+        $hasExplicitProvider = !empty($selection['has_explicit_provider']);
+        $hasExplicitModel = !empty($selection['has_explicit_model']);
+        $cloudIntent = !empty($selection['cloud_intent']);
+        $provider = (string) ($selection['resolved_provider'] ?? '');
+        $model = (string) ($selection['resolved_model'] ?? '');
+        $selectionMeta = [
+            'selected_provider_raw' => (string) ($selection['selected_provider_raw'] ?? ''),
+            'selected_model_raw' => (string) ($selection['selected_model_raw'] ?? ''),
+            'selected_model_raw_hash' => (string) ($selection['selected_model_raw_hash'] ?? ''),
+            'selection_origin' => (string) ($selection['selection_origin'] ?? 'default_local'),
+            'explicit_provider' => !empty($selection['explicit_provider']),
+        ];
+        if (!$hasExplicitProvider && !$hasExplicitModel) {
+            $provider = $this->normalizeP4ProviderId((string) ($default['provider'] ?? 'ollama'));
+            $model = $this->sanitizeModel((string) ($default['model'] ?? ''));
+        }
+
+        if ($cloudIntent && $provider === '') {
+            $provider = (string) ($selection['model_cloud_provider'] ?? '');
+
+            return array_merge([
+                'provider' => $provider !== '' ? $provider : 'disabled',
+                'model' => $model,
+                'label' => $provider !== '' ? $provider : 'provider inválido',
+                'ready' => false,
+                'cloud' => true,
+                'source' => 'cloud',
+                'blocked_reason' => 'provider_selection_missing',
+                'last_test_status' => 'unknown',
+            ], $selectionMeta);
+        }
+
+        if ($hasExplicitProvider && $provider === '') {
+            return array_merge([
+                'provider' => 'disabled',
+                'model' => $model,
+                'label' => 'provider inválido',
+                'ready' => false,
+                'cloud' => true,
+                'source' => 'cloud',
+                'blocked_reason' => 'provider_not_allowed',
+                'last_test_status' => 'unknown',
+            ], $selectionMeta);
         }
 
         if ($provider === '' || $provider === 'ollama') {
@@ -1826,7 +2126,7 @@ final class HistoricalMiningUiService
             }
             $modelAllowed = $model !== '' && ($models === [] || in_array($model, $models, true));
 
-            return [
+            return array_merge([
                 'provider' => 'ollama',
                 'model' => $model,
                 'label' => 'Ollama local',
@@ -1834,7 +2134,7 @@ final class HistoricalMiningUiService
                 'cloud' => false,
                 'source' => 'local',
                 'blocked_reason' => $modelAllowed && !empty($local['ready']) ? '' : 'local_model_not_available',
-            ];
+            ], $selectionMeta);
         }
 
         $readyCloud = is_array($catalog['cloud_ready_providers'] ?? null) ? $catalog['cloud_ready_providers'] : [];
@@ -1847,7 +2147,7 @@ final class HistoricalMiningUiService
                 $models = is_array($row['models'] ?? null) ? array_values(array_map('strval', $row['models'])) : [];
                 if ($model === '' && $models !== []) {
                     if ($hasExplicitProvider) {
-                        return [
+                        return array_merge([
                             'provider' => $provider,
                             'model' => '',
                             'label' => (string) ($row['name'] ?? $provider),
@@ -1856,14 +2156,14 @@ final class HistoricalMiningUiService
                             'source' => 'cloud',
                             'blocked_reason' => 'provider_selection_missing',
                             'last_test_status' => (string) ($row['last_test_status'] ?? 'not_tested'),
-                        ];
+                        ], $selectionMeta);
                     }
                     $model = (string) $models[0];
                 }
                 $modelAllowed = $model !== '' && in_array($model, $models, true);
                 $ready = !empty($row['ready_for_controlled_use']) && $modelAllowed;
 
-                return [
+                return array_merge([
                     'provider' => $provider,
                     'model' => $model,
                     'label' => (string) ($row['name'] ?? $provider),
@@ -1872,12 +2172,12 @@ final class HistoricalMiningUiService
                     'source' => 'cloud',
                     'blocked_reason' => $ready ? '' : ($modelAllowed ? (string) ($row['blocked_reason'] ?? 'provider_not_ready') : 'model_not_allowed'),
                     'last_test_status' => (string) ($row['last_test_status'] ?? 'not_tested'),
-                ];
+                ], $selectionMeta);
             }
         }
 
         if ($hasExplicitProvider && in_array($provider, self::P4_CLOUD_PROVIDER_IDS, true)) {
-            return [
+            return array_merge([
                 'provider' => $provider,
                 'model' => $model,
                 'label' => $provider,
@@ -1886,10 +2186,23 @@ final class HistoricalMiningUiService
                 'source' => 'cloud',
                 'blocked_reason' => $model === '' ? 'provider_selection_missing' : 'provider_not_ready',
                 'last_test_status' => 'unknown',
-            ];
+            ], $selectionMeta);
         }
 
-        return [
+        if ($cloudIntent) {
+            return array_merge([
+                'provider' => $provider !== '' ? $provider : 'disabled',
+                'model' => $model,
+                'label' => $provider !== '' ? $provider : 'provider inválido',
+                'ready' => false,
+                'cloud' => true,
+                'source' => 'cloud',
+                'blocked_reason' => $provider === '' || $model === '' ? 'provider_selection_missing' : 'provider_not_ready',
+                'last_test_status' => 'unknown',
+            ], $selectionMeta);
+        }
+
+        return array_merge([
             'provider' => 'disabled',
             'model' => '',
             'label' => 'provider inválido',
@@ -1897,7 +2210,7 @@ final class HistoricalMiningUiService
             'cloud' => false,
             'source' => 'local',
             'blocked_reason' => 'provider_not_allowed',
-        ];
+        ], $selectionMeta);
     }
 
     private function sanitizeModel(string $model): string
@@ -2056,7 +2369,7 @@ final class HistoricalMiningUiService
     /**
      * @param array<string, mixed> $providerConfig
      * @param list<array<string, mixed>> $payloads
-     * @return array{response_text: string, elapsed_ms: int}
+     * @return array<string, mixed>
      */
     private function callCloudProviderForCandidateReview(array $providerConfig, array $payloads): array
     {
@@ -2064,8 +2377,14 @@ final class HistoricalMiningUiService
         if ($payloadJson === '' || $this->containsSensitiveData($payloadJson)) {
             throw new RuntimeException('pii_blocked');
         }
+        if (strlen($payloadJson) > 9000) {
+            throw new RuntimeException('cloud_provider_payload_too_large');
+        }
 
         $prompt = $this->buildAiCandidateReviewPrompt($payloads);
+        if (strlen($prompt) > self::P4_CLOUD_MAX_PROMPT_BYTES) {
+            throw new RuntimeException('cloud_provider_payload_too_large');
+        }
         if ($this->containsSensitiveData($prompt)) {
             throw new RuntimeException('pii_blocked');
         }
@@ -2079,7 +2398,7 @@ final class HistoricalMiningUiService
         );
         $responseText = trim((string) ($result['response_text'] ?? ''));
         if ($responseText === '') {
-            throw new RuntimeException('invalid_json');
+            throw new RuntimeException('cloud_provider_invalid_response');
         }
         if ($this->containsSensitiveData($responseText)) {
             throw new RuntimeException('pii_blocked');
@@ -2088,6 +2407,9 @@ final class HistoricalMiningUiService
         return [
             'response_text' => $responseText,
             'elapsed_ms' => (int) ($result['elapsed_ms'] ?? 0),
+            'http_status' => (int) ($result['http_status'] ?? 0),
+            'response_hash' => (string) ($result['response_hash'] ?? ''),
+            'error_type' => (string) ($result['error_type'] ?? 'none'),
         ];
     }
 
@@ -2116,15 +2438,12 @@ final class HistoricalMiningUiService
      */
     private function validateAiCandidateReviewResponse(string $responseText, array $payloads): array
     {
-        $responseText = trim($responseText);
-        $responseText = preg_replace('/^```(?:json)?\s*/i', '', $responseText) ?? $responseText;
-        $responseText = preg_replace('/\s*```$/', '', $responseText) ?? $responseText;
-        $decoded = json_decode($responseText, true);
+        $decoded = $this->decodeAiCandidateReviewJson($responseText);
         if (!is_array($decoded)) {
             throw new RuntimeException(__('A IA retornou JSON inválido para revisão P4.', 'glpiintegaglpi'));
         }
 
-        $items = is_array($decoded['suggestions'] ?? null) ? $decoded['suggestions'] : $decoded;
+        $items = is_array($decoded['suggestions'] ?? null) ? $decoded['suggestions'] : [];
         if (!is_array($items) || $items === []) {
             throw new RuntimeException(__('A IA não retornou sugestões P4 revisáveis.', 'glpiintegaglpi'));
         }
@@ -2169,6 +2488,33 @@ final class HistoricalMiningUiService
         }
 
         return $suggestions;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function decodeAiCandidateReviewJson(string $responseText): ?array
+    {
+        $responseText = trim($responseText);
+        $responseText = preg_replace('/^```(?:json)?\s*/i', '', $responseText) ?? $responseText;
+        $responseText = preg_replace('/\s*```$/', '', $responseText) ?? $responseText;
+        $decoded = json_decode($responseText, true);
+        if (is_string($decoded)) {
+            $decoded = json_decode(trim($decoded), true);
+        }
+        if (is_array($decoded) && !is_array($decoded['suggestions'] ?? null)) {
+            foreach (['response', 'content', 'text', 'output'] as $field) {
+                if (!is_string($decoded[$field] ?? null)) {
+                    continue;
+                }
+                $nested = json_decode(trim((string) $decoded[$field]), true);
+                if (is_array($nested)) {
+                    return $nested;
+                }
+            }
+        }
+
+        return is_array($decoded) ? $decoded : null;
     }
 
     /**
@@ -2657,10 +3003,49 @@ final class HistoricalMiningUiService
         return preg_match('/^\d{4}-\d{2}-\d{2}(?:[T ][0-9:.+-Z]*)?$/', $value) ? $value : '';
     }
 
-    private function p4ProviderErrorType(string $message): string
+    private function p4ProviderErrorType(string $message, string $source = ''): string
     {
         $normalized = strtolower(trim($message));
-        if (in_array($normalized, ['provider_url_not_allowed', 'provider_unreachable', 'provider_unavailable', 'provider_disabled', 'provider_not_local_ollama', 'provider_not_ready', 'provider_selection_missing', 'model_not_allowed', 'local_model_not_available', 'model_not_configured', 'timeout', 'invalid_json', 'schema_invalid', 'low_confidence', 'pii_blocked', 'secret_not_configured', 'secret_vault_locked'], true)) {
+        $cloudErrors = [
+            'cloud_provider_unreachable',
+            'cloud_provider_timeout',
+            'cloud_provider_http_400',
+            'cloud_provider_http_401',
+            'cloud_provider_http_403',
+            'cloud_provider_http_429',
+            'cloud_provider_invalid_response',
+            'cloud_provider_schema_invalid',
+            'cloud_provider_payload_too_large',
+            'cloud_provider_missing_secret',
+            'cloud_provider_model_not_allowed',
+        ];
+        if (in_array($normalized, $cloudErrors, true)) {
+            return $normalized;
+        }
+        if ($source === 'cloud') {
+            if (in_array($normalized, ['provider_unreachable', 'provider_unavailable'], true)) {
+                return 'cloud_provider_unreachable';
+            }
+            if (in_array($normalized, ['timeout', 'provider_timeout'], true)) {
+                return 'cloud_provider_timeout';
+            }
+            if (in_array($normalized, ['invalid_json', 'invalid_response'], true)) {
+                return 'cloud_provider_invalid_response';
+            }
+            if ($normalized === 'schema_invalid') {
+                return 'cloud_provider_schema_invalid';
+            }
+            if (in_array($normalized, ['payload_invalid', 'payload_too_large'], true)) {
+                return 'cloud_provider_payload_too_large';
+            }
+            if (in_array($normalized, ['secret_not_configured', 'secret_vault_locked'], true)) {
+                return 'cloud_provider_missing_secret';
+            }
+            if (in_array($normalized, ['model_not_allowed', 'model_not_configured', 'model_not_found', 'cloud_model_not_allowed'], true)) {
+                return 'cloud_provider_model_not_allowed';
+            }
+        }
+        if (in_array($normalized, ['provider_url_not_allowed', 'provider_unreachable', 'provider_unavailable', 'provider_disabled', 'provider_not_local_ollama', 'provider_not_ready', 'provider_not_allowed', 'provider_selection_missing', 'model_not_allowed', 'local_model_not_available', 'model_not_configured', 'timeout', 'invalid_json', 'schema_invalid', 'low_confidence', 'pii_blocked', 'secret_not_configured', 'secret_vault_locked'], true)) {
             return $normalized;
         }
         if (strpos($normalized, 'dado sensível') !== false || strpos($normalized, 'pii') !== false) {
@@ -2670,16 +3055,57 @@ final class HistoricalMiningUiService
             return 'low_confidence';
         }
         if (strpos($normalized, 'json') !== false) {
-            return 'invalid_json';
+            return $source === 'cloud' ? 'cloud_provider_invalid_response' : 'invalid_json';
         }
         if (strpos($normalized, 'timeout') !== false || strpos($normalized, 'timed out') !== false) {
-            return 'timeout';
+            return $source === 'cloud' ? 'cloud_provider_timeout' : 'timeout';
         }
         if (strpos($normalized, 'schema') !== false || strpos($normalized, 'sugest') !== false) {
-            return 'schema_invalid';
+            return $source === 'cloud' ? 'cloud_provider_schema_invalid' : 'schema_invalid';
         }
 
-        return 'provider_unreachable';
+        return $source === 'cloud' ? 'cloud_provider_unreachable' : 'provider_unreachable';
+    }
+
+    private function publicP4ProviderError(string $message, string $source): string
+    {
+        if ($source === 'cloud') {
+            if ($message === 'preview_required') {
+                return __('preview_required: Selecione provider/modelo e gere o preview antes de executar P4 cloud.', 'glpiintegaglpi');
+            }
+            if ($message === 'cloud_provider_unreachable' || $message === 'provider_unreachable' || $message === 'provider_unavailable') {
+                return __('cloud_provider_unreachable: provider cloud selecionado não respondeu para revisão P4; P1/P2/P3 e revisão manual permanecem operacionais.', 'glpiintegaglpi');
+            }
+            if ($message === 'cloud_provider_timeout' || $message === 'timeout') {
+                return __('cloud_provider_timeout: provider cloud selecionado demorou mais que o esperado na revisão P4.', 'glpiintegaglpi');
+            }
+            if ($message === 'cloud_provider_http_400') {
+                return __('cloud_provider_http_400: provider cloud recusou a requisição P4; revise modelo/payload. P1/P2/P3 e revisão manual permanecem operacionais.', 'glpiintegaglpi');
+            }
+            if ($message === 'cloud_provider_http_401' || $message === 'cloud_provider_http_403') {
+                return __($message . ': provider cloud recusou autenticação/autorização; revise Secret Vault e permissões. Nenhum segredo foi exibido.', 'glpiintegaglpi');
+            }
+            if ($message === 'cloud_provider_http_429') {
+                return __('cloud_provider_http_429: provider cloud limitou a requisição P4; tente novamente mais tarde ou reduza o lote.', 'glpiintegaglpi');
+            }
+            if ($message === 'cloud_provider_invalid_response' || $message === 'invalid_json') {
+                return __('cloud_provider_invalid_response: provider cloud respondeu fora do formato JSON esperado para revisão P4.', 'glpiintegaglpi');
+            }
+            if ($message === 'cloud_provider_schema_invalid') {
+                return __('cloud_provider_schema_invalid: provider cloud não retornou suggestions[] no schema P4 esperado.', 'glpiintegaglpi');
+            }
+            if ($message === 'cloud_provider_payload_too_large') {
+                return __('cloud_provider_payload_too_large: payload P4 sanitizado excedeu o limite seguro; reduza o lote de candidatos.', 'glpiintegaglpi');
+            }
+            if ($message === 'cloud_provider_missing_secret') {
+                return __('cloud_provider_missing_secret: provider cloud selecionado não possui chave ativa no Secret Vault.', 'glpiintegaglpi');
+            }
+            if ($message === 'cloud_provider_model_not_allowed') {
+                return __('cloud_provider_model_not_allowed: modelo cloud selecionado não está permitido ou foi recusado pelo provider.', 'glpiintegaglpi');
+            }
+        }
+
+        return $this->publicError($message);
     }
 
     private function publicError(string $message): string
@@ -2701,6 +3127,9 @@ final class HistoricalMiningUiService
         }
         if ($message === 'provider_not_ready') {
             return __('provider_not_ready: provider/modelo selecionado não passou gates, Secret Vault e teste sintético.', 'glpiintegaglpi');
+        }
+        if ($message === 'provider_not_allowed') {
+            return __('provider_not_allowed: provider selecionado não está no catálogo allowlist.', 'glpiintegaglpi');
         }
         if ($message === 'provider_selection_missing') {
             return __('provider_selection_missing: selecione provider e modelo antes de executar P4 cloud.', 'glpiintegaglpi');
