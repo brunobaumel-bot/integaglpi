@@ -198,6 +198,10 @@ const OUTBOUND_MEDIA_LIMITS_BYTES: Record<'document' | 'image' | 'audio' | 'vide
   audio: 16 * 1024 * 1024,
   video: 64 * 1024 * 1024,
 };
+const WHATSAPP_CUSTOMER_CARE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const MANUAL_WINDOW_CLOSED_ERROR_CODE = 'WINDOW_24H_CLOSED_TEMPLATE_REQUIRED';
+const MANUAL_TEMPLATE_NOT_ALLOWED_ERROR_CODE = 'TEMPLATE_NOT_ALLOWED';
+const CONTROLLED_MANUAL_TEMPLATE_NAMES = new Set(['aviso_atendimento_fora_janela']);
 const INACTIVITY_AUTOCLOSE_REASON = 'Encerrado por falta de retorno do usuário';
 const attachmentSecurityService = new AttachmentSecurityService();
 
@@ -424,6 +428,24 @@ export class OutboundMessageService {
     const recipientPhone = conversation.phoneE164;
     const senderPhone = `whatsapp:${this.metaPhoneNumberId}`;
     const toForMeta = digitsOnlyForMeta(recipientPhone);
+
+    if (body.message_type === 'text' && body.glpi_user_id > 0) {
+      const guard = await this.guardManualTextWindow({
+        body,
+        conversationId: conversation.id,
+        correlationId,
+      });
+      if (guard !== null) {
+        return guard;
+      }
+    }
+
+    if (body.message_type === 'template' && body.glpi_user_id > 0) {
+      const guard = this.guardManualTemplate(body, conversation.id, correlationId);
+      if (guard !== null) {
+        return guard;
+      }
+    }
 
     if (
       body.message_type === 'document'
@@ -1539,6 +1561,127 @@ export class OutboundMessageService {
 
   private recordAudit(input: Parameters<AuditService['recordAuditEventFireAndForget']>[0]): void {
     this.auditService?.recordAuditEventFireAndForget(input);
+  }
+
+  private async guardManualTextWindow(input: {
+    body: OutboundMessageRequestBody;
+    conversationId: string;
+    correlationId: string;
+  }): Promise<OutboundSendResult | null> {
+    const lastInboundAt = await this.findLastInboundAt(input.conversationId);
+    const windowOpen = lastInboundAt !== null
+      && Date.now() - lastInboundAt.getTime() < WHATSAPP_CUSTOMER_CARE_WINDOW_MS;
+
+    if (windowOpen) {
+      return null;
+    }
+
+    logger.warn(
+      {
+        ticket_id: input.body.ticket_id,
+        conversation_id: input.conversationId,
+        correlation_id: input.correlationId,
+        event_type: 'MESSAGE_BLOCKED',
+        status: 'failed',
+        error_code: MANUAL_WINDOW_CLOSED_ERROR_CODE,
+        last_inbound_at: lastInboundAt?.toISOString() ?? null,
+      },
+      '[integration-service][outbound][WINDOW_24H_CLOSED]',
+    );
+    this.recordAudit({
+      correlationId: input.correlationId,
+      ticketId: input.body.ticket_id,
+      conversationId: input.conversationId,
+      direction: 'outbound',
+      eventType: 'MESSAGE_BLOCKED',
+      status: 'failed',
+      severity: 'warning',
+      source: 'OutboundMessageService',
+      errorMessage: MANUAL_WINDOW_CLOSED_ERROR_CODE,
+      payload: {
+        error_code: MANUAL_WINDOW_CLOSED_ERROR_CODE,
+        message_type: input.body.message_type,
+        last_inbound_at: lastInboundAt?.toISOString() ?? null,
+        reason: 'manual_free_text_outside_24h',
+      },
+    });
+
+    return {
+      httpStatus: 409,
+      body: {
+        status: 'failed',
+        error_code: MANUAL_WINDOW_CLOSED_ERROR_CODE,
+        message: 'A janela de 24h está fechada. Use um template aprovado para iniciar contato antes de enviar texto livre.',
+      },
+    };
+  }
+
+  private guardManualTemplate(
+    body: OutboundMessageRequestBody,
+    conversationId: string,
+    correlationId: string,
+  ): OutboundSendResult | null {
+    const templateName = body.template_name?.trim() ?? '';
+    const idempotencyKey = body.idempotency_key?.trim() ?? '';
+    const controlledManualTemplate = CONTROLLED_MANUAL_TEMPLATE_NAMES.has(templateName)
+      && idempotencyKey.startsWith('manual_ticket_template:');
+
+    if (controlledManualTemplate) {
+      return null;
+    }
+
+    logger.warn(
+      {
+        ticket_id: body.ticket_id,
+        conversation_id: conversationId,
+        correlation_id: correlationId,
+        event_type: 'MESSAGE_BLOCKED',
+        status: 'failed',
+        error_code: MANUAL_TEMPLATE_NOT_ALLOWED_ERROR_CODE,
+        template_name: templateName,
+      },
+      '[integration-service][outbound][TEMPLATE_NOT_ALLOWED]',
+    );
+    this.recordAudit({
+      correlationId,
+      ticketId: body.ticket_id,
+      conversationId,
+      direction: 'outbound',
+      eventType: 'MESSAGE_BLOCKED',
+      status: 'failed',
+      severity: 'warning',
+      source: 'OutboundMessageService',
+      errorMessage: MANUAL_TEMPLATE_NOT_ALLOWED_ERROR_CODE,
+      payload: {
+        error_code: MANUAL_TEMPLATE_NOT_ALLOWED_ERROR_CODE,
+        message_type: body.message_type,
+        template_name: templateName,
+        reason: 'manual_template_not_controlled',
+      },
+    });
+
+    return {
+      httpStatus: 400,
+      body: {
+        status: 'failed',
+        error_code: MANUAL_TEMPLATE_NOT_ALLOWED_ERROR_CODE,
+        message: 'Template não permitido para envio manual. Use um template aprovado e ativo pelo fluxo controlado.',
+      },
+    };
+  }
+
+  private async findLastInboundAt(conversationId: string): Promise<Date | null> {
+    const messages = await this.messageRepository.findByConversationId(conversationId, 50);
+    const lastInbound = messages.find((message) => message.direction === 'inbound');
+    if (!lastInbound) {
+      return null;
+    }
+
+    const createdAt = lastInbound.createdAt instanceof Date
+      ? lastInbound.createdAt
+      : new Date(lastInbound.createdAt);
+
+    return Number.isNaN(createdAt.getTime()) ? null : createdAt;
   }
 
   private async trackInactivityOutbound(input: {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Conversation } from '../src/domain/entities/Conversation.js';
+import type { InboundMessage } from '../src/domain/entities/InboundMessage.js';
 import { OutboundMessageService } from '../src/domain/services/OutboundMessageService.js';
 import type { AuditService } from '../src/domain/services/AuditService.js';
 import type { ConversationRepository } from '../src/repositories/contracts/ConversationRepository.js';
@@ -31,8 +32,37 @@ function makeConversation(overrides: Partial<Conversation> = {}): Conversation {
   };
 }
 
-function makeRepositories(conversation: Conversation | null = makeConversation()) {
+function makeMessage(overrides: Partial<InboundMessage> = {}): InboundMessage {
+  return {
+    id: 'msg-1',
+    conversationId: 'conv-1',
+    messageId: 'wamid.inbound',
+    direction: 'inbound',
+    senderPhone: '+5541999999999',
+    recipientPhone: 'whatsapp:5511999999999',
+    messageType: 'text',
+    messageText: 'Mensagem do cliente.',
+    rawPayload: {},
+    mediaInfo: null,
+    processingStatus: 'processed',
+    glpiSyncStatus: 'synced',
+    metaMessageId: null,
+    deliveryStatus: null,
+    deliveryStatusUpdatedAt: null,
+    metaErrorCode: null,
+    metaErrorMessageSanitized: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
+function makeRepositories(
+  conversation: Conversation | null = makeConversation(),
+  messages: InboundMessage[] | null = null,
+) {
   const insertedMessages: InsertOutboundMessageInput[] = [];
+  const conversationMessages = messages ?? (conversation ? [makeMessage({ conversationId: conversation.id })] : []);
   const conversationRepository = {
     findByIdAndGlpiTicketId: vi.fn().mockResolvedValue(conversation),
     touch: vi.fn().mockResolvedValue(undefined),
@@ -43,6 +73,7 @@ function makeRepositories(conversation: Conversation | null = makeConversation()
       insertedMessages.push(input);
       return { id: `row-${insertedMessages.length}`, messageId: input.messageId };
     }),
+    findByConversationId: vi.fn().mockResolvedValue(conversationMessages),
   } as unknown as MessageRepository;
 
   return { conversationRepository, messageRepository, insertedMessages };
@@ -507,6 +538,185 @@ describe('OutboundMessageService media outbound', () => {
       ticketId: 123,
       occurredAt: expect.any(Date),
     });
+  });
+
+  it('allows manual free text when the customer care window is open', async () => {
+    const { conversationRepository, messageRepository } = makeRepositories(makeConversation(), [
+      makeMessage({
+        conversationId: 'conv-1',
+        direction: 'inbound',
+        createdAt: new Date(Date.now() - 60 * 60 * 1000),
+      }),
+    ]);
+    const metaClient = {
+      uploadMedia: vi.fn(),
+      sendDocumentMessage: vi.fn(),
+      sendImageMessage: vi.fn(),
+      sendTextMessage: vi.fn().mockResolvedValue({ messages: [{ id: 'wamid.manual-text' }] }),
+    };
+    const service = new OutboundMessageService(
+      conversationRepository,
+      messageRepository,
+      metaClient as never,
+      'real',
+      '5511999999999',
+    );
+
+    const result = await service.send({
+      ticket_id: 123,
+      conversation_id: 'conv-1',
+      text: 'Mensagem dentro da janela.',
+      message_type: 'text',
+      glpi_user_id: 7,
+      idempotency_key: 'manual_reply_window_open',
+    }, { correlationId: 'WA-window-open' });
+
+    expect(result.httpStatus).toBe(201);
+    expect(messageRepository.findByConversationId).toHaveBeenCalledWith('conv-1', 50);
+    expect(metaClient.sendTextMessage).toHaveBeenCalledWith({
+      to: '5541999999999',
+      body: 'Mensagem dentro da janela.',
+    });
+    expect(messageRepository.insertOutbound).toHaveBeenCalled();
+  });
+
+  it('blocks manual free text outside the 24h customer care window without calling Meta', async () => {
+    const { conversationRepository, messageRepository } = makeRepositories(makeConversation(), [
+      makeMessage({
+        conversationId: 'conv-1',
+        direction: 'inbound',
+        createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
+      }),
+    ]);
+    const metaClient = {
+      uploadMedia: vi.fn(),
+      sendDocumentMessage: vi.fn(),
+      sendImageMessage: vi.fn(),
+      sendTextMessage: vi.fn(),
+      sendTemplateMessage: vi.fn(),
+    };
+    const audit = {
+      recordAuditEventFireAndForget: vi.fn(),
+    } as unknown as AuditService;
+    const service = new OutboundMessageService(
+      conversationRepository,
+      messageRepository,
+      metaClient as never,
+      'real',
+      '5511999999999',
+      audit,
+    );
+
+    const result = await service.send({
+      ticket_id: 123,
+      conversation_id: 'conv-1',
+      text: 'Mensagem fora da janela.',
+      message_type: 'text',
+      glpi_user_id: 7,
+      idempotency_key: 'manual_reply_window_closed',
+    }, { correlationId: 'WA-window-closed' });
+
+    expect(result).toMatchObject({
+      httpStatus: 409,
+      body: {
+        status: 'failed',
+        error_code: 'WINDOW_24H_CLOSED_TEMPLATE_REQUIRED',
+      },
+    });
+    expect(metaClient.sendTextMessage).not.toHaveBeenCalled();
+    expect(metaClient.sendTemplateMessage).not.toHaveBeenCalled();
+    expect(messageRepository.insertOutbound).not.toHaveBeenCalled();
+    expect(audit.recordAuditEventFireAndForget).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'MESSAGE_BLOCKED',
+      errorMessage: 'WINDOW_24H_CLOSED_TEMPLATE_REQUIRED',
+    }));
+  });
+
+  it('allows the controlled approved manual template outside the 24h window', async () => {
+    const { conversationRepository, messageRepository, insertedMessages } = makeRepositories(makeConversation(), [
+      makeMessage({
+        conversationId: 'conv-1',
+        direction: 'inbound',
+        createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
+      }),
+    ]);
+    const metaClient = {
+      uploadMedia: vi.fn(),
+      sendDocumentMessage: vi.fn(),
+      sendImageMessage: vi.fn(),
+      sendTextMessage: vi.fn(),
+      sendTemplateMessage: vi.fn().mockResolvedValue({ messages: [{ id: 'wamid.manual-template' }] }),
+    };
+    const service = new OutboundMessageService(
+      conversationRepository,
+      messageRepository,
+      metaClient as never,
+      'real',
+      '5511999999999',
+    );
+
+    const result = await service.send({
+      ticket_id: 123,
+      conversation_id: 'conv-1',
+      text: 'Template aviso_atendimento_fora_janela enviado.',
+      message_type: 'template',
+      glpi_user_id: 7,
+      template_name: 'aviso_atendimento_fora_janela',
+      language: 'pt_BR',
+      template_parameters: ['Cliente', '123'],
+      idempotency_key: 'manual_ticket_template:123:conv-1:aviso_atendimento_fora_janela',
+    }, { correlationId: 'WA-controlled-template' });
+
+    expect(result.httpStatus).toBe(201);
+    expect(metaClient.sendTemplateMessage).toHaveBeenCalledWith({
+      to: '5541999999999',
+      templateName: 'aviso_atendimento_fora_janela',
+      language: 'pt_BR',
+      parameters: ['Cliente', '123'],
+    });
+    expect(insertedMessages[0]).toMatchObject({
+      messageType: 'template',
+      messageText: 'Template aviso_atendimento_fora_janela enviado.',
+    });
+  });
+
+  it('rejects invalid or uncontrolled manual templates without calling Meta', async () => {
+    const { conversationRepository, messageRepository } = makeRepositories();
+    const metaClient = {
+      uploadMedia: vi.fn(),
+      sendDocumentMessage: vi.fn(),
+      sendImageMessage: vi.fn(),
+      sendTextMessage: vi.fn(),
+      sendTemplateMessage: vi.fn(),
+    };
+    const service = new OutboundMessageService(
+      conversationRepository,
+      messageRepository,
+      metaClient as never,
+      'real',
+      '5511999999999',
+    );
+
+    const result = await service.send({
+      ticket_id: 123,
+      conversation_id: 'conv-1',
+      text: 'Template inválido.',
+      message_type: 'template',
+      glpi_user_id: 7,
+      template_name: 'template_reprovado',
+      language: 'pt_BR',
+      idempotency_key: 'manual_template_uncontrolled',
+    }, { correlationId: 'WA-invalid-template' });
+
+    expect(result).toMatchObject({
+      httpStatus: 400,
+      body: {
+        status: 'failed',
+        error_code: 'TEMPLATE_NOT_ALLOWED',
+      },
+    });
+    expect(metaClient.sendTemplateMessage).not.toHaveBeenCalled();
+    expect(messageRepository.insertOutbound).not.toHaveBeenCalled();
   });
 
   it('does not restart the inactivity ruler for inactivity reminder messages', async () => {

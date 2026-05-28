@@ -253,12 +253,30 @@ if ($method === 'POST') {
         $result = $client->sendOutbound($payload);
 
         if (!$result['success']) {
+            $body = is_array($result['body'] ?? null) ? $result['body'] : [];
+            $errorCode = (string) ($body['error_code'] ?? 'upstream_error');
+            $message = (string) ($body['message'] ?? '');
+            if ($errorCode === 'WINDOW_24H_CLOSED_TEMPLATE_REQUIRED') {
+                $message = 'A janela de 24h está fechada. Use um template aprovado antes de enviar texto livre.';
+            } elseif ($errorCode === 'TEMPLATE_NOT_ALLOWED') {
+                $message = 'Template não permitido para envio manual. Use um template aprovado e ativo pelo fluxo controlado.';
+            } elseif ($message === '') {
+                $message = 'Não foi possível enviar a mensagem pelo WhatsApp agora.';
+            }
+            $httpStatus = (int) ($result['status'] ?? 502);
+            if ($httpStatus < 400 || $httpStatus > 599) {
+                $httpStatus = 502;
+            }
+
             integaglpiJsonResponse([
                 'success' => false,
-                'message' => 'integration-service retornou HTTP ' . $result['status'],
-                'error'   => 'upstream_error',
-                'detail'  => $result['body'],
-            ], 502);
+                'message' => $message,
+                'error'   => $errorCode,
+                'detail'  => [
+                    'status' => (string) ($body['status'] ?? 'failed'),
+                    'error_code' => $errorCode,
+                ],
+            ], $httpStatus);
         }
 
         integaglpiJsonResponse(['success' => true]);
