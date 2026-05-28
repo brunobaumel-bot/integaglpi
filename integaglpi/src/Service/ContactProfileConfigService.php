@@ -34,6 +34,7 @@ final class ContactProfileConfigService
         'contact_profile_collection_enabled' => false,
         'contact_profile_require_company' => true,
         'contact_profile_require_name' => true,
+        'contact_profile_require_email' => true,   // absent → ask email (backward compat)
         'contact_profile_require_equipment' => false,
         'contact_profile_require_summary' => true,
         'contact_profile_confirmation_enabled' => true,
@@ -62,8 +63,10 @@ final class ContactProfileConfigService
      * @var array<string, string>
      */
     private const PROMPT_DEFAULTS = [
-        'contact_profile_prompt_name'      => 'Por favor, informe seu nome completo.',
+        'contact_profile_initial_prompt'   => "Perfeito! Vou agilizar seu atendimento.\n\nEnvie em uma unica mensagem:\nEmpresa ou unidade, seu nome, etiqueta/patrimonio se souber, e um resumo curto do problema.\n\nSe nao souber a etiqueta, pode escrever \"nao sei\".",
         'contact_profile_prompt_company'   => 'Por favor, informe o nome da sua empresa.',
+        'contact_profile_prompt_name'      => 'Por favor, informe seu nome completo.',
+        'contact_profile_prompt_email'     => 'Por favor, informe seu e-mail (ou responda "não informar").',
         'contact_profile_prompt_equipment' => 'Por favor, informe o equipamento ou sistema com problema.',
         'contact_profile_prompt_summary'   => 'Descreva brevemente o problema que está enfrentando.',
         'contact_profile_confirm_message'  => 'Obrigado! Dados registrados. Continuando com seu atendimento...',

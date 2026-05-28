@@ -1,6 +1,6 @@
 import type { SettingsRepository } from '../repositories/SettingsRepository.js';
 import type { ContactProfilePersistenceRepository } from '../repositories/ContactProfilePersistenceRepository.js';
-import { normalizeBooleanSetting } from './SettingsService.js';
+import { normalizeBooleanSetting, type ContactProfileConfig } from './SettingsService.js';
 
 export interface ContactProfileData {
   phone_e164: string;
@@ -68,15 +68,72 @@ const MAX_TITLE_REASON_LENGTH = 60;
 const MAX_TITLE_LENGTH = 200;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+const DEFAULT_INITIAL_PROMPT = [
+  'Perfeito! Vou agilizar seu atendimento.',
+  '',
+  'Envie em uma unica mensagem:',
+  'Empresa ou unidade, seu nome, etiqueta/patrimonio se souber, e um resumo curto do problema.',
+  '',
+  'Se nao souber a etiqueta, pode escrever "nao sei".',
+].join('\n');
+
 /**
  * Ponte entre configuração `contact_profile` (GLPI configs) e perfil persistido no Postgres.
  * Não altera o fluxo inbound existente até ser injetado explicitamente no grafo de dependências.
  */
 export class ContactProfileService {
+  // Populated by getInitialPrompt() — which is always called before the step flow starts.
+  // getCollectionPrompt() and processCollectionResponse() use this cache when available.
+  // Falls back to hardcoded defaults for code paths that skip getInitialPrompt().
+  private configCache: ContactProfileConfig | null = null;
+
   public constructor(
     private readonly settingsRepository: SettingsRepository,
     private readonly contactProfilePersistenceRepository: ContactProfilePersistenceRepository,
   ) {}
+
+  private async loadAndCacheConfig(): Promise<ContactProfileConfig> {
+    if (this.configCache !== null) {
+      return this.configCache;
+    }
+    const rawValues = await this.settingsRepository.findContactProfileSettings();
+    const toStr = (key: string, fallback: string): string => {
+      const v = rawValues.get(key);
+      if (typeof v !== 'string') return fallback;
+      const t = v.trim();
+      return t !== '' ? t : fallback;
+    };
+    const toBool = (key: string, fallback: boolean): boolean =>
+      normalizeBooleanSetting(rawValues.get(key), fallback);
+
+    this.configCache = {
+      collectionEnabled: toBool('contact_profile_collection_enabled', false),
+      promptMode: 'hybrid',
+      requireCompany: toBool('contact_profile_require_company', true),
+      requireName: toBool('contact_profile_require_name', true),
+      requireEmail: toBool('contact_profile_require_email', true),  // absent → ask email (backward compat)
+      requireEquipment: toBool('contact_profile_require_equipment', false),
+      requireSummary: toBool('contact_profile_require_summary', true),
+      confirmationEnabled: toBool('contact_profile_confirmation_enabled', true),
+      useButtons: toBool('contact_profile_use_buttons', true),
+      titleEnrichmentEnabled: toBool('ticket_title_enrichment_enabled', true),
+      initialPrompt: toStr('contact_profile_initial_prompt',
+        toStr('profile_initial_prompt', DEFAULT_INITIAL_PROMPT)),
+      promptCompany: toStr('contact_profile_prompt_company',
+        toStr('profile_ask_company', 'Informe a empresa ou unidade.')),
+      promptName: toStr('contact_profile_prompt_name',
+        toStr('profile_ask_name', 'Informe seu nome completo.')),
+      promptEmail: toStr('contact_profile_prompt_email',
+        toStr('profile_ask_email', 'Informe seu e-mail (ou responda "não informar").')),
+      promptEquipment: toStr('contact_profile_prompt_equipment',
+        toStr('profile_ask_equipment', 'Informe a etiqueta/patrimônio do equipamento.')),
+      promptSummary: toStr('contact_profile_prompt_summary',
+        toStr('profile_ask_summary', 'Qual o motivo do seu contato? Resuma em ate 200 caracteres.')),
+      confirmMessage: toStr('contact_profile_confirm_message',
+        toStr('profile_confirmation_message', 'Obrigado. Seus dados foram registrados.')),
+    };
+    return this.configCache;
+  }
 
   /**
    * Carrega flags de configuração e snapshot persistido. Usa apenas métodos obrigatórios do repositório
@@ -285,27 +342,31 @@ export class ContactProfileService {
       return this.buildExistingProfileConfirmationPrompt(profile ?? this.profileFromState('', state));
     }
 
+    // configCache is populated by getInitialPrompt() before the step flow starts.
+    // Falls back to hardcoded strings for code paths that bypass getInitialPrompt().
+    const cfg = this.configCache;
+
     if (state.step === 'asking_company') {
-      return 'Informe a empresa ou unidade.';
+      return cfg?.promptCompany ?? 'Informe a empresa ou unidade.';
     }
 
     if (state.step === 'asking_name') {
-      return 'Informe seu nome completo.';
+      return cfg?.promptName ?? 'Informe seu nome completo.';
     }
 
     if (state.step === 'asking_email') {
-      return 'Informe seu e-mail para localizarmos seu cadastro no GLPI. Se preferir, responda "não informar".';
+      return cfg?.promptEmail ?? 'Informe seu e-mail para localizarmos seu cadastro no GLPI. Se preferir, responda "não informar".';
     }
 
     if (state.step === 'asking_tag') {
-      return 'Informe a etiqueta/patrimônio do equipamento com 4 números. Se não souber, use o botão "Não sei".';
+      return cfg?.promptEquipment ?? 'Informe a etiqueta/patrimônio do equipamento com 4 números. Se não souber, use o botão "Não sei".';
     }
 
     if (state.step === 'asking_reason') {
-      return 'Qual o motivo do seu contato? Resuma em ate 200 caracteres.';
+      return cfg?.promptSummary ?? 'Qual o motivo do seu contato? Resuma em ate 200 caracteres.';
     }
 
-    return 'Obrigado. Seus dados foram registrados.';
+    return cfg?.confirmMessage ?? 'Obrigado. Seus dados foram registrados.';
   }
 
   public processCollectionResponse(input: {
@@ -368,9 +429,13 @@ export class ContactProfileService {
     }
 
     if (state.step === 'asking_name') {
+      // Skip email step when disabled in config (requireEmail defaults to true for
+      // backward-compatibility when configCache has not been warmed up).
+      const requireEmail = this.configCache?.requireEmail ?? true;
+      const nextStep: ContactProfileCollectionStep = requireEmail ? 'asking_email' : 'asking_tag';
       const nextState: ContactProfileCollectionState = {
         ...state,
-        step: 'asking_email',
+        step: nextStep,
         requester_name: this.truncate(text, 120),
       };
       return { state: nextState, reply: this.getCollectionPrompt(nextState), completed: false, profile: null };
@@ -566,20 +631,10 @@ export class ContactProfileService {
   }
 
   public async getInitialPrompt(): Promise<string> {
-    const settings = await this.settingsRepository.findContactProfileSettings();
-    const custom = settings.get('profile_initial_prompt');
-    if (typeof custom === 'string' && custom.trim().length > 0) {
-      return custom;
-    }
-
-    return [
-      'Perfeito! Vou agilizar seu atendimento.',
-      '',
-      'Envie em uma unica mensagem:',
-      'Empresa ou unidade, seu nome, etiqueta/patrimonio se souber, e um resumo curto do problema.',
-      '',
-      'Se nao souber a etiqueta, pode escrever "nao sei".',
-    ].join('\n');
+    // Warms up configCache as a side-effect so subsequent sync calls to
+    // getCollectionPrompt() and processCollectionResponse() use configured texts.
+    const config = await this.loadAndCacheConfig();
+    return config.initialPrompt.trim().length > 0 ? config.initialPrompt : DEFAULT_INITIAL_PROMPT;
   }
 
   private parseLabeledParts(text: string): {

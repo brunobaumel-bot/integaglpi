@@ -145,6 +145,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 Session::addMessageAfterRedirect($syncWarning, false, integaglpi_config_warning_type());
             }
             $redirectUrl .= '?tab=contact_profile';
+        } elseif (isset($_POST['save_contact_profile_hub'])) {
+            $syncWarning = $contactProfileConfigService->saveConfig($_POST);
+            Session::addMessageAfterRedirect(__('Recepção Inteligente configuration saved successfully.', 'glpiintegaglpi'));
+            if ($syncWarning !== null) {
+                Session::addMessageAfterRedirect($syncWarning, false, integaglpi_config_warning_type());
+            }
+            $redirectUrl .= '?tab=message_settings&section=smart_reception';
+        } elseif (isset($_POST['save_inactivity_timers_hub'])) {
+            $pluginConfigService->saveInactivityConfig($_POST, (int) ($_SESSION['glpiID'] ?? 0));
+            Session::addMessageAfterRedirect(__('Timers de inatividade salvos.', 'glpiintegaglpi'));
+            $redirectUrl .= '?tab=message_settings&section=avisos_inatividade';
+        } elseif (isset($_POST['save_business_hours_hub'])) {
+            $pluginConfigService->saveBusinessHoursConfig($_POST, (int) ($_SESSION['glpiID'] ?? 0));
+            Session::addMessageAfterRedirect(__('Horário comercial salvo.', 'glpiintegaglpi'));
+            $redirectUrl .= '?tab=message_settings&section=horario_comercial';
+        } elseif (isset($_POST['save_message_catalog_hub'])) {
+            $pluginConfigService->saveMessageCatalogEntry($_POST, (int) ($_SESSION['glpiID'] ?? 0));
+            Session::addMessageAfterRedirect(__('Mensagem automática salva.', 'glpiintegaglpi'));
+            $redirectUrl .= '?tab=message_settings&section=mensagens';
         } elseif (isset($_POST['save_local_template'])) {
             $pluginConfigService->saveLocalTemplate($_POST, (int) ($_SESSION['glpiID'] ?? 0));
             Session::addMessageAfterRedirect(__('Template local salvo.', 'glpiintegaglpi'));
@@ -188,6 +207,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $redirectUrl = Plugin::getQueueAdminUrl() . '?tab=inactivity';
         } elseif (isset($_POST['save_contact_profile'])) {
             $redirectUrl = Plugin::getQueueAdminUrl() . '?tab=contact_profile';
+        } elseif (isset($_POST['save_contact_profile_hub'])) {
+            $redirectUrl = Plugin::getQueueAdminUrl() . '?tab=message_settings&section=smart_reception';
+        } elseif (isset($_POST['save_inactivity_timers_hub'])) {
+            $redirectUrl = Plugin::getQueueAdminUrl() . '?tab=message_settings&section=avisos_inatividade';
+        } elseif (isset($_POST['save_business_hours_hub'])) {
+            $redirectUrl = Plugin::getQueueAdminUrl() . '?tab=message_settings&section=horario_comercial';
+        } elseif (isset($_POST['save_message_catalog_hub'])) {
+            $redirectUrl = Plugin::getQueueAdminUrl() . '?tab=message_settings&section=mensagens';
         } elseif (isset($_POST['save_local_template']) || isset($_POST['disable_local_template']) || isset($_POST['enable_local_template'])) {
             $redirectUrl = Plugin::getQueueAdminUrl() . '?tab=templates';
         }

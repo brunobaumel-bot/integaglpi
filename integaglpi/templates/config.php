@@ -30,7 +30,7 @@ $inactivityConfig = $configService->getInactivityConfig();
 $messagePlaceholderAllowlist = $configService->getMessagePlaceholderAllowlist();
 $aiSupervisorEnabled = $configService->isAiSupervisorEnabled();
 $activeTab = (string) ($_GET['tab'] ?? 'connection');
-if (!in_array($activeTab, ['connection', 'queues', 'messages', 'inactivity', 'templates', 'contact_profile', 'diagnostics'], true)) {
+if (!in_array($activeTab, ['connection', 'queues', 'messages', 'inactivity', 'templates', 'contact_profile', 'message_settings', 'diagnostics'], true)) {
     $activeTab = 'connection';
 }
 
@@ -89,6 +89,12 @@ $tabUrl = static fn (string $tab): string => $configUrl . '?tab=' . rawurlencode
         <a class="nav-link <?= $activeTab === 'contact_profile' ? 'active' : ''; ?>"
            href="<?= $this->escape($tabUrl('contact_profile')); ?>">
             <?= $this->escape(__('Recepção Inteligente', 'glpiintegaglpi')); ?>
+        </a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link <?= $activeTab === 'message_settings' ? 'active' : ''; ?>"
+           href="<?= $this->escape($tabUrl('message_settings')); ?>">
+            <?= $this->escape(__('Hub de Mensagens', 'glpiintegaglpi')); ?>
         </a>
     </li>
     <li class="nav-item">
@@ -744,18 +750,22 @@ $tabUrl = static fn (string $tab): string => $configUrl . '?tab=' . rawurlencode
     $contactProfileConfigService = new \GlpiPlugin\Integaglpi\Service\ContactProfileConfigService();
     $contactProfileConfig = $contactProfileConfigService->getConfig();
     $cpBoolLabels = [
-        'contact_profile_collection_enabled' => __('Habilitar coleta de perfil do contato', 'glpiintegaglpi'),
-        'contact_profile_require_name'       => __('Solicitar nome do contato', 'glpiintegaglpi'),
-        'contact_profile_require_company'    => __('Solicitar empresa do contato', 'glpiintegaglpi'),
-        'contact_profile_require_equipment'  => __('Solicitar equipamento/sistema afetado', 'glpiintegaglpi'),
-        'contact_profile_require_summary'    => __('Solicitar resumo do problema', 'glpiintegaglpi'),
+        'contact_profile_collection_enabled'  => __('Habilitar coleta de perfil do contato', 'glpiintegaglpi'),
+        'contact_profile_require_company'     => __('Solicitar empresa do contato', 'glpiintegaglpi'),
+        'contact_profile_require_name'        => __('Solicitar nome do contato', 'glpiintegaglpi'),
+        'contact_profile_require_email'       => __('Solicitar e-mail do contato', 'glpiintegaglpi'),
+        'contact_profile_require_equipment'   => __('Solicitar equipamento/sistema afetado', 'glpiintegaglpi'),
+        'contact_profile_require_summary'     => __('Solicitar resumo do problema', 'glpiintegaglpi'),
         'contact_profile_confirmation_enabled' => __('Exibir confirmação ao final da coleta', 'glpiintegaglpi'),
-        'contact_profile_use_buttons'        => __('Usar botões interativos (quando disponível)', 'glpiintegaglpi'),
-        'ticket_title_enrichment_enabled'    => __('Enriquecer título do ticket com dados coletados', 'glpiintegaglpi'),
+        'contact_profile_use_buttons'         => __('Usar botões interativos (quando disponível)', 'glpiintegaglpi'),
+        'ticket_title_enrichment_enabled'     => __('Enriquecer título do ticket com dados coletados', 'glpiintegaglpi'),
     ];
+    // Order matches the step flow: initial prompt → company → name → email → equipment → summary → confirm.
     $cpPromptLabels = [
-        'contact_profile_prompt_name'      => __('Pergunta: nome do contato', 'glpiintegaglpi'),
+        'contact_profile_initial_prompt'   => __('Mensagem inicial (boas-vindas antes das perguntas)', 'glpiintegaglpi'),
         'contact_profile_prompt_company'   => __('Pergunta: empresa do contato', 'glpiintegaglpi'),
+        'contact_profile_prompt_name'      => __('Pergunta: nome do contato', 'glpiintegaglpi'),
+        'contact_profile_prompt_email'     => __('Pergunta: e-mail do contato', 'glpiintegaglpi'),
         'contact_profile_prompt_equipment' => __('Pergunta: equipamento/sistema', 'glpiintegaglpi'),
         'contact_profile_prompt_summary'   => __('Pergunta: resumo do problema', 'glpiintegaglpi'),
         'contact_profile_confirm_message'  => __('Mensagem de confirmação final', 'glpiintegaglpi'),
@@ -838,7 +848,7 @@ $tabUrl = static fn (string $tab): string => $configUrl . '?tab=' . rawurlencode
                                 class="form-control"
                                 name="<?= $this->escape($field); ?>"
                                 id="cp_prompt_<?= $this->escape($field); ?>"
-                                rows="2"
+                                rows="<?= $field === 'contact_profile_initial_prompt' ? 4 : 2; ?>"
                             ><?= $this->escape((string) ($contactProfileConfig[$field] ?? '')); ?></textarea>
                         </div>
                     <?php } ?>
@@ -854,6 +864,356 @@ $tabUrl = static fn (string $tab): string => $configUrl . '?tab=' . rawurlencode
             </form>
         </div>
     </div>
+<?php } ?>
+
+<?php if ($activeTab === 'message_settings') {
+    $activeSection = (string) ($_GET['section'] ?? 'smart_reception');
+    if (!in_array($activeSection, ['smart_reception', 'avisos_inatividade', 'horario_comercial', 'mensagens'], true)) {
+        $activeSection = 'smart_reception';
+    }
+    $sectionUrl = static fn (string $s): string => $configUrl . '?tab=message_settings&section=' . rawurlencode($s);
+
+    // Load contact_profile config for the smart_reception section.
+    $hubCpConfigService = new \GlpiPlugin\Integaglpi\Service\ContactProfileConfigService();
+    $hubCpConfig = $hubCpConfigService->getConfig();
+    $hubCpBoolLabels = [
+        'contact_profile_collection_enabled'  => __('Habilitar coleta de perfil do contato', 'glpiintegaglpi'),
+        'contact_profile_require_company'     => __('Solicitar empresa do contato', 'glpiintegaglpi'),
+        'contact_profile_require_name'        => __('Solicitar nome do contato', 'glpiintegaglpi'),
+        'contact_profile_require_email'       => __('Solicitar e-mail do contato', 'glpiintegaglpi'),
+        'contact_profile_require_equipment'   => __('Solicitar equipamento/sistema afetado', 'glpiintegaglpi'),
+        'contact_profile_require_summary'     => __('Solicitar resumo do problema', 'glpiintegaglpi'),
+        'contact_profile_confirmation_enabled' => __('Exibir confirmação ao final da coleta', 'glpiintegaglpi'),
+        'contact_profile_use_buttons'         => __('Usar botões interativos (quando disponível)', 'glpiintegaglpi'),
+        'ticket_title_enrichment_enabled'     => __('Enriquecer título do ticket com dados coletados', 'glpiintegaglpi'),
+    ];
+    $hubCpPromptLabels = [
+        'contact_profile_initial_prompt'   => __('Mensagem inicial (boas-vindas antes das perguntas)', 'glpiintegaglpi'),
+        'contact_profile_prompt_company'   => __('Pergunta: empresa do contato', 'glpiintegaglpi'),
+        'contact_profile_prompt_name'      => __('Pergunta: nome do contato', 'glpiintegaglpi'),
+        'contact_profile_prompt_email'     => __('Pergunta: e-mail do contato', 'glpiintegaglpi'),
+        'contact_profile_prompt_equipment' => __('Pergunta: equipamento/sistema', 'glpiintegaglpi'),
+        'contact_profile_prompt_summary'   => __('Pergunta: resumo do problema', 'glpiintegaglpi'),
+        'contact_profile_confirm_message'  => __('Mensagem de confirmação final', 'glpiintegaglpi'),
+    ];
+    $hubCpPromptMode = (string) ($hubCpConfig['contact_profile_prompt_mode'] ?? 'hybrid');
+    if (!in_array($hubCpPromptMode, ['hybrid', 'single_message', 'step_by_step'], true)) {
+        $hubCpPromptMode = 'hybrid';
+    }
+    ?>
+
+    <ul class="nav nav-pills mb-3">
+        <li class="nav-item">
+            <a class="nav-link <?= $activeSection === 'smart_reception' ? 'active' : ''; ?>"
+               href="<?= $this->escape($sectionUrl('smart_reception')); ?>">
+                <?= $this->escape(__('Recepção Inteligente', 'glpiintegaglpi')); ?>
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link <?= $activeSection === 'avisos_inatividade' ? 'active' : ''; ?>"
+               href="<?= $this->escape($sectionUrl('avisos_inatividade')); ?>">
+                <?= $this->escape(__('Avisos e Inatividade', 'glpiintegaglpi')); ?>
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link <?= $activeSection === 'horario_comercial' ? 'active' : ''; ?>"
+               href="<?= $this->escape($sectionUrl('horario_comercial')); ?>">
+                <?= $this->escape(__('Horário Comercial', 'glpiintegaglpi')); ?>
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link <?= $activeSection === 'mensagens' ? 'active' : ''; ?>"
+               href="<?= $this->escape($sectionUrl('mensagens')); ?>">
+                <?= $this->escape(__('Mensagens Automáticas', 'glpiintegaglpi')); ?>
+            </a>
+        </li>
+    </ul>
+
+    <?php if ($activeSection === 'smart_reception') { ?>
+        <div class="card mb-3">
+            <div class="card-header"><?= $this->escape(__('Recepção Inteligente', 'glpiintegaglpi')); ?></div>
+            <div class="card-body">
+                <p class="text-muted small mb-3">
+                    <?= $this->escape(__('Configure a coleta automática de dados do contato antes de abrir o ticket. Todos os recursos estão desabilitados por padrão.', 'glpiintegaglpi')); ?>
+                </p>
+                <form method="post" action="<?= $this->escape($configUrl); ?>?tab=message_settings&section=smart_reception">
+                    <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken(); ?>
+
+                    <h6 class="mb-2"><?= $this->escape(__('Funcionalidades', 'glpiintegaglpi')); ?></h6>
+                    <div class="row g-2 mb-4">
+                        <?php foreach ($hubCpBoolLabels as $field => $label) { ?>
+                            <div class="col-md-6">
+                                <div class="form-check">
+                                    <input
+                                        class="form-check-input"
+                                        type="checkbox"
+                                        name="<?= $this->escape($field); ?>"
+                                        value="1"
+                                        id="hub_cp_<?= $this->escape($field); ?>"
+                                        <?= !empty($hubCpConfig[$field]) ? "checked='checked'" : ''; ?>
+                                    >
+                                    <label class="form-check-label" for="hub_cp_<?= $this->escape($field); ?>">
+                                        <?= $this->escape($label); ?>
+                                    </label>
+                                </div>
+                            </div>
+                        <?php } ?>
+                    </div>
+
+                    <div class="mb-4">
+                        <label class="form-label" for="hub_cp_prompt_mode">
+                            <?= $this->escape(__('Modo de pergunta', 'glpiintegaglpi')); ?>
+                        </label>
+                        <select class="form-select" name="contact_profile_prompt_mode" id="hub_cp_prompt_mode">
+                            <option value="step_by_step" selected="selected">
+                                <?= $this->escape(__('Passo a passo', 'glpiintegaglpi')); ?>
+                            </option>
+                        </select>
+                        <small class="text-muted">
+                            <?= $this->escape(__('Nesta fase, o runtime usa perguntas passo a passo com botões quando disponíveis.', 'glpiintegaglpi')); ?>
+                        </small>
+                    </div>
+
+                    <div class="mb-4">
+                        <label class="form-label" for="hub_cp_entity_resolution_mode">
+                            <?= $this->escape(__('Resolução de entidade', 'glpiintegaglpi')); ?>
+                        </label>
+                        <select class="form-select" name="entity_resolution_mode" id="hub_cp_entity_resolution_mode">
+                            <option value="defer_until_known" selected="selected">
+                                <?= $this->escape(__('Aguardar seleção manual da entidade', 'glpiintegaglpi')); ?>
+                            </option>
+                        </select>
+                    </div>
+
+                    <h6 class="mb-2"><?= $this->escape(__('Mensagens de coleta', 'glpiintegaglpi')); ?></h6>
+                    <div class="row g-3 mb-3">
+                        <?php foreach ($hubCpPromptLabels as $field => $label) { ?>
+                            <div class="col-md-12">
+                                <label class="form-label" for="hub_cp_prompt_<?= $this->escape($field); ?>">
+                                    <?= $this->escape($label); ?>
+                                </label>
+                                <textarea
+                                    class="form-control"
+                                    name="<?= $this->escape($field); ?>"
+                                    id="hub_cp_prompt_<?= $this->escape($field); ?>"
+                                    rows="<?= $field === 'contact_profile_initial_prompt' ? 4 : 2; ?>"
+                                ><?= $this->escape((string) ($hubCpConfig[$field] ?? '')); ?></textarea>
+                            </div>
+                        <?php } ?>
+                    </div>
+
+                    <div class="alert alert-info">
+                        <?= $this->escape(__('Campos de texto vazios serão substituídos pelo texto padrão ao salvar.', 'glpiintegaglpi')); ?>
+                    </div>
+
+                    <button type="submit" name="save_contact_profile_hub" value="1" class="btn btn-primary">
+                        <?= $this->escape(__('Salvar Recepção Inteligente', 'glpiintegaglpi')); ?>
+                    </button>
+                </form>
+            </div>
+        </div>
+    <?php } ?>
+
+    <?php if ($activeSection === 'avisos_inatividade') { ?>
+        <div class="alert alert-info">
+            <?= $this->escape(__('Configuração operacional do job existente de inatividade. Valores inválidos usam fallback seguro no Node: 15/20/25/30 minutos.', 'glpiintegaglpi')); ?>
+        </div>
+        <?php if (!$isConfigured) { ?>
+            <div class="alert alert-warning">
+                <?= $this->escape(__('Configure a conexão PostgreSQL externa antes de salvar timers de inatividade.', 'glpiintegaglpi')); ?>
+            </div>
+        <?php } else { ?>
+            <div class="card mb-3">
+                <div class="card-header"><?= $this->escape(__('Timers de inatividade', 'glpiintegaglpi')); ?></div>
+                <div class="card-body">
+                    <form method="post" action="<?= $this->escape($configUrl); ?>?tab=message_settings&section=avisos_inatividade">
+                        <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken(); ?>
+                        <div class="row g-3 align-items-end">
+                            <div class="col-md-12">
+                                <div class="form-check">
+                                    <input type="hidden" name="inactivity_enabled" value="0">
+                                    <input
+                                        class="form-check-input"
+                                        type="checkbox"
+                                        name="inactivity_enabled"
+                                        value="1"
+                                        id="hub_inactivity_enabled"
+                                        <?= !empty($inactivityConfig['inactivity_enabled']) ? "checked='checked'" : ''; ?>
+                                    >
+                                    <label class="form-check-label" for="hub_inactivity_enabled">
+                                        <?= $this->escape(__('Habilitar automação de inatividade/autoclose no Node', 'glpiintegaglpi')); ?>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label"><?= $this->escape(__('Reminder 1 minutos', 'glpiintegaglpi')); ?></label>
+                                <input class="form-control" type="number" min="1" max="10080" name="inactivity_reminder_1_minutes" value="<?= (int) ($inactivityConfig['inactivity_reminder_1_minutes'] ?? 15); ?>" required>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label"><?= $this->escape(__('Reminder 2 minutos', 'glpiintegaglpi')); ?></label>
+                                <input class="form-control" type="number" min="1" max="10080" name="inactivity_reminder_2_minutes" value="<?= (int) ($inactivityConfig['inactivity_reminder_2_minutes'] ?? 20); ?>" required>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label"><?= $this->escape(__('Reminder 3 minutos', 'glpiintegaglpi')); ?></label>
+                                <input class="form-control" type="number" min="1" max="10080" name="inactivity_reminder_3_minutes" value="<?= (int) ($inactivityConfig['inactivity_reminder_3_minutes'] ?? 25); ?>" required>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label"><?= $this->escape(__('Autoclose minutos', 'glpiintegaglpi')); ?></label>
+                                <input class="form-control" type="number" min="1" max="10080" name="inactivity_autoclose_minutes" value="<?= (int) ($inactivityConfig['inactivity_autoclose_minutes'] ?? 30); ?>" required>
+                            </div>
+                            <div class="col-md-12">
+                                <button type="submit" name="save_inactivity_timers_hub" value="1" class="btn btn-primary">
+                                    <?= $this->escape(__('Salvar timers', 'glpiintegaglpi')); ?>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="form-text mt-2">
+                            <?= $this->escape(__('Validação obrigatória: reminder_1 < reminder_2 < reminder_3 < autoclose. Não altera tickets, não envia WhatsApp e não remove histórico.', 'glpiintegaglpi')); ?>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        <?php } ?>
+    <?php } ?>
+
+    <?php if ($activeSection === 'horario_comercial') { ?>
+        <?php if (!$isConfigured) { ?>
+            <div class="alert alert-warning">
+                <?= $this->escape(__('Configure a conexão PostgreSQL externa antes de salvar o horário comercial.', 'glpiintegaglpi')); ?>
+            </div>
+        <?php } else { ?>
+            <div class="card mb-3">
+                <div class="card-header"><?= $this->escape(__('Horário Comercial', 'glpiintegaglpi')); ?></div>
+                <div class="card-body">
+                    <form method="post" action="<?= $this->escape($configUrl); ?>?tab=message_settings&section=horario_comercial">
+                        <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken(); ?>
+                        <div class="row g-3 align-items-end">
+                            <div class="col-md-12">
+                                <div class="form-check">
+                                    <input type="hidden" name="business_hours_enabled" value="0">
+                                    <input class="form-check-input" type="checkbox" name="business_hours_enabled" value="1" id="hub_business_hours_enabled" <?= !empty($businessHoursConfig['business_hours_enabled']) ? "checked='checked'" : ''; ?>>
+                                    <label class="form-check-label" for="hub_business_hours_enabled">
+                                        <?= $this->escape(__('Habilitar mensagem fora do horário comercial', 'glpiintegaglpi')); ?>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label"><?= $this->escape(__('Timezone', 'glpiintegaglpi')); ?></label>
+                                <input type="text" name="business_hours_timezone" class="form-control" value="<?= $this->escape((string) ($businessHoursConfig['timezone'] ?? 'America/Sao_Paulo')); ?>">
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label"><?= $this->escape(__('Seg-Sex início', 'glpiintegaglpi')); ?></label>
+                                <input type="time" name="weekday_start_time" class="form-control" value="<?= $this->escape((string) ($businessHoursConfig['weekday_start_time'] ?? '08:00')); ?>" required>
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label"><?= $this->escape(__('Seg-Sex fim', 'glpiintegaglpi')); ?></label>
+                                <input type="time" name="weekday_end_time" class="form-control" value="<?= $this->escape((string) ($businessHoursConfig['weekday_end_time'] ?? '18:00')); ?>" required>
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label"><?= $this->escape(__('Cooldown min.', 'glpiintegaglpi')); ?></label>
+                                <input type="number" name="cooldown_minutes" class="form-control" min="1" max="1440" value="<?= (int) ($businessHoursConfig['cooldown_minutes'] ?? 60); ?>">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label"><?= $this->escape(__('Feriado', 'glpiintegaglpi')); ?></label>
+                                <select name="holiday_behavior" class="form-select">
+                                    <?php foreach (['normal', 'closed', 'custom'] as $hb) { ?>
+                                        <option value="<?= $this->escape($hb); ?>" <?= (string) ($businessHoursConfig['holiday_behavior'] ?? 'normal') === $hb ? "selected='selected'" : ''; ?>>
+                                            <?= $this->escape($hb); ?>
+                                        </option>
+                                    <?php } ?>
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="form-check mb-2">
+                                    <input type="hidden" name="saturday_enabled" value="0">
+                                    <input class="form-check-input" type="checkbox" name="saturday_enabled" value="1" id="hub_saturday_enabled" <?= !empty($businessHoursConfig['saturday_enabled']) ? "checked='checked'" : ''; ?>>
+                                    <label class="form-check-label" for="hub_saturday_enabled"><?= $this->escape(__('Sábado habilitado', 'glpiintegaglpi')); ?></label>
+                                </div>
+                                <div class="d-flex gap-2">
+                                    <input type="time" name="saturday_start_time" class="form-control" value="<?= $this->escape((string) ($businessHoursConfig['saturday_start_time'] ?? '')); ?>">
+                                    <input type="time" name="saturday_end_time" class="form-control" value="<?= $this->escape((string) ($businessHoursConfig['saturday_end_time'] ?? '')); ?>">
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="form-check mb-2">
+                                    <input type="hidden" name="sunday_enabled" value="0">
+                                    <input class="form-check-input" type="checkbox" name="sunday_enabled" value="1" id="hub_sunday_enabled" <?= !empty($businessHoursConfig['sunday_enabled']) ? "checked='checked'" : ''; ?>>
+                                    <label class="form-check-label" for="hub_sunday_enabled"><?= $this->escape(__('Domingo habilitado', 'glpiintegaglpi')); ?></label>
+                                </div>
+                                <div class="d-flex gap-2">
+                                    <input type="time" name="sunday_start_time" class="form-control" value="<?= $this->escape((string) ($businessHoursConfig['sunday_start_time'] ?? '')); ?>">
+                                    <input type="time" name="sunday_end_time" class="form-control" value="<?= $this->escape((string) ($businessHoursConfig['sunday_end_time'] ?? '')); ?>">
+                                </div>
+                            </div>
+                            <div class="col-md-12">
+                                <button type="submit" name="save_business_hours_hub" value="1" class="btn btn-primary">
+                                    <?= $this->escape(__('Salvar horário comercial', 'glpiintegaglpi')); ?>
+                                </button>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        <?php } ?>
+    <?php } ?>
+
+    <?php if ($activeSection === 'mensagens') { ?>
+        <div class="alert alert-info">
+            <?= $this->escape(__('Catálogo configurável de mensagens automáticas. O plugin não envia mensagens de teste e não consulta a API de templates da Meta.', 'glpiintegaglpi')); ?>
+        </div>
+        <?php if (!$isConfigured) { ?>
+            <div class="alert alert-warning">
+                <?= $this->escape(__('Configure a conexão PostgreSQL externa antes de editar o catálogo avançado.', 'glpiintegaglpi')); ?>
+            </div>
+        <?php } ?>
+        <?php foreach ($messageCatalogGroups as $groupName => $messages) { ?>
+            <div class="card mb-3">
+                <div class="card-header"><?= $this->escape((string) $groupName); ?></div>
+                <div class="card-body">
+                    <?php foreach ($messages as $message) { ?>
+                        <?php $hubEventKey = (string) ($message['event_key'] ?? ''); ?>
+                        <form method="post" action="<?= $this->escape($configUrl); ?>?tab=message_settings&section=mensagens" class="border rounded p-3 mb-3">
+                            <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken(); ?>
+                            <input type="hidden" name="event_key" value="<?= $this->escape($hubEventKey); ?>">
+                            <div class="d-flex justify-content-between gap-2 align-items-start">
+                                <div>
+                                    <code><?= $this->escape($hubEventKey); ?></code>
+                                    <div class="small text-muted"><?= $this->escape((string) ($message['description'] ?? '')); ?></div>
+                                </div>
+                                <div class="form-check">
+                                    <input type="hidden" name="is_active" value="0">
+                                    <input class="form-check-input" type="checkbox" name="is_active" value="1" id="hub_msg_active_<?= $this->escape($hubEventKey); ?>" <?= !empty($message['is_active']) ? "checked='checked'" : ''; ?>>
+                                    <label class="form-check-label" for="hub_msg_active_<?= $this->escape($hubEventKey); ?>"><?= $this->escape(__('Ativa', 'glpiintegaglpi')); ?></label>
+                                </div>
+                            </div>
+                            <div class="row g-3 mt-1">
+                                <div class="col-md-8">
+                                    <label class="form-label"><?= $this->escape(__('Texto customizado', 'glpiintegaglpi')); ?></label>
+                                    <textarea name="custom_text" class="form-control" rows="3" placeholder="<?= $this->escape((string) ($message['default_text'] ?? '')); ?>"><?= $this->escape((string) ($message['custom_text'] ?? '')); ?></textarea>
+                                    <small class="text-muted"><?= $this->escape(__('Default seguro:', 'glpiintegaglpi')); ?> <?= $this->escape((string) ($message['default_text'] ?? '')); ?></small>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label"><?= $this->escape(__('Tipo de envio', 'glpiintegaglpi')); ?></label>
+                                    <select name="send_type" class="form-select">
+                                        <?php foreach (['text', 'interactive_buttons', 'interactive_list', 'template', 'internal_only'] as $hubSendType) { ?>
+                                            <option value="<?= $this->escape($hubSendType); ?>" <?= (string) ($message['send_type'] ?? 'text') === $hubSendType ? "selected='selected'" : ''; ?>>
+                                                <?= $this->escape($hubSendType); ?>
+                                            </option>
+                                        <?php } ?>
+                                    </select>
+                                </div>
+                                <div class="col-md-4 text-end">
+                                    <button type="submit" name="save_message_catalog_hub" value="1" class="btn btn-primary">
+                                        <?= $this->escape(__('Salvar evento', 'glpiintegaglpi')); ?>
+                                    </button>
+                                </div>
+                            </div>
+                        </form>
+                    <?php } ?>
+                </div>
+            </div>
+        <?php } ?>
+    <?php } ?>
 <?php } ?>
 
 <?php if ($activeTab === 'diagnostics') { ?>

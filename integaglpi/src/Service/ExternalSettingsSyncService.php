@@ -103,6 +103,9 @@ final class ExternalSettingsSyncService
             'contact_profile_confirmation_enabled' => 'TEXT NULL',
             'contact_profile_use_buttons' => 'TEXT NULL',
             'ticket_title_enrichment_enabled' => 'TEXT NULL',
+            'contact_profile_initial_prompt' => 'TEXT NULL',
+            'contact_profile_require_email' => 'TEXT NULL',
+            'contact_profile_prompt_email' => 'TEXT NULL',
             'contact_profile_prompt_name' => 'TEXT NULL',
             'contact_profile_prompt_company' => 'TEXT NULL',
             'contact_profile_prompt_equipment' => 'TEXT NULL',
@@ -111,6 +114,7 @@ final class ExternalSettingsSyncService
             'profile_initial_prompt' => 'TEXT NULL',
             'profile_ask_company' => 'TEXT NULL',
             'profile_ask_name' => 'TEXT NULL',
+            'profile_ask_email' => 'TEXT NULL',
             'profile_ask_equipment' => 'TEXT NULL',
             'profile_ask_summary' => 'TEXT NULL',
             'profile_confirmation_message' => 'TEXT NULL',
@@ -152,16 +156,20 @@ final class ExternalSettingsSyncService
         unset($values['context']);
         unset($values['entity_resolution_mode']);
 
+        $initialPrompt = trim((string) ($values['contact_profile_initial_prompt'] ?? ''));
         $namePrompt = (string) ($values['contact_profile_prompt_name'] ?? '');
         $companyPrompt = (string) ($values['contact_profile_prompt_company'] ?? '');
+        $emailPrompt = (string) ($values['contact_profile_prompt_email'] ?? '');
         $equipmentPrompt = (string) ($values['contact_profile_prompt_equipment'] ?? '');
         $summaryPrompt = (string) ($values['contact_profile_prompt_summary'] ?? '');
         $confirmationMessage = (string) ($values['contact_profile_confirm_message'] ?? '');
 
         return [
             ...$values,
-            'profile_initial_prompt' => self::defaultInitialPrompt(),
+            // profile_initial_prompt: use configured value; fall back to hardcoded default only when empty.
+            'profile_initial_prompt' => $initialPrompt !== '' ? $initialPrompt : self::defaultInitialPrompt(),
             'profile_ask_name' => $namePrompt,
+            'profile_ask_email' => $emailPrompt,
             'profile_ask_company' => $companyPrompt,
             'profile_ask_equipment' => $equipmentPrompt,
             'profile_ask_summary' => $summaryPrompt,

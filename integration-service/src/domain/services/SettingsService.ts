@@ -23,13 +23,16 @@ export interface ContactProfileConfig {
   promptMode: 'hybrid' | 'single_message' | 'step_by_step';
   requireCompany: boolean;
   requireName: boolean;
+  requireEmail: boolean;
   requireEquipment: boolean;
   requireSummary: boolean;
   confirmationEnabled: boolean;
   useButtons: boolean;
   titleEnrichmentEnabled: boolean;
+  initialPrompt: string;
   promptName: string;
   promptCompany: string;
+  promptEmail: string;
   promptEquipment: string;
   promptSummary: string;
   confirmMessage: string;
@@ -46,13 +49,23 @@ const CONTACT_PROFILE_DEFAULTS: ContactProfileConfig = {
   promptMode: 'hybrid',
   requireCompany: true,
   requireName: true,
+  requireEmail: true,   // absent key → preserve pre-existing behaviour (always ask email)
   requireEquipment: false,
   requireSummary: true,
   confirmationEnabled: true,
   useButtons: true,
   titleEnrichmentEnabled: true,
+  initialPrompt: [
+    'Perfeito! Vou agilizar seu atendimento.',
+    '',
+    'Envie em uma unica mensagem:',
+    'Empresa ou unidade, seu nome, etiqueta/patrimonio se souber, e um resumo curto do problema.',
+    '',
+    'Se nao souber a etiqueta, pode escrever "nao sei".',
+  ].join('\n'),
   promptName: 'Por favor, informe seu nome.',
   promptCompany: 'Por favor, informe a empresa.',
+  promptEmail: 'Por favor, informe seu e-mail (ou responda "não informar").',
   promptEquipment: 'Informe o equipamento (opcional).',
   promptSummary: 'Descreva resumidamente o problema.',
   confirmMessage: 'Confirma as informações para abrir o chamado?',
@@ -179,24 +192,40 @@ export class SettingsService {
           rawValues.get('ticket_title_enrichment_enabled'),
           CONTACT_PROFILE_DEFAULTS.titleEnrichmentEnabled,
         ),
+        requireEmail: this.toBooleanOrDefault(
+          rawValues.get('contact_profile_require_email'),
+          CONTACT_PROFILE_DEFAULTS.requireEmail,
+        ),
+        // initialPrompt: configured value (contact_profile_initial_prompt) takes priority over
+        // the legacy profile_initial_prompt that used to be hardcoded by the sync service.
+        initialPrompt: this.toStringOrDefault(
+          rawValues.get('contact_profile_initial_prompt') ?? rawValues.get('profile_initial_prompt'),
+          CONTACT_PROFILE_DEFAULTS.initialPrompt,
+        ),
+        // Dual-key resolution: new canonical key (contact_profile_prompt_*) takes priority;
+        // legacy key (profile_ask_*) kept as fallback for backward compatibility only.
         promptName: this.toStringOrDefault(
-          rawValues.get('profile_ask_name') ?? rawValues.get('contact_profile_prompt_name'),
+          rawValues.get('contact_profile_prompt_name') ?? rawValues.get('profile_ask_name'),
           CONTACT_PROFILE_DEFAULTS.promptName,
         ),
         promptCompany: this.toStringOrDefault(
-          rawValues.get('profile_ask_company') ?? rawValues.get('contact_profile_prompt_company'),
+          rawValues.get('contact_profile_prompt_company') ?? rawValues.get('profile_ask_company'),
           CONTACT_PROFILE_DEFAULTS.promptCompany,
         ),
+        promptEmail: this.toStringOrDefault(
+          rawValues.get('contact_profile_prompt_email') ?? rawValues.get('profile_ask_email'),
+          CONTACT_PROFILE_DEFAULTS.promptEmail,
+        ),
         promptEquipment: this.toStringOrDefault(
-          rawValues.get('profile_ask_equipment') ?? rawValues.get('contact_profile_prompt_equipment'),
+          rawValues.get('contact_profile_prompt_equipment') ?? rawValues.get('profile_ask_equipment'),
           CONTACT_PROFILE_DEFAULTS.promptEquipment,
         ),
         promptSummary: this.toStringOrDefault(
-          rawValues.get('profile_ask_summary') ?? rawValues.get('contact_profile_prompt_summary'),
+          rawValues.get('contact_profile_prompt_summary') ?? rawValues.get('profile_ask_summary'),
           CONTACT_PROFILE_DEFAULTS.promptSummary,
         ),
         confirmMessage: this.toStringOrDefault(
-          rawValues.get('profile_confirmation_message') ?? rawValues.get('contact_profile_confirm_message'),
+          rawValues.get('contact_profile_confirm_message') ?? rawValues.get('profile_confirmation_message'),
           CONTACT_PROFILE_DEFAULTS.confirmMessage,
         ),
       };

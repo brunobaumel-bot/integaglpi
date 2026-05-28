@@ -79,22 +79,30 @@ describe('SettingsService', () => {
     const repository = new FakeSettingsRepository(new Map<string, string>());
     const service = new SettingsService(repository);
 
-    await expect(service.getContactProfileConfig()).resolves.toEqual({
+    const config = await service.getContactProfileConfig();
+
+    // Boolean fields
+    expect(config).toMatchObject({
       collectionEnabled: false,
       promptMode: 'hybrid',
       requireCompany: true,
       requireName: true,
+      requireEmail: true,   // absent key defaults to true (ask email — backward compat)
       requireEquipment: false,
       requireSummary: true,
       confirmationEnabled: true,
       useButtons: true,
       titleEnrichmentEnabled: true,
-      promptName: 'Por favor, informe seu nome.',
-      promptCompany: 'Por favor, informe a empresa.',
-      promptEquipment: 'Informe o equipamento (opcional).',
-      promptSummary: 'Descreva resumidamente o problema.',
-      confirmMessage: 'Confirma as informações para abrir o chamado?',
     });
+
+    // Prompt text fields
+    expect(config.promptName).toBe('Por favor, informe seu nome.');
+    expect(config.promptCompany).toBe('Por favor, informe a empresa.');
+    expect(config.promptEquipment).toBe('Informe o equipamento (opcional).');
+    expect(config.promptSummary).toBe('Descreva resumidamente o problema.');
+    expect(config.confirmMessage).toBe('Confirma as informações para abrir o chamado?');
+    expect(config.promptEmail).toBe('Por favor, informe seu e-mail (ou responda "não informar").');
+    expect(config.initialPrompt).toContain('Perfeito! Vou agilizar seu atendimento.');
   });
 
   it('parses booleans from mixed scalar values', async () => {
@@ -193,30 +201,48 @@ describe('SettingsService', () => {
     });
   });
 
-  it('prefers runtime profile_* prompt aliases synced by the plugin', async () => {
+  it('canonical contact_profile_prompt_* keys take priority over legacy profile_ask_* aliases', async () => {
+    // Dual-key priority fix: contact_profile_prompt_* (UI-saved key) MUST win over
+    // profile_ask_* (legacy key written by the sync service for backward compatibility).
     const repository = new FakeSettingsRepository(
       new Map<string, string>(),
       new Map<string, unknown>([
-        ['contact_profile_prompt_name', 'Nome antigo?'],
-        ['profile_ask_name', 'Nome novo?'],
-        ['contact_profile_prompt_company', 'Empresa antiga?'],
-        ['profile_ask_company', 'Empresa nova?'],
-        ['contact_profile_prompt_equipment', 'Equipamento antigo?'],
-        ['profile_ask_equipment', 'Equipamento novo?'],
-        ['contact_profile_prompt_summary', 'Resumo antigo?'],
-        ['profile_ask_summary', 'Resumo novo?'],
-        ['contact_profile_confirm_message', 'Confirma antigo?'],
-        ['profile_confirmation_message', 'Confirma novo?'],
+        ['contact_profile_prompt_name', 'Nome canonical?'],
+        ['profile_ask_name', 'Nome legado?'],
+        ['contact_profile_prompt_company', 'Empresa canonical?'],
+        ['profile_ask_company', 'Empresa legada?'],
+        ['contact_profile_prompt_equipment', 'Equipamento canonical?'],
+        ['profile_ask_equipment', 'Equipamento legado?'],
+        ['contact_profile_prompt_summary', 'Resumo canonical?'],
+        ['profile_ask_summary', 'Resumo legado?'],
+        ['contact_profile_confirm_message', 'Confirma canonical?'],
+        ['profile_confirmation_message', 'Confirma legado?'],
       ]),
     );
     const service = new SettingsService(repository);
 
     await expect(service.getContactProfileConfig()).resolves.toMatchObject({
-      promptName: 'Nome novo?',
-      promptCompany: 'Empresa nova?',
-      promptEquipment: 'Equipamento novo?',
-      promptSummary: 'Resumo novo?',
-      confirmMessage: 'Confirma novo?',
+      promptName: 'Nome canonical?',
+      promptCompany: 'Empresa canonical?',
+      promptEquipment: 'Equipamento canonical?',
+      promptSummary: 'Resumo canonical?',
+      confirmMessage: 'Confirma canonical?',
+    });
+  });
+
+  it('falls back to legacy profile_ask_* aliases when canonical keys are absent', async () => {
+    const repository = new FakeSettingsRepository(
+      new Map<string, string>(),
+      new Map<string, unknown>([
+        ['profile_ask_name', 'Nome legado OK?'],
+        ['profile_ask_company', 'Empresa legada OK?'],
+      ]),
+    );
+    const service = new SettingsService(repository);
+
+    await expect(service.getContactProfileConfig()).resolves.toMatchObject({
+      promptName: 'Nome legado OK?',
+      promptCompany: 'Empresa legada OK?',
     });
   });
 
@@ -243,11 +269,12 @@ describe('SettingsService', () => {
     const service = new SettingsService(repository);
 
     await expect(service.getMessage('menu_message')).resolves.toBe('Menu A');
-    await expect(service.getContactProfileConfig()).resolves.toEqual({
+    await expect(service.getContactProfileConfig()).resolves.toMatchObject({
       collectionEnabled: false,
       promptMode: 'hybrid',
       requireCompany: true,
       requireName: true,
+      requireEmail: true,   // absent key defaults to true (ask email — backward compat)
       requireEquipment: false,
       requireSummary: true,
       confirmationEnabled: true,
