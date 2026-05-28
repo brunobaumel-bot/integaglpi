@@ -578,6 +578,7 @@ $operationalFilterMap = [
                         $windowAlert = (string) ($whatsappWindow['alert'] ?? '');
                         $memoryEntityId = (int) ($row['memory_entity_id'] ?? 0);
                         $memoryEntityName = trim((string) ($row['memory_entity_name'] ?? ''));
+                        $memoryEntitySourceLabel = trim((string) ($row['memory_entity_source_label'] ?? ''));
                         $profileSnapshot = is_array($row['contact_profile_snapshot'] ?? null)
                             ? $row['contact_profile_snapshot']
                             : null;
@@ -846,6 +847,9 @@ $operationalFilterMap = [
                                         <div class="itg-card-meta">
                                             <?= $this->escape(__('Entidade memorizada', 'glpiintegaglpi')); ?>:
                                             <?= $this->escape($memoryEntityName !== '' ? $memoryEntityName : (string) $memoryEntityId); ?>
+                                            <?php if ($memoryEntitySourceLabel !== '') { ?>
+                                                <span class="text-muted small">(<?= $this->escape($memoryEntitySourceLabel); ?>)</span>
+                                            <?php } ?>
                                         </div>
                                     <?php } ?>
                                     <div class="itg-card-meta js-integaglpi-central-technician">
@@ -902,6 +906,25 @@ $operationalFilterMap = [
                                             <div class="alert alert-warning py-2 mb-2">
                                                 <?= $this->escape(__('Entidade do contato ainda não definida.', 'glpiintegaglpi')); ?>
                                             </div>
+                                            <?php if ($memoryEntityId > 0) { ?>
+                                                <div class="alert alert-info py-2 mb-2 d-flex align-items-center gap-2">
+                                                    <div>
+                                                        <strong><?= $this->escape(__('Entidade memorizada disponível', 'glpiintegaglpi')); ?>:</strong>
+                                                        <?= $this->escape($memoryEntityName !== '' ? $memoryEntityName : (string) $memoryEntityId); ?>
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        class="btn btn-sm btn-success js-integaglpi-apply-memory-entity"
+                                                        data-conversation-id="<?= $this->escape($conversationId); ?>"
+                                                        data-entity-id="<?= $memoryEntityId; ?>"
+                                                        data-entity-name="<?= $this->escape($memoryEntityName); ?>"
+                                                        title="<?= $this->escape(__('Aplica a entidade memorizada e cria o chamado. A permissão sobre a entidade será verificada.', 'glpiintegaglpi')); ?>"
+                                                    >
+                                                        <?= $this->escape(__('Aplicar e criar chamado', 'glpiintegaglpi')); ?>
+                                                    </button>
+                                                    <small class="text-muted js-integaglpi-entity-feedback"></small>
+                                                </div>
+                                            <?php } ?>
                                             <div class="integaglpi-central-entity" data-entity-box="1">
                                                 <label class="form-label small mb-1"><?= $this->escape(__('Filtrar entidades', 'glpiintegaglpi')); ?></label>
                                                 <input
@@ -1461,7 +1484,22 @@ $operationalFilterMap = [
 
         if (canUpdateActions && row.can_confirm_entity) {
             const hasEntities = Array.isArray(glpiEntities) && glpiEntities.length > 0;
+            const memId = Number(row.memory_entity_id || 0);
+            const memName = String(row.memory_entity_name || '').trim();
+            const memoryApplyBtn = memId > 0
+                ? '<div class="alert alert-info py-2 mb-2 d-flex align-items-center gap-2">'
+                    + '<div><strong>Entidade memorizada disponível:</strong> ' + escapeHtml(memName || String(memId)) + '</div>'
+                    + '<button type="button" class="btn btn-sm btn-success js-integaglpi-apply-memory-entity"'
+                    + ' data-conversation-id="' + conversationId + '"'
+                    + ' data-entity-id="' + memId + '"'
+                    + ' data-entity-name="' + escapeHtml(memName) + '"'
+                    + ' title="Aplica a entidade memorizada e cria o chamado. A permissão sobre a entidade será verificada."'
+                    + '>Aplicar e criar chamado</button>'
+                    + '<small class="text-muted js-integaglpi-entity-feedback"></small>'
+                    + '</div>'
+                : '';
             return '<div class="alert alert-warning py-2 mb-2">Entidade do contato ainda não definida.</div>'
+                + memoryApplyBtn
                 + '<div class="integaglpi-central-entity" data-entity-box="1">'
                 + '<label class="form-label small mb-1">Filtrar entidades</label>'
                 + '<input type="search" class="form-control form-control-sm mb-2 js-integaglpi-entity-filter" placeholder="Digite para filtrar a lista" autocomplete="off" aria-label="Filtrar entidades">'
@@ -1584,9 +1622,11 @@ $operationalFilterMap = [
             : '';
         const memoryEntityId = Number(row.memory_entity_id || 0);
         const memoryEntityName = String(row.memory_entity_name || '').trim();
+        const memoryEntitySourceLabel = String(row.memory_entity_source_label || '').trim();
         const memoryEntityHtml = memoryEntityId > 0
             ? '<div class="itg-card-meta">Entidade memorizada: '
                 + escapeHtml(memoryEntityName || String(memoryEntityId))
+                + (memoryEntitySourceLabel !== '' ? ' <span class="text-muted small">(' + escapeHtml(memoryEntitySourceLabel) + ')</span>' : '')
                 + '</div>'
             : '';
         const inactivityStatus = String(row.inactivity_status_label || '').trim();
@@ -2807,6 +2847,88 @@ $operationalFilterMap = [
     }, pollingIntervalMs);
 
     document.addEventListener('click', function (event) {
+            // ── "Aplicar entidade memorizada" one-click path ──────────────────
+            const memoryApplyButton = event.target.closest('.js-integaglpi-apply-memory-entity');
+            if (memoryApplyButton) {
+                event.preventDefault();
+                if (memoryApplyButton.dataset.requestInProgress === '1') {
+                    return;
+                }
+                const memEntityId = Number(memoryApplyButton.dataset.entityId || 0);
+                if (!Number.isInteger(memEntityId) || memEntityId <= 0) {
+                    alert('Entidade memorizada inválida. Selecione manualmente.');
+                    return;
+                }
+                // Find the nearest feedback element (may be in the same alert block)
+                const feedbackEl = memoryApplyButton.parentElement
+                    ? memoryApplyButton.parentElement.querySelector('.js-integaglpi-entity-feedback')
+                    : null;
+                const originalText = memoryApplyButton.textContent;
+                memoryApplyButton.disabled = true;
+                memoryApplyButton.dataset.requestInProgress = '1';
+                memoryApplyButton.textContent = 'Criando chamado...';
+                if (feedbackEl) { feedbackEl.textContent = ''; }
+
+                const memPayload = new URLSearchParams();
+                memPayload.set('_glpi_csrf_token', csrfToken);
+                memPayload.set('action', 'confirm_entity');
+                memPayload.set('conversation_id', memoryApplyButton.dataset.conversationId || '');
+                memPayload.set('ticket_id', '0');
+                memPayload.set('glpi_entity_id', String(memEntityId));
+                memPayload.set('create_ticket', '1');
+                memPayload.set('idempotency_key', buildEntitySelectionIdempotencyKey(
+                    memoryApplyButton.dataset.conversationId || '',
+                    memEntityId
+                ));
+
+                let keepMemDisabled = false;
+                fetch(actionUrl, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+                    body: memPayload.toString()
+                })
+                    .then(parseJsonResponse)
+                    .then(function (result) {
+                        updateCsrfToken(result.body);
+                        const body = result.body || {};
+                        const message = body.message || 'Não foi possível aplicar a entidade memorizada.';
+                        if (!body.ok) {
+                            if (feedbackEl) { feedbackEl.textContent = message; }
+                            else { alert(message); }
+                            refreshCentral(true);
+                            return;
+                        }
+                        if (feedbackEl) { feedbackEl.textContent = message; }
+                        if (body.status === 'processing') {
+                            keepMemDisabled = true;
+                            memoryApplyButton.textContent = 'Criando chamado...';
+                            pollEntitySelectionStatus(
+                                memoryApplyButton.dataset.conversationId || '',
+                                feedbackEl,
+                                memoryApplyButton,
+                                originalText,
+                                0
+                            );
+                            return;
+                        }
+                        refreshCentral(true);
+                    })
+                    .catch(function () {
+                        if (feedbackEl) { feedbackEl.textContent = 'Erro ao aplicar entidade. Atualize a Central.'; }
+                        refreshCentral(true);
+                    })
+                    .finally(function () {
+                        if (!keepMemDisabled) {
+                            memoryApplyButton.disabled = false;
+                            memoryApplyButton.dataset.requestInProgress = '0';
+                            memoryApplyButton.textContent = originalText;
+                        }
+                    });
+                return;
+            }
+
+            // ── Regular confirm_entity / update_entity path ───────────────────
             const entityButton = event.target.closest('.js-integaglpi-confirm-entity, .js-integaglpi-update-entity');
             if (entityButton) {
                 event.preventDefault();
@@ -2820,9 +2942,6 @@ $operationalFilterMap = [
                 : null;
             const feedback = box ? box.querySelector('.js-integaglpi-entity-feedback') : null;
             const entityId = entitySelect ? Number(entitySelect.value || 0) : 0;
-            const entityName = entitySelect && entitySelect.selectedOptions && entitySelect.selectedOptions.length > 0
-                ? entitySelect.selectedOptions[0].textContent.trim()
-                : '';
             const serviceSelect = box ? box.querySelector('.js-integaglpi-service-catalog-id') : null;
             const serviceChecklist = box ? box.querySelector('.js-integaglpi-service-checklist-json') : null;
 
@@ -2837,7 +2956,6 @@ $operationalFilterMap = [
             payload.set('conversation_id', entityButton.dataset.conversationId || '');
             payload.set('ticket_id', isEntityUpdate ? (entityButton.dataset.ticketId || '0') : '0');
             payload.set('glpi_entity_id', String(entityId));
-            payload.set('glpi_entity_name', entityName);
             if (isEntityUpdate) {
                 payload.set('apply_to_ticket', '0');
             } else {

@@ -84,7 +84,7 @@ try {
             (int) ($_POST['new_technician_id'] ?? 0)
         );
     } elseif ($action === 'confirm_entity') {
-        $rawEntityId = $_POST['glpi_entity_id'] ?? $_POST['entity_id'] ?? null;
+        $rawEntityId = $_POST['glpi_entity_id'] ?? null;
         $glpiEntityId = 0;
         if (is_string($rawEntityId) || is_int($rawEntityId)) {
             $trimmed = trim((string) $rawEntityId);
@@ -99,7 +99,7 @@ try {
         $result = $service->confirmConversationEntity(
             $conversationId,
             $glpiEntityId,
-            isset($_POST['glpi_entity_name']) ? (string) $_POST['glpi_entity_name'] : null,
+            null,
             $userId,
             (string) ($_POST['create_ticket'] ?? '1') !== '0',
             $ticketId,
@@ -108,7 +108,7 @@ try {
             (string) ($_POST['service_checklist_json'] ?? '')
         );
     } elseif ($action === 'update_entity') {
-        $rawEntityId = $_POST['glpi_entity_id'] ?? $_POST['entity_id'] ?? null;
+        $rawEntityId = $_POST['glpi_entity_id'] ?? null;
         $glpiEntityId = 0;
         if (is_string($rawEntityId) || is_int($rawEntityId)) {
             $trimmed = trim((string) $rawEntityId);
@@ -123,7 +123,7 @@ try {
         $result = $service->updateConversationEntity(
             $conversationId,
             $glpiEntityId,
-            isset($_POST['glpi_entity_name']) ? (string) $_POST['glpi_entity_name'] : null,
+            null,
             $userId,
             (string) ($_POST['apply_to_ticket'] ?? '0') === '1'
         );

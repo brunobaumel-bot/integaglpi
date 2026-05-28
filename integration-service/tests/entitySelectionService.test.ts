@@ -1055,4 +1055,84 @@ describe('EntitySelectionService', () => {
       durationSeconds: null,
     });
   });
+
+  // ── Entity memory auto-reuse ──────────────────────────────────────────────
+  // Phase: integaglpi_entity_memory_auto_reuse_and_override_001
+
+  it('saves entity memory with source=manual after successful ticket creation and link', async () => {
+    const { service, memoryRepository } = createService(
+      createConversation({ glpiTicketId: 0 }),
+    );
+
+    await service.confirmEntity({
+      conversationId: 'conv-1',
+      glpiEntityId: 119,
+      glpiEntityName: 'Unidade Central',
+      createTicket: true,
+    });
+
+    expect(memoryRepository.remembers).toHaveLength(1);
+    expect(memoryRepository.remembers[0]).toMatchObject({
+      phoneE164: '+5511999999999',
+      glpiEntityId: 119,
+      glpiEntityName: 'Unidade Central',
+      sourceTicketId: 2112319281,
+      sourceConversationId: 'conv-1',
+      source: 'manual',
+    });
+  });
+
+  it('saves new entity memory with source=manual when tech overrides to a different entity than the memorised one', async () => {
+    const { service, memoryRepository } = createService(
+      createConversation({ glpiTicketId: 0 }),
+    );
+    // Pre-seed memory with a DIFFERENT entity (42) to simulate a prior contact.
+    memoryRepository.activeMemory = {
+      id: 'memory-old',
+      phoneE164: '+5511999999999',
+      contactId: 'contact-1',
+      glpiEntityId: 42,
+      glpiEntityName: 'Filial Antiga',
+      sourceTicketId: 99,
+      sourceConversationId: 'conv-old',
+      source: 'manual',
+      isActive: true,
+      createdAt: new Date('2026-05-10T00:00:00.000Z'),
+      updatedAt: new Date('2026-05-10T00:00:00.000Z'),
+    };
+
+    // Tech selects entity 119 (override), not the memorised entity 42.
+    await service.confirmEntity({
+      conversationId: 'conv-1',
+      glpiEntityId: 119,
+      glpiEntityName: 'Matriz Nova',
+      createTicket: true,
+    });
+
+    expect(memoryRepository.remembers).toHaveLength(1);
+    expect(memoryRepository.remembers[0]).toMatchObject({
+      glpiEntityId: 119,
+      glpiEntityName: 'Matriz Nova',
+      source: 'manual',
+    });
+  });
+
+  it('does not save entity memory when ticket creation fails before ticket is created', async () => {
+    const { service, glpiClient, memoryRepository } = createService(
+      createConversation({ glpiTicketId: 0 }),
+    );
+    (glpiClient.createTicket as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('GLPI unavailable'),
+    );
+
+    await expect(service.confirmEntity({
+      conversationId: 'conv-1',
+      glpiEntityId: 119,
+      glpiEntityName: 'Entidade Teste',
+      createTicket: true,
+    })).rejects.toMatchObject({ errorCode: 'FAILED_BEFORE_TICKET' });
+
+    // Memory must NOT have been written — no ticket was confirmed in GLPI.
+    expect(memoryRepository.remembers).toHaveLength(0);
+  });
 });

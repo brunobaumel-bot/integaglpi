@@ -1612,6 +1612,7 @@ final class AttendanceCenterService
             $row['operational_state_label'] = $this->operationalStateLabel($row);
             $row['sla_context'] = $this->buildSlaContext($row);
             $row['risk_badges'] = $this->buildRiskBadges($row);
+            $row['memory_entity_source_label'] = $this->resolveEntitySourceLabel($row);
             $row['activity_at'] = $this->formatDisplayTimestamp($row['activity_at'] ?? null);
             $row['last_message_at'] = $this->formatDisplayTimestamp($row['last_message_at'] ?? null);
             $row['last_inbound_at'] = $this->formatDisplayTimestamp($row['last_inbound_at'] ?? null);
@@ -2405,6 +2406,36 @@ final class AttendanceCenterService
         }
 
         return __('Sem entidade', 'glpiintegaglpi');
+    }
+
+    /**
+     * Derives the display label for the origin of the memorised entity.
+     *
+     * Uses data already available in the decorated row:
+     *  - entity_attempt_status = 'succeeded' → entity was confirmed manually via the Central
+     *  - otherwise → entity came from an automatic or plugin-override write to memory
+     *
+     * NOTE: the canonical `source` column of the contact_entity_memory table is stored
+     * by the Node FSM ('manual') and by the PHP override flow ('plugin_entity_edit').
+     * Because ConversationRepository.php is outside this phase's allowlist, we derive
+     * the label from the already-available entity_attempt_status instead of joining cem.source.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function resolveEntitySourceLabel(array $row): string
+    {
+        $memoryEntityId = (int) ($row['memory_entity_id'] ?? 0);
+        if ($memoryEntityId <= 0) {
+            return '';
+        }
+
+        $attemptStatus = strtolower(trim((string) ($row['entity_attempt_status'] ?? '')));
+        if ($attemptStatus === 'succeeded') {
+            return __('seleção manual', 'glpiintegaglpi');
+        }
+
+        // Covers both 'manual' (Node auto-applied from memory) and 'plugin_entity_edit' (PHP override).
+        return __('memória', 'glpiintegaglpi');
     }
 
     private function calculateStalledSeconds(string $activityAt): int
