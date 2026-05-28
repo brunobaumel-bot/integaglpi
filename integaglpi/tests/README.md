@@ -1,3 +1,29 @@
+# Testes isolados do plugin PHP
+
+Baseline minima para validar contratos estaticos/unitarios do plugin `integaglpi` sem carregar GLPI real.
+
+## Como rodar
+
+```bash
+cd integaglpi
+composer install
+composer test
+```
+
+Os testes usam `tests/bootstrap.php`, stubs mínimos de classes globais do GLPI e não carregam `inc/includes.php`.
+
+## Garantias desta baseline
+
+- sem conexão com banco real;
+- sem Redis;
+- sem HTTP real;
+- sem WhatsApp;
+- sem GLPI real;
+- sem alteração de tickets;
+- sem cobertura obrigatória.
+
+---
+
 # Validacao Manual - Fase 2B
 
 ## Pre-requisitos
