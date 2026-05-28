@@ -10,7 +10,7 @@ class FakeSqlExecutor implements SqlExecutor {
 
   public async query<T>(text: string, params?: unknown[]): Promise<QueryResult<T>> {
     this.queries.push({ text, params: params ?? [] });
-    return { rowCount: 1, rows: [] };
+    return { rowCount: 0, rows: [] };
   }
 }
 
@@ -19,6 +19,22 @@ function compactSql(sql: string): string {
 }
 
 describe('PostgresConversationRepository', () => {
+  it('prioritizes an open ticket-linked conversation over newer triage conversations for inbound reuse', async () => {
+    const executor = new FakeSqlExecutor();
+    const repository = new PostgresConversationRepository(executor);
+
+    await repository.findReusableByPhoneE164('+5541999999999');
+
+    expect(executor.queries).toHaveLength(1);
+    const sql = compactSql(executor.queries[0]?.text ?? '');
+    expect(sql).toContain("WHEN status = 'open' AND glpi_ticket_id IS NOT NULL AND glpi_ticket_id > 0 THEN 0");
+    expect(sql.indexOf("WHEN status = 'open'")).toBeLessThan(sql.indexOf('last_message_at DESC'));
+    expect(executor.queries[0]?.params).toEqual([
+      '+5541999999999',
+      ['open', 'awaiting_queue_selection', 'awaiting_entity_selection', 'collecting_contact_profile'],
+    ]);
+  });
+
   it('reopenConversation reopens the conversation row and clears closed runtime state', async () => {
     const executor = new FakeSqlExecutor();
     const repository = new PostgresConversationRepository(executor);

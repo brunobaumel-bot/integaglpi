@@ -82,7 +82,14 @@ export class PostgresConversationRepository implements ConversationRepository {
         FROM ${DATABASE_TABLES.conversations}
         WHERE phone_e164 = $1
           AND status = ANY($2::text[])
-        ORDER BY last_message_at DESC
+        ORDER BY
+          CASE
+            WHEN status = 'open'
+              AND glpi_ticket_id IS NOT NULL
+              AND glpi_ticket_id > 0 THEN 0
+            ELSE 1
+          END,
+          last_message_at DESC
         LIMIT 1
       `,
       [phoneE164, REUSABLE_CONVERSATION_STATUSES],

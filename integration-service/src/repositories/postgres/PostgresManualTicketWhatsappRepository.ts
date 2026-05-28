@@ -163,6 +163,7 @@ export class PostgresManualTicketWhatsappRepository {
         SET
           glpi_ticket_id = $2,
           status = 'open',
+          last_message_at = NOW(),
           link_origin = 'manual_glpi_ticket_link',
           linked_by_glpi_user_id = $3,
           linked_at = COALESCE(linked_at, NOW()),

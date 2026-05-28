@@ -112,6 +112,50 @@ describe('ManualTicketWhatsappLinkService', () => {
     });
   });
 
+  it('reactivates a reusable conversation linked to the ticket before sending the approved template', async () => {
+    const { service, repo, outbound } = makeService({
+      reusable: {
+        id: 'conv-old-ticket',
+        phone_e164: '+5541999999999',
+        contact_id: 'contact-1',
+        glpi_ticket_id: 123,
+        status: 'closed',
+        last_message_at: new Date('2024-01-01T00:00:00.000Z'),
+        created_at: new Date('2024-01-01T00:00:00.000Z'),
+        updated_at: new Date('2024-01-01T00:00:00.000Z'),
+      },
+      outboundResult: {
+        httpStatus: 201,
+        body: {
+          status: 'sent',
+          message_id: 'wamid.manual-template-existing',
+          conversation_id: 'conv-existing',
+          postgres_message_row_id: 'row-existing',
+          idempotent: false,
+        },
+      },
+    });
+
+    const result = await service.startTemplate(makeInput());
+
+    expect(repo.createManualConversation).not.toHaveBeenCalled();
+    expect(repo.linkConversation).toHaveBeenCalledWith({
+      conversationId: 'conv-old-ticket',
+      ticketId: 123,
+      glpiUserId: 7,
+    });
+    expect(outbound.send).toHaveBeenCalledWith(expect.objectContaining({
+      ticket_id: 123,
+      conversation_id: 'conv-existing',
+      message_type: 'template',
+      template_name: 'aviso_atendimento_fora_janela',
+    }), expect.any(Object));
+    expect(result).toMatchObject({
+      status: 'sent',
+      conversation_id: 'conv-existing',
+    });
+  });
+
   it('returns an idempotent replay when outbound already recorded the same template send', async () => {
     const { service, outbound, auditService } = makeService({
       outboundResult: {
