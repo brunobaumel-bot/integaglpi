@@ -77,6 +77,13 @@ final class CentralRenderer
      */
     public function getPageUrl(array $filters, int $page, int $limit): string
     {
+        // Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001.
+        // mine_only is preserved across pagination so the technician's "Mostrar
+        // todos" / "Apenas meus" choice survives page navigation.
+        $mineOnly = array_key_exists('mine_only', $filters)
+            ? (bool) ($filters['mine_only'] ?? true)
+            : true;
+
         $query = [
             'status' => (string) ($filters['status'] ?? ''),
             'queue_id' => (int) ($filters['queue_id'] ?? 0),
@@ -91,9 +98,12 @@ final class CentralRenderer
             'limit' => $limit,
         ];
 
-        return $this->getCentralUrl() . '?' . http_build_query(array_filter(
+        $queryString = http_build_query(array_filter(
             $query,
             static fn (mixed $value): bool => $value !== '' && $value !== 0
         ));
+        $queryString .= ($queryString !== '' ? '&' : '') . 'mine_only=' . ($mineOnly ? '1' : '0');
+
+        return $this->getCentralUrl() . '?' . $queryString;
     }
 }

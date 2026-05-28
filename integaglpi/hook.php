@@ -185,11 +185,137 @@ function plugin_integaglpi_item_add_ticket(\Ticket $ticket): void
         return;
     }
 
+    // Enforce "Novo" status for WhatsApp-originated tickets.
+    // Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001.
+    // Rule: a ticket created via the integration must remain status=1 (Novo)
+    // until a technician explicitly claims it via Central WhatsApp / GLPI.
+    // GLPI core may auto-promote status to 2 (Em atendimento) when the
+    // creation payload carries an assignee from queue routing; revert that
+    // promotion here. We only revert when a linked conversation exists,
+    // which guarantees we never touch organic GLPI tickets.
+    try {
+        plugin_integaglpi_enforce_initial_new_status($ticket, $ticketId);
+    } catch (\Throwable $e) {
+        error_log('[integaglpi][ticket][new_status_enforcement_error] ticket_id=' . $ticketId . ' ' . $e->getMessage());
+    }
+
     try {
         $service = new \GlpiPlugin\Integaglpi\Service\NotificationService();
         $service->notifyTicketOpened($ticketId);
     } catch (\Throwable $e) {
         error_log('[integaglpi][notification][ticket_opened_hook_error] ticket_id=' . $ticketId . ' ' . $e->getMessage());
+    }
+}
+
+/**
+ * Force WhatsApp-originated tickets to start as "Novo" (status=1).
+ * Idempotent and safe: only acts when the ticket is recognizable as
+ * WhatsApp-originated AND the current status is not already 1. Uses direct
+ * $DB->update to bypass ITEM_UPDATE hooks (we do not want to fire
+ * ticket_update notifications for an internal status correction at
+ * creation time).
+ *
+ * Detection (see plugin_integaglpi_is_whatsapp_originated_ticket) uses TWO
+ * independent signals so the rule does not depend on the conversation row
+ * being already linked at ITEM_ADD time (Node calls linkGlpiTicket AFTER
+ * createTicket returns, so the conversation may not yet carry the ticket
+ * id when this hook fires).
+ *
+ * Returns early (void) whenever the operation is not applicable; helper
+ * lookups return nullable arrays. This keeps hook.php free of the literal
+ * forbidden by the cross-repo static contract.
+ */
+function plugin_integaglpi_enforce_initial_new_status(\Ticket $ticket, int $ticketId): void
+{
+    $currentStatus = (int) ($ticket->fields['status'] ?? 0);
+    if ($currentStatus === 1) {
+        return;
+    }
+
+    if (!plugin_integaglpi_is_whatsapp_originated_ticket($ticket, $ticketId)) {
+        return;
+    }
+
+    global $DB;
+    if (!isset($DB) || !is_object($DB)) {
+        return;
+    }
+
+    $updated = $DB->update(
+        'glpi_tickets',
+        ['status' => 1],
+        ['id' => $ticketId]
+    );
+
+    if (!$updated) {
+        error_log('[integaglpi][ticket][new_status_enforcement_failed] ticket_id=' . $ticketId . ' previous_status=' . $currentStatus);
+        return;
+    }
+
+    $ticket->fields['status'] = 1;
+    error_log('[integaglpi][ticket][new_status_enforced] ticket_id=' . $ticketId . ' previous_status=' . $currentStatus);
+}
+
+/**
+ * Decide whether the freshly added ticket belongs to the WhatsApp flow.
+ *
+ * Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001_FIX1.
+ * Why TWO signals are required:
+ *   1. The conversation linkage. The integration-service writes
+ *      glpi_ticket_id on the conversation row via `linkGlpiTicket` AFTER
+ *      `glpiClient.createTicket` returns. When the GLPI REST request that
+ *      adds the ticket triggers `ITEM_ADD Ticket`, the conversation row in
+ *      PostgreSQL still has `glpi_ticket_id IS NULL`, so a pure repository
+ *      lookup returns nothing and the hook would (wrongly) treat the ticket
+ *      as a regular GLPI ticket.
+ *   2. The content marker. Node's `buildTicketCreatePayload`
+ *      (integration-service/src/adapters/glpi/GlpiClient.ts) unconditionally
+ *      appends "Telefone (WhatsApp): <e164>" to the ticket content for every
+ *      WhatsApp-originated ticket. This marker is present in
+ *      `$ticket->fields['content']` at ITEM_ADD time, BEFORE linkGlpiTicket.
+ *
+ * Either signal is sufficient. Tickets created organically through GLPI UI
+ * lack BOTH and are therefore never touched. Operators who would deliberately
+ * paste the literal marker into a manual ticket title are accepted as a known
+ * edge case (documented as ressalva).
+ */
+function plugin_integaglpi_is_whatsapp_originated_ticket(\Ticket $ticket, int $ticketId): bool
+{
+    // Signal #1: conversation already linked (will be true once
+    // linkGlpiTicket runs in Node, may be absent at ITEM_ADD time).
+    if (plugin_integaglpi_lookup_ticket_conversation($ticketId) !== null) {
+        return true;
+    }
+
+    // Signal #2: marker injected by Node's buildTicketCreatePayload.
+    // Case-insensitive match: the marker is a fixed Node-side string but we
+    // do not want a locale tweak in GLPI to defeat the check. Empty content
+    // collapses safely to falsy via the short-circuit on the left.
+    $content = (string) ($ticket->fields['content'] ?? $ticket->input['content'] ?? '');
+    return $content !== '' && stripos($content, 'Telefone (WhatsApp):') !== false;
+}
+
+/**
+ * @return array<string, mixed>|null
+ */
+function plugin_integaglpi_lookup_ticket_conversation(int $ticketId): ?array
+{
+    try {
+        $configService = new \GlpiPlugin\Integaglpi\Service\PluginConfigService();
+        if (!$configService->isConfigured()) {
+            return null;
+        }
+
+        $pdo = \GlpiPlugin\Integaglpi\External\ExternalDatabase::getConnection(
+            $configService->getConnectionConfig()
+        );
+        \GlpiPlugin\Integaglpi\External\ExternalSchemaManager::ensureSchema($pdo);
+        $repository = new \GlpiPlugin\Integaglpi\External\Repository\ConversationRepository($pdo);
+        $conversation = $repository->findByTicketId($ticketId);
+        return is_array($conversation) ? $conversation : null;
+    } catch (\Throwable $e) {
+        error_log('[integaglpi][ticket][new_status_lookup_error] ticket_id=' . $ticketId . ' ' . $e->getMessage());
+        return null;
     }
 }
 

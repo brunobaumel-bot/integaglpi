@@ -163,28 +163,47 @@ function plugin_init_integaglpi(): void
     $PLUGIN_HOOKS[Hooks::ITEM_ADD][PLUGIN_INTEGAGLPI_NAME][\ITILSolution::class] = 'plugin_integaglpi_item_solution';
     $PLUGIN_HOOKS[Hooks::ITEM_ADD][PLUGIN_INTEGAGLPI_NAME][\Document_Item::class] = 'plugin_integaglpi_item_add_document_item';
     $PLUGIN_HOOKS[Hooks::ITEM_UPDATE][PLUGIN_INTEGAGLPI_NAME][\Ticket::class] = 'plugin_integaglpi_ticket_update';
-    $PLUGIN_HOOKS[Hooks::ITEM_UPDATE][PLUGIN_INTEGAGLPI_NAME][\ITILSolution::class] = 'plugin_integaglpi_item_solution';
+    // ITEM_UPDATE for ITILSolution intentionally not registered.
+    // Re-firing notifyTicketSolved when a solution is updated (e.g. customer
+    // approval flips status/date_approval) produced a duplicate ticket_solved
+    // message because the fallback idempotency key (without solution_id) does
+    // not collide with the ITEM_ADD key (which includes solution_id). The
+    // ITEM_ADD hook already covers the legitimate "solution registered" event.
+    // Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001.
     // JS assets are injected by renderers (see Support\AssetRenderer) because
     // some environments return 404 for /plugins/... static assets.
+    // Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001.
+    // Menus reorganized in logical groups (top → bottom): WhatsApp/Central,
+    // Supervisão/Monitoramento Online, IA & Conhecimento, Gestão, Auditoria
+    // e Diagnóstico, Configuração. The order here drives the order shown in
+    // the GLPI sidebar. True nested submenus would require new wrapper Menu
+    // classes; the current step keeps a flat list with explicit grouping
+    // comments to minimize the surface area of the change.
     $PLUGIN_HOOKS[Hooks::MENU_TOADD][PLUGIN_INTEGAGLPI_NAME] = [
         'plugins' => [
+            // ── Grupo: WhatsApp / Central ────────────────────────────────
             Queue::class,
-            OperationLogMenu::class,
-            RoutingSafetyMenu::class,
-            ContactAgendaImportMenu::class,
             AttendanceCenterMenu::class,
+            // ── Grupo: Supervisão ───────────────────────────────────────
             OnlineMonitorMenu::class,
             SupervisorBackofficeMenu::class,
+            // ── Grupo: IA & Conhecimento ────────────────────────────────
             AiOperationsMenu::class,
-            QualityDashboardMenu::class,
             CoachingMenu::class,
-            ExternalResearchMenu::class,
-            ObservabilityMenu::class,
-            OperationalDiagnosticsMenu::class,
-            ContractsHoursMenu::class,
-            ServiceCatalogMenu::class,
             KnowledgeBaseMenu::class,
             KbCandidatesMenu::class,
+            ExternalResearchMenu::class,
+            // ── Grupo: Gestão ───────────────────────────────────────────
+            ContractsHoursMenu::class,
+            ServiceCatalogMenu::class,
+            ContactAgendaImportMenu::class,
+            // ── Grupo: Monitoramento / Qualidade ────────────────────────
+            QualityDashboardMenu::class,
+            ObservabilityMenu::class,
+            OperationalDiagnosticsMenu::class,
+            OperationLogMenu::class,
+            // ── Grupo: Configuração ─────────────────────────────────────
+            RoutingSafetyMenu::class,
         ],
     ];
     $PLUGIN_HOOKS['config_page'][PLUGIN_INTEGAGLPI_NAME] = 'front/config.form.php';

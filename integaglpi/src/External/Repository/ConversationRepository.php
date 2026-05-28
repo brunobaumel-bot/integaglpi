@@ -1010,6 +1010,22 @@ final class ConversationRepository
             ];
         }
 
+        // Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001.
+        // mine_only restricts Central rows to the logged-in technician's
+        // assignments. Skipped when an explicit technician_id filter is
+        // already in place (avoid double restriction) or when current_user_id
+        // could not be resolved (background contexts).
+        $mineOnly = (bool) ($filters['mine_only'] ?? false);
+        $currentUserId = (int) ($filters['current_user_id'] ?? 0);
+        $hasExplicitTechnicianFilter = is_int($technicianId) && $technicianId > 0;
+        if ($mineOnly && !$hasExplicitTechnicianFilter && $currentUserId > 0) {
+            $where[] = 'rt.assigned_user_id = :mine_only_user_id';
+            $params[':mine_only_user_id'] = [
+                'value' => $currentUserId,
+                'type'  => PDO::PARAM_INT,
+            ];
+        }
+
         $entityId = $filters['entity_id'] ?? null;
         if (is_int($entityId)) {
             if ($entityId === -1) {

@@ -1207,15 +1207,23 @@ final class AttendanceCenterService
         $notificationWarning = '';
         if (($solutionResult['status'] ?? '') !== 'already_solved') {
             try {
+                // Idempotency key MUST match NotificationService::notifyTicketSolved
+                // (notify_ticket_solved_<ticketId>_<solutionId>). The ITEM_ADD ITILSolution
+                // hook fires concurrently with this Central call and reserves the same key
+                // first; whichever path wins, the other is deduped at the repository level
+                // so the customer receives a single ticket_solved message.
+                // Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001.
+                $resolvedSolutionId = (int) ($solutionResult['solution_id'] ?? 0);
+                $solveIdempotencyKey = $resolvedSolutionId > 0
+                    ? 'notify_ticket_solved_' . $ticketId . '_' . $resolvedSolutionId
+                    : 'notify_ticket_solved_' . $ticketId;
                 $notification = (new IntegrationServiceClient($this->pluginConfigService))
                     ->sendTicketSolvedNotification([
                         'ticket_id' => $ticketId,
                         'conversation_id' => $conversationId,
                         'glpi_user_id' => $userId,
-                        'idempotency_key' => 'central_solve_' . $ticketId . '_' . (int) ($solutionResult['solution_id'] ?? 0),
-                        'solution_id' => (int) ($solutionResult['solution_id'] ?? 0) > 0
-                            ? (int) $solutionResult['solution_id']
-                            : null,
+                        'idempotency_key' => $solveIdempotencyKey,
+                        'solution_id' => $resolvedSolutionId > 0 ? $resolvedSolutionId : null,
                         'solution_content' => 'Ticket resolvido via Central WhatsApp.',
                         'solution_status' => (int) ($solutionResult['ticket_status'] ?? CommonITILObject::SOLVED),
                     ]);
@@ -1484,6 +1492,21 @@ final class AttendanceCenterService
             $technicianId = max(0, (int) $query['technician_id']);
         }
 
+        // Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001.
+        // mine_only restricts Central rows to conversations whose
+        // assigned_user_id matches the logged-in technician (i.e. those
+        // claimed/transferred to them). Default = on. Opt-out is explicit
+        // (?mine_only=0) so technicians can browse the full queue when
+        // searching for a conversation to claim or transfer.
+        $mineOnly = true;
+        if (array_key_exists('mine_only', $query)) {
+            $rawMineOnly = strtolower(trim((string) ($query['mine_only'] ?? '')));
+            if ($rawMineOnly === '0' || $rawMineOnly === 'false' || $rawMineOnly === 'no' || $rawMineOnly === 'off') {
+                $mineOnly = false;
+            }
+        }
+        $currentUserId = $this->resolveCurrentUserId();
+
         $entityId = 0;
         if (isset($query['entity_id']) && ctype_digit((string) $query['entity_id'])) {
             $entityId = max(0, (int) $query['entity_id']);
@@ -1512,7 +1535,32 @@ final class AttendanceCenterService
             'inactivity' => $inactivityFilter,
             'delivery' => $deliveryFilter,
             'operational_state' => $operationalState,
+            'mine_only' => $mineOnly,
+            'current_user_id' => $currentUserId,
         ];
+    }
+
+    /**
+     * Resolves the logged-in GLPI user id once per request. Falls back to 0 when
+     * not running inside a GLPI session (e.g. background tests).
+     *
+     * Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001.
+     */
+    private function resolveCurrentUserId(): int
+    {
+        try {
+            if (class_exists('\GlpiPlugin\Integaglpi\Plugin')
+                && method_exists('\GlpiPlugin\Integaglpi\Plugin', 'getCurrentUserId')) {
+                return max(0, (int) \GlpiPlugin\Integaglpi\Plugin::getCurrentUserId());
+            }
+            if (class_exists('\Session') && method_exists('\Session', 'getLoginUserID')) {
+                return max(0, (int) \Session::getLoginUserID());
+            }
+        } catch (Throwable) {
+            return 0;
+        }
+
+        return 0;
     }
 
     /**

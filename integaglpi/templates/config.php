@@ -67,12 +67,7 @@ $tabUrl = static fn (string $tab): string => $configUrl . '?tab=' . rawurlencode
             <?= $this->escape(__('Filas', 'glpiintegaglpi')); ?>
         </a>
     </li>
-    <li class="nav-item">
-        <a class="nav-link <?= $activeTab === 'messages' ? 'active' : ''; ?>"
-           href="<?= $this->escape($tabUrl('messages')); ?>">
-            <?= $this->escape(__('Mensagens', 'glpiintegaglpi')); ?>
-        </a>
-    </li>
+    <?php // Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001 — tabs "Mensagens", "Inatividade" e "Recepção Inteligente" foram consolidadas em "Hub de Mensagens". URLs antigas continuam respondendo via ?tab=, mas a navegação superior só expõe o Hub para evitar duplicidade visual. ?>
     <li class="nav-item">
         <a class="nav-link <?= $activeTab === 'templates' ? 'active' : ''; ?>"
            href="<?= $this->escape($tabUrl('templates')); ?>">
@@ -80,19 +75,7 @@ $tabUrl = static fn (string $tab): string => $configUrl . '?tab=' . rawurlencode
         </a>
     </li>
     <li class="nav-item">
-        <a class="nav-link <?= $activeTab === 'inactivity' ? 'active' : ''; ?>"
-           href="<?= $this->escape($tabUrl('inactivity')); ?>">
-            <?= $this->escape(__('Inatividade', 'glpiintegaglpi')); ?>
-        </a>
-    </li>
-    <li class="nav-item">
-        <a class="nav-link <?= $activeTab === 'contact_profile' ? 'active' : ''; ?>"
-           href="<?= $this->escape($tabUrl('contact_profile')); ?>">
-            <?= $this->escape(__('Recepção Inteligente', 'glpiintegaglpi')); ?>
-        </a>
-    </li>
-    <li class="nav-item">
-        <a class="nav-link <?= $activeTab === 'message_settings' ? 'active' : ''; ?>"
+        <a class="nav-link <?= in_array($activeTab, ['message_settings', 'messages', 'inactivity', 'contact_profile'], true) ? 'active' : ''; ?>"
            href="<?= $this->escape($tabUrl('message_settings')); ?>">
             <?= $this->escape(__('Hub de Mensagens', 'glpiintegaglpi')); ?>
         </a>

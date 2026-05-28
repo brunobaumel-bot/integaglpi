@@ -1076,6 +1076,126 @@ if ($auditPanelOk) {
     </div>
 </div>
 
+<?php
+// Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001.
+// Lightweight polling for the ticket WhatsApp tab. Calls central.messages.php
+// every ~12s using after_id to fetch ONLY new messages. When new messages
+// arrive a non-intrusive banner appears; user clicks to refresh the tab.
+// We never auto-reload to avoid losing the technician's draft reply.
+if ($isExternalConfigured && $runtime !== null && !$isClosed) {
+    $pollingConversationId = (string) ($runtime['conversation_id'] ?? '');
+    $pollingTicketId = (int) $ticket->getID();
+    $pollingMessagesUrl = rtrim((string) ($CFG_GLPI['root_doc'] ?? ''), '/')
+        . '/plugins/integaglpi/front/central.messages.php';
+    $pollingLastId = '';
+    if (!empty($messages)) {
+        $lastMessage = $messages[count($messages) - 1];
+        $pollingLastId = (string) ($lastMessage['id'] ?? $lastMessage['message_id'] ?? '');
+    }
+    if ($pollingConversationId !== '' && $pollingTicketId > 0) {
+        ?>
+        <div class="alert alert-info mt-2 mb-0 d-none js-integaglpi-ticket-poll-banner" role="alert">
+            <span class="js-integaglpi-ticket-poll-text"><?= $this->escape(__('Novas mensagens recebidas. Atualize para visualizar.', 'glpiintegaglpi')); ?></span>
+            <button type="button" class="btn btn-sm btn-outline-primary ms-2 js-integaglpi-ticket-poll-refresh">
+                <?= $this->escape(__('Atualizar', 'glpiintegaglpi')); ?>
+            </button>
+        </div>
+        <script>
+        (function () {
+            var pollingEndpoint = <?= json_encode($pollingMessagesUrl, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
+            var conversationId = <?= json_encode($pollingConversationId, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
+            var ticketId = <?= (int) $pollingTicketId; ?>;
+            var lastId = <?= json_encode($pollingLastId, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
+            var pollIntervalMs = 12000;
+            var pollHandle = null;
+            var banner = document.querySelector('.js-integaglpi-ticket-poll-banner');
+            var refreshBtn = document.querySelector('.js-integaglpi-ticket-poll-refresh');
+            var bannerText = document.querySelector('.js-integaglpi-ticket-poll-text');
+            if (!banner || !refreshBtn) {
+                return;
+            }
+            refreshBtn.addEventListener('click', function () {
+                window.location.reload();
+            });
+
+            function buildUrl(after) {
+                var params = new URLSearchParams({
+                    conversation_id: conversationId,
+                    ticket_id: String(ticketId),
+                    limit: '20'
+                });
+                if (after) {
+                    params.set('after_id', after);
+                }
+                return pollingEndpoint + '?' + params.toString();
+            }
+
+            function tick() {
+                if (document.hidden) {
+                    return; // pause polling when the tab is in background
+                }
+                fetch(buildUrl(lastId), {
+                    method: 'GET',
+                    credentials: 'same-origin',
+                    headers: { 'Accept': 'application/json' }
+                }).then(function (response) {
+                    if (!response.ok) {
+                        return null;
+                    }
+                    return response.json();
+                }).then(function (data) {
+                    if (!data || data.ok !== true) {
+                        return;
+                    }
+                    var messages = Array.isArray(data.messages) ? data.messages : [];
+                    if (messages.length === 0) {
+                        return;
+                    }
+                    // Update tracking id; show banner once.
+                    var latest = messages[messages.length - 1];
+                    if (latest && latest.id) {
+                        lastId = String(latest.id);
+                    }
+                    banner.classList.remove('d-none');
+                    if (bannerText) {
+                        var count = messages.length;
+                        var template = <?= json_encode(__('Novas mensagens recebidas (%d). Atualize para visualizar.', 'glpiintegaglpi'), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>;
+                        bannerText.textContent = template.replace('%d', String(count));
+                    }
+                }).catch(function () {
+                    // Silent — polling errors must not disrupt the page.
+                });
+            }
+
+            function start() {
+                if (pollHandle !== null) {
+                    return;
+                }
+                pollHandle = window.setInterval(tick, pollIntervalMs);
+            }
+            function stop() {
+                if (pollHandle !== null) {
+                    window.clearInterval(pollHandle);
+                    pollHandle = null;
+                }
+            }
+
+            document.addEventListener('visibilitychange', function () {
+                if (document.hidden) {
+                    stop();
+                } else {
+                    start();
+                }
+            });
+            window.addEventListener('beforeunload', stop);
+            start();
+        })();
+        </script>
+        <?php
+    }
+}
+?>
+
 <?php if ($isExternalConfigured && $runtime !== null && $isClosed) { ?>
     <div class="alert alert-warning mt-3 mb-0 d-flex align-items-start gap-2">
         <span style="font-size: 1.1rem;">&#128274;</span>
@@ -1127,7 +1247,8 @@ if ($auditPanelOk) {
     <div class="card mt-3" id="<?= $this->escape($replyDomId); ?>" data-reply-card="1">
         <div class="card-header"><?= $this->escape(__('Responder cliente', 'glpiintegaglpi')); ?></div>
         <div class="card-body">
-            <div class="border rounded p-3 mb-3 bg-white js-integaglpi-ticket-ai-assistant">
+            <?php // Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001 — Assistente IA was moved below the reply textarea/attachment. Block is rendered after the send button using data-ai-assistant-position="below-reply". ?>
+            <div class="border rounded p-3 mb-3 bg-white js-integaglpi-ticket-ai-assistant" data-ai-assistant-position="below-reply" data-ai-assistant-render="deferred" hidden>
                 <div class="d-flex justify-content-between align-items-start gap-2 flex-wrap mb-2">
                     <div>
                         <strong><?= $this->escape(__('Assistente IA', 'glpiintegaglpi')); ?></strong>
@@ -1321,6 +1442,31 @@ if ($auditPanelOk) {
             </div>
         </div>
     </div>
+    <script>
+    // Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001.
+    // Reposition the Assistente IA block to AFTER the reply textarea/attachment/send.
+    // The block is rendered hidden in its original position; this script appends it
+    // at the end of the reply card body and reveals it.
+    (function () {
+        var card = document.getElementById(<?= json_encode($replyDomId, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>);
+        if (!card) {
+            return;
+        }
+        var assistant = card.querySelector('.js-integaglpi-ticket-ai-assistant[data-ai-assistant-position="below-reply"]');
+        if (!assistant) {
+            return;
+        }
+        var body = card.querySelector('.card-body');
+        if (body) {
+            try {
+                body.appendChild(assistant);
+            } catch (err) {
+                // Reposition is non-critical; fall back to revealing in place.
+            }
+        }
+        assistant.removeAttribute('hidden');
+    })();
+    </script>
     <script>
     (function () {
         var card = document.getElementById(<?= json_encode($replyDomId, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE); ?>);

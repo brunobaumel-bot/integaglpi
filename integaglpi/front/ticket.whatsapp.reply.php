@@ -92,6 +92,103 @@ function integaglpiMaxBytesForMime(string $mime): int
     return 15_728_640;
 }
 
+/**
+ * Decide whether the current technician may reply on this conversation/ticket.
+ *
+ * Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001.
+ * Rules:
+ *  - The conversation must exist and be bound to the ticket.
+ *  - It must be open (not closed/cancelled).
+ *  - The conversation.assigned_user_id (= claimed technician) must equal $currentUserId.
+ *    Read-only viewing is allowed, but sending requires ownership.
+ *
+ * Fail-closed: any lookup failure denies the send.
+ *
+ * @return array{allowed: bool, http_status: int, error: string, reason: string, message: string}
+ */
+function plugin_integaglpi_resolve_reply_gate(int $ticketId, string $conversationId, int $currentUserId): array
+{
+    $deny = static fn (int $code, string $error, string $reason, string $message): array => [
+        'allowed' => false,
+        'http_status' => $code,
+        'error' => $error,
+        'reason' => $reason,
+        'message' => $message,
+    ];
+
+    if ($ticketId <= 0 || $conversationId === '' || $currentUserId <= 0) {
+        return $deny(400, 'invalid_request', 'invalid_input', 'Requisição inválida para envio.');
+    }
+
+    try {
+        $configService = new \GlpiPlugin\Integaglpi\Service\PluginConfigService();
+        if (!$configService->isConfigured()) {
+            return $deny(503, 'not_configured', 'integration_not_configured', 'Integração não configurada.');
+        }
+        $pdo = \GlpiPlugin\Integaglpi\External\ExternalDatabase::getConnection(
+            $configService->getConnectionConfig()
+        );
+        \GlpiPlugin\Integaglpi\External\ExternalSchemaManager::ensureSchema($pdo);
+        $repository = new \GlpiPlugin\Integaglpi\External\Repository\ConversationRepository($pdo);
+        $conversation = $repository->findBoundToTicket($ticketId, $conversationId);
+    } catch (\Throwable $e) {
+        error_log('[integaglpi][outbound][reply_gate_lookup_error] ticket_id=' . $ticketId . ' ' . $e->getMessage());
+        return $deny(500, 'lookup_failed', 'conversation_lookup_error', 'Não foi possível validar a conversa agora.');
+    }
+
+    if (!is_array($conversation)) {
+        return $deny(404, 'not_found', 'conversation_not_found', 'Conversa não encontrada para este chamado.');
+    }
+
+    $conversationStatus = strtolower(trim((string) ($conversation['conversation_status'] ?? '')));
+    $runtimeStatus = strtolower(trim((string) ($conversation['runtime_status'] ?? '')));
+    if ($conversationStatus === 'closed' || $runtimeStatus === 'closed') {
+        return $deny(409, 'conversation_closed', 'conversation_closed', 'Conversa encerrada. Não é possível responder.');
+    }
+
+    // Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001_FIX1.
+    // Mirrors AttendanceCenterService::replyConversation: anything that is not
+    // explicitly 'open' blocks the outbound. Pre-ticket states (awaiting_*,
+    // collecting_contact_profile, pending_glpi, media_error, cancelled,
+    // unknown) all fall here. Backend gate, not frontend cosmetic, so a direct
+    // POST cannot bypass it.
+    if ($conversationStatus !== 'open') {
+        return $deny(
+            409,
+            'conversation_not_open',
+            'conversation_status_' . ($conversationStatus !== '' ? $conversationStatus : 'unknown'),
+            'A conversa não está aberta para resposta. Assuma/reabra o atendimento antes de responder.'
+        );
+    }
+
+    $assignedUserId = (int) ($conversation['assigned_user_id'] ?? 0);
+    if ($assignedUserId <= 0) {
+        return $deny(
+            403,
+            'not_claimed',
+            'no_claim',
+            'Assuma o atendimento para responder. A conversa ainda não tem técnico responsável.'
+        );
+    }
+
+    if ($assignedUserId !== $currentUserId) {
+        return $deny(
+            403,
+            'not_owner',
+            'owned_by_other_technician',
+            'Você pode visualizar esta conversa, mas a resposta cabe ao técnico responsável. Solicite transferência.'
+        );
+    }
+
+    return [
+        'allowed' => true,
+        'http_status' => 200,
+        'error' => '',
+        'reason' => '',
+        'message' => '',
+    ];
+}
+
 function integaglpiHasReplyUpload(): bool
 {
     return isset($_FILES['reply_file'])
@@ -235,6 +332,20 @@ if ($method === 'POST') {
             integaglpiJsonResponse(['success' => false, 'message' => 'Ticket não encontrado.', 'error' => 'ticket_not_found'], 404);
         }
         $ticket->check($ticketId, UPDATE);
+
+        // Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001.
+        // Only the assigned technician may respond via WhatsApp from inside the
+        // ticket. Backend gate, not frontend cosmetic. Mirrors the same rule
+        // enforced in AttendanceCenterService::replyConversation.
+        $replyGate = plugin_integaglpi_resolve_reply_gate($ticketId, $conversationId, $currentUserId);
+        if (!$replyGate['allowed']) {
+            integaglpiJsonResponse([
+                'success' => false,
+                'message' => $replyGate['message'],
+                'error'   => $replyGate['error'],
+                'reason'  => $replyGate['reason'],
+            ], $replyGate['http_status']);
+        }
 
         $payload = integaglpiBuildOutboundPayload($ticketId, $conversationId, $replyText, $currentUserId, $mediaPayload);
 

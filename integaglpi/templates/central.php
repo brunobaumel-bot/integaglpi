@@ -359,7 +359,34 @@ $operationalFilterMap = [
                 </div>
             <?php } ?>
 
+            <?php // Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001 — default scope = only conversations assigned to the logged-in technician. ?>
+            <?php $mineOnlyActive = !array_key_exists('mine_only', $filters) || (bool) ($filters['mine_only'] ?? true); ?>
             <form method="get" action="<?= $this->escape($this->getCentralUrl()); ?>" class="mb-2 js-integaglpi-central-filter-form">
+                <input type="hidden" name="mine_only" value="<?= $mineOnlyActive ? '1' : '0'; ?>" class="js-integaglpi-central-mine-only-hidden">
+                <div class="alert alert-secondary py-2 px-3 d-flex justify-content-between align-items-center small mb-2">
+                    <span>
+                        <?php if ($mineOnlyActive) { ?>
+                            <strong><?= $this->escape(__('Apenas chamados atribuídos a você', 'glpiintegaglpi')); ?></strong>
+                            <span class="text-muted"> · <?= $this->escape(__('Inclui transferências e claims pessoais.', 'glpiintegaglpi')); ?></span>
+                        <?php } else { ?>
+                            <strong><?= $this->escape(__('Exibindo todos os atendimentos', 'glpiintegaglpi')); ?></strong>
+                            <span class="text-muted"> · <?= $this->escape(__('Você pode assumir qualquer conversa não atribuída.', 'glpiintegaglpi')); ?></span>
+                        <?php } ?>
+                    </span>
+                    <button
+                        type="submit"
+                        class="btn btn-sm btn-outline-primary js-integaglpi-central-mine-only-toggle"
+                        formaction="<?= $this->escape($this->getCentralUrl()); ?>"
+                        name="mine_only"
+                        value="<?= $mineOnlyActive ? '0' : '1'; ?>"
+                    >
+                        <?php if ($mineOnlyActive) { ?>
+                            <?= $this->escape(__('Mostrar todos', 'glpiintegaglpi')); ?>
+                        <?php } else { ?>
+                            <?= $this->escape(__('Mostrar apenas os meus', 'glpiintegaglpi')); ?>
+                        <?php } ?>
+                    </button>
+                </div>
                 <div class="row g-2 align-items-end">
                     <div class="col-6 col-xl-2">
                         <label class="form-label small mb-1"><?= $this->escape(__('Status', 'glpiintegaglpi')); ?></label>
@@ -1779,6 +1806,14 @@ $operationalFilterMap = [
         if (form) {
             const data = new FormData(form);
             data.forEach(function (value, key) {
+                // Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001.
+                // `mine_only` is a tri-state filter ('1' on / '0' off / absent = default on).
+                // The legacy filter skipped '0', which would erase the user's explicit
+                // "Mostrar todos" choice. Forward it verbatim.
+                if (key === 'mine_only') {
+                    params.set(key, String(value));
+                    return;
+                }
                 if (String(value) !== '' && String(value) !== '0') {
                     params.set(key, String(value));
                 }
