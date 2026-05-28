@@ -62,6 +62,10 @@ export function createHealthController(pool: Pick<Pool, 'query'>) {
 
     const version = getServiceVersion();
     const runtimeManifest = readRuntimeManifest();
+    const aiRuntimeConfig = postgresOk
+      ? await loadAiRuntimeConfigDiagnostics(pool)
+      : buildAiRuntimeEnvFallbackDiagnostics(false);
+    const aiRuntimeSummary = buildAiRuntimeHealthSummary(aiRuntimeConfig);
 
     const body = {
       ok: postgresOk,
@@ -84,13 +88,16 @@ export function createHealthController(pool: Pick<Pool, 'query'>) {
         manifest_found: runtimeManifest.found,
         expected_migrations_count: runtimeManifest.expected_migrations_count,
         webhook_guard: {
-          app_secret_configured: Boolean(env.META_APP_SECRET),
+          // Boolean presence indicator only — the value itself is never serialized.
+          app_signature_configured: Boolean(env.META_APP_SECRET),
           allowlist_configured:
             env.ALLOWED_META_PHONE_NUMBER_IDS.trim() !== ''
             || env.ALLOWED_META_DISPLAY_PHONE_NUMBERS.trim() !== ''
             || env.ALLOWED_META_PHONE_ID.trim() !== '',
         },
       },
+      ai_runtime_config_present: true,
+      ai_runtime_config_summary: aiRuntimeSummary,
       ...(version !== undefined ? { version } : {}),
     };
 
@@ -133,6 +140,96 @@ const AI_RUNTIME_SETTING_KEYS = [
   'p4_candidate_review_provider',
   'p4_candidate_review_model',
 ] as const;
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function nestedRecordValue(source: Record<string, unknown>, key: string): Record<string, unknown> {
+  return recordValue(source[key]);
+}
+
+function buildAiRuntimeHealthSummary(aiRuntimeConfig: Record<string, unknown>): Record<string, unknown> {
+  const cache = nestedRecordValue(aiRuntimeConfig, 'cache');
+  const supervisor = nestedRecordValue(aiRuntimeConfig, 'ai_supervisor');
+  const supervisorEffective = nestedRecordValue(supervisor, 'effective');
+  const copilot = nestedRecordValue(aiRuntimeConfig, 'copilot');
+  const copilotEffective = nestedRecordValue(copilot, 'effective');
+  const worker = nestedRecordValue(aiRuntimeConfig, 'ai_online_alert_worker');
+
+  return {
+    authoritative_endpoint: '/internal/glpi/diagnostics',
+    source: cache.source ?? 'env',
+    refreshed_at: cache.refreshed_at ?? '',
+    supervisor: {
+      model: supervisorEffective.model ?? '',
+      timeout_ms: supervisorEffective.timeout_ms ?? null,
+      origin: supervisor.origin ?? '',
+    },
+    copilot: {
+      model: copilotEffective.model ?? '',
+      timeout_ms: copilotEffective.timeout_ms ?? null,
+      origin: copilot.origin ?? '',
+    },
+    worker: {
+      loop_env: worker.loop_env ?? false,
+      interval_seconds: worker.interval_seconds ?? 0,
+      status_source: worker.status_source ?? 'worker_process_or_compose',
+    },
+  };
+}
+
+function buildAiRuntimeEnvFallbackDiagnostics(databaseAvailable: boolean): Record<string, unknown> {
+  const supervisorTimeoutMs = env.AI_SUPERVISOR_TIMEOUT_SECONDS * 1000;
+  const copilotTimeoutMs = (env.COPILOT_TIMEOUT_SECONDS || env.AI_SUPERVISOR_TIMEOUT_SECONDS) * 1000;
+  const alertTimeoutMs = (env.AI_ONLINE_ALERT_TIMEOUT_SECONDS || env.AI_SUPERVISOR_TIMEOUT_SECONDS) * 1000;
+
+  return {
+    cache: {
+      strategy: databaseAvailable ? 'no_cache' : 'no_cache_db_unavailable',
+      refreshed_at: new Date().toISOString(),
+      source: 'env',
+      database_available: databaseAvailable,
+    },
+    ai_supervisor: {
+      origin: 'env',
+      effective: {
+        enabled: env.AI_SUPERVISOR_ENABLED,
+        provider: env.AI_SUPERVISOR_PROVIDER,
+        model: env.AI_SUPERVISOR_MODEL,
+        timeout_ms: supervisorTimeoutMs,
+        max_messages: env.AI_SUPERVISOR_MAX_MESSAGES,
+        max_chars: env.AI_SUPERVISOR_MAX_CHARS,
+        dry_run: env.AI_SUPERVISOR_DRY_RUN,
+      },
+    },
+    copilot: {
+      origin: 'env',
+      effective: {
+        enabled: env.AI_SUPERVISOR_ENABLED,
+        provider: env.AI_SUPERVISOR_PROVIDER,
+        model: env.COPILOT_DRAFT_MODEL || env.AI_SUPERVISOR_MODEL,
+        timeout_ms: copilotTimeoutMs,
+        max_chars: env.AI_SUPERVISOR_MAX_CHARS,
+        dry_run: env.AI_SUPERVISOR_DRY_RUN,
+      },
+    },
+    ai_online_alerts: {
+      origin: env.AI_ONLINE_ALERT_MODEL.trim() !== '' || env.AI_ONLINE_ALERT_TIMEOUT_SECONDS > 0 ? 'env_function_override' : 'env',
+      effective: {
+        provider: env.AI_SUPERVISOR_PROVIDER,
+        model: env.AI_ONLINE_ALERT_MODEL || env.AI_SUPERVISOR_MODEL,
+        timeout_ms: alertTimeoutMs,
+        dry_run: env.AI_SUPERVISOR_DRY_RUN,
+      },
+    },
+    ai_online_alert_worker: {
+      loop_env: env.AI_ONLINE_ALERT_WORKER_LOOP,
+      interval_seconds: env.AI_ONLINE_ALERT_WORKER_INTERVAL_SECONDS,
+      status_source: 'worker_process_or_compose',
+    },
+  };
+}
 
 function aiSetting(settings: Map<string, unknown>, key: string): string {
   const value = settings.get(key);
@@ -186,12 +283,7 @@ async function loadAiRuntimeConfigDiagnostics(pool: Pick<Pool, 'query'>): Promis
   );
   const columns = columnRows.map((row) => row.column_name);
   if (!columns.includes('context')) {
-    return {
-      cache: { strategy: 'no_cache', refreshed_at: refreshedAt, source: 'env', database_available: false },
-      ai_supervisor: { origin: 'env', effective: { model: env.AI_SUPERVISOR_MODEL, timeout_ms: env.AI_SUPERVISOR_TIMEOUT_SECONDS * 1000 } },
-      copilot: { origin: 'env', effective: { model: env.COPILOT_DRAFT_MODEL || env.AI_SUPERVISOR_MODEL, timeout_ms: (env.COPILOT_TIMEOUT_SECONDS || env.AI_SUPERVISOR_TIMEOUT_SECONDS) * 1000 } },
-      ai_online_alerts: { origin: 'env', effective: { model: env.AI_ONLINE_ALERT_MODEL || env.AI_SUPERVISOR_MODEL, timeout_ms: (env.AI_ONLINE_ALERT_TIMEOUT_SECONDS || env.AI_SUPERVISOR_TIMEOUT_SECONDS) * 1000 } },
-    };
+    return buildAiRuntimeEnvFallbackDiagnostics(false);
   }
 
   const projectionColumns = columns.filter((column) => column !== 'context');
