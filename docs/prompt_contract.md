@@ -1,14 +1,35 @@
 # Prompt Contract — Engineering Workflow
 
-**Version:** 1.1  
-**Last Updated:** 2026-05-13  
-**Project:** AI-ENGINEER Control Plane  
+**Version:** 2.0  
+**Last Updated:** 2026-05-28  
+**Project:** IntegraGLPI — GLPI 11 + WhatsApp Cloud API + IA Local  
+**Roadmap:** V5 — Ciclo completo F0–F4 fechado; F5 registrado como backlog V6  
 **Status:** Official
 
 ---
 
 ## Purpose
-Este documento define o padrão oficial de prompts, handoffs, revisões e governança de segurança para todo o ciclo de engenharia assistida por IA do projeto.
+Este documento define o padrão oficial de prompts, handoffs, revisões e governança de segurança para todo o ciclo de engenharia assistida por IA do IntegraGLPI.
+
+## Identidade do Projeto
+
+| Pasta | Stack | Responsabilidade |
+|---|---|---|
+| `integaglpi/` | PHP 8.3 | Plugin GLPI — UI, Central, hooks, config, KB, coaching |
+| `integration-service/` | TypeScript/Node.js | Webhooks Meta, FSM, IA local, outbound, jobs, quality |
+| `infra/` | Docker + PostgreSQL | Bootstrap, schema, migrations |
+
+## Roadmap V5 — Estado Final (2026-05-28)
+
+| Fase | ID | Status | Ressalvas aceitas |
+|------|----|--------|-------------------|
+| F0 | `integaglpi_gold_readiness_audit_001` | CLOSE_COM_RESSALVAS | composer test sem vendor; smokes manuais T06–T09 pendentes execução humana |
+| F1 | `integaglpi_ops_console_entity_identity_gold_001` | CLOSE_COM_RESSALVAS | Sub-pacote entidade fechado; smoke contato novo OK |
+| F2 | `integaglpi_whatsapp_professional_messaging_gold_001` | CLOSE_COM_RESSALVAS | Guard 24h, template controlado, bugfix continuidade chamado reaberto; smoke OK |
+| F3 | `integaglpi_active_monitoring_sla_quality_gold_001` | CLOSE_COM_RESSALVAS | Quality Dashboard, Observability, SLA, Inatividade, Integrity Audit; smoke OK |
+| F4 | `integaglpi_ai_knowledge_console_feedback_gold_001` | CLOSE_COM_RESSALVAS | IA Supervisora, Copiloto, KB candidatos, Feedback Humano, Vault, AI Pilot gates; smoke OK |
+| F5 | `integaglpi_future_integrations_readonly_gold_001` | BACKLOG_V6 | LogMeIn/Zabbix/ERP/n8n/Omnichannel diferidos; smokes estáticos S-F5-01/02/03 confirmados |
+| Final | `integaglpi_docs_contract_sync_001` | EXECUTADO | Este documento |
 
 ## Single Source of Truth
 Este arquivo é a **fonte oficial e mais atualizada**.  
@@ -40,16 +61,31 @@ text## Core Principles
 - Gates humanos obrigatórios em todas as etapas
 
 ## Safety Flags (Default — Nunca Alterar)
-- `safe_to_execute_project=False`
-- `safe_to_promote=False`
-- `dispatch_prohibited=True`
-- `promotion_manual_only=True`
-- `human_gate_required=True`
-- `human_review_required=True`
-- `manual_handoff_only=True`
-- `auto_apply_allowed=False`
-- `auto_commit_allowed=False`
-- `auto_deploy_allowed=False`
+
+```
+safe_to_execute_project=False
+safe_to_promote=False
+dispatch_prohibited=True
+promotion_manual_only=True
+human_gate_required=True
+human_review_required=True
+manual_handoff_only=True
+manual_commit_only=True
+manual_deploy_only=True
+auto_apply_allowed=False
+auto_commit_allowed=False
+auto_deploy_allowed=False
+production_untouched=True
+no_db_mutation_real=True
+no_ticket_mutation_real=True
+no_whatsapp_send_real=True
+no_env_changes=True
+no_raw_prompt=True
+pii_masking_required=True
+no_autonomous_mutation=True
+cloud_requires_gate=True
+no_phase_duplication=True
+```
 
 ## Workflow
 1. ChatGPT gera prompt para IAs revisoras (Grok / Gemini / DeepSeek)
@@ -84,6 +120,52 @@ Qualquer alteração deve ser realizada exclusivamente via fase documental aprov
 - Criação de novos arquivos sem autorização explícita na allowlist
 - Alteração de arquivos fora da allowlist
 
+## Stop Conditions — IntegraGLPI (Abortar imediatamente se)
+
+As condições abaixo disparam BLOCK imediato em qualquer fase:
+
+| Condição | Risco |
+|----------|-------|
+| IA enviar mensagem WhatsApp ao cliente | Alto — envio não autorizado |
+| IA alterar, fechar ou reabrir ticket GLPI | Alto — mutação não auditada |
+| IA mudar entidade de conversa sem gate humano | Alto — dado de classificação corrompido |
+| Cloud/LLM externo ativado sem gate DPO + direção + admin | Crítico |
+| Texto livre enviado fora da janela de 24h Meta | Alto — violação de política |
+| Integração externa com ação mutável (LogMeIn, Zabbix, ERP) | Crítico |
+| Deploy automático em produção | Crítico |
+| `git add .` ou `git add -A` | Alto — arquivos sensíveis podem ser commitados |
+| Prompt bruto com PII em logs ou audit | Alto |
+| Token / secret / senha exposto em UI, log ou payload | Crítico |
+| Migration destrutiva (DROP/TRUNCATE/DELETE amplo) sem gate | Crítico |
+| Workspace sujo sem autorização | Médio |
+| Reabrir fase já fechada (F0–F5) | Médio — duplicação de trabalho |
+
+## Produção — Gates Obrigatórios
+
+Qualquer ação em produção exige todos os itens abaixo:
+
+1. `git status --short` limpo
+2. `npx tsc --noEmit` CLEAN
+3. `npx vitest run` 100% PASS
+4. `php -l` CLEAN em todos os arquivos alterados
+5. Cursor review aprovado (`CLOSE` ou `CLOSE_COM_RESSALVAS`)
+6. Commit manual assinado pelo operador
+7. Deploy manual com janela de manutenção aprovada
+8. Smoke pós-deploy confirmado manualmente
+9. Rollback plan documentado e testado
+
+## IA — Governança Operacional
+
+| Módulo | Modo permitido | Modo proibido |
+|--------|----------------|---------------|
+| IA Supervisora | Sugestão read-only, dry-run, provider=ollama | Alterar ticket, enviar WA, cloud sem gate |
+| Copiloto | Rascunho para técnico revisar, dry-run | Auto-envio, cloud sem gate |
+| AI Online Alerts | Alertas internos read-only | Enviar WA, mutar ticket, cloud |
+| AI Pilot (P4) | Gates: DPO + direção + admin + incidentAck | Cloud sem todos os gates |
+| KB Candidatos | Revisão humana obrigatória antes de publicar | Auto-publicar em `glpi_knowbaseitems` |
+| Feedback Humano | useful/not_useful/incorrect apenas | Alterar ticket, ranking punitivo |
+| External Research | Preview sanitizado, allowlist de sources | Cloud sem gate, PII em prompt |
+
 ## Reviewer Contract (Grok / Gemini / DeepSeek)
 - Analisam risco, escopo, segurança e alinhamento com a missão
 - Retornam veredito estruturado (`VERDICT`, `BLOCKERS`, `RISKS`, `REQUIRED_ADJUSTMENTS`)
@@ -99,9 +181,42 @@ Qualquer alteração deve ser realizada exclusivamente via fase documental aprov
 - Retorna veredito com evidência (`arquivo + linha` quando possível)
 - Verifica escopo real vs escopo aprovado, safety flags e testes
 
+## F5 — Backlog V6 (Integrações Futuras Read-only)
+
+Nenhum item abaixo deve ser implementado antes do ciclo V6 com escopo, credenciais e smoke em TESTE formalmente aprovados.
+
+| Integração | Modo permitido no V6 | Proibido sempre |
+|------------|----------------------|-----------------|
+| **LogMeIn** | Inventário/equipamento read-only; vínculo visual com ticket | remote control, wake-on-LAN, `session/start`, `deploy` |
+| **Zabbix** | `problem.get`, `host.get`; status de alertas relacionados a ticket | `acknowledge` automático, criação de incidente automática |
+| **ERP** | Consulta de contrato/status comercial (token read-only por contrato) | write/update, faturamento, cobrança; exige PII assessment jurídico |
+| **n8n** | Discovery/mapeamento de workflows futuros apenas | Webhook público novo, workflow ativo, execução automática |
+| **Omnichannel** | Mapeamento de canais futuros (Telegram, e-mail, voz) | Novo canal sem gate de licenciamento Meta/provedor |
+
+**Pré-requisitos obrigatórios para qualquer integração V6:**
+- Credencial dedicada read-only por contrato com o fornecedor
+- AiSecretVaultService estendido com o novo provider
+- Smoke em TESTE com dados sintéticos (sem cliente real)
+- PII assessment se dados de cliente/equipamento forem trafegados
+- Bearer middleware em todas as rotas internas
+- Rate limit via Redis (padrão `AiOnlineSupervisorAlertService`)
+- Audit trail via `AuditService.recordAuditEventFireAndForget`
+
+## Arquivos Congelados (Não Alterar sem Fase Explícita)
+
+| Arquivo | Motivo |
+|---------|--------|
+| `integration-service/src/domain/services/InboundWebhookService.ts` | FSM principal — risco de regressão em produção |
+| `integration-service/src/domain/services/OutboundMessageService.ts` | Envio WhatsApp — alteração pode disparar mensagens reais |
+| `integration-service/src/adapters/glpi/GlpiClient.ts` | Client GLPI — alteração pode mutar tickets reais |
+| `integration-service/src/config/env.ts` | Defaults críticos — AI Pilot cloud=false, OUTBOUND=mock |
+| `infra/postgres/init/*.sql` | Schema base — não alterar; criar novas migrations |
+| `integaglpi/inc/install.php` | Instalação GLPI — risco de reinstalação acidental |
+| `.env` / `.env.*` | Segredos — nunca commitar |
+
 ## Maintenance
-Qualquer evolução deste contrato deve ser feita através de fase documental aprovada e commit separado.
+Qualquer evolução deste contrato deve ser feita através de fase documental aprovada (`integaglpi_docs_contract_sync_*`) e commit manual separado.
 
 ---
 
-**End of Document**
+**End of Document — Roadmap V5 Closed 2026-05-28**
