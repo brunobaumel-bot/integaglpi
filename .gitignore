@@ -24,3 +24,7 @@ vendor/
 *.sql.bak
 *.dump
 .claude/
+# Local Claude workspace artifacts
+.claude
+.claude_old/
+CLAUDE.md
