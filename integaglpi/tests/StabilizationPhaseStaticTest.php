@@ -97,6 +97,31 @@ final class StabilizationPhaseStaticTest extends TestCase
         self::assertLessThan($ownerGuard, $statusGuard);
     }
 
+    public function testTicketTabHidesReplyFormWhenCurrentUserIsNotOwner(): void
+    {
+        $template = (string) file_get_contents($this->pluginPath('templates/ticket_tab.php'));
+
+        self::assertStringContainsString('$replyOwnedByCurrentUser', $template);
+        self::assertStringContainsString('js-integaglpi-ticket-reply-owner-gate', $template);
+        self::assertStringContainsString('Este atendimento está atribuído a outro técnico.', $template);
+        self::assertStringContainsString('Você precisa assumir este atendimento antes de responder.', $template);
+        self::assertStringContainsString('&& $replyOwnedByCurrentUser', $template);
+    }
+
+    public function testNativeGlpiTicketUserClaimIsHookedAndSynced(): void
+    {
+        $setup = (string) file_get_contents($this->pluginPath('setup.php'));
+        $hook = (string) file_get_contents($this->pluginPath('hook.php'));
+        $runtime = (string) file_get_contents($this->pluginPath('src/Service/TicketRuntimeService.php'));
+
+        self::assertStringContainsString("\\Ticket_User::class] = 'plugin_integaglpi_item_add_ticket_user'", $setup);
+        self::assertStringContainsString('function plugin_integaglpi_item_add_ticket_user', $hook);
+        self::assertStringContainsString('syncNativeTicketAssignment', $hook);
+        self::assertStringContainsString('public function syncNativeTicketAssignment', $runtime);
+        self::assertStringContainsString('sendTechnicianAssigned', $runtime);
+        self::assertStringContainsString('ensureTicketProcessingStatusIfNew', $runtime);
+    }
+
     // ── Item 8: ticket created via WhatsApp stays as Novo ──────────────
 
     public function testHookEnforcesNewStatusForWhatsappTickets(): void
@@ -269,33 +294,36 @@ final class StabilizationPhaseStaticTest extends TestCase
 
         // The grouping comments are part of the public contract.
         self::assertStringContainsString('Grupo: WhatsApp / Central', $setup);
-        self::assertStringContainsString('Grupo: Supervisão', $setup);
-        self::assertStringContainsString('Grupo: IA & Conhecimento', $setup);
+        self::assertStringContainsString('Grupo: Configuração', $setup);
+        self::assertStringContainsString('Grupo: Monitoramento', $setup);
+        self::assertStringContainsString('Grupo: IA', $setup);
         self::assertStringContainsString('Grupo: Gestão', $setup);
-        self::assertStringContainsString('Grupo: Monitoramento / Qualidade', $setup);
+        self::assertStringContainsString('Grupo: Supervisão', $setup);
 
-        // FIX2: MENU_TOADD now references the 5 parent group classes.
+        // FIX3: MENU_TOADD now references the 6 final parent group classes.
         self::assertStringContainsString('WhatsAppGroupMenu::class', $setup);
-        self::assertStringContainsString('SupervisaoGroupMenu::class', $setup);
+        self::assertStringContainsString('ConfiguracaoGroupMenu::class', $setup);
+        self::assertStringContainsString('MonitoramentoGroupMenu::class', $setup);
         self::assertStringContainsString('IaGroupMenu::class', $setup);
         self::assertStringContainsString('GestaoGroupMenu::class', $setup);
-        self::assertStringContainsString('MonitoramentoGroupMenu::class', $setup);
+        self::assertStringContainsString('SupervisaoGroupMenu::class', $setup);
 
         // No experimental Central A/B menus must be reintroduced here.
         self::assertStringNotContainsString('AttendanceCenterModelAMenu::class,', $setup);
         self::assertStringNotContainsString('AttendanceCenterModelBMenu::class,', $setup);
     }
 
-    // ── FIX2: true submenu grouping (5 parent group classes) ─────────────
+    // ── FIX3: final submenu grouping (6 parent group classes) ────────────
 
     public function testMenuGroupClassFilesExist(): void
     {
         $groups = [
             'WhatsAppGroupMenu',
-            'SupervisaoGroupMenu',
+            'ConfiguracaoGroupMenu',
+            'MonitoramentoGroupMenu',
             'IaGroupMenu',
             'GestaoGroupMenu',
-            'MonitoramentoGroupMenu',
+            'SupervisaoGroupMenu',
         ];
 
         foreach ($groups as $group) {
@@ -307,11 +335,12 @@ final class StabilizationPhaseStaticTest extends TestCase
     public function testGroupMenuClassesHaveOptionsKey(): void
     {
         $groups = [
-            'WhatsAppGroupMenu'      => 2,
-            'SupervisaoGroupMenu'    => 2,
+            'WhatsAppGroupMenu'      => 3,
+            'ConfiguracaoGroupMenu'  => 9,
+            'MonitoramentoGroupMenu' => 3,
             'IaGroupMenu'            => 5,
-            'GestaoGroupMenu'        => 3,
-            'MonitoramentoGroupMenu' => 5,
+            'GestaoGroupMenu'        => 4,
+            'SupervisaoGroupMenu'    => 4,
         ];
 
         foreach ($groups as $group => $expectedChildren) {
@@ -345,12 +374,13 @@ final class StabilizationPhaseStaticTest extends TestCase
         self::assertNotFalse($start, 'MENU_TOADD assignment must be present in setup.php.');
         $menuBlock = substr($setup, (int) $start, 1500);
 
-        // The 5 group parent classes must be registered in MENU_TOADD.
+        // The 6 final group parent classes must be registered in MENU_TOADD.
         self::assertStringContainsString('WhatsAppGroupMenu::class', $menuBlock);
-        self::assertStringContainsString('SupervisaoGroupMenu::class', $menuBlock);
+        self::assertStringContainsString('ConfiguracaoGroupMenu::class', $menuBlock);
+        self::assertStringContainsString('MonitoramentoGroupMenu::class', $menuBlock);
         self::assertStringContainsString('IaGroupMenu::class', $menuBlock);
         self::assertStringContainsString('GestaoGroupMenu::class', $menuBlock);
-        self::assertStringContainsString('MonitoramentoGroupMenu::class', $menuBlock);
+        self::assertStringContainsString('SupervisaoGroupMenu::class', $menuBlock);
 
         // Leaf classes appear only in "Aggregates" documentation comments
         // inside the MENU_TOADD block so that the cross-repo static safety
@@ -358,8 +388,38 @@ final class StabilizationPhaseStaticTest extends TestCase
         // locate them without runtime GLPI. They must not appear as PHP
         // array entries — enforced by Cursor review (comment vs code).
         self::assertStringContainsString('// Aggregates: Queue::class', $menuBlock);
-        self::assertStringContainsString('KnowledgeBaseMenu::class, KbCandidatesMenu::class', $menuBlock);
-        self::assertStringContainsString('RoutingSafetyMenu::class', $menuBlock);
+        self::assertStringContainsString('KbCandidatesMenu::class, ExternalResearchMenu::class', $menuBlock);
+        self::assertStringContainsString('QualityDashboardMenu::class', $menuBlock);
+    }
+
+    public function testFinalMenuHierarchyUsesRequestedLabels(): void
+    {
+        $groups = [
+            'WhatsAppGroupMenu.php'      => ['Central WhatsApp / Monitor Online', 'Conversas WhatsApp / aba do ticket', 'Hub de Mensagens'],
+            'ConfiguracaoGroupMenu.php'  => ['Configurações das Mensagens', 'Recepção Inteligente', 'Avisos e Inatividade', 'CSAT', 'Horário Comercial', 'Mídia', 'Ticket e Solução', 'Templates WhatsApp', 'Configurações Gerais do Plugin'],
+            'MonitoramentoGroupMenu.php' => ['Monitor Online / visão do supervisor', 'Health / Status de Serviços', 'Central de Eventos Operacionais / futura V6'],
+            'IaGroupMenu.php'            => ['Console IA / status, configuração, diagnóstico', 'Copiloto / dentro do chamado', 'Mineração Histórica', 'Candidatos KB', 'Pesquisa Externa'],
+            'GestaoGroupMenu.php'        => ['Contratos e Banco de Horas', 'Entidades e Memória de Contato', 'Perfis e Permissões', 'Auditoria'],
+            'SupervisaoGroupMenu.php'    => ['SLA e Qualidade / métricas, aging, filas', 'Relatórios Operacionais', 'Alertas IA / configuração', 'Inatividade e Autoclose / parâmetros'],
+        ];
+
+        foreach ($groups as $file => $labels) {
+            $src = (string) file_get_contents($this->pluginPath('src/' . $file));
+            foreach ($labels as $label) {
+                self::assertStringContainsString($label, $src, $file . ' must expose ' . $label);
+            }
+        }
+    }
+
+    public function testCentralLayoutMovesSelectedDetailsAndActionsToMiddleColumn(): void
+    {
+        $template = (string) file_get_contents($this->pluginPath('templates/central.php'));
+
+        self::assertStringContainsString('js-integaglpi-central-selected-summary', $template);
+        self::assertStringContainsString('js-integaglpi-central-selected-actions', $template);
+        self::assertStringContainsString('itg-conversation-panel .itg-card > .js-integaglpi-central-actions', $template);
+        self::assertStringContainsString('sourceActions.innerHTML', $template);
+        self::assertStringNotContainsString('Perfil do contato</strong><br>', $template);
     }
 
     // ── Item 5 sanity: getPageUrl preserves the mine_only choice ───────

@@ -9,11 +9,7 @@ use CommonDBTM;
 /**
  * Parent menu group: Gestão.
  *
- * Aggregates ContractsHoursMenu, ServiceCatalogMenu, and
- * ContactAgendaImportMenu as GLPI submenu options so the sidebar shows one
- * collapsible entry instead of three flat items.
- *
- * FIX2: integaglpi_ops_console_claim_ui_messaging_stabilization_001_FIX2.
+ * Exposes management/admin entry points in the final sidebar hierarchy.
  */
 final class GestaoGroupMenu extends CommonDBTM
 {
@@ -39,20 +35,25 @@ final class GestaoGroupMenu extends CommonDBTM
             'page'    => Plugin::getContractHoursUrl(),
             'icon'    => 'ti ti-briefcase',
             'options' => [
-                'contracts' => [
-                    'title' => ContractsHoursMenu::getMenuName(),
+                'contratos_banco_horas'       => [
+                    'title' => __('Contratos e Banco de Horas', 'glpiintegaglpi'),
                     'page'  => Plugin::getContractHoursUrl(),
                     'icon'  => 'ti ti-file-time',
                 ],
-                'catalog'   => [
-                    'title' => ServiceCatalogMenu::getMenuName(),
-                    'page'  => Plugin::getServiceCatalogUrl(),
-                    'icon'  => 'ti ti-list-check',
-                ],
-                'contacts'  => [
-                    'title' => ContactAgendaImportMenu::getMenuName(),
+                'entidades_memoria_contato'   => [
+                    'title' => __('Entidades e Memória de Contato', 'glpiintegaglpi'),
                     'page'  => Plugin::getContactAgendaImportUrl(),
                     'icon'  => 'ti ti-address-book',
+                ],
+                'perfis_permissoes'           => [
+                    'title' => __('Perfis e Permissões', 'glpiintegaglpi'),
+                    'page'  => Plugin::getWebBasePath() . '/front/profile.form.php',
+                    'icon'  => 'ti ti-user-shield',
+                ],
+                'auditoria'                   => [
+                    'title' => __('Auditoria', 'glpiintegaglpi'),
+                    'page'  => Plugin::getAuditUrl(),
+                    'icon'  => 'ti ti-shield-search',
                 ],
             ],
         ];

@@ -7,14 +7,7 @@ namespace GlpiPlugin\Integaglpi;
 use CommonDBTM;
 
 /**
- * Parent menu group: Monitoramento / Qualidade.
- *
- * Aggregates QualityDashboardMenu, ObservabilityMenu,
- * OperationalDiagnosticsMenu, OperationLogMenu, and RoutingSafetyMenu as GLPI
- * submenu options so the sidebar shows one collapsible entry instead of five
- * flat items.
- *
- * FIX2: integaglpi_ops_console_claim_ui_messaging_stabilization_001_FIX2.
+ * Parent menu group: Monitoramento.
  */
 final class MonitoramentoGroupMenu extends CommonDBTM
 {
@@ -22,12 +15,12 @@ final class MonitoramentoGroupMenu extends CommonDBTM
 
     public static function getTypeName($nb = 0): string
     {
-        return __('Monitoramento / Qualidade', 'glpiintegaglpi');
+        return __('Monitoramento', 'glpiintegaglpi');
     }
 
     public static function getMenuName($nb = 0): string
     {
-        return __('Monitoramento / Qualidade', 'glpiintegaglpi');
+        return __('Monitoramento', 'glpiintegaglpi');
     }
 
     /**
@@ -37,33 +30,23 @@ final class MonitoramentoGroupMenu extends CommonDBTM
     {
         return [
             'title'   => self::getMenuName(),
-            'page'    => Plugin::getQualityDashboardUrl(),
+            'page'    => Plugin::getOnlineMonitorUrl(),
             'icon'    => 'ti ti-heartbeat',
             'options' => [
-                'quality'       => [
-                    'title' => QualityDashboardMenu::getMenuName(),
-                    'page'  => Plugin::getQualityDashboardUrl(),
-                    'icon'  => 'ti ti-dashboard',
+                'monitor_online'  => [
+                    'title' => __('Monitor Online / visão do supervisor', 'glpiintegaglpi'),
+                    'page'  => Plugin::getOnlineMonitorUrl(),
+                    'icon'  => 'ti ti-activity',
                 ],
-                'observability' => [
-                    'title' => ObservabilityMenu::getMenuName(),
-                    'page'  => Plugin::getObservabilityUrl(),
-                    'icon'  => 'ti ti-heartbeat',
-                ],
-                'diagnostics'   => [
-                    'title' => OperationalDiagnosticsMenu::getMenuName(),
+                'health_status'   => [
+                    'title' => __('Health / Status de Serviços', 'glpiintegaglpi'),
                     'page'  => Plugin::getOperationalDiagnosticsUrl(),
                     'icon'  => 'ti ti-activity',
                 ],
-                'audit'         => [
-                    'title' => OperationLogMenu::getMenuName(),
+                'central_eventos' => [
+                    'title' => __('Central de Eventos Operacionais / futura V6', 'glpiintegaglpi'),
                     'page'  => Plugin::getAuditUrl(),
                     'icon'  => 'ti ti-shield-search',
-                ],
-                'routing'       => [
-                    'title' => RoutingSafetyMenu::getMenuName(),
-                    'page'  => Plugin::getRoutingSafetyUrl(),
-                    'icon'  => 'ti ti-route',
                 ],
             ],
         ];
@@ -72,6 +55,7 @@ final class MonitoramentoGroupMenu extends CommonDBTM
     public static function canView(): bool
     {
         return Plugin::canQualityDashboardRead()
+            || Plugin::canOnlineMonitorRead()
             || Plugin::canObservabilityRead()
             || Plugin::canOperationalDiagnosticsRead()
             || Plugin::canAuditRead();

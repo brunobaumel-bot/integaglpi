@@ -283,7 +283,7 @@ export class ContactProfileService {
     }
 
     if (missing.length === 0) {
-      return 'Obrigado. Envie os dados em uma unica mensagem para continuar.';
+      return 'Obrigado. Seus dados foram registrados.';
     }
 
     return `Ainda preciso de: ${missing.join(', ')}. Envie essas informacoes para continuar.`;
@@ -389,10 +389,23 @@ export class ContactProfileService {
 
     if (state.step === 'confirming_existing_profile') {
       if (PROFILE_YES_RE.test(text)) {
-        const nextState: ContactProfileCollectionState = {
-          ...this.stateFromProfile(input.existingProfile ?? this.profileFromState(input.phoneE164, state), state.queue_label),
-          step: 'asking_reason',
-        };
+        const nextState = this.stateFromProfile(
+          input.existingProfile ?? this.profileFromState(input.phoneE164, state),
+          state.queue_label,
+        );
+        if (this.cleanText(nextState.reason) !== '') {
+          const completeState: ContactProfileCollectionState = {
+            ...nextState,
+            step: 'complete',
+          };
+          return {
+            state: completeState,
+            reply: this.getCollectionPrompt(completeState),
+            completed: true,
+            profile: this.profileFromState(input.phoneE164, completeState),
+          };
+        }
+
         return {
           state: nextState,
           reply: this.getCollectionPrompt(nextState),
@@ -504,6 +517,15 @@ export class ContactProfileService {
         reply: 'Obrigado. Seus dados foram registrados.',
         completed: true,
         profile,
+      };
+    }
+
+    if (state.step === 'complete') {
+      return {
+        state,
+        reply: this.getCollectionPrompt(state),
+        completed: true,
+        profile: this.profileFromState(input.phoneE164, state),
       };
     }
 
@@ -697,6 +719,7 @@ export class ContactProfileService {
       email_status: profile.email_status ?? (profile.email_address ? 'valid' : 'not_provided'),
       last_equipment_tag: profile.equipment_tag_unknown ? null : profile.last_equipment_tag,
       equipment_tag_unknown: profile.equipment_tag_unknown,
+      reason: profile.last_problem_summary ?? null,
     };
   }
 

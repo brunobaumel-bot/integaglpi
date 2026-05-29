@@ -207,6 +207,30 @@ function plugin_integaglpi_item_add_ticket(\Ticket $ticket): void
     }
 }
 
+function plugin_integaglpi_item_add_ticket_user(\Ticket_User $ticketUser): void
+{
+    $ticketId = (int) ($ticketUser->fields['tickets_id'] ?? $ticketUser->input['tickets_id'] ?? 0);
+    $userId = (int) ($ticketUser->fields['users_id'] ?? $ticketUser->input['users_id'] ?? 0);
+    $type = (int) ($ticketUser->fields['type'] ?? $ticketUser->input['type'] ?? 0);
+    $assignedType = defined('CommonITILActor::ASSIGN') ? (int) constant('CommonITILActor::ASSIGN') : 2;
+
+    if ($ticketId <= 0 || $userId <= 0 || $type !== $assignedType) {
+        return;
+    }
+
+    try {
+        $service = new \GlpiPlugin\Integaglpi\Service\TicketRuntimeService();
+        $service->syncNativeTicketAssignment(
+            $ticketId,
+            $userId,
+            plugin_integaglpi_ticket_actor_user_id()
+        );
+    } catch (\Throwable $e) {
+        error_log('[integaglpi][ticket][native_claim_sync_error] ticket_id=' . $ticketId
+            . ' user_id=' . $userId . ' ' . $e->getMessage());
+    }
+}
+
 /**
  * Force WhatsApp-originated tickets to start as "Novo" (status=1).
  * Idempotent and safe: only acts when the ticket is recognizable as

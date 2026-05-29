@@ -238,6 +238,43 @@ $operationalFilterMap = [
     gap: 0.35rem;
 }
 
+.itg-conversation-panel .itg-card > .js-integaglpi-central-actions {
+    display: none;
+}
+
+.itg-selected-summary {
+    background: #fff;
+    border-bottom: 1px solid rgba(98, 105, 118, 0.16);
+    flex: 0 0 auto;
+    padding: 0.75rem 1rem;
+}
+
+.itg-selected-summary-grid {
+    display: grid;
+    gap: 0.5rem;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.itg-selected-summary-item {
+    background: #f8fafc;
+    border-radius: 10px;
+    padding: 0.55rem 0.65rem;
+}
+
+.itg-selected-summary-item strong {
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+.itg-selected-actions {
+    background: #fff;
+    border-top: 1px solid rgba(98, 105, 118, 0.16);
+    flex: 0 0 auto;
+    padding: 0.75rem 1rem;
+}
+
 .itg-chat-body {
     background:
         radial-gradient(circle at 12% 20%, rgba(32, 107, 196, 0.08), transparent 30%),
@@ -300,6 +337,10 @@ $operationalFilterMap = [
     .itg-context-panel .itg-panel-body {
         max-height: none;
         overflow-y: visible;
+    }
+
+    .itg-selected-summary-grid {
+        grid-template-columns: 1fr;
     }
 }
 </style>
@@ -903,31 +944,6 @@ $operationalFilterMap = [
                                             · <?= $this->escape(__('parado há', 'glpiintegaglpi')); ?> <?= $this->escape($stalledLabel); ?>
                                         <?php } ?>
                                     </div>
-                                    <?php if ($lastMessagePreview !== '') { ?>
-                                        <div class="itg-card-meta">
-                                            <?= $this->escape(__('Última mensagem', 'glpiintegaglpi')); ?>:
-                                            <?= $this->escape(function_exists('mb_substr') ? mb_substr($lastMessagePreview, 0, 140) : substr($lastMessagePreview, 0, 140)); ?>
-                                        </div>
-                                    <?php } ?>
-                                    <?php if ($profileSnapshot !== null || $profileAnswered !== '-' || $profilePending !== '-') { ?>
-                                        <div class="border rounded p-3 mt-3 mb-0 bg-light">
-                                            <strong><?= $this->escape(__('Perfil do contato', 'glpiintegaglpi')); ?></strong><br>
-                                            <?= $this->escape(__('Nome', 'glpiintegaglpi')); ?>:
-                                            <?= $this->escape($profileName !== '' ? $profileName : '-'); ?><br>
-                                            <?= $this->escape(__('Empresa informada', 'glpiintegaglpi')); ?>:
-                                            <?= $this->escape($profileCompany !== '' ? $profileCompany : '-'); ?><br>
-                                            <?= $this->escape(__('E-mail', 'glpiintegaglpi')); ?>:
-                                            <?= $this->escape($profileEmail !== '' ? $profileEmail : '-'); ?><br>
-                                            <?= $this->escape(__('Equipamento', 'glpiintegaglpi')); ?>:
-                                            <?= $this->escape($profileEquipment !== '' ? $profileEquipment : '-'); ?><br>
-                                            <?= $this->escape(__('Resumo', 'glpiintegaglpi')); ?>:
-                                            <?= $this->escape($profileReason !== '' ? $profileReason : '-'); ?><br>
-                                            <?= $this->escape(__('Respondidos', 'glpiintegaglpi')); ?>:
-                                            <?= $this->escape($profileAnswered); ?><br>
-                                            <?= $this->escape(__('Pendentes', 'glpiintegaglpi')); ?>:
-                                            <?= $this->escape($profilePending); ?>
-                                        </div>
-                                    <?php } ?>
                                     <div class="mt-2 js-integaglpi-central-actions">
                                         <?php if ($canConfirmEntity) { ?>
                                             <div class="alert alert-warning py-2 mb-2">
@@ -1119,7 +1135,38 @@ $operationalFilterMap = [
             </span>
             <small class="text-muted js-integaglpi-central-messages-status"></small>
         </div>
+        <div class="itg-selected-summary js-integaglpi-central-selected-summary">
+            <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                <div>
+                    <strong class="js-integaglpi-central-selected-contact">-</strong>
+                    <small class="d-block text-muted js-integaglpi-central-selected-phone">-</small>
+                </div>
+                <a
+                    class="btn btn-sm btn-outline-primary js-integaglpi-central-selected-ticket"
+                    href="#"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                >-</a>
+            </div>
+            <div class="itg-selected-summary-grid">
+                <div class="itg-selected-summary-item">
+                    <strong><?= $this->escape(__('Perfil', 'glpiintegaglpi')); ?></strong>
+                    <span class="js-integaglpi-central-selected-profile">-</span>
+                </div>
+                <div class="itg-selected-summary-item">
+                    <strong><?= $this->escape(__('Operação', 'glpiintegaglpi')); ?></strong>
+                    <span class="js-integaglpi-central-selected-operation">-</span>
+                </div>
+                <div class="itg-selected-summary-item">
+                    <strong><?= $this->escape(__('SLA / Janela', 'glpiintegaglpi')); ?></strong>
+                    <span class="js-integaglpi-central-selected-sla">-</span>
+                </div>
+            </div>
+        </div>
         <div class="itg-chat-body js-integaglpi-central-messages"></div>
+        <div class="itg-selected-actions js-integaglpi-central-selected-actions">
+            <span class="text-muted"><?= $this->escape(__('Selecione uma conversa para responder ou assumir atendimento.', 'glpiintegaglpi')); ?></span>
+        </div>
     </section>
 
     <aside class="itg-panel itg-context-panel">
@@ -1695,19 +1742,6 @@ $operationalFilterMap = [
         const deliveryAlert = deliveryError !== ''
             ? '<div class="alert alert-danger py-2 my-2">Falha Meta: ' + escapeHtml(deliveryError) + '</div>'
             : '';
-        const profileHtml = profile || profileAnswered !== '-' || profilePending !== '-'
-            ? '<div class="border rounded p-3 mt-3 mb-0 bg-light">'
-                + '<strong>Perfil do contato</strong><br>'
-                + 'Nome: ' + escapeHtml(profileName || '-') + '<br>'
-                + 'Empresa informada: ' + escapeHtml(profileCompany || '-') + '<br>'
-                + 'E-mail: ' + escapeHtml(profileEmail || '-') + '<br>'
-                + 'Equipamento: ' + escapeHtml(profileEquipment || '-') + '<br>'
-                + 'Resumo: ' + escapeHtml(profileReason || '-') + '<br>'
-                + 'Respondidos: ' + escapeHtml(profileAnswered || '-') + '<br>'
-                + 'Pendentes: ' + escapeHtml(profilePending || '-')
-                + '</div>'
-            : '';
-
         const element = document.createElement('tr');
         element.setAttribute('data-conversation-id', conversationId);
         element.setAttribute('data-ticket-id', String(ticketId));
@@ -1776,23 +1810,10 @@ $operationalFilterMap = [
             + windowAlert
             + deliveryAlert
             + '<div class="itg-card-meta">Próxima ação: ' + escapeHtml(nextAction) + '</div>'
-            + inactivityHtml
             + '<div class="itg-card-meta">Fila: ' + escapeHtml(queueName || '-')
             + (queueId > 0 ? ' <span>#' + queueId + '</span>' : '') + '</div>'
-            + '<div class="itg-card-meta">Entidade: ' + escapeHtml(entityLabel || '-') + '</div>'
-            + '<div class="itg-card-meta">Serviço: ' + escapeHtml(serviceCatalogName || '-') + '</div>'
-            + '<div class="itg-card-meta">SLA: ' + escapeHtml(slaLabel || 'SLA não configurado')
-            + (slaResponseDeadline !== '' ? ' · Resposta ' + escapeHtml(slaResponseDeadline) : '')
-            + (slaSolutionDeadline !== '' ? ' · Solução ' + escapeHtml(slaSolutionDeadline) : '')
-            + '</div>'
             + renderEntityEditControls(row)
-            + memoryEntityHtml
             + '<div class="itg-card-meta js-integaglpi-central-technician">Técnico: ' + technicianHtml + '</div>'
-            + '<div class="itg-card-meta">Última atividade: ' + escapeHtml(activityAt)
-            + (stalledLabel !== '' ? ' · parado há ' + escapeHtml(stalledLabel) : '') + '</div>'
-            + (lastMessagePreview !== '' ? '<div class="itg-card-meta">Última mensagem: '
-                + escapeHtml(lastMessagePreview.slice(0, 140)) + '</div>' : '')
-            + profileHtml
             + '<div class="mt-2 js-integaglpi-central-actions">' + renderActions(row) + '</div>'
             + '</div></td>';
 
@@ -2050,6 +2071,13 @@ $operationalFilterMap = [
         const whatsappLink = document.querySelector('.js-integaglpi-central-context-whatsapp');
         const transferButton = document.querySelector('.js-integaglpi-central-context-transfer');
         const solveButton = document.querySelector('.js-integaglpi-central-context-solve');
+        const selectedContact = document.querySelector('.js-integaglpi-central-selected-contact');
+        const selectedPhone = document.querySelector('.js-integaglpi-central-selected-phone');
+        const selectedTicket = document.querySelector('.js-integaglpi-central-selected-ticket');
+        const selectedProfile = document.querySelector('.js-integaglpi-central-selected-profile');
+        const selectedOperation = document.querySelector('.js-integaglpi-central-selected-operation');
+        const selectedSla = document.querySelector('.js-integaglpi-central-selected-sla');
+        const selectedActions = document.querySelector('.js-integaglpi-central-selected-actions');
         const conversationId = row.getAttribute('data-conversation-id') || '';
         const rowStatus = row.getAttribute('data-status') || '';
         const canUseTicketActions = row.getAttribute('data-can-reply') === '1'
@@ -2064,6 +2092,16 @@ $operationalFilterMap = [
 
         if (phone) {
             phone.textContent = row.getAttribute('data-masked-phone') || '-';
+        }
+
+        if (selectedContact) {
+            selectedContact.textContent = row.getAttribute('data-profile-name')
+                || row.getAttribute('data-contact-name')
+                || '-';
+        }
+
+        if (selectedPhone) {
+            selectedPhone.textContent = row.getAttribute('data-masked-phone') || '-';
         }
 
         if (company) {
@@ -2094,6 +2132,13 @@ $operationalFilterMap = [
             const tid = Number(ticketId);
             ticketLink.textContent = row.getAttribute('data-ticket-label') || (tid > 0 ? '#' + tid : 'Pré-Ticket');
             ticketLink.href = tid > 0 ? ticketUrlBase + tid : '#';
+        }
+
+        if (selectedTicket) {
+            const tid = Number(ticketId);
+            selectedTicket.textContent = row.getAttribute('data-ticket-label') || (tid > 0 ? '#' + tid : 'Pré-Ticket');
+            selectedTicket.href = tid > 0 ? ticketUrlBase + tid : '#';
+            selectedTicket.classList.toggle('disabled', tid <= 0);
         }
 
         if (queue) {
@@ -2175,6 +2220,34 @@ $operationalFilterMap = [
 
         if (contract) {
             contract.textContent = 'Contrato: ' + (row.getAttribute('data-contract') || '-');
+        }
+
+        if (selectedProfile) {
+            selectedProfile.textContent = 'Empresa: ' + (row.getAttribute('data-profile-company') || '-')
+                + ' / E-mail: ' + (row.getAttribute('data-profile-email') || '-')
+                + ' / Equipamento: ' + (row.getAttribute('data-profile-equipment') || '-')
+                + ' / Resumo: ' + (row.getAttribute('data-profile-reason') || '-');
+        }
+
+        if (selectedOperation) {
+            selectedOperation.textContent = 'Fila: ' + (row.getAttribute('data-queue') || '-')
+                + ' / Técnico: ' + (row.getAttribute('data-technician') || '-')
+                + ' / Status: ' + ((row.getAttribute('data-status-label') || rowStatus || '-'))
+                + ' / Próxima ação: ' + (row.getAttribute('data-next-action') || '-');
+        }
+
+        if (selectedSla) {
+            selectedSla.textContent = 'SLA: ' + (row.getAttribute('data-sla') || '-')
+                + ' / Janela: ' + (row.getAttribute('data-window') || '-')
+                + ' / Parado: ' + (row.getAttribute('data-stalled') || '-')
+                + ' / Delivery: ' + (row.getAttribute('data-delivery') || '-');
+        }
+
+        if (selectedActions) {
+            const sourceActions = row.querySelector('.js-integaglpi-central-actions');
+            selectedActions.innerHTML = sourceActions
+                ? sourceActions.innerHTML
+                : '<span class="text-muted">Nenhuma ação disponível.</span>';
         }
 
         if (whatsappLink) {

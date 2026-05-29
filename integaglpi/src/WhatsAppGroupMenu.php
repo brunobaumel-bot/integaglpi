@@ -9,10 +9,7 @@ use CommonDBTM;
 /**
  * Parent menu group: WhatsApp / Central.
  *
- * Aggregates Queue (WhatsApp admin) and AttendanceCenterMenu as GLPI submenu
- * options so the sidebar shows one collapsible entry instead of two flat items.
- *
- * FIX2: integaglpi_ops_console_claim_ui_messaging_stabilization_001_FIX2.
+ * Exposes the operational WhatsApp entry points in the final sidebar order.
  */
 final class WhatsAppGroupMenu extends CommonDBTM
 {
@@ -38,15 +35,20 @@ final class WhatsAppGroupMenu extends CommonDBTM
             'page'    => Plugin::getWebBasePath() . '/front/central.php',
             'icon'    => 'ti ti-brand-whatsapp',
             'options' => [
-                'queue'   => [
-                    'title' => Queue::getMenuName(),
-                    'page'  => Plugin::getQueueAdminUrl(),
-                    'icon'  => 'ti ti-brand-whatsapp',
-                ],
-                'central' => [
-                    'title' => AttendanceCenterMenu::getMenuName(),
+                'central_whatsapp'   => [
+                    'title' => __('Central WhatsApp / Monitor Online', 'glpiintegaglpi'),
                     'page'  => Plugin::getWebBasePath() . '/front/central.php',
                     'icon'  => 'ti ti-headset',
+                ],
+                'conversas_whatsapp' => [
+                    'title' => __('Conversas WhatsApp / aba do ticket', 'glpiintegaglpi'),
+                    'page'  => Plugin::getWebBasePath() . '/front/central.php',
+                    'icon'  => 'ti ti-messages',
+                ],
+                'hub_mensagens'      => [
+                    'title' => __('Hub de Mensagens', 'glpiintegaglpi'),
+                    'page'  => Plugin::getQueueAdminUrl() . '?tab=message_settings',
+                    'icon'  => 'ti ti-message-cog',
                 ],
             ],
         ];

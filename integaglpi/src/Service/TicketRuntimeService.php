@@ -97,6 +97,7 @@ final class TicketRuntimeService
             if ($groupId !== null) {
                 $this->ensureTicketGroupAssignment($ticketId, $groupId);
             }
+            $this->ensureTicketProcessingStatusIfNew($ticketId);
         } catch (Throwable $e) {
             error_log('[integaglpi][ticket][assign][error] ' . $e->getMessage());
             error_log($e->getTraceAsString());
@@ -117,6 +118,58 @@ final class TicketRuntimeService
                 $userId,
                 $conversationId
             );
+        }
+    }
+
+    public function syncNativeTicketAssignment(int $ticketId, int $userId, ?int $actorUserId = null): void
+    {
+        if ($ticketId <= 0 || $userId <= 0) {
+            return;
+        }
+
+        $runtime = $this->getRuntimeByTicketId($ticketId);
+        if ($runtime === null) {
+            return;
+        }
+
+        $conversationStatus = strtolower((string) ($runtime['conversation_status'] ?? $runtime['status'] ?? 'open'));
+        $runtimeStatus = strtolower((string) ($runtime['runtime_status'] ?? ''));
+        if ($conversationStatus === 'closed' || $runtimeStatus === 'closed') {
+            return;
+        }
+
+        $conversationId = trim((string) ($runtime['conversation_id'] ?? ''));
+        if ($conversationId === '') {
+            return;
+        }
+
+        $previousAssignedUserId = (int) ($runtime['assigned_user_id_int'] ?? $runtime['assigned_user_id'] ?? 0);
+        $groupId = isset($runtime['assigned_group_id']) && (int) $runtime['assigned_group_id'] > 0
+            ? (int) $runtime['assigned_group_id']
+            : null;
+
+        if ($previousAssignedUserId !== $userId) {
+            $this->getConversationRepository()->claim($ticketId, $conversationId, $userId, $groupId);
+            $this->recordTicketHistory(
+                $ticketId,
+                sprintf(
+                    'WhatsApp: responsável sincronizado a partir da atribuição nativa do GLPI para %s.',
+                    (string) getUserName($userId)
+                ),
+                $actorUserId ?? $userId
+            );
+
+            (new NotificationService($this->pluginConfigService))->sendTechnicianAssigned(
+                $ticketId,
+                $userId,
+                $conversationId
+            );
+        }
+
+        try {
+            $this->ensureTicketProcessingStatusIfNew($ticketId);
+        } catch (Throwable $e) {
+            error_log('[integaglpi][ticket][native_claim_status_error] ticket_id=' . $ticketId . ' ' . $e->getMessage());
         }
     }
 
@@ -464,6 +517,42 @@ final class TicketRuntimeService
         if ($created === false || (int) $created <= 0) {
             throw new RuntimeException(__('Failed to assign the GLPI ticket to the current technician.', 'glpiintegaglpi'));
         }
+    }
+
+    private function ensureTicketProcessingStatusIfNew(int $ticketId): void
+    {
+        if (!class_exists('\Ticket')) {
+            return;
+        }
+
+        $ticket = new \Ticket();
+        if (!$ticket->getFromDB($ticketId)) {
+            return;
+        }
+
+        $currentStatus = (int) ($ticket->fields['status'] ?? 0);
+        if ($currentStatus !== 1) {
+            return;
+        }
+
+        $processingStatus = defined('CommonITILObject::ASSIGNED')
+            ? (int) constant('CommonITILObject::ASSIGNED')
+            : 2;
+        if ($processingStatus <= 0 || $processingStatus === $currentStatus) {
+            return;
+        }
+
+        $updated = $ticket->update([
+            'id' => $ticketId,
+            'status' => $processingStatus,
+        ]);
+
+        if ($updated === false) {
+            error_log('[integaglpi][ticket][processing_status_failed] ticket_id=' . $ticketId);
+            return;
+        }
+
+        error_log('[integaglpi][ticket][processing_status_set] ticket_id=' . $ticketId . ' previous_status=' . $currentStatus);
     }
 
     private function replaceTicketUserAssignment(int $ticketId, int $userId): void

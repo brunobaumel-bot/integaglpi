@@ -17,10 +17,18 @@ declare(strict_types=1);
 $timelineId = 'integaglpi-timeline-' . (int) $ticket->getID();
 $runtimeView = is_array($runtime) ? $runtime : [];
 $assignedUserId = isset($runtimeView['assigned_user_id_int']) ? (int) $runtimeView['assigned_user_id_int'] : 0;
+$currentUserId = (int) (\Session::getLoginUserID() ?: 0);
 $statusValue = strtolower(trim((string) ($runtimeView['status'] ?? 'open')));
 $isClosed = array_key_exists('is_closed', $runtimeView)
     ? (bool) $runtimeView['is_closed']
     : $statusValue === 'closed';
+$replyOwnedByCurrentUser = !$isClosed && $assignedUserId > 0 && $assignedUserId === $currentUserId;
+$replyBlockedReason = '';
+if (!$isClosed && $runtime !== null && $assignedUserId <= 0) {
+    $replyBlockedReason = __('Você precisa assumir este atendimento antes de responder.', 'glpiintegaglpi');
+} elseif (!$isClosed && $runtime !== null && !$replyOwnedByCurrentUser) {
+    $replyBlockedReason = __('Este atendimento está atribuído a outro técnico.', 'glpiintegaglpi');
+}
 $canClaim = array_key_exists('can_claim', $runtimeView)
     ? (bool) $runtimeView['can_claim']
     : !$isClosed;
@@ -1206,7 +1214,14 @@ if ($isExternalConfigured && $runtime !== null && !$isClosed) {
     </div>
 <?php } ?>
 
-<?php if ($isExternalConfigured && $runtime !== null && !$isClosed && \GlpiPlugin\Integaglpi\Plugin::canUpdate()) { ?>
+<?php if ($isExternalConfigured && $runtime !== null && !$isClosed && \GlpiPlugin\Integaglpi\Plugin::canUpdate() && !$replyOwnedByCurrentUser) { ?>
+    <div class="alert alert-warning mt-3 mb-0 js-integaglpi-ticket-reply-owner-gate">
+        <strong><?= $this->escape(__('Resposta bloqueada', 'glpiintegaglpi')); ?></strong><br>
+        <?= $this->escape($replyBlockedReason); ?>
+    </div>
+<?php } ?>
+
+<?php if ($isExternalConfigured && $runtime !== null && !$isClosed && \GlpiPlugin\Integaglpi\Plugin::canUpdate() && $replyOwnedByCurrentUser) { ?>
     <?php
     $replyTicketId = (int) $ticket->getID();
     $replyConvId   = (string) ($runtime['conversation_id'] ?? '');

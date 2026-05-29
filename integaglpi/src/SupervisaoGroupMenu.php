@@ -9,10 +9,7 @@ use CommonDBTM;
 /**
  * Parent menu group: Supervisão.
  *
- * Aggregates OnlineMonitorMenu and SupervisorBackofficeMenu as GLPI submenu
- * options so the sidebar shows one collapsible entry instead of two flat items.
- *
- * FIX2: integaglpi_ops_console_claim_ui_messaging_stabilization_001_FIX2.
+ * Exposes supervisory views and parameters in the final sidebar hierarchy.
  */
 final class SupervisaoGroupMenu extends CommonDBTM
 {
@@ -35,18 +32,28 @@ final class SupervisaoGroupMenu extends CommonDBTM
     {
         return [
             'title'   => self::getMenuName(),
-            'page'    => Plugin::getOnlineMonitorUrl(),
+            'page'    => Plugin::getQualityDashboardUrl(),
             'icon'    => 'ti ti-chart-bar',
             'options' => [
-                'monitor'    => [
-                    'title' => OnlineMonitorMenu::getMenuName(),
-                    'page'  => Plugin::getOnlineMonitorUrl(),
-                    'icon'  => 'ti ti-activity',
+                'sla_qualidade'          => [
+                    'title' => __('SLA e Qualidade / métricas, aging, filas', 'glpiintegaglpi'),
+                    'page'  => Plugin::getQualityDashboardUrl(),
+                    'icon'  => 'ti ti-dashboard',
                 ],
-                'backoffice' => [
-                    'title' => SupervisorBackofficeMenu::getMenuName(),
+                'relatorios_operacionais' => [
+                    'title' => __('Relatórios Operacionais', 'glpiintegaglpi'),
                     'page'  => Plugin::getSupervisorBackofficeUrl(),
                     'icon'  => 'ti ti-chart-bar',
+                ],
+                'alertas_ia'             => [
+                    'title' => __('Alertas IA / configuração', 'glpiintegaglpi'),
+                    'page'  => Plugin::getOnlineMonitorUrl() . '?tab=ai_alerts',
+                    'icon'  => 'ti ti-alert-triangle',
+                ],
+                'inatividade_autoclose'  => [
+                    'title' => __('Inatividade e Autoclose / parâmetros', 'glpiintegaglpi'),
+                    'page'  => Plugin::getQueueAdminUrl() . '?tab=message_settings&section=avisos_inatividade',
+                    'icon'  => 'ti ti-clock-pause',
                 ],
             ],
         ];
@@ -54,6 +61,8 @@ final class SupervisaoGroupMenu extends CommonDBTM
 
     public static function canView(): bool
     {
-        return Plugin::canOnlineMonitorRead() || Plugin::canSupervisorRead();
+        return Plugin::canOnlineMonitorRead()
+            || Plugin::canQualityDashboardRead()
+            || Plugin::canSupervisorRead();
     }
 }

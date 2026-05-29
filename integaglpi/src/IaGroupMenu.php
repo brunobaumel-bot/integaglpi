@@ -7,13 +7,7 @@ namespace GlpiPlugin\Integaglpi;
 use CommonDBTM;
 
 /**
- * Parent menu group: IA & Conhecimento.
- *
- * Aggregates AiOperationsMenu, CoachingMenu, KnowledgeBaseMenu,
- * KbCandidatesMenu, and ExternalResearchMenu as GLPI submenu options so the
- * sidebar shows one collapsible entry instead of five flat items.
- *
- * FIX2: integaglpi_ops_console_claim_ui_messaging_stabilization_001_FIX2.
+ * Parent menu group: IA.
  */
 final class IaGroupMenu extends CommonDBTM
 {
@@ -21,12 +15,12 @@ final class IaGroupMenu extends CommonDBTM
 
     public static function getTypeName($nb = 0): string
     {
-        return __('IA & Conhecimento', 'glpiintegaglpi');
+        return __('IA', 'glpiintegaglpi');
     }
 
     public static function getMenuName($nb = 0): string
     {
-        return __('IA & Conhecimento', 'glpiintegaglpi');
+        return __('IA', 'glpiintegaglpi');
     }
 
     /**
@@ -36,31 +30,31 @@ final class IaGroupMenu extends CommonDBTM
     {
         return [
             'title'   => self::getMenuName(),
-            'page'    => Plugin::getAiOperationsUrl(),
+            'page'    => Plugin::getAiConfigUrl(),
             'icon'    => 'ti ti-brain',
             'options' => [
-                'ia_ops'       => [
-                    'title' => AiOperationsMenu::getMenuName(),
-                    'page'  => Plugin::getAiOperationsUrl(),
+                'console_ia'          => [
+                    'title' => __('Console IA / status, configuração, diagnóstico', 'glpiintegaglpi'),
+                    'page'  => Plugin::getAiConfigUrl(),
                     'icon'  => 'ti ti-brain',
                 ],
-                'coaching'     => [
-                    'title' => CoachingMenu::getMenuName(),
+                'copiloto'            => [
+                    'title' => __('Copiloto / dentro do chamado', 'glpiintegaglpi'),
                     'page'  => Plugin::getCoachingUrl(),
                     'icon'  => 'ti ti-school',
                 ],
-                'kb'           => [
-                    'title' => KnowledgeBaseMenu::getMenuName(),
-                    'page'  => Plugin::getNativeKnowledgeBaseUrl(),
-                    'icon'  => 'ti ti-book',
+                'mineracao_historica' => [
+                    'title' => __('Mineração Histórica', 'glpiintegaglpi'),
+                    'page'  => Plugin::getHistoricalMiningUrl(),
+                    'icon'  => 'ti ti-pick',
                 ],
-                'kb_candidates' => [
-                    'title' => KbCandidatesMenu::getMenuName(),
+                'candidatos_kb'       => [
+                    'title' => __('Candidatos KB', 'glpiintegaglpi'),
                     'page'  => Plugin::getKbCandidatesUrl(),
                     'icon'  => 'ti ti-brain',
                 ],
-                'research'     => [
-                    'title' => ExternalResearchMenu::getMenuName(),
+                'pesquisa_externa'    => [
+                    'title' => __('Pesquisa Externa', 'glpiintegaglpi'),
                     'page'  => Plugin::getExternalResearchUrl(),
                     'icon'  => 'ti ti-world-search',
                 ],

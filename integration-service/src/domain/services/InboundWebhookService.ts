@@ -62,6 +62,8 @@ const CSAT_THANK_YOU_CLOSURE_TEXT = 'Seu chamado foi encerrado. Obrigado pela av
 const PRETICKET_USER_CANCELLED_TEXT =
   'Atendimento cancelado. Nenhum chamado foi aberto. Se precisar, inicie um novo atendimento.';
 const PRETICKET_CANCEL_WORDS = new Set(['cancelar', 'sair', 'encerrar']);
+const OPEN_TICKET_USER_CANCELLED_CONTENT =
+  'Cliente solicitou cancelamento via WhatsApp. Atendimento encerrado conforme solicitacao do cliente.';
 const PRETICKET_BLOCKED_INPUT_TYPES = new Set(['image', 'audio', 'voice', 'video', 'document', 'sticker', 'location', 'contacts', 'contact']);
 const REOPEN_REASON_OPTIONS: Array<{ key: ReopenReasonKey; eventKey: string; fallback: string }> = [
   { key: 'problem_persists', eventKey: 'reopen_reason_problem_persists', fallback: 'O problema permanece' },
@@ -1588,6 +1590,19 @@ export class InboundWebhookService {
             '[integration-service][inbound][DECISION]',
           );
 
+          if (
+            glpiTicketStatus !== 'closed'
+            && await this.tryCancelOpenTicketFromInbound({
+              contact,
+              conversation: existingConversation,
+              ticketId: existingConversationTicketId,
+              inboundMessage,
+              correlationId,
+            })
+          ) {
+            return;
+          }
+
           if (action === 'append') {
             inboundGlpiStage = 'glpi_followup_create';
 
@@ -3051,6 +3066,61 @@ export class InboundWebhookService {
       payload: {
         close_reason: 'preticket_user_cancelled',
         glpi_ticket_created: false,
+        csat_suppressed: true,
+      },
+    });
+
+    return true;
+  }
+
+  private async tryCancelOpenTicketFromInbound(input: {
+    contact: Contact;
+    conversation: Conversation;
+    ticketId: number;
+    inboundMessage: ParsedMetaInboundMessage;
+    correlationId: string;
+  }): Promise<boolean> {
+    if (!this.isPreTicketCancelText(input.inboundMessage.messageText)) {
+      return false;
+    }
+
+    const content = OPEN_TICKET_USER_CANCELLED_CONTENT;
+
+    await this.glpiClient.updateTicketStatus(input.ticketId, GLPI_STATUS_CLOSED, {
+      content,
+      _accepted: 1,
+    });
+    await this.conversationRepository.updateStatus(input.conversation.id, 'closed');
+    await this.conversationRepository.touch(input.conversation.id, new Date());
+    await this.messageRepository.updateState({
+      messageId: input.inboundMessage.messageId,
+      conversationId: input.conversation.id,
+      processingStatus: 'processed',
+      glpiSyncStatus: 'synced',
+    });
+
+    logger.info(
+      {
+        conversation_id: input.conversation.id,
+        ticket_id: input.ticketId,
+        event_type: 'OPEN_TICKET_CANCELLED_BY_USER',
+        status: 'success',
+      },
+      '[integration-service][inbound][OPEN_TICKET_CANCELLED_BY_USER]',
+    );
+    this.recordAudit({
+      correlationId: input.correlationId,
+      ticketId: input.ticketId,
+      conversationId: input.conversation.id,
+      messageId: input.inboundMessage.messageId,
+      direction: 'inbound',
+      eventType: 'OPEN_TICKET_CANCELLED_BY_USER',
+      status: 'success',
+      severity: 'info',
+      source: 'InboundWebhookService',
+      payload: {
+        close_reason: 'customer_requested_cancel_via_whatsapp',
+        glpi_ticket_closed: true,
         csat_suppressed: true,
       },
     });

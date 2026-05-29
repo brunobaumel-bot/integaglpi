@@ -299,7 +299,7 @@ describe('ContactProfileService', () => {
     });
   });
 
-  it('confirms existing profile with yes/no before asking the new attendance reason', async () => {
+  it('confirms existing profile and completes when remembered reason is already available', async () => {
     const service = new ContactProfileService(new FakeSettingsRepository(), new FakeProfileRepository());
     const profile = service.parseProfileText(
       '+5511999999999',
@@ -321,13 +321,78 @@ describe('ContactProfileService', () => {
     });
 
     expect(yes.state).toMatchObject({
+      step: 'complete',
+      company_name_raw: 'Etica',
+      requester_name: 'Bruno',
+      last_equipment_tag: '2022',
+      reason: 'ultimo atendimento',
+    });
+    expect(yes.completed).toBe(true);
+    expect(yes.profile).toMatchObject({
+      company_name_raw: 'Etica',
+      requester_name: 'Bruno',
+      last_equipment_tag: '2022',
+      last_problem_summary: 'ultimo atendimento',
+    });
+    expect(no.state.step).toBe('asking_company');
+  });
+
+  it('asks only for reason when confirmed existing profile has no remembered reason', async () => {
+    const service = new ContactProfileService(new FakeSettingsRepository(), new FakeProfileRepository());
+    const profile = {
+      ...service.parseProfileText(
+        '+5511999999999',
+        'Empresa: Etica; Nome: Bruno; Etiqueta: 2022; Problema: ultimo atendimento',
+      ),
+      last_problem_summary: null,
+    };
+    const state = service.startExistingProfileConfirmationState(profile, 'Suporte');
+
+    const result = service.processCollectionResponse({
+      phoneE164: '+5511999999999',
+      state,
+      text: 'Sim',
+      existingProfile: profile,
+    });
+
+    expect(result.completed).toBe(false);
+    expect(result.profile).toBeNull();
+    expect(result.state).toMatchObject({
       step: 'asking_reason',
       company_name_raw: 'Etica',
       requester_name: 'Bruno',
       last_equipment_tag: '2022',
     });
-    expect(yes.reply).toContain('motivo');
-    expect(no.state.step).toBe('asking_company');
+    expect(result.reply).toContain('motivo');
+  });
+
+  it('keeps a complete collection state idempotent to avoid repeated pending prompts', () => {
+    const service = new ContactProfileService(new FakeSettingsRepository(), new FakeProfileRepository());
+
+    const result = service.processCollectionResponse({
+      phoneE164: '+5511999999999',
+      state: {
+        step: 'complete',
+        queue_label: 'Suporte',
+        company_name_raw: 'Etica',
+        requester_name: 'Bruno',
+        email_address: 'bruno@example.com',
+        email_status: 'valid',
+        last_equipment_tag: '2022',
+        equipment_tag_unknown: false,
+        reason: 'ultimo atendimento',
+      },
+      text: 'sim',
+    });
+
+    expect(result.completed).toBe(true);
+    expect(result.state.step).toBe('complete');
+    expect(result.reply).toContain('registrados');
+    expect(result.profile).toMatchObject({
+      company_name_raw: 'Etica',
+      requester_name: 'Bruno',
+      last_problem_summary: 'ultimo atendimento',
+    });
   });
 
   it('only treats complete profiles with valid fixed fields as reliable for confirmation', () => {

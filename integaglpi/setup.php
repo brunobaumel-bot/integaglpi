@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Glpi\Plugin\Hooks;
 use GlpiPlugin\Integaglpi\AiOperationsMenu;
 use GlpiPlugin\Integaglpi\AttendanceCenterMenu;
+use GlpiPlugin\Integaglpi\ConfiguracaoGroupMenu;
 use GlpiPlugin\Integaglpi\ContactAgendaImportMenu;
 use GlpiPlugin\Integaglpi\ContractsHoursMenu;
 use GlpiPlugin\Integaglpi\CoachingMenu;
@@ -164,6 +165,8 @@ function plugin_init_integaglpi(): void
 
     $PLUGIN_HOOKS['csrf_compliant'][PLUGIN_INTEGAGLPI_NAME] = true;
     $PLUGIN_HOOKS[Hooks::ITEM_ADD][PLUGIN_INTEGAGLPI_NAME][\Ticket::class] = 'plugin_integaglpi_item_add_ticket';
+    $PLUGIN_HOOKS[Hooks::ITEM_ADD][PLUGIN_INTEGAGLPI_NAME][\Ticket_User::class] = 'plugin_integaglpi_item_add_ticket_user';
+    $PLUGIN_HOOKS[Hooks::ITEM_UPDATE][PLUGIN_INTEGAGLPI_NAME][\Ticket_User::class] = 'plugin_integaglpi_item_add_ticket_user';
     $PLUGIN_HOOKS[Hooks::ITEM_ADD][PLUGIN_INTEGAGLPI_NAME][\ITILFollowup::class] = 'plugin_integaglpi_item_add_followup';
     $PLUGIN_HOOKS[Hooks::ITEM_ADD][PLUGIN_INTEGAGLPI_NAME][\ITILSolution::class] = 'plugin_integaglpi_item_solution';
     $PLUGIN_HOOKS[Hooks::ITEM_ADD][PLUGIN_INTEGAGLPI_NAME][\Document_Item::class] = 'plugin_integaglpi_item_add_document_item';
@@ -178,8 +181,8 @@ function plugin_init_integaglpi(): void
     // JS assets are injected by renderers (see Support\AssetRenderer) because
     // some environments return 404 for /plugins/... static assets.
     // Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001.
-    // Menus restructured as 5 parent group classes with GLPI submenu options
-    // (FIX2: integaglpi_ops_console_claim_ui_messaging_stabilization_001_FIX2).
+    // Menus restructured as parent group classes with GLPI submenu options
+    // (FIX3: integaglpi_ops_console_claim_ui_messaging_stabilization_001_FIX3).
     // Each group class returns an 'options' key so the sidebar renders one
     // collapsible entry per group instead of 17 flat items.
     // Leaf classes remain registerClass'd below for GLPI type resolution but
@@ -189,22 +192,26 @@ function plugin_init_integaglpi(): void
             // ── Grupo: WhatsApp / Central ────────────────────────────────
             // Aggregates: Queue::class, AttendanceCenterMenu::class
             WhatsAppGroupMenu::class,
-            // ── Grupo: Supervisão ───────────────────────────────────────
-            // Aggregates: OnlineMonitorMenu::class, SupervisorBackofficeMenu::class
-            SupervisaoGroupMenu::class,
-            // ── Grupo: IA & Conhecimento ────────────────────────────────
+            // ── Grupo: Configuração ─────────────────────────────────────
+            // Aggregates: message hub, smart reception, inactivity, templates
+            ConfiguracaoGroupMenu::class,
+            // ── Grupo: Monitoramento ────────────────────────────────────
+            // Aggregates: OnlineMonitorMenu::class, OperationalDiagnosticsMenu::class,
+            //   OperationLogMenu::class, RoutingSafetyMenu::class
+            MonitoramentoGroupMenu::class,
+            // ── Grupo: IA ────────────────────────────────────────────────
             // Aggregates: AiOperationsMenu::class, CoachingMenu::class,
-            //   KnowledgeBaseMenu::class, KbCandidatesMenu::class, ExternalResearchMenu::class
+            //   KnowledgeBaseMenu::class, KbCandidatesMenu::class,
+            //   ExternalResearchMenu::class
             IaGroupMenu::class,
             // ── Grupo: Gestão ───────────────────────────────────────────
             // Aggregates: ContractsHoursMenu::class, ServiceCatalogMenu::class,
-            //   ContactAgendaImportMenu::class
+            //   ContactAgendaImportMenu::class, OperationLogMenu::class
             GestaoGroupMenu::class,
-            // ── Grupo: Monitoramento / Qualidade ────────────────────────
-            // Aggregates: QualityDashboardMenu::class, ObservabilityMenu::class,
-            //   OperationalDiagnosticsMenu::class, OperationLogMenu::class,
-            //   RoutingSafetyMenu::class
-            MonitoramentoGroupMenu::class,
+            // ── Grupo: Supervisão ───────────────────────────────────────
+            // Aggregates: QualityDashboardMenu::class, SupervisorBackofficeMenu::class,
+            //   OnlineMonitorMenu::class
+            SupervisaoGroupMenu::class,
         ],
     ];
     $PLUGIN_HOOKS['config_page'][PLUGIN_INTEGAGLPI_NAME] = 'front/config.form.php';
@@ -237,8 +244,9 @@ function plugin_init_integaglpi(): void
         'addtabon' => [\Ticket::class],
     ]);
     \CommonGLPI::registerStandardTab(\Ticket::class, 'PluginIntegaglpiTicketRuntime');
-    // Group parent classes (FIX2) — registered so GLPI resolves them.
+    // Group parent classes (FIX3) — registered so GLPI resolves them.
     \Plugin::registerClass(WhatsAppGroupMenu::class);
+    \Plugin::registerClass(ConfiguracaoGroupMenu::class);
     \Plugin::registerClass(SupervisaoGroupMenu::class);
     \Plugin::registerClass(IaGroupMenu::class);
     \Plugin::registerClass(GestaoGroupMenu::class);
