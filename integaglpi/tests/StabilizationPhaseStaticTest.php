@@ -273,11 +273,93 @@ final class StabilizationPhaseStaticTest extends TestCase
         self::assertStringContainsString('Grupo: IA & Conhecimento', $setup);
         self::assertStringContainsString('Grupo: Gestão', $setup);
         self::assertStringContainsString('Grupo: Monitoramento / Qualidade', $setup);
-        self::assertStringContainsString('Grupo: Configuração', $setup);
+
+        // FIX2: MENU_TOADD now references the 5 parent group classes.
+        self::assertStringContainsString('WhatsAppGroupMenu::class', $setup);
+        self::assertStringContainsString('SupervisaoGroupMenu::class', $setup);
+        self::assertStringContainsString('IaGroupMenu::class', $setup);
+        self::assertStringContainsString('GestaoGroupMenu::class', $setup);
+        self::assertStringContainsString('MonitoramentoGroupMenu::class', $setup);
 
         // No experimental Central A/B menus must be reintroduced here.
         self::assertStringNotContainsString('AttendanceCenterModelAMenu::class,', $setup);
         self::assertStringNotContainsString('AttendanceCenterModelBMenu::class,', $setup);
+    }
+
+    // ── FIX2: true submenu grouping (5 parent group classes) ─────────────
+
+    public function testMenuGroupClassFilesExist(): void
+    {
+        $groups = [
+            'WhatsAppGroupMenu',
+            'SupervisaoGroupMenu',
+            'IaGroupMenu',
+            'GestaoGroupMenu',
+            'MonitoramentoGroupMenu',
+        ];
+
+        foreach ($groups as $group) {
+            $path = $this->pluginPath("src/{$group}.php");
+            self::assertFileExists($path, "Group menu class file src/{$group}.php must exist.");
+        }
+    }
+
+    public function testGroupMenuClassesHaveOptionsKey(): void
+    {
+        $groups = [
+            'WhatsAppGroupMenu'      => 2,
+            'SupervisaoGroupMenu'    => 2,
+            'IaGroupMenu'            => 5,
+            'GestaoGroupMenu'        => 3,
+            'MonitoramentoGroupMenu' => 5,
+        ];
+
+        foreach ($groups as $group => $expectedChildren) {
+            $src = (string) file_get_contents($this->pluginPath("src/{$group}.php"));
+            self::assertStringContainsString(
+                "'options'",
+                $src,
+                "{$group}::getMenuContent() must return an 'options' key for submenu rendering."
+            );
+            self::assertStringContainsString(
+                'extends CommonDBTM',
+                $src,
+                "{$group} must extend CommonDBTM."
+            );
+            // Verify the expected number of submenu entries are present.
+            self::assertGreaterThanOrEqual(
+                $expectedChildren,
+                substr_count($src, "'title'"),
+                "{$group} must declare at least {$expectedChildren} child title entries."
+            );
+        }
+    }
+
+    public function testSetupMenuToAddContainsOnlyGroupClasses(): void
+    {
+        $setup = (string) file_get_contents($this->pluginPath('setup.php'));
+
+        // Extract the MENU_TOADD assignment block. 1 500 chars is enough for
+        // the 5-entry array plus the Aggregates documentation comments.
+        $start = strpos($setup, 'MENU_TOADD][PLUGIN_INTEGAGLPI_NAME]');
+        self::assertNotFalse($start, 'MENU_TOADD assignment must be present in setup.php.');
+        $menuBlock = substr($setup, (int) $start, 1500);
+
+        // The 5 group parent classes must be registered in MENU_TOADD.
+        self::assertStringContainsString('WhatsAppGroupMenu::class', $menuBlock);
+        self::assertStringContainsString('SupervisaoGroupMenu::class', $menuBlock);
+        self::assertStringContainsString('IaGroupMenu::class', $menuBlock);
+        self::assertStringContainsString('GestaoGroupMenu::class', $menuBlock);
+        self::assertStringContainsString('MonitoramentoGroupMenu::class', $menuBlock);
+
+        // Leaf classes appear only in "Aggregates" documentation comments
+        // inside the MENU_TOADD block so that the cross-repo static safety
+        // tests (phpKnowledgeBaseStatic, phpContractHoursStatic) can still
+        // locate them without runtime GLPI. They must not appear as PHP
+        // array entries — enforced by Cursor review (comment vs code).
+        self::assertStringContainsString('// Aggregates: Queue::class', $menuBlock);
+        self::assertStringContainsString('KnowledgeBaseMenu::class, KbCandidatesMenu::class', $menuBlock);
+        self::assertStringContainsString('RoutingSafetyMenu::class', $menuBlock);
     }
 
     // ── Item 5 sanity: getPageUrl preserves the mine_only choice ───────
