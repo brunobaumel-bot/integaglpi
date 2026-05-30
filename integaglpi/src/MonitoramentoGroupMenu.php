@@ -33,21 +33,6 @@ final class MonitoramentoGroupMenu extends CommonDBTM
             'page'    => Plugin::getOnlineMonitorUrl(),
             'icon'    => 'ti ti-heartbeat',
             'options' => [
-                'monitor_online'  => [
-                    'title' => __('Monitor Online / visão do supervisor', 'glpiintegaglpi'),
-                    'page'  => Plugin::getOnlineMonitorUrl() . '?view=supervisor',
-                    'icon'  => 'ti ti-activity',
-                ],
-                'health_status'   => [
-                    'title' => __('Health / Status de Serviços', 'glpiintegaglpi'),
-                    'page'  => Plugin::getOperationalDiagnosticsUrl() . '?view=health',
-                    'icon'  => 'ti ti-activity',
-                ],
-                'central_eventos' => [
-                    'title' => __('Central de Eventos Operacionais', 'glpiintegaglpi'),
-                    'page'  => Plugin::getAuditUrl() . '?view=events',
-                    'icon'  => 'ti ti-shield-search',
-                ],
                 'observabilidade_whatsapp' => [
                     'title' => __('Observabilidade WhatsApp', 'glpiintegaglpi'),
                     'page'  => Plugin::getObservabilityUrl(),
@@ -58,10 +43,30 @@ final class MonitoramentoGroupMenu extends CommonDBTM
                     'page'  => Plugin::getOperationalDiagnosticsUrl() . '?view=diagnostics',
                     'icon'  => 'ti ti-stethoscope',
                 ],
+                'auditoria_operacional' => [
+                    'title' => __('Auditoria Operacional', 'glpiintegaglpi'),
+                    'page'  => Plugin::getOperationLogUrl(),
+                    'icon'  => 'ti ti-shield-search',
+                ],
+                'filas_roteamento' => [
+                    'title' => __('Filas e Roteamento', 'glpiintegaglpi'),
+                    'page'  => Plugin::getRoutingOptionsAdminUrl(),
+                    'icon'  => 'ti ti-route',
+                ],
                 'roteamento_seguro' => [
                     'title' => __('Roteamento Seguro', 'glpiintegaglpi'),
                     'page'  => Plugin::getRoutingSafetyUrl(),
                     'icon'  => 'ti ti-route',
+                ],
+                'health_status'   => [
+                    'title' => __('Health / Status de Serviços', 'glpiintegaglpi'),
+                    'page'  => Plugin::getOperationalDiagnosticsUrl() . '?view=health',
+                    'icon'  => 'ti ti-activity',
+                ],
+                'central_eventos' => [
+                    'title' => __('Central de Eventos Operacionais', 'glpiintegaglpi'),
+                    'page'  => Plugin::getAuditUrl() . '?view=events',
+                    'icon'  => 'ti ti-shield-search',
                 ],
             ],
         ];

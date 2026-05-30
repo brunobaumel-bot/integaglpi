@@ -351,6 +351,7 @@ final class StabilizationPhaseStaticTest extends TestCase
             'ObservabilityMenu::class',
             'OperationalDiagnosticsMenu::class',
             'OperationLogMenu::class',
+            'RoutingOptionsMenu::class',
             'RoutingSafetyMenu::class',
         ];
 
@@ -386,15 +387,17 @@ final class StabilizationPhaseStaticTest extends TestCase
         $expectations = [
             'src/WhatsAppGroupMenu.php' => ['WhatsApp', 'Central de Atendimento', 'Monitor Online WhatsApp', 'Hub de Mensagens'],
             'src/ConfiguracaoGroupMenu.php' => ['Configurações das Mensagens', 'Recepção Inteligente', 'Avisos e Inatividade', 'CSAT', 'Horário Comercial', 'Mídia', 'Ticket e Solução', 'Templates WhatsApp', 'Configurações Gerais do Plugin'],
-            'src/MonitoramentoGroupMenu.php' => ['Monitor Online / visão do supervisor', 'Health / Status de Serviços', 'Central de Eventos Operacionais', 'Observabilidade WhatsApp', 'Diagnóstico Operacional', 'Roteamento Seguro'],
-            'src/IaGroupMenu.php' => ['IA & Conhecimento / Console IA', 'Coaching e Onboarding IA', 'Base de Conhecimento GLPI', 'Candidatos de KB por IA', 'Pesquisa Externa Controlada', 'Mineração Histórica'],
-            'src/GestaoGroupMenu.php' => ['Contratos e Horas / Banco de Horas', 'Catálogo de Serviços', 'Importar agenda', 'Perfis e Permissões', 'Auditoria'],
+            'src/MonitoramentoGroupMenu.php' => ['Observabilidade WhatsApp', 'Diagnóstico Operacional', 'Auditoria Operacional', 'Filas e Roteamento', 'Roteamento Seguro', 'Health / Status de Serviços', 'Central de Eventos Operacionais'],
+            'src/IaGroupMenu.php' => ['IA & Conhecimento', 'Coaching e Onboarding IA', 'Base de Conhecimento GLPI', 'Candidatos de KB por IA', 'Pesquisa Externa Controlada', 'Mineração Histórica', 'Configuração IA'],
+            'src/GestaoGroupMenu.php' => ['Contratos e Horas / Banco de Horas', 'Catálogo de Serviços', 'Importar agenda', 'Perfis e Permissões'],
             'src/SupervisaoGroupMenu.php' => ['Backoffice Supervisor', 'Dashboard de Qualidade', 'SLA e Qualidade / métricas, aging, filas', 'Relatórios Operacionais', 'Alertas IA', 'Inatividade e Autoclose / parâmetros'],
         ];
 
         foreach ($expectations as $relativePath => $labels) {
             $source = (string) file_get_contents($this->pluginPath($relativePath));
             self::assertStringContainsString("'options' => [", $source, $relativePath . ' must expose direct GLPI submenu options.');
+            $beforeOptions = substr($source, 0, (int) strpos($source, "'options' => ["));
+            self::assertStringContainsString("'page'", $beforeOptions, $relativePath . ' category must keep a parent page so GLPI renders the sidebar menu entry.');
             foreach ($labels as $label) {
                 self::assertStringContainsString($label, $source, $label . ' must be a visible child label in ' . $relativePath . '.');
             }
@@ -402,7 +405,7 @@ final class StabilizationPhaseStaticTest extends TestCase
 
         $iaGroup = (string) file_get_contents($this->pluginPath('src/IaGroupMenu.php'));
         self::assertStringContainsString('Plugin::getAiOperationsUrl()', $iaGroup);
-        self::assertStringNotContainsString("Plugin::getAiConfigUrl(),\n            'icon'", $iaGroup);
+        self::assertStringContainsString('Plugin::getAiConfigUrl()', $iaGroup);
     }
 
     public function testCentralLayoutKeepsMiddleColumnChatOnlyAndMovesDetailsToContext(): void

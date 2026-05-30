@@ -34,7 +34,7 @@ final class IaGroupMenu extends CommonDBTM
             'icon'    => 'ti ti-brain',
             'options' => [
                 'console_ia'          => [
-                    'title' => __('IA & Conhecimento / Console IA', 'glpiintegaglpi'),
+                    'title' => __('IA & Conhecimento', 'glpiintegaglpi'),
                     'page'  => Plugin::getAiOperationsUrl(),
                     'icon'  => 'ti ti-brain',
                 ],
@@ -62,6 +62,11 @@ final class IaGroupMenu extends CommonDBTM
                     'title' => __('Mineração Histórica', 'glpiintegaglpi'),
                     'page'  => Plugin::getHistoricalMiningUrl(),
                     'icon'  => 'ti ti-pick',
+                ],
+                'configuracao_ia'     => [
+                    'title' => __('Configuração IA', 'glpiintegaglpi'),
+                    'page'  => Plugin::getAiConfigUrl(),
+                    'icon'  => 'ti ti-settings',
                 ],
             ],
         ];

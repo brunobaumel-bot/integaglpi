@@ -55,11 +55,6 @@ final class GestaoGroupMenu extends CommonDBTM
                     'page'  => Plugin::getWebBasePath() . '/front/profile.form.php',
                     'icon'  => 'ti ti-user-shield',
                 ],
-                'auditoria'                   => [
-                    'title' => __('Auditoria', 'glpiintegaglpi'),
-                    'page'  => Plugin::getAuditUrl(),
-                    'icon'  => 'ti ti-shield-search',
-                ],
             ],
         ];
     }
