@@ -322,17 +322,22 @@ final class StabilizationPhaseStaticTest extends TestCase
         $menuBlock = substr($setup, (int) $start, (int) $end - (int) $start);
 
         $groupMenus = [
-            'WhatsAppGroupMenu::class',
-            'ConfiguracaoGroupMenu::class',
-            'MonitoramentoGroupMenu::class',
-            'IaGroupMenu::class',
-            'GestaoGroupMenu::class',
-            'SupervisaoGroupMenu::class',
+            "'plugin_integaglpi_whatsapp' => [\n            WhatsAppGroupMenu::class",
+            "'plugin_integaglpi_configuracao' => [\n            ConfiguracaoGroupMenu::class",
+            "'plugin_integaglpi_monitoramento' => [\n            MonitoramentoGroupMenu::class",
+            "'plugin_integaglpi_ia' => [\n            IaGroupMenu::class",
+            "'plugin_integaglpi_gestao' => [\n            GestaoGroupMenu::class",
+            "'plugin_integaglpi_supervisao' => [\n            SupervisaoGroupMenu::class",
         ];
         foreach ($groupMenus as $groupMenu) {
-            self::assertStringContainsString($groupMenu, $menuBlock, $groupMenu . ' must be listed as an expandable parent in MENU_TOADD.');
-            self::assertStringContainsString('registerClass(' . $groupMenu . ')', $setup, $groupMenu . ' must be registered as an active menu class.');
+            self::assertStringContainsString($groupMenu, $menuBlock, $groupMenu . ' must be listed as a dedicated expandable MENU_TOADD sector.');
         }
+        self::assertStringContainsString('registerClass(WhatsAppGroupMenu::class)', $setup);
+        self::assertStringContainsString('registerClass(ConfiguracaoGroupMenu::class)', $setup);
+        self::assertStringContainsString('registerClass(MonitoramentoGroupMenu::class)', $setup);
+        self::assertStringContainsString('registerClass(IaGroupMenu::class)', $setup);
+        self::assertStringContainsString('registerClass(GestaoGroupMenu::class)', $setup);
+        self::assertStringContainsString('registerClass(SupervisaoGroupMenu::class)', $setup);
 
         $leafMenus = [
             'Queue::class',
@@ -380,6 +385,7 @@ final class StabilizationPhaseStaticTest extends TestCase
 
         self::assertCount(6, $entries, 'MENU_TOADD must contain the six expandable parent menu categories.');
         self::assertSame($entries, array_values(array_unique($entries)), 'MENU_TOADD must not contain duplicate menu class entries.');
+        self::assertStringNotContainsString("'plugins' => [", $menuBlock, 'IntegraGLPI groups must be rendered as dedicated sidebar sectors, not hidden as third-level options below Plugins.');
     }
 
     public function testMenuCategoriesExposeExpectedChildren(): void
@@ -395,9 +401,8 @@ final class StabilizationPhaseStaticTest extends TestCase
 
         foreach ($expectations as $relativePath => $labels) {
             $source = (string) file_get_contents($this->pluginPath($relativePath));
-            self::assertStringContainsString("'options' => [", $source, $relativePath . ' must expose direct GLPI submenu options.');
-            $beforeOptions = substr($source, 0, (int) strpos($source, "'options' => ["));
-            self::assertStringContainsString("'page'", $beforeOptions, $relativePath . ' category must keep a parent page so GLPI renders the sidebar menu entry.');
+            self::assertStringContainsString("'is_multi_entries' => true", $source, $relativePath . ' must expose children as first-level GLPI sidebar content.');
+            self::assertStringContainsString('public static function getIcon()', $source, $relativePath . ' must provide the sidebar sector icon.');
             foreach ($labels as $label) {
                 self::assertStringContainsString($label, $source, $label . ' must be a visible child label in ' . $relativePath . '.');
             }

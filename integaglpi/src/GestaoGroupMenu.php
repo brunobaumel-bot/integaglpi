@@ -25,16 +25,23 @@ final class GestaoGroupMenu extends CommonDBTM
         return __('Gestão', 'glpiintegaglpi');
     }
 
+    public static function getIcon(): string
+    {
+        return 'ti ti-briefcase';
+    }
+
     /**
      * @return array<string, mixed>
      */
     public static function getMenuContent(): array
     {
+        if (!self::canView()) {
+            return [];
+        }
+
         return [
-            'title'   => self::getMenuName(),
-            'page'    => Plugin::getContractHoursUrl(),
-            'icon'    => 'ti ti-briefcase',
-            'options' => [
+            'title'            => self::getMenuName(),
+            'is_multi_entries' => true,
                 'contratos_banco_horas'       => [
                     'title' => __('Contratos e Horas / Banco de Horas', 'glpiintegaglpi'),
                     'page'  => Plugin::getContractHoursUrl(),
@@ -55,7 +62,6 @@ final class GestaoGroupMenu extends CommonDBTM
                     'page'  => Plugin::getWebBasePath() . '/front/profile.form.php',
                     'icon'  => 'ti ti-user-shield',
                 ],
-            ],
         ];
     }
 

@@ -23,16 +23,23 @@ final class IaGroupMenu extends CommonDBTM
         return __('IA', 'glpiintegaglpi');
     }
 
+    public static function getIcon(): string
+    {
+        return 'ti ti-brain';
+    }
+
     /**
      * @return array<string, mixed>
      */
     public static function getMenuContent(): array
     {
+        if (!self::canView()) {
+            return [];
+        }
+
         return [
-            'title'   => self::getMenuName(),
-            'page'    => Plugin::getAiOperationsUrl(),
-            'icon'    => 'ti ti-brain',
-            'options' => [
+            'title'            => self::getMenuName(),
+            'is_multi_entries' => true,
                 'console_ia'          => [
                     'title' => __('IA & Conhecimento', 'glpiintegaglpi'),
                     'page'  => Plugin::getAiOperationsUrl(),
@@ -68,7 +75,6 @@ final class IaGroupMenu extends CommonDBTM
                     'page'  => Plugin::getAiConfigUrl(),
                     'icon'  => 'ti ti-settings',
                 ],
-            ],
         ];
     }
 

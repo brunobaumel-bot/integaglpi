@@ -184,12 +184,22 @@ function plugin_init_integaglpi(): void
     // Use GLPI parent menu entries with options so operators can expand each
     // category directly in the sidebar without an intermediate hub page.
     $PLUGIN_HOOKS[Hooks::MENU_TOADD][PLUGIN_INTEGAGLPI_NAME] = [
-        'plugins' => [
+        'plugin_integaglpi_whatsapp' => [
             WhatsAppGroupMenu::class,
+        ],
+        'plugin_integaglpi_configuracao' => [
             ConfiguracaoGroupMenu::class,
+        ],
+        'plugin_integaglpi_monitoramento' => [
             MonitoramentoGroupMenu::class,
+        ],
+        'plugin_integaglpi_ia' => [
             IaGroupMenu::class,
+        ],
+        'plugin_integaglpi_gestao' => [
             GestaoGroupMenu::class,
+        ],
+        'plugin_integaglpi_supervisao' => [
             SupervisaoGroupMenu::class,
         ],
     ];

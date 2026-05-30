@@ -23,16 +23,23 @@ final class MonitoramentoGroupMenu extends CommonDBTM
         return __('Monitoramento', 'glpiintegaglpi');
     }
 
+    public static function getIcon(): string
+    {
+        return 'ti ti-heartbeat';
+    }
+
     /**
      * @return array<string, mixed>
      */
     public static function getMenuContent(): array
     {
+        if (!self::canView()) {
+            return [];
+        }
+
         return [
-            'title'   => self::getMenuName(),
-            'page'    => Plugin::getOnlineMonitorUrl(),
-            'icon'    => 'ti ti-heartbeat',
-            'options' => [
+            'title'            => self::getMenuName(),
+            'is_multi_entries' => true,
                 'observabilidade_whatsapp' => [
                     'title' => __('Observabilidade WhatsApp', 'glpiintegaglpi'),
                     'page'  => Plugin::getObservabilityUrl(),
@@ -68,7 +75,6 @@ final class MonitoramentoGroupMenu extends CommonDBTM
                     'page'  => Plugin::getAuditUrl() . '?view=events',
                     'icon'  => 'ti ti-shield-search',
                 ],
-            ],
         ];
     }
 

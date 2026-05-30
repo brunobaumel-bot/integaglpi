@@ -25,36 +25,42 @@ final class WhatsAppGroupMenu extends CommonDBTM
         return __('WhatsApp / Central', 'glpiintegaglpi');
     }
 
+    public static function getIcon(): string
+    {
+        return 'ti ti-brand-whatsapp';
+    }
+
     /**
      * @return array<string, mixed>
      */
     public static function getMenuContent(): array
     {
+        if (!self::canView()) {
+            return [];
+        }
+
         return [
-            'title'   => self::getMenuName(),
-            'page'    => Plugin::getWebBasePath() . '/front/central.php',
-            'icon'    => 'ti ti-brand-whatsapp',
-            'options' => [
-                'whatsapp'           => [
-                    'title' => __('WhatsApp', 'glpiintegaglpi'),
-                    'page'  => Plugin::getQueueAdminUrl(),
-                    'icon'  => 'ti ti-brand-whatsapp',
-                ],
-                'central_whatsapp'   => [
-                    'title' => __('Central de Atendimento', 'glpiintegaglpi'),
-                    'page'  => Plugin::getWebBasePath() . '/front/central.php',
-                    'icon'  => 'ti ti-headset',
-                ],
-                'monitor_online_whatsapp' => [
-                    'title' => __('Monitor Online WhatsApp', 'glpiintegaglpi'),
-                    'page'  => Plugin::getOnlineMonitorUrl(),
-                    'icon'  => 'ti ti-activity',
-                ],
-                'hub_mensagens'      => [
-                    'title' => __('Hub de Mensagens', 'glpiintegaglpi'),
-                    'page'  => Plugin::getQueueAdminUrl() . '?tab=message_settings',
-                    'icon'  => 'ti ti-message-cog',
-                ],
+            'title'            => self::getMenuName(),
+            'is_multi_entries' => true,
+            'whatsapp'         => [
+                'title' => __('WhatsApp', 'glpiintegaglpi'),
+                'page'  => Plugin::getQueueAdminUrl(),
+                'icon'  => 'ti ti-brand-whatsapp',
+            ],
+            'central_whatsapp' => [
+                'title' => __('Central de Atendimento', 'glpiintegaglpi'),
+                'page'  => Plugin::getWebBasePath() . '/front/central.php',
+                'icon'  => 'ti ti-headset',
+            ],
+            'monitor_online_whatsapp' => [
+                'title' => __('Monitor Online WhatsApp', 'glpiintegaglpi'),
+                'page'  => Plugin::getOnlineMonitorUrl(),
+                'icon'  => 'ti ti-activity',
+            ],
+            'hub_mensagens'    => [
+                'title' => __('Hub de Mensagens', 'glpiintegaglpi'),
+                'page'  => Plugin::getQueueAdminUrl() . '?tab=message_settings',
+                'icon'  => 'ti ti-message-cog',
             ],
         ];
     }

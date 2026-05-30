@@ -25,16 +25,23 @@ final class SupervisaoGroupMenu extends CommonDBTM
         return __('Supervisão', 'glpiintegaglpi');
     }
 
+    public static function getIcon(): string
+    {
+        return 'ti ti-chart-bar';
+    }
+
     /**
      * @return array<string, mixed>
      */
     public static function getMenuContent(): array
     {
+        if (!self::canView()) {
+            return [];
+        }
+
         return [
-            'title'   => self::getMenuName(),
-            'page'    => Plugin::getSupervisorBackofficeUrl(),
-            'icon'    => 'ti ti-chart-bar',
-            'options' => [
+            'title'            => self::getMenuName(),
+            'is_multi_entries' => true,
                 'backoffice_supervisor'  => [
                     'title' => __('Backoffice Supervisor', 'glpiintegaglpi'),
                     'page'  => Plugin::getSupervisorBackofficeUrl(),
@@ -65,7 +72,6 @@ final class SupervisaoGroupMenu extends CommonDBTM
                     'page'  => Plugin::getQueueAdminUrl() . '?tab=message_settings&section=avisos_inatividade',
                     'icon'  => 'ti ti-clock-pause',
                 ],
-            ],
         ];
     }
 
