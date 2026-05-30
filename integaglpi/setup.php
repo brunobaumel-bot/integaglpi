@@ -26,6 +26,7 @@ use GlpiPlugin\Integaglpi\QualityDashboardMenu;
 use GlpiPlugin\Integaglpi\Queue;
 use GlpiPlugin\Integaglpi\RoutingOptionsMenu;
 use GlpiPlugin\Integaglpi\RoutingSafetyMenu;
+use GlpiPlugin\Integaglpi\SecurityCenterMenu;
 use GlpiPlugin\Integaglpi\ServiceCatalogMenu;
 use GlpiPlugin\Integaglpi\Service\TicketSyncService;
 use GlpiPlugin\Integaglpi\SupervisaoGroupMenu;
@@ -203,6 +204,9 @@ function plugin_init_integaglpi(): void
         'plugin_integaglpi_supervisao' => [
             SupervisaoGroupMenu::class,
         ],
+        'plugin_integaglpi_security_center' => [
+            SecurityCenterMenu::class,
+        ],
     ];
     $PLUGIN_HOOKS['config_page'][PLUGIN_INTEGAGLPI_NAME] = 'front/config.form.php';
 
@@ -258,6 +262,7 @@ function plugin_init_integaglpi(): void
     \Plugin::registerClass(ServiceCatalogMenu::class);
     \Plugin::registerClass(KnowledgeBaseMenu::class);
     \Plugin::registerClass(KbCandidatesMenu::class);
+    \Plugin::registerClass(SecurityCenterMenu::class);
 }
 
 function plugin_integaglpi_install(): bool

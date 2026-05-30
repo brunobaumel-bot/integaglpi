@@ -5,6 +5,8 @@ declare(strict_types=1);
 use GlpiPlugin\Integaglpi\Plugin;
 use GlpiPlugin\Integaglpi\Service\AttendanceCenterService;
 use GlpiPlugin\Integaglpi\Service\PluginConfigService;
+use GlpiPlugin\Integaglpi\Service\SecurityAuditService;
+use GlpiPlugin\Integaglpi\Service\SecurityPermissionService;
 
 include '../../../inc/includes.php';
 
@@ -63,6 +65,36 @@ try {
     $ticketId = (int) ($_POST['ticket_id'] ?? 0);
     $userId = Plugin::getCurrentUserId();
 
+    $actionRightMap = [
+        'claim' => SecurityPermissionService::RIGHT_CLAIM_TICKET,
+        'reply' => SecurityPermissionService::RIGHT_REPLY_OWNED_TICKET,
+        'transfer' => SecurityPermissionService::RIGHT_TRANSFER_TICKET,
+        'confirm_entity' => SecurityPermissionService::RIGHT_SELECT_ENTITY,
+        'update_entity' => SecurityPermissionService::RIGHT_OVERRIDE_ENTITY_MEMORY,
+        'soft_close' => SecurityPermissionService::RIGHT_ADMINISTRATIVE_CLOSE,
+        'entity_status' => SecurityPermissionService::RIGHT_VIEW_CENTRAL,
+    ];
+    if ($action === 'solve') {
+        $requiredRight = SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_SOLVE_TICKET)
+            ? SecurityPermissionService::RIGHT_SOLVE_TICKET
+            : SecurityPermissionService::RIGHT_SOLVE_OWNED_TICKET;
+    } else {
+        $requiredRight = $actionRightMap[$action] ?? SecurityPermissionService::RIGHT_VIEW_CENTRAL;
+    }
+    $rbacGate = SecurityPermissionService::requirePermissionOrDeny($requiredRight, [
+        'endpoint' => 'central.action.php',
+        'action' => $action,
+        'conversation_id' => $conversationId,
+        'ticket_id' => $ticketId,
+    ]);
+    if (!$rbacGate['ok']) {
+        plugin_integaglpi_central_json([
+            'ok' => false,
+            'error' => $rbacGate['error'],
+            'message' => $rbacGate['message'],
+        ], $rbacGate['http_status']);
+    }
+
     $service = new AttendanceCenterService(new PluginConfigService());
     if ($action === 'claim') {
         $result = $service->claimConversation($conversationId, $ticketId, $userId);
@@ -96,6 +128,18 @@ try {
             }
         }
 
+        if ($glpiEntityId > 0 && !SecurityPermissionService::enforceEntityScope($glpiEntityId)) {
+            SecurityAuditService::logAccessDenied(
+                SecurityPermissionService::RIGHT_ENFORCE_ENTITY_ISOLATION,
+                ['endpoint' => 'central.action.php', 'action' => $action, 'glpi_entity_id' => $glpiEntityId]
+            );
+            plugin_integaglpi_central_json([
+                'ok' => false,
+                'error' => 'entity_out_of_scope',
+                'message' => __('A entidade selecionada está fora do escopo ativo da sua sessão.', 'glpiintegaglpi'),
+            ], 403);
+        }
+
         $result = $service->confirmConversationEntity(
             $conversationId,
             $glpiEntityId,
@@ -120,6 +164,29 @@ try {
             }
         }
 
+        $reasonForOverride = trim((string) ($_POST['reason'] ?? ''));
+        if ($reasonForOverride === '') {
+            plugin_integaglpi_central_json([
+                'ok' => false,
+                'error' => 'reason_required',
+                'message' => __('Informe o motivo para sobrepor a entidade desta conversa.', 'glpiintegaglpi'),
+            ], 400);
+        }
+
+        if ($glpiEntityId > 0 && !SecurityPermissionService::enforceEntityScope($glpiEntityId)) {
+            SecurityAuditService::logAccessDenied(
+                SecurityPermissionService::RIGHT_ENFORCE_ENTITY_ISOLATION,
+                ['endpoint' => 'central.action.php', 'action' => $action, 'glpi_entity_id' => $glpiEntityId]
+            );
+            plugin_integaglpi_central_json([
+                'ok' => false,
+                'error' => 'entity_out_of_scope',
+                'message' => __('A entidade selecionada está fora do escopo ativo da sua sessão.', 'glpiintegaglpi'),
+            ], 403);
+        }
+
+        SecurityAuditService::logEntityOverride($conversationId !== '' ? crc32($conversationId) : 0, 0, $glpiEntityId, $reasonForOverride);
+
         $result = $service->updateConversationEntity(
             $conversationId,
             $glpiEntityId,
@@ -130,10 +197,12 @@ try {
     } elseif ($action === 'entity_status') {
         $result = $service->getConversationEntityStatus($conversationId);
     } elseif ($action === 'soft_close') {
+        $softCloseReason = (string) ($_POST['reason'] ?? '');
+        SecurityAuditService::logAdminClose($conversationId, $softCloseReason);
         $result = $service->softCloseConversation(
             $conversationId,
             $userId,
-            (string) ($_POST['reason'] ?? '')
+            $softCloseReason
         );
     } else {
         $result = $service->solveConversation($conversationId, $ticketId, $userId);

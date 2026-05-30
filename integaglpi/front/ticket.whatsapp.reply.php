@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use GlpiPlugin\Integaglpi\Plugin;
 use GlpiPlugin\Integaglpi\Service\IntegrationServiceClient;
+use GlpiPlugin\Integaglpi\Service\SecurityPermissionService;
 
 include '../../../inc/includes.php';
 
@@ -296,6 +297,18 @@ if ($method === 'POST') {
 
         if (!Plugin::canUpdate()) {
             integaglpiJsonResponse(['success' => false, 'message' => 'Permissão insuficiente.', 'error' => 'forbidden'], 403);
+        }
+
+        $rbacReplyGate = SecurityPermissionService::requirePermissionOrDeny(
+            SecurityPermissionService::RIGHT_REPLY_OWNED_TICKET,
+            ['endpoint' => 'ticket.whatsapp.reply.php', 'ticket_id' => (int) ($_POST['ticket_id'] ?? 0)]
+        );
+        if (!$rbacReplyGate['ok']) {
+            integaglpiJsonResponse([
+                'success' => false,
+                'message' => $rbacReplyGate['message'],
+                'error' => $rbacReplyGate['error'],
+            ], $rbacReplyGate['http_status']);
         }
 
         $ticketId       = (int)   ($_POST['ticket_id']       ?? 0);
