@@ -36,12 +36,17 @@ final class GestaoGroupMenu extends CommonDBTM
             'icon'    => 'ti ti-briefcase',
             'options' => [
                 'contratos_banco_horas'       => [
-                    'title' => __('Contratos e Banco de Horas', 'glpiintegaglpi'),
+                    'title' => __('Contratos e Horas / Banco de Horas', 'glpiintegaglpi'),
                     'page'  => Plugin::getContractHoursUrl(),
                     'icon'  => 'ti ti-file-time',
                 ],
-                'entidades_memoria_contato'   => [
-                    'title' => __('Entidades e Memória de Contato', 'glpiintegaglpi'),
+                'catalogo_servicos'           => [
+                    'title' => __('Catálogo de Serviços', 'glpiintegaglpi'),
+                    'page'  => Plugin::getServiceCatalogUrl(),
+                    'icon'  => 'ti ti-list-check',
+                ],
+                'importar_agenda'             => [
+                    'title' => __('Importar agenda', 'glpiintegaglpi'),
                     'page'  => Plugin::getContactAgendaImportUrl(),
                     'icon'  => 'ti ti-address-book',
                 ],

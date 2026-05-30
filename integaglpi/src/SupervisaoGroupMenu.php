@@ -32,17 +32,27 @@ final class SupervisaoGroupMenu extends CommonDBTM
     {
         return [
             'title'   => self::getMenuName(),
-            'page'    => Plugin::getQualityDashboardUrl(),
+            'page'    => Plugin::getSupervisorBackofficeUrl(),
             'icon'    => 'ti ti-chart-bar',
             'options' => [
+                'backoffice_supervisor'  => [
+                    'title' => __('Backoffice Supervisor', 'glpiintegaglpi'),
+                    'page'  => Plugin::getSupervisorBackofficeUrl(),
+                    'icon'  => 'ti ti-users',
+                ],
+                'dashboard_qualidade'    => [
+                    'title' => __('Dashboard de Qualidade', 'glpiintegaglpi'),
+                    'page'  => Plugin::getQualityDashboardUrl(),
+                    'icon'  => 'ti ti-dashboard',
+                ],
                 'sla_qualidade'          => [
                     'title' => __('SLA e Qualidade / métricas, aging, filas', 'glpiintegaglpi'),
-                    'page'  => Plugin::getQualityDashboardUrl(),
+                    'page'  => Plugin::getQualityDashboardUrl() . '?view=sla',
                     'icon'  => 'ti ti-dashboard',
                 ],
                 'relatorios_operacionais' => [
                     'title' => __('Relatórios Operacionais', 'glpiintegaglpi'),
-                    'page'  => Plugin::getSupervisorBackofficeUrl(),
+                    'page'  => Plugin::getSupervisorBackofficeUrl() . '?view=reports',
                     'icon'  => 'ti ti-chart-bar',
                 ],
                 'alertas_ia'             => [

@@ -35,18 +35,33 @@ final class MonitoramentoGroupMenu extends CommonDBTM
             'options' => [
                 'monitor_online'  => [
                     'title' => __('Monitor Online / visão do supervisor', 'glpiintegaglpi'),
-                    'page'  => Plugin::getOnlineMonitorUrl(),
+                    'page'  => Plugin::getOnlineMonitorUrl() . '?view=supervisor',
                     'icon'  => 'ti ti-activity',
                 ],
                 'health_status'   => [
                     'title' => __('Health / Status de Serviços', 'glpiintegaglpi'),
-                    'page'  => Plugin::getOperationalDiagnosticsUrl(),
+                    'page'  => Plugin::getOperationalDiagnosticsUrl() . '?view=health',
                     'icon'  => 'ti ti-activity',
                 ],
                 'central_eventos' => [
-                    'title' => __('Central de Eventos Operacionais / futura V6', 'glpiintegaglpi'),
-                    'page'  => Plugin::getAuditUrl(),
+                    'title' => __('Central de Eventos Operacionais', 'glpiintegaglpi'),
+                    'page'  => Plugin::getAuditUrl() . '?view=events',
                     'icon'  => 'ti ti-shield-search',
+                ],
+                'observabilidade_whatsapp' => [
+                    'title' => __('Observabilidade WhatsApp', 'glpiintegaglpi'),
+                    'page'  => Plugin::getObservabilityUrl(),
+                    'icon'  => 'ti ti-heartbeat',
+                ],
+                'diagnostico_operacional' => [
+                    'title' => __('Diagnóstico Operacional', 'glpiintegaglpi'),
+                    'page'  => Plugin::getOperationalDiagnosticsUrl() . '?view=diagnostics',
+                    'icon'  => 'ti ti-stethoscope',
+                ],
+                'roteamento_seguro' => [
+                    'title' => __('Roteamento Seguro', 'glpiintegaglpi'),
+                    'page'  => Plugin::getRoutingSafetyUrl(),
+                    'icon'  => 'ti ti-route',
                 ],
             ],
         ];

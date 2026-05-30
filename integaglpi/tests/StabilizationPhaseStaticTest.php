@@ -108,6 +108,17 @@ final class StabilizationPhaseStaticTest extends TestCase
         self::assertStringContainsString('&& $replyOwnedByCurrentUser', $template);
     }
 
+    public function testTicketTabDoesNotExposeAttachmentLogicalDeleteActions(): void
+    {
+        $template = (string) file_get_contents($this->pluginPath('templates/ticket_tab.php'));
+
+        self::assertStringNotContainsString('Excluir logicamente', $template);
+        self::assertStringNotContainsString('Restaurar anexo', $template);
+        self::assertStringNotContainsString('attachment_action', $template);
+        self::assertStringNotContainsString('attachment.action.php', $template);
+        self::assertStringContainsString('$attachmentStatusLabel', $template);
+    }
+
     public function testNativeGlpiTicketUserClaimIsHookedAndSynced(): void
     {
         $setup = (string) file_get_contents($this->pluginPath('setup.php'));
@@ -300,7 +311,7 @@ final class StabilizationPhaseStaticTest extends TestCase
         );
     }
 
-    public function testSetupRegistersOriginalFlatMenus(): void
+    public function testSetupRegistersExpandableMenuCategories(): void
     {
         $setup = (string) file_get_contents($this->pluginPath('setup.php'));
 
@@ -310,7 +321,20 @@ final class StabilizationPhaseStaticTest extends TestCase
         self::assertNotFalse($end, 'config_page assignment must follow MENU_TOADD in setup.php.');
         $menuBlock = substr($setup, (int) $start, (int) $end - (int) $start);
 
-        $expectedLeafMenus = [
+        $groupMenus = [
+            'WhatsAppGroupMenu::class',
+            'ConfiguracaoGroupMenu::class',
+            'MonitoramentoGroupMenu::class',
+            'IaGroupMenu::class',
+            'GestaoGroupMenu::class',
+            'SupervisaoGroupMenu::class',
+        ];
+        foreach ($groupMenus as $groupMenu) {
+            self::assertStringContainsString($groupMenu, $menuBlock, $groupMenu . ' must be listed as an expandable parent in MENU_TOADD.');
+            self::assertStringContainsString('registerClass(' . $groupMenu . ')', $setup, $groupMenu . ' must be registered as an active menu class.');
+        }
+
+        $leafMenus = [
             'Queue::class',
             'AttendanceCenterMenu::class',
             'OnlineMonitorMenu::class',
@@ -330,21 +354,9 @@ final class StabilizationPhaseStaticTest extends TestCase
             'RoutingSafetyMenu::class',
         ];
 
-        foreach ($expectedLeafMenus as $menuClass) {
-            self::assertStringContainsString($menuClass, $menuBlock, $menuClass . ' must be listed directly in MENU_TOADD.');
-        }
-
-        $groupMenus = [
-            'WhatsAppGroupMenu::class',
-            'ConfiguracaoGroupMenu::class',
-            'MonitoramentoGroupMenu::class',
-            'IaGroupMenu::class',
-            'GestaoGroupMenu::class',
-            'SupervisaoGroupMenu::class',
-        ];
-        foreach ($groupMenus as $groupMenu) {
-            self::assertStringNotContainsString($groupMenu, $menuBlock, $groupMenu . ' must not be listed in MENU_TOADD.');
-            self::assertStringNotContainsString('registerClass(' . $groupMenu . ')', $setup, $groupMenu . ' must not be registered as an active menu class.');
+        foreach ($leafMenus as $leafMenu) {
+            self::assertStringNotContainsString($leafMenu, $menuBlock, $leafMenu . ' must remain registered but not loose in top-level MENU_TOADD.');
+            self::assertStringContainsString('registerClass(' . $leafMenu . ')', $setup, $leafMenu . ' direct URL class must remain registered.');
         }
 
         // No experimental Central A/B menus must be reintroduced here.
@@ -352,7 +364,7 @@ final class StabilizationPhaseStaticTest extends TestCase
         self::assertStringNotContainsString('AttendanceCenterModelBMenu::class,', $setup);
     }
 
-    public function testSetupMenuToAddHasNoDuplicateFlatEntries(): void
+    public function testSetupMenuToAddHasNoDuplicateCategoryEntries(): void
     {
         $setup = (string) file_get_contents($this->pluginPath('setup.php'));
 
@@ -362,14 +374,38 @@ final class StabilizationPhaseStaticTest extends TestCase
         self::assertNotFalse($end, 'config_page assignment must follow MENU_TOADD in setup.php.');
         $menuBlock = substr($setup, (int) $start, (int) $end - (int) $start);
 
-        preg_match_all('/([A-Za-z0-9_]+(?:Menu|Queue))::class,/', $menuBlock, $matches);
+        preg_match_all('/([A-Za-z0-9_]+GroupMenu)::class,/', $menuBlock, $matches);
         $entries = $matches[1] ?? [];
 
-        self::assertNotEmpty($entries, 'MENU_TOADD must contain direct menu class entries.');
+        self::assertCount(6, $entries, 'MENU_TOADD must contain the six expandable parent menu categories.');
         self::assertSame($entries, array_values(array_unique($entries)), 'MENU_TOADD must not contain duplicate menu class entries.');
     }
 
-    public function testCentralLayoutMovesSelectedDetailsAndActionsToMiddleColumn(): void
+    public function testMenuCategoriesExposeExpectedChildren(): void
+    {
+        $expectations = [
+            'src/WhatsAppGroupMenu.php' => ['WhatsApp', 'Central de Atendimento', 'Monitor Online WhatsApp', 'Hub de Mensagens'],
+            'src/ConfiguracaoGroupMenu.php' => ['Configurações das Mensagens', 'Recepção Inteligente', 'Avisos e Inatividade', 'CSAT', 'Horário Comercial', 'Mídia', 'Ticket e Solução', 'Templates WhatsApp', 'Configurações Gerais do Plugin'],
+            'src/MonitoramentoGroupMenu.php' => ['Monitor Online / visão do supervisor', 'Health / Status de Serviços', 'Central de Eventos Operacionais', 'Observabilidade WhatsApp', 'Diagnóstico Operacional', 'Roteamento Seguro'],
+            'src/IaGroupMenu.php' => ['IA & Conhecimento / Console IA', 'Coaching e Onboarding IA', 'Base de Conhecimento GLPI', 'Candidatos de KB por IA', 'Pesquisa Externa Controlada', 'Mineração Histórica'],
+            'src/GestaoGroupMenu.php' => ['Contratos e Horas / Banco de Horas', 'Catálogo de Serviços', 'Importar agenda', 'Perfis e Permissões', 'Auditoria'],
+            'src/SupervisaoGroupMenu.php' => ['Backoffice Supervisor', 'Dashboard de Qualidade', 'SLA e Qualidade / métricas, aging, filas', 'Relatórios Operacionais', 'Alertas IA', 'Inatividade e Autoclose / parâmetros'],
+        ];
+
+        foreach ($expectations as $relativePath => $labels) {
+            $source = (string) file_get_contents($this->pluginPath($relativePath));
+            self::assertStringContainsString("'options' => [", $source, $relativePath . ' must expose direct GLPI submenu options.');
+            foreach ($labels as $label) {
+                self::assertStringContainsString($label, $source, $label . ' must be a visible child label in ' . $relativePath . '.');
+            }
+        }
+
+        $iaGroup = (string) file_get_contents($this->pluginPath('src/IaGroupMenu.php'));
+        self::assertStringContainsString('Plugin::getAiOperationsUrl()', $iaGroup);
+        self::assertStringNotContainsString("Plugin::getAiConfigUrl(),\n            'icon'", $iaGroup);
+    }
+
+    public function testCentralLayoutKeepsMiddleColumnChatOnlyAndMovesDetailsToContext(): void
     {
         $template = (string) file_get_contents($this->pluginPath('templates/central.php'));
 
@@ -378,6 +414,22 @@ final class StabilizationPhaseStaticTest extends TestCase
         self::assertStringContainsString('itg-conversation-panel .itg-card > .js-integaglpi-central-actions', $template);
         self::assertStringContainsString('sourceActions.innerHTML', $template);
         self::assertStringNotContainsString('Perfil do contato</strong><br>', $template);
+
+        $chatPanel = strpos($template, '<section class="itg-panel itg-chat-panel');
+        $contextPanel = strpos($template, '<aside class="itg-panel itg-context-panel">');
+        $messages = strpos($template, 'js-integaglpi-central-messages');
+        $selectedSummary = strpos($template, 'js-integaglpi-central-selected-summary');
+        $selectedActions = strpos($template, 'js-integaglpi-central-selected-actions');
+
+        self::assertIsInt($chatPanel);
+        self::assertIsInt($contextPanel);
+        self::assertIsInt($messages);
+        self::assertIsInt($selectedSummary);
+        self::assertIsInt($selectedActions);
+        self::assertGreaterThan($chatPanel, $messages, 'The middle column must keep the chat messages area.');
+        self::assertGreaterThan($contextPanel, $selectedSummary, 'Selected ticket/context details must live in the third column.');
+        self::assertGreaterThan($contextPanel, $selectedActions, 'Selected operational actions must live in the third column.');
+        self::assertLessThan($contextPanel, $messages, 'Chat messages must remain before the context panel markup.');
     }
 
     // ── Item 5 sanity: getPageUrl preserves the mine_only choice ───────

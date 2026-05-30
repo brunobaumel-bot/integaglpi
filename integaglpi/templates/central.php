@@ -1135,38 +1135,7 @@ $operationalFilterMap = [
             </span>
             <small class="text-muted js-integaglpi-central-messages-status"></small>
         </div>
-        <div class="itg-selected-summary js-integaglpi-central-selected-summary">
-            <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
-                <div>
-                    <strong class="js-integaglpi-central-selected-contact">-</strong>
-                    <small class="d-block text-muted js-integaglpi-central-selected-phone">-</small>
-                </div>
-                <a
-                    class="btn btn-sm btn-outline-primary js-integaglpi-central-selected-ticket"
-                    href="#"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                >-</a>
-            </div>
-            <div class="itg-selected-summary-grid">
-                <div class="itg-selected-summary-item">
-                    <strong><?= $this->escape(__('Perfil', 'glpiintegaglpi')); ?></strong>
-                    <span class="js-integaglpi-central-selected-profile">-</span>
-                </div>
-                <div class="itg-selected-summary-item">
-                    <strong><?= $this->escape(__('Operação', 'glpiintegaglpi')); ?></strong>
-                    <span class="js-integaglpi-central-selected-operation">-</span>
-                </div>
-                <div class="itg-selected-summary-item">
-                    <strong><?= $this->escape(__('SLA / Janela', 'glpiintegaglpi')); ?></strong>
-                    <span class="js-integaglpi-central-selected-sla">-</span>
-                </div>
-            </div>
-        </div>
         <div class="itg-chat-body js-integaglpi-central-messages"></div>
-        <div class="itg-selected-actions js-integaglpi-central-selected-actions">
-            <span class="text-muted"><?= $this->escape(__('Selecione uma conversa para responder ou assumir atendimento.', 'glpiintegaglpi')); ?></span>
-        </div>
     </section>
 
     <aside class="itg-panel itg-context-panel">
@@ -1176,6 +1145,37 @@ $operationalFilterMap = [
         </div>
         <div class="itg-panel-body">
             <div class="itg-context-list">
+                <div class="itg-selected-summary js-integaglpi-central-selected-summary">
+                    <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                        <div>
+                            <strong class="js-integaglpi-central-selected-contact">-</strong>
+                            <small class="d-block text-muted js-integaglpi-central-selected-phone">-</small>
+                        </div>
+                        <a
+                            class="btn btn-sm btn-outline-primary js-integaglpi-central-selected-ticket"
+                            href="#"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                        >-</a>
+                    </div>
+                    <div class="itg-selected-summary-grid">
+                        <div class="itg-selected-summary-item">
+                            <strong><?= $this->escape(__('Perfil', 'glpiintegaglpi')); ?></strong>
+                            <span class="js-integaglpi-central-selected-profile">-</span>
+                        </div>
+                        <div class="itg-selected-summary-item">
+                            <strong><?= $this->escape(__('Operação', 'glpiintegaglpi')); ?></strong>
+                            <span class="js-integaglpi-central-selected-operation">-</span>
+                        </div>
+                        <div class="itg-selected-summary-item">
+                            <strong><?= $this->escape(__('SLA / Janela', 'glpiintegaglpi')); ?></strong>
+                            <span class="js-integaglpi-central-selected-sla">-</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="itg-selected-actions js-integaglpi-central-selected-actions">
+                    <span class="text-muted"><?= $this->escape(__('Selecione uma conversa para responder ou assumir atendimento.', 'glpiintegaglpi')); ?></span>
+                </div>
                 <div class="itg-context-item">
                     <small class="text-muted d-block"><?= $this->escape(__('Contato', 'glpiintegaglpi')); ?></small>
                     <span class="js-integaglpi-central-context-contact">-</span><br>

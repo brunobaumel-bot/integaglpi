@@ -30,33 +30,38 @@ final class IaGroupMenu extends CommonDBTM
     {
         return [
             'title'   => self::getMenuName(),
-            'page'    => Plugin::getAiConfigUrl(),
+            'page'    => Plugin::getAiOperationsUrl(),
             'icon'    => 'ti ti-brain',
             'options' => [
                 'console_ia'          => [
-                    'title' => __('Console IA / status, configuração, diagnóstico', 'glpiintegaglpi'),
-                    'page'  => Plugin::getAiConfigUrl(),
+                    'title' => __('IA & Conhecimento / Console IA', 'glpiintegaglpi'),
+                    'page'  => Plugin::getAiOperationsUrl(),
                     'icon'  => 'ti ti-brain',
                 ],
                 'copiloto'            => [
-                    'title' => __('Copiloto / dentro do chamado', 'glpiintegaglpi'),
+                    'title' => __('Coaching e Onboarding IA', 'glpiintegaglpi'),
                     'page'  => Plugin::getCoachingUrl(),
                     'icon'  => 'ti ti-school',
+                ],
+                'base_conhecimento'   => [
+                    'title' => __('Base de Conhecimento GLPI', 'glpiintegaglpi'),
+                    'page'  => Plugin::getNativeKnowledgeBaseUrl(),
+                    'icon'  => 'ti ti-book',
+                ],
+                'candidatos_kb'       => [
+                    'title' => __('Candidatos de KB por IA', 'glpiintegaglpi'),
+                    'page'  => Plugin::getKbCandidatesUrl(),
+                    'icon'  => 'ti ti-brain',
+                ],
+                'pesquisa_externa'    => [
+                    'title' => __('Pesquisa Externa Controlada', 'glpiintegaglpi'),
+                    'page'  => Plugin::getExternalResearchUrl(),
+                    'icon'  => 'ti ti-world-search',
                 ],
                 'mineracao_historica' => [
                     'title' => __('Mineração Histórica', 'glpiintegaglpi'),
                     'page'  => Plugin::getHistoricalMiningUrl(),
                     'icon'  => 'ti ti-pick',
-                ],
-                'candidatos_kb'       => [
-                    'title' => __('Candidatos KB', 'glpiintegaglpi'),
-                    'page'  => Plugin::getKbCandidatesUrl(),
-                    'icon'  => 'ti ti-brain',
-                ],
-                'pesquisa_externa'    => [
-                    'title' => __('Pesquisa Externa', 'glpiintegaglpi'),
-                    'page'  => Plugin::getExternalResearchUrl(),
-                    'icon'  => 'ti ti-world-search',
                 ],
             ],
         ];

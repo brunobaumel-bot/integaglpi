@@ -35,15 +35,20 @@ final class WhatsAppGroupMenu extends CommonDBTM
             'page'    => Plugin::getWebBasePath() . '/front/central.php',
             'icon'    => 'ti ti-brand-whatsapp',
             'options' => [
+                'whatsapp'           => [
+                    'title' => __('WhatsApp', 'glpiintegaglpi'),
+                    'page'  => Plugin::getQueueAdminUrl(),
+                    'icon'  => 'ti ti-brand-whatsapp',
+                ],
                 'central_whatsapp'   => [
-                    'title' => __('Central WhatsApp / Monitor Online', 'glpiintegaglpi'),
+                    'title' => __('Central de Atendimento', 'glpiintegaglpi'),
                     'page'  => Plugin::getWebBasePath() . '/front/central.php',
                     'icon'  => 'ti ti-headset',
                 ],
-                'conversas_whatsapp' => [
-                    'title' => __('Conversas WhatsApp / aba do ticket', 'glpiintegaglpi'),
-                    'page'  => Plugin::getWebBasePath() . '/front/central.php',
-                    'icon'  => 'ti ti-messages',
+                'monitor_online_whatsapp' => [
+                    'title' => __('Monitor Online WhatsApp', 'glpiintegaglpi'),
+                    'page'  => Plugin::getOnlineMonitorUrl(),
+                    'icon'  => 'ti ti-activity',
                 ],
                 'hub_mensagens'      => [
                     'title' => __('Hub de Mensagens', 'glpiintegaglpi'),

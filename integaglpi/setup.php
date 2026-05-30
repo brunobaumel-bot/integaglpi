@@ -5,13 +5,17 @@ declare(strict_types=1);
 use Glpi\Plugin\Hooks;
 use GlpiPlugin\Integaglpi\AiOperationsMenu;
 use GlpiPlugin\Integaglpi\AttendanceCenterMenu;
+use GlpiPlugin\Integaglpi\ConfiguracaoGroupMenu;
 use GlpiPlugin\Integaglpi\ContactAgendaImportMenu;
 use GlpiPlugin\Integaglpi\ContractsHoursMenu;
 use GlpiPlugin\Integaglpi\CoachingMenu;
 use GlpiPlugin\Integaglpi\ExternalResearchMenu;
+use GlpiPlugin\Integaglpi\GestaoGroupMenu;
+use GlpiPlugin\Integaglpi\IaGroupMenu;
 use GlpiPlugin\Integaglpi\Install\Installer;
 use GlpiPlugin\Integaglpi\KnowledgeBaseMenu;
 use GlpiPlugin\Integaglpi\KbCandidatesMenu;
+use GlpiPlugin\Integaglpi\MonitoramentoGroupMenu;
 use GlpiPlugin\Integaglpi\OnlineMonitorMenu;
 use GlpiPlugin\Integaglpi\OperationLogMenu;
 use GlpiPlugin\Integaglpi\OperationalDiagnosticsMenu;
@@ -24,8 +28,10 @@ use GlpiPlugin\Integaglpi\RoutingOptionsMenu;
 use GlpiPlugin\Integaglpi\RoutingSafetyMenu;
 use GlpiPlugin\Integaglpi\ServiceCatalogMenu;
 use GlpiPlugin\Integaglpi\Service\TicketSyncService;
+use GlpiPlugin\Integaglpi\SupervisaoGroupMenu;
 use GlpiPlugin\Integaglpi\SupervisorBackofficeMenu;
 use GlpiPlugin\Integaglpi\TicketRuntime;
+use GlpiPlugin\Integaglpi\WhatsAppGroupMenu;
 
 if (file_exists(__DIR__ . '/vendor/autoload.php')) {
     require_once __DIR__ . '/vendor/autoload.php';
@@ -175,28 +181,16 @@ function plugin_init_integaglpi(): void
     // JS assets are injected by renderers (see Support\AssetRenderer) because
     // some environments return 404 for /plugins/... static assets.
     // Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001.
-    // Keep the plugin sidebar flat: each operational page is listed directly.
-    // The grouped menu experiment was reverted so operators can see the
-    // original pages without navigating through parent group entries.
+    // Use GLPI parent menu entries with options so operators can expand each
+    // category directly in the sidebar without an intermediate hub page.
     $PLUGIN_HOOKS[Hooks::MENU_TOADD][PLUGIN_INTEGAGLPI_NAME] = [
         'plugins' => [
-            Queue::class,
-            AttendanceCenterMenu::class,
-            OnlineMonitorMenu::class,
-            SupervisorBackofficeMenu::class,
-            AiOperationsMenu::class,
-            CoachingMenu::class,
-            KnowledgeBaseMenu::class,
-            KbCandidatesMenu::class,
-            ExternalResearchMenu::class,
-            ContractsHoursMenu::class,
-            ServiceCatalogMenu::class,
-            ContactAgendaImportMenu::class,
-            QualityDashboardMenu::class,
-            ObservabilityMenu::class,
-            OperationalDiagnosticsMenu::class,
-            OperationLogMenu::class,
-            RoutingSafetyMenu::class,
+            WhatsAppGroupMenu::class,
+            ConfiguracaoGroupMenu::class,
+            MonitoramentoGroupMenu::class,
+            IaGroupMenu::class,
+            GestaoGroupMenu::class,
+            SupervisaoGroupMenu::class,
         ],
     ];
     $PLUGIN_HOOKS['config_page'][PLUGIN_INTEGAGLPI_NAME] = 'front/config.form.php';
@@ -229,6 +223,12 @@ function plugin_init_integaglpi(): void
         'addtabon' => [\Ticket::class],
     ]);
     \CommonGLPI::registerStandardTab(\Ticket::class, 'PluginIntegaglpiTicketRuntime');
+    \Plugin::registerClass(WhatsAppGroupMenu::class);
+    \Plugin::registerClass(ConfiguracaoGroupMenu::class);
+    \Plugin::registerClass(MonitoramentoGroupMenu::class);
+    \Plugin::registerClass(IaGroupMenu::class);
+    \Plugin::registerClass(GestaoGroupMenu::class);
+    \Plugin::registerClass(SupervisaoGroupMenu::class);
     \Plugin::registerClass(Queue::class);
     \Plugin::registerClass(OperationLogMenu::class);
     \Plugin::registerClass(RoutingSafetyMenu::class);

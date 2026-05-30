@@ -55,7 +55,7 @@ final class ConfiguracaoGroupMenu extends CommonDBTM
                 ],
                 'csat'                    => [
                     'title' => __('CSAT', 'glpiintegaglpi'),
-                    'page'  => $base . '?tab=message_settings&section=mensagens',
+                    'page'  => $base . '?tab=message_settings&section=mensagens#csat',
                     'icon'  => 'ti ti-mood-check',
                 ],
                 'horario_comercial'       => [
@@ -65,12 +65,12 @@ final class ConfiguracaoGroupMenu extends CommonDBTM
                 ],
                 'midia'                   => [
                     'title' => __('Mídia', 'glpiintegaglpi'),
-                    'page'  => $base . '?tab=message_settings&section=mensagens',
+                    'page'  => $base . '?tab=message_settings&section=mensagens#midia',
                     'icon'  => 'ti ti-paperclip',
                 ],
                 'ticket_solucao'          => [
                     'title' => __('Ticket e Solução', 'glpiintegaglpi'),
-                    'page'  => $base . '?tab=message_settings&section=mensagens',
+                    'page'  => $base . '?tab=message_settings&section=mensagens#ticket-solucao',
                     'icon'  => 'ti ti-ticket',
                 ],
                 'templates_whatsapp'      => [

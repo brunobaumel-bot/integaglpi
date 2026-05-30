@@ -111,7 +111,6 @@ $short = static function ($value, int $max = 44): string {
 
     return strlen($text) > $max ? substr($text, 0, $max) . '...' : $text;
 };
-$attachmentActionUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/front/attachment.action.php';
 $attachmentStatusLabel = static function (string $status): string {
     switch ($status) {
         case 'received':
@@ -1002,24 +1001,6 @@ if ($auditPanelOk) {
                                             <?= $this->escape(__('Motivo', 'glpiintegaglpi')); ?>:
                                             <?= $this->escape($attachmentReason); ?>
                                         </div>
-                                    <?php } ?>
-                                    <?php if (\GlpiPlugin\Integaglpi\Plugin::canUpdate() && trim((string) ($message['message_id'] ?? '')) !== '') { ?>
-                                        <form method="post" action="<?= $this->escape($attachmentActionUrl); ?>" class="mt-2 mb-0">
-                                            <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken(); ?>
-                                            <input type="hidden" name="ticket_id" value="<?= (int) $ticket->getID(); ?>">
-                                            <input type="hidden" name="message_id" value="<?= $this->escape((string) $message['message_id']); ?>">
-                                            <?php if ($attachmentStatus === 'deleted') { ?>
-                                                <input type="hidden" name="attachment_action" value="restore">
-                                                <button type="submit" class="btn btn-sm btn-outline-secondary">
-                                                    <?= $this->escape(__('Restaurar anexo', 'glpiintegaglpi')); ?>
-                                                </button>
-                                            <?php } else { ?>
-                                                <input type="hidden" name="attachment_action" value="soft_delete">
-                                                <button type="submit" class="btn btn-sm btn-outline-danger">
-                                                    <?= $this->escape(__('Excluir logicamente', 'glpiintegaglpi')); ?>
-                                                </button>
-                                            <?php } ?>
-                                        </form>
                                     <?php } ?>
                                 </div>
                             <?php } ?>
