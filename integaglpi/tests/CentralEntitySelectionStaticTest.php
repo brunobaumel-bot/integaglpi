@@ -89,4 +89,60 @@ final class CentralEntitySelectionStaticTest extends TestCase
         // Safe defaults: no new column created, no migration.
         self::assertStringNotContainsString('ALTER TABLE', $service);
     }
+
+    // ── Phase central_visibility_required_fix ──────────────────────────────
+
+    public function testRepositoryMineOnlyFilterBypassesPreTicketConversations(): void
+    {
+        $repo = (string) file_get_contents(
+            $this->pluginPath('src/External/Repository/ConversationRepository.php')
+        );
+
+        // The mine_only SQL condition must include pre-ticket statuses via OR
+        // so that awaiting_entity_selection conversations are not hidden.
+        self::assertStringContainsString(
+            "rt.assigned_user_id = :mine_only_user_id OR c.status IN ('awaiting_entity_selection', 'collecting_contact_profile', 'awaiting_queue_selection')",
+            $repo
+        );
+        // The bypass must NOT be a plain equality-only condition (no OR).
+        self::assertDoesNotMatchRegularExpression(
+            "/\\\$where\[\]\s*=\s*'rt\.assigned_user_id\s*=\s*:mine_only_user_id'\s*;/",
+            $repo
+        );
+        // The fix comment must reference the visibility requirement.
+        self::assertStringContainsString('central_visibility_required_fix', $repo);
+    }
+
+    public function testRepositoryEntityIdFilterBypassesPreTicketNullEntity(): void
+    {
+        $repo = (string) file_get_contents(
+            $this->pluginPath('src/External/Repository/ConversationRepository.php')
+        );
+
+        // The entity_id SQL condition must allow NULL/0 entity for pre-ticket statuses
+        // so that awaiting_entity_selection conversations appear even when filtered by entity.
+        self::assertStringContainsString(
+            "c.glpi_entity_id = :entity_id OR (c.status IN ('awaiting_entity_selection', 'collecting_contact_profile', 'awaiting_queue_selection') AND (c.glpi_entity_id IS NULL OR c.glpi_entity_id = 0))",
+            $repo
+        );
+        // The plain equality-only condition must not be present for the entity_id case.
+        self::assertDoesNotMatchRegularExpression(
+            "/\\\$where\[\]\s*=\s*'c\.glpi_entity_id\s*=\s*:entity_id'\s*;/",
+            $repo
+        );
+    }
+
+    public function testAttendanceCenterServiceDecoratesPreTicketNextAction(): void
+    {
+        $service = (string) file_get_contents(
+            $this->pluginPath('src/Service/AttendanceCenterService.php')
+        );
+
+        // nextAction() must return a label for awaiting_entity_selection.
+        self::assertStringContainsString("'awaiting_entity_selection'", $service);
+        self::assertStringContainsString('Selecione a entidade para criar o chamado', $service);
+        // can_confirm_entity must be computed in getCentralRefreshData.
+        self::assertStringContainsString('can_confirm_entity', $service);
+        self::assertStringContainsString("awaiting_entity_selection", $service);
+    }
 }

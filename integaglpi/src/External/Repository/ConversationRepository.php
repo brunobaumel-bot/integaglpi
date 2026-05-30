@@ -1015,23 +1015,31 @@ final class ConversationRepository
         // assignments. Skipped when an explicit technician_id filter is
         // already in place (avoid double restriction) or when current_user_id
         // could not be resolved (background contexts).
+        // central_visibility_required_fix: pre-ticket conversations
+        // (awaiting_entity_selection, collecting_contact_profile,
+        // awaiting_queue_selection) have no assigned technician yet but require
+        // operator/supervisor action — they must remain visible even when
+        // mine_only is active.
         $mineOnly = (bool) ($filters['mine_only'] ?? false);
         $currentUserId = (int) ($filters['current_user_id'] ?? 0);
         $hasExplicitTechnicianFilter = is_int($technicianId) && $technicianId > 0;
         if ($mineOnly && !$hasExplicitTechnicianFilter && $currentUserId > 0) {
-            $where[] = 'rt.assigned_user_id = :mine_only_user_id';
+            $where[] = "(rt.assigned_user_id = :mine_only_user_id OR c.status IN ('awaiting_entity_selection', 'collecting_contact_profile', 'awaiting_queue_selection'))";
             $params[':mine_only_user_id'] = [
                 'value' => $currentUserId,
                 'type'  => PDO::PARAM_INT,
             ];
         }
 
+        // central_visibility_required_fix: pre-ticket conversations awaiting entity
+        // selection have glpi_entity_id = NULL/0 and must appear in the Central even
+        // when an entity filter is active, so operators can assign the entity.
         $entityId = $filters['entity_id'] ?? null;
         if (is_int($entityId)) {
             if ($entityId === -1) {
                 $where[] = '1 = 0';
             } elseif ($entityId > 0) {
-                $where[] = 'c.glpi_entity_id = :entity_id';
+                $where[] = "(c.glpi_entity_id = :entity_id OR (c.status IN ('awaiting_entity_selection', 'collecting_contact_profile', 'awaiting_queue_selection') AND (c.glpi_entity_id IS NULL OR c.glpi_entity_id = 0)))";
                 $params[':entity_id'] = [
                     'value' => $entityId,
                     'type'  => PDO::PARAM_INT,
