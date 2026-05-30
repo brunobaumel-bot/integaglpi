@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace GlpiPlugin\Integaglpi\Service;
 
+use Config;
 use GlpiPlugin\Integaglpi\Plugin;
 use Session;
 use Throwable;
@@ -203,7 +204,12 @@ final class SecurityPermissionService
             return false;
         }
 
-        return in_array($right, self::ROLE_MATRIX[$role] ?? [], true);
+        // FIX1: hasRight() now consults the effective matrix (defaults +
+        // persisted overrides from the Central de Segurança). ROLE_DENIED is
+        // checked downstream inside saveMatrixOverrides, so a hostile override
+        // can never relax separation of duties.
+        $effective = self::getEffectiveMatrix();
+        return in_array($right, $effective[$role] ?? [], true);
     }
 
     /**
@@ -262,7 +268,23 @@ final class SecurityPermissionService
             || self::canManageSecurityCenter();
     }
 
+    /**
+     * FIX1: operational role is no longer the gate for managing security —
+     * Super-Admin/admin in GLPI must always be able to govern the matrix,
+     * even if they sit in ROLE_SUPERVISAO for day-to-day work.
+     *
+     * canManageSecurityCenter() now delegates to isSecurityAdmin(), and
+     * isSecurityAdmin() recognises any session that holds the canonical
+     * GLPI admin signals (config UPDATE, user UPDATE, profile UPDATE), with
+     * the well-known profile-name list as a fast path and the plugin's own
+     * UPDATE right as a fall-back. Profile/User IDs are NEVER hard-coded.
+     */
     public static function canManageSecurityCenter(): bool
+    {
+        return self::isSecurityAdmin();
+    }
+
+    public static function isSecurityAdmin(): bool
     {
         try {
             if ((int) Session::getLoginUserID() <= 0) {
@@ -272,16 +294,175 @@ final class SecurityPermissionService
             return false;
         }
 
+        // (1) Strong native signals: anyone who can configure GLPI, manage
+        // users or manage profiles is a Super-Admin from GLPI's point of view.
+        $strongRights = [
+            ['config', UPDATE],
+            ['user', UPDATE],
+            ['profile', UPDATE],
+        ];
+        foreach ($strongRights as [$right, $level]) {
+            try {
+                if (Session::haveRight($right, $level)) {
+                    return true;
+                }
+            } catch (Throwable) {
+                // continue
+            }
+        }
+
+        // (2) Known admin profile names + UPDATE on the plugin's own right.
         $profileName = strtolower(trim((string) ($_SESSION['glpiactiveprofile']['name'] ?? '')));
-        if (!in_array($profileName, ['super-admin', 'super admin', 'admin', 'administrator', 'administrador'], true)) {
-            return false;
+        $adminNames = ['super-admin', 'super admin', 'admin', 'administrator', 'administrador'];
+        if ($profileName !== '' && in_array($profileName, $adminNames, true)) {
+            try {
+                if (Session::haveRight(Plugin::RIGHT_NAME, UPDATE)) {
+                    return true;
+                }
+            } catch (Throwable) {
+                // fall through
+            }
+        }
+
+        return false;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Matrix persistence — FIX1.
+    //
+    // Defaults come from ROLE_MATRIX (declared in code). Overrides are stored
+    // through GLPI's Config::setConfigurationValues('plugin:integaglpi', …),
+    // which writes to the GLPI-managed `glpi_configs` table. We do NOT touch
+    // GLPI core, we do NOT create a new table, we do NOT run DDL at runtime.
+    // ─────────────────────────────────────────────────────────────────────
+
+    public const CONFIG_CONTEXT  = 'plugin:integaglpi';
+    public const CONFIG_KEY      = 'security_matrix_overrides';
+
+    /**
+     * Returns the effective matrix: ROLE_MATRIX defaults merged with any
+     * persisted overrides. Persisted overrides may only narrow or extend
+     * the granted list per role; ROLE_DENIED is authoritative and cannot be
+     * relaxed via the UI (defence in depth).
+     *
+     * @return array<string, list<string>>
+     */
+    public static function getEffectiveMatrix(): array
+    {
+        $defaults = self::ROLE_MATRIX;
+        $overrides = self::loadMatrixOverrides();
+        if ($overrides === []) {
+            return $defaults;
+        }
+
+        $effective = $defaults;
+        foreach ([self::ROLE_TECNICO, self::ROLE_SUPERVISAO, self::ROLE_DIRECAO] as $role) {
+            if (!isset($overrides[$role]) || !is_array($overrides[$role])) {
+                continue;
+            }
+            $rights = [];
+            foreach ($overrides[$role] as $right) {
+                if (!is_string($right)) {
+                    continue;
+                }
+                // Never let a saved override grant a right that ROLE_DENIED
+                // explicitly forbids — separation of duties is not editable.
+                if (in_array($right, self::ROLE_DENIED[$role] ?? [], true)) {
+                    continue;
+                }
+                $rights[] = $right;
+            }
+            $effective[$role] = array_values(array_unique($rights));
+        }
+
+        return $effective;
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    public static function loadMatrixOverrides(): array
+    {
+        try {
+            if (!class_exists('Config') || !method_exists('Config', 'getConfigurationValues')) {
+                return [];
+            }
+            $values = Config::getConfigurationValues(self::CONFIG_CONTEXT);
+            if (!is_array($values) || !isset($values[self::CONFIG_KEY])) {
+                return [];
+            }
+            $decoded = json_decode((string) $values[self::CONFIG_KEY], true);
+            if (!is_array($decoded)) {
+                return [];
+            }
+            $out = [];
+            foreach ([self::ROLE_TECNICO, self::ROLE_SUPERVISAO, self::ROLE_DIRECAO] as $role) {
+                if (isset($decoded[$role]) && is_array($decoded[$role])) {
+                    $out[$role] = array_values(array_filter(
+                        array_map(static fn ($v): string => is_string($v) ? $v : '', $decoded[$role]),
+                        static fn (string $v): bool => $v !== ''
+                    ));
+                }
+            }
+            return $out;
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][security_matrix][load_failed] ' . $exception->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Persists a new matrix. Returns a diff (per role: added/removed) so the
+     * caller can audit SECURITY_PERMISSION_CHANGED with non-secret details.
+     *
+     * @param array<string, list<string>> $newMatrix
+     * @return array<string, array{added: list<string>, removed: list<string>}>
+     */
+    public static function saveMatrixOverrides(array $newMatrix): array
+    {
+        $allowedRights = self::getAllRights();
+        $clean = [];
+        foreach ([self::ROLE_TECNICO, self::ROLE_SUPERVISAO, self::ROLE_DIRECAO] as $role) {
+            $rights = is_array($newMatrix[$role] ?? null) ? $newMatrix[$role] : [];
+            $filtered = [];
+            foreach ($rights as $right) {
+                if (!is_string($right)) {
+                    continue;
+                }
+                if (!in_array($right, $allowedRights, true)) {
+                    continue;
+                }
+                if (in_array($right, self::ROLE_DENIED[$role] ?? [], true)) {
+                    continue;
+                }
+                $filtered[] = $right;
+            }
+            $clean[$role] = array_values(array_unique($filtered));
+        }
+
+        $current = self::getEffectiveMatrix();
+        $diff = [];
+        foreach ([self::ROLE_TECNICO, self::ROLE_SUPERVISAO, self::ROLE_DIRECAO] as $role) {
+            $before = $current[$role] ?? [];
+            $after = $clean[$role] ?? [];
+            $diff[$role] = [
+                'added'   => array_values(array_diff($after, $before)),
+                'removed' => array_values(array_diff($before, $after)),
+            ];
         }
 
         try {
-            return (bool) Session::haveRight(Plugin::RIGHT_NAME, UPDATE);
-        } catch (Throwable) {
-            return false;
+            if (class_exists('Config') && method_exists('Config', 'setConfigurationValues')) {
+                Config::setConfigurationValues(self::CONFIG_CONTEXT, [
+                    self::CONFIG_KEY => json_encode($clean, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                ]);
+            }
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][security_matrix][save_failed] ' . $exception->getMessage());
+            throw $exception;
         }
+
+        return $diff;
     }
 
     public static function enforceEntityScope(int $entityId): bool

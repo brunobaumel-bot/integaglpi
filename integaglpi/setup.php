@@ -204,9 +204,10 @@ function plugin_init_integaglpi(): void
         'plugin_integaglpi_supervisao' => [
             SupervisaoGroupMenu::class,
         ],
-        'plugin_integaglpi_security_center' => [
-            SecurityCenterMenu::class,
-        ],
+        // Phase FIX2: Central de Segurança não fica mais como item solto no
+        // sidebar — ela passou a ser filho de Gestão (ver GestaoGroupMenu).
+        // SecurityCenterMenu permanece registrada abaixo para resolução de
+        // tipo do GLPI e acesso por URL direta a /front/security.center.php.
     ];
     $PLUGIN_HOOKS['config_page'][PLUGIN_INTEGAGLPI_NAME] = 'front/config.form.php';
 

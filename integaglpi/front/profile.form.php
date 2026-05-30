@@ -212,9 +212,32 @@ $escape = static fn (string $value): string => htmlspecialchars($value, ENT_QUOT
 
 Html::header(__('PluginIntegaglpi permissions', 'integaglpi'), $_SERVER['PHP_SELF'], 'admin', \Profile::class);
 
+// Phase: integaglpi_security_access_center_rbac_profiles_001_FIX1.
+// Centralization notice: this screen now only edits the GLPI-native
+// Read/Update bootstrap that gates access to the plugin. The granular
+// IntegraGLPI matrix (Técnico/Supervisão/Direção) is managed exclusively
+// at the Central de Segurança — link rendered below.
+$securityCenterUrl = Plugin::getWebBasePath() . '/front/security.center.php';
+
 echo "<div class='card'>";
-echo "<div class='card-header'>" . __('PluginIntegaglpi permissions', 'integaglpi') . '</div>';
+echo "<div class='card-header d-flex align-items-center'>"
+    . "<i class='ti ti-settings me-2'></i>"
+    . "<span>" . __('Bootstrap GLPI — PluginIntegaglpi (Ler / Atualizar)', 'integaglpi') . "</span>"
+    . '</div>';
 echo "<div class='card-body'>";
+echo "<div class='alert alert-warning d-flex align-items-center justify-content-between flex-wrap gap-2'>"
+    . "<div>"
+    . "<i class='ti ti-shield-lock me-1'></i><strong>"
+    . __('As permissões granulares são geridas na Central de Segurança.', 'integaglpi')
+    . '</strong><br>'
+    . "<span class='small text-muted'>"
+    . __('Aqui você define apenas o bootstrap Ler/Atualizar usado pelo GLPI como porta de entrada ao plugin. Técnico, Supervisão e Direção são configurados na Central de Segurança.', 'integaglpi')
+    . '</span>'
+    . '</div>'
+    . "<a class='btn btn-primary' href='" . $escape($securityCenterUrl) . "'>"
+    . "<i class='ti ti-shield-lock me-1'></i>" . __('Abrir Central de Segurança', 'integaglpi')
+    . '</a>'
+    . '</div>';
 echo "<p class='mb-3'>" . __('Profile', 'integaglpi') . ': <strong>' . $escape($profileName) . '</strong> '
     . "<small class='text-muted'>(id=" . $profileId . ')</small></p>';
 echo "<form method='post' action='" . $escape($actionUrl) . "'>";
