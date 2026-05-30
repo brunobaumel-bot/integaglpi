@@ -164,6 +164,7 @@ function plugin_init_integaglpi(): void
     global $PLUGIN_HOOKS;
 
     $PLUGIN_HOOKS['csrf_compliant'][PLUGIN_INTEGAGLPI_NAME] = true;
+    $PLUGIN_HOOKS[Hooks::ADD_JAVASCRIPT][PLUGIN_INTEGAGLPI_NAME][] = 'front/integaglpi.js.php';
     $PLUGIN_HOOKS[Hooks::ITEM_ADD][PLUGIN_INTEGAGLPI_NAME][\Ticket::class] = 'plugin_integaglpi_item_add_ticket';
     $PLUGIN_HOOKS[Hooks::ITEM_ADD][PLUGIN_INTEGAGLPI_NAME][\Ticket_User::class] = 'plugin_integaglpi_item_add_ticket_user';
     $PLUGIN_HOOKS[Hooks::ITEM_UPDATE][PLUGIN_INTEGAGLPI_NAME][\Ticket_User::class] = 'plugin_integaglpi_item_add_ticket_user';

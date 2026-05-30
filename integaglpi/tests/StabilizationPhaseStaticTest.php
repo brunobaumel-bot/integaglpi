@@ -413,6 +413,20 @@ final class StabilizationPhaseStaticTest extends TestCase
         self::assertStringContainsString('Plugin::getAiConfigUrl()', $iaGroup);
     }
 
+    public function testPluginSidebarMenuKeepsExpandableGroupsOpen(): void
+    {
+        $setup = (string) file_get_contents($this->pluginPath('setup.php'));
+        $script = (string) file_get_contents($this->pluginPath('js/integaglpi.js'));
+
+        self::assertStringContainsString("[Hooks::ADD_JAVASCRIPT][PLUGIN_INTEGAGLPI_NAME][] = 'front/integaglpi.js.php'", $setup);
+        self::assertStringContainsString('initSidebarMenuTreePersistence', $script);
+        self::assertStringContainsString('integaglpi.sidebar.openMenuClasses', $script);
+        self::assertStringContainsString('restoreOpenGroups', $script);
+        self::assertStringContainsString('show.bs.dropdown', $script);
+        self::assertStringContainsString('hidden.bs.dropdown', $script);
+        self::assertStringContainsString('window.__integaglpiScriptLoaded', $script);
+    }
+
     public function testCentralLayoutKeepsMiddleColumnChatOnlyAndMovesDetailsToContext(): void
     {
         $template = (string) file_get_contents($this->pluginPath('templates/central.php'));

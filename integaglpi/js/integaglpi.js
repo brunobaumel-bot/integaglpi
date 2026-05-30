@@ -2,6 +2,11 @@
 (function () {
   'use strict';
 
+  if (window.__integaglpiScriptLoaded) {
+    return;
+  }
+  window.__integaglpiScriptLoaded = true;
+
   console.log('[integaglpi] Script initialized with event delegation');
 
   function log() {
@@ -73,6 +78,116 @@
     if (el.closest) return el.closest(selector);
     // IE fallback not needed; GLPI 11 supported browsers have closest.
     return null;
+  }
+
+  function initSidebarMenuTreePersistence() {
+    const labels = [
+      'WhatsApp / Central',
+      'Configuração',
+      'Monitoramento',
+      'IA',
+      'Gestão',
+      'Supervisão'
+    ];
+    const labelSet = new Set(labels);
+    const storageKey = 'integaglpi.sidebar.openMenuClasses';
+
+    function normalizeLabel(text) {
+      return String(text || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function readOpenLabels() {
+      try {
+        const parsed = JSON.parse(window.sessionStorage.getItem(storageKey) || '[]');
+        if (Array.isArray(parsed)) {
+          return new Set(parsed.filter((label) => labelSet.has(label)));
+        }
+      } catch (e) {}
+      return new Set();
+    }
+
+    function writeOpenLabels(openLabels) {
+      try {
+        window.sessionStorage.setItem(storageKey, JSON.stringify(Array.from(openLabels)));
+      } catch (e) {}
+    }
+
+    function getGroupItems() {
+      return Array.prototype.slice.call(document.querySelectorAll('#navbar-menu .nav-item.dropdown'))
+        .map((item) => {
+          const link = item.querySelector(':scope > .nav-link.dropdown-toggle');
+          const labelEl = link ? link.querySelector('.menu-label') : null;
+          const label = normalizeLabel(labelEl ? labelEl.textContent : '');
+          const menu = item.querySelector(':scope > .dropdown-menu');
+          return { item, link, menu, label };
+        })
+        .filter((entry) => entry.link && entry.menu && labelSet.has(entry.label));
+    }
+
+    function setGroupOpen(entry, open) {
+      entry.item.classList.toggle('active', open);
+      entry.link.classList.toggle('active', open);
+      entry.link.classList.toggle('show', open);
+      entry.link.setAttribute('aria-expanded', open ? 'true' : 'false');
+      entry.menu.classList.toggle('show', open);
+      entry.menu.classList.remove('animate__fadeInLeft', 'animate__zoomIn');
+    }
+
+    function restoreOpenGroups() {
+      const openLabels = readOpenLabels();
+      getGroupItems().forEach((entry) => {
+        setGroupOpen(entry, openLabels.has(entry.label));
+      });
+    }
+
+    document.addEventListener('click', function (event) {
+      const link = event.target && event.target.closest
+        ? event.target.closest('#navbar-menu .nav-item.dropdown > .nav-link.dropdown-toggle')
+        : null;
+      if (!link) return;
+
+      const item = link.closest('.nav-item.dropdown');
+      const label = normalizeLabel(link.querySelector('.menu-label') ? link.querySelector('.menu-label').textContent : '');
+      if (!item || !labelSet.has(label)) return;
+
+      const menu = item.querySelector(':scope > .dropdown-menu');
+      const openLabels = readOpenLabels();
+      const isOpen = link.classList.contains('show') || (menu && menu.classList.contains('show'));
+
+      if (isOpen) {
+        openLabels.delete(label);
+      } else {
+        openLabels.add(label);
+      }
+      writeOpenLabels(openLabels);
+      window.setTimeout(restoreOpenGroups, 0);
+      window.setTimeout(restoreOpenGroups, 80);
+    }, true);
+
+    document.addEventListener('show.bs.dropdown', function (event) {
+      const item = event.target && event.target.closest
+        ? event.target.closest('#navbar-menu .nav-item.dropdown')
+        : null;
+      if (!item) return;
+
+      const labelEl = item.querySelector(':scope > .nav-link.dropdown-toggle .menu-label');
+      const label = normalizeLabel(labelEl ? labelEl.textContent : '');
+      if (!labelSet.has(label)) return;
+
+      const openLabels = readOpenLabels();
+      openLabels.add(label);
+      writeOpenLabels(openLabels);
+      window.setTimeout(restoreOpenGroups, 0);
+      window.setTimeout(restoreOpenGroups, 80);
+    }, true);
+
+    document.addEventListener('hidden.bs.dropdown', function () {
+      window.setTimeout(restoreOpenGroups, 0);
+      window.setTimeout(restoreOpenGroups, 80);
+    }, true);
+
+    restoreOpenGroups();
+    window.setTimeout(restoreOpenGroups, 100);
   }
 
   function readQueueEditorPayload(editor) {
@@ -334,6 +449,7 @@
     // Native delegation fallback (works even without jQuery).
     document.removeEventListener('click', onDocumentClick, false);
     document.addEventListener('click', onDocumentClick, false);
+    initSidebarMenuTreePersistence();
   }
 
   if (document.readyState === 'loading') {
