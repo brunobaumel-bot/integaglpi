@@ -111,6 +111,11 @@ interface CompletedProfileTransitionInput {
   conversation: Conversation;
 }
 
+interface ExistingEntitySelectionWaitInput {
+  inboundMessage: ParsedMetaInboundMessage;
+  conversation: Conversation;
+}
+
 export class InboundWebhookService {
   public constructor(
     private readonly webhookEventRepository: WebhookEventRepository,
@@ -457,6 +462,63 @@ export class InboundWebhookService {
           && !Array.isArray(activeConversation.profileCollectionState)
           ? String((activeConversation.profileCollectionState as Record<string, unknown>).step ?? '')
           : '';
+        const mayCarryStaleProfileState =
+          activeConversation
+          && !hasValidGlpiTicketId(activeConversation.glpiTicketId)
+          && this.contactProfileService
+          && (
+            activeConversation.status === 'awaiting_entity_selection'
+            || (activeConversation.status === 'collecting_contact_profile' && activeProfileStep === 'complete')
+          )
+          && await this.contactProfileService.isCollectionEnabled();
+        if (mayCarryStaleProfileState) {
+          const persistedProfile = await this.contactProfileService!.findProfile(contact.phoneE164);
+          const hasUsablePersistedProfile = persistedProfile !== null
+            && await this.contactProfileService!.isProfileComplete(persistedProfile);
+
+          if (!hasUsablePersistedProfile) {
+            const rawState = activeConversation.profileCollectionState;
+            const queueLabel = rawState
+              && typeof rawState === 'object'
+              && !Array.isArray(rawState)
+              && typeof (rawState as Record<string, unknown>).queue_label === 'string'
+              && String((rawState as Record<string, unknown>).queue_label).trim() !== ''
+                ? String((rawState as Record<string, unknown>).queue_label).trim()
+                : activeConversation.queueId
+                  ? `Fila ${activeConversation.queueId}`
+                  : null;
+            const resetState = this.contactProfileService!.startNewCollectionState(queueLabel);
+            await this.conversationRepository.updateQueueAndStatus(
+              activeConversation.id,
+              activeConversation.queueId ?? null,
+              'collecting_contact_profile',
+            );
+            await this.conversationRepository.updateProfileCollectionState(activeConversation.id, resetState);
+            await this.conversationRepository.touch(activeConversation.id, new Date());
+            await this.sendContactProfilePrompt({
+              toMeta,
+              body: this.contactProfileService!.getCollectionPrompt(resetState),
+              state: resetState,
+              conversationId: activeConversation.id,
+            });
+            logger.info(
+              {
+                conversation_id: activeConversation.id,
+                previous_status: activeConversation.status,
+                previous_profile_step: activeProfileStep || null,
+                reason: 'missing_persisted_contact_profile',
+              },
+              '[integration-service][contact_profile][STALE_PROFILE_STATE_RESET]',
+            );
+            await this.messageRepository.updateState({
+              messageId: inboundMessage.messageId,
+              conversationId: activeConversation.id,
+              processingStatus: 'processed',
+              glpiSyncStatus: 'synced',
+            });
+            return;
+          }
+        }
         if (
           activeConversation
           && !hasValidGlpiTicketId(activeConversation.glpiTicketId)
@@ -475,13 +537,9 @@ export class InboundWebhookService {
             return;
           }
 
-          conversationId = await this.deferTicketCreationForEntitySelection({
-            contact,
+          await this.acknowledgeExistingEntitySelectionWait({
             inboundMessage,
-            toMeta,
-            conversationId: activeConversation.id,
-            queueId: activeConversation.queueId,
-            message: ENTITY_SELECTION_PENDING_MESSAGE,
+            conversation: activeConversation,
           });
           return;
         }
@@ -798,9 +856,26 @@ export class InboundWebhookService {
               body: ENTITY_SELECTION_PENDING_MESSAGE,
             });
             logger.info(
-              { conversation_id: activeConversation.id },
+              {
+                conversation_id: activeConversation.id,
+                reason: 'entity_selection_required',
+              },
               '[integration-service][contact_profile][TICKET_CREATION_DEFERRED_ENTITY_PENDING]',
             );
+            this.recordAudit({
+              correlationId,
+              conversationId: activeConversation.id,
+              messageId: inboundMessage.messageId,
+              direction: 'inbound',
+              eventType: 'TICKET_CREATION_DEFERRED_ENTITY_PENDING',
+              status: 'pending',
+              severity: 'info',
+              source: 'InboundWebhookService',
+              payload: {
+                reason: 'entity_selection_required',
+                queue_id: activeConversation.queueId ?? null,
+              },
+            });
             await this.messageRepository.updateState({
               messageId: inboundMessage.messageId,
               conversationId: activeConversation.id,
@@ -3633,6 +3708,38 @@ export class InboundWebhookService {
     );
   }
 
+  private async acknowledgeExistingEntitySelectionWait(input: ExistingEntitySelectionWaitInput): Promise<void> {
+    await this.conversationRepository.touch(input.conversation.id, new Date());
+    await this.messageRepository.updateState({
+      messageId: input.inboundMessage.messageId,
+      conversationId: input.conversation.id,
+      processingStatus: 'processed',
+      glpiSyncStatus: 'synced',
+    });
+    logger.info(
+      {
+        conversation_id: input.conversation.id,
+        queue_id: input.conversation.queueId ?? null,
+        reason: 'entity_selection_already_pending',
+      },
+      '[integration-service][contact_profile][FINAL_CONFIRMATION_SUPPRESSED]',
+    );
+    this.recordAudit({
+      conversationId: input.conversation.id,
+      messageId: input.inboundMessage.messageId,
+      direction: 'inbound',
+      eventType: 'CONTACT_PROFILE_FINAL_CONFIRMATION_SUPPRESSED',
+      status: 'ignored',
+      severity: 'info',
+      source: 'InboundWebhookService',
+      payload: {
+        reason: 'entity_selection_already_pending',
+        conversation_status: input.conversation.status,
+        queue_id: input.conversation.queueId ?? null,
+      },
+    });
+  }
+
   private async findRememberedEntity(phoneE164: string): Promise<ContactEntityMemory | null> {
     const rememberedEntity = this.contactEntityMemoryRepository
       ? await this.contactEntityMemoryRepository.findActiveByPhone(phoneE164)
@@ -3673,9 +3780,23 @@ export class InboundWebhookService {
       {
         conversation_id: conversationId,
         phone_e164: input.contact.phoneE164,
+        reason: 'entity_selection_required',
       },
       '[integration-service][entity][TICKET_CREATION_DEFERRED_ENTITY_PENDING]',
     );
+    this.recordAudit({
+      conversationId,
+      messageId: input.inboundMessage.messageId,
+      direction: 'inbound',
+      eventType: 'TICKET_CREATION_DEFERRED_ENTITY_PENDING',
+      status: 'pending',
+      severity: 'info',
+      source: 'InboundWebhookService',
+      payload: {
+        reason: 'entity_selection_required',
+        queue_id: input.queueId ?? null,
+      },
+    });
     await this.messageRepository.updateState({
       messageId: input.inboundMessage.messageId,
       conversationId,

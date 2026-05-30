@@ -2011,7 +2011,7 @@ describe('InboundWebhookService', () => {
     expect(meta.sendTextMessage.mock.calls[0]?.[0].body).toBe('Recebemos as suas informações, em breve um de nossos técnicos irá seguir com o atendimento.');
   });
 
-  it('keeps awaiting_entity_selection without creating a ticket when routing options are empty', async () => {
+  it('keeps awaiting_entity_selection without repeating final confirmation when routing options are empty', async () => {
     const webhookEventRepository = new FakeWebhookEventRepository();
     const messageRepository = new FakeMessageRepository();
     const conversationRepository = new FakeConversationRepository();
@@ -2050,11 +2050,8 @@ describe('InboundWebhookService', () => {
 
     expect(result.results).toEqual([{ messageId: 'wamid.123', outcome: 'processed' }]);
     expect(glpiClient.createTicket).not.toHaveBeenCalled();
-    expect(conversationRepository.updatedQueuesAndStatuses[0]).toEqual({
-      conversationId: 'conv-awaiting-entity',
-      queueId: 5,
-      status: 'awaiting_entity_selection',
-    });
+    expect(conversationRepository.updatedQueuesAndStatuses).toEqual([]);
+    expect(meta.sendTextMessage).not.toHaveBeenCalled();
     expect(messageRepository.updates[0]).toEqual({
       messageId: 'wamid.123',
       conversationId: 'conv-awaiting-entity',
@@ -2063,7 +2060,7 @@ describe('InboundWebhookService', () => {
     });
   });
 
-  it('keeps awaiting_entity_selection without resending the routing menu when routing options exist', async () => {
+  it('keeps awaiting_entity_selection without repeating final confirmation when routing options exist', async () => {
     const webhookEventRepository = new FakeWebhookEventRepository();
     const messageRepository = new FakeMessageRepository();
     const conversationRepository = new FakeConversationRepository();
@@ -2106,14 +2103,9 @@ describe('InboundWebhookService', () => {
     expect(result.results).toEqual([{ messageId: 'wamid.123', outcome: 'processed' }]);
     expect(glpiClient.createTicket).not.toHaveBeenCalled();
     expect(conversationRepository.createdCount).toBe(0);
-    expect(conversationRepository.updatedQueuesAndStatuses).toEqual([{
-      conversationId: 'conv-awaiting-entity',
-      queueId: 5,
-      status: 'awaiting_entity_selection',
-    }]);
+    expect(conversationRepository.updatedQueuesAndStatuses).toEqual([]);
     expect(meta.sendReplyButtons).not.toHaveBeenCalled();
-    expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
-    expect(meta.sendTextMessage.mock.calls[0]?.[0].body).toBe('Recebemos as suas informações, em breve um de nossos técnicos irá seguir com o atendimento.');
+    expect(meta.sendTextMessage).not.toHaveBeenCalled();
   });
 
   it('normalizes a completed contact profile collection state to awaiting_entity_selection', async () => {
@@ -2838,6 +2830,9 @@ describe('InboundWebhookService', () => {
     const entityResolution = new FakeContactEntityResolutionService();
     entityResolution.mode = 'defer_until_known';
     const meta = { sendTextMessage: vi.fn().mockResolvedValue({}) };
+    const audit = {
+      recordAuditEventFireAndForget: vi.fn(),
+    } as unknown as AuditService;
     const glpiClient = { createTicket: vi.fn(), addFollowUp: vi.fn() };
 
     const profilePayload = structuredClone(basePayload) as typeof basePayload;
@@ -2849,7 +2844,7 @@ describe('InboundWebhookService', () => {
       conversationRepository,
       contactResolutionService,
       glpiClient,
-      { routing, meta, contactProfile, entityResolution },
+      { routing, meta, contactProfile, entityResolution, audit },
     );
 
     const result = await service.process(profilePayload);
@@ -2860,6 +2855,92 @@ describe('InboundWebhookService', () => {
     expect(conversationRepository.updatedQueuesAndStatuses).toEqual([
       { conversationId: 'conv-collecting-defer', queueId: 5, status: 'awaiting_entity_selection' },
     ]);
+    expect(audit.recordAuditEventFireAndForget).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'conv-collecting-defer',
+      messageId: 'wamid.123',
+      eventType: 'TICKET_CREATION_DEFERRED_ENTITY_PENDING',
+      status: 'pending',
+      payload: expect.objectContaining({
+        reason: 'entity_selection_required',
+        queue_id: 5,
+      }),
+    }));
+  });
+
+  it('persists a summary once and suppresses repeated final confirmation while entity selection is pending', async () => {
+    const webhookEventRepository = new FakeWebhookEventRepository();
+    const messageRepository = new FakeMessageRepository();
+    const conversationRepository = new FakeConversationRepository();
+    const contactResolutionService = { resolve: vi.fn().mockResolvedValue(resolvedContact) };
+    conversationRepository.reusableConversation = {
+      id: 'conv-summary-once',
+      phoneE164: '+5511999999999',
+      contactId: 'contact-1',
+      glpiTicketId: null,
+      queueId: 5,
+      profileCollectionState: {
+        step: 'asking_reason',
+        queue_label: 'Suporte',
+        company_name_raw: 'Empresa',
+        requester_name: 'Maria',
+        last_equipment_tag: '2022',
+        equipment_tag_unknown: false,
+      },
+      status: 'collecting_contact_profile',
+      lastMessageAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const routing = new FakeRoutingRepository();
+    routing.options = sampleRoutingOptions;
+    const contactProfile = new FakeContactProfileService();
+    contactProfile.collectionEnabled = true;
+    const meta = { sendTextMessage: vi.fn().mockResolvedValue({}) };
+    const audit = {
+      recordAuditEventFireAndForget: vi.fn(),
+    } as unknown as AuditService;
+    const glpiClient = { createTicket: vi.fn(), addFollowUp: vi.fn() };
+
+    const service = makeInboundService(
+      webhookEventRepository,
+      messageRepository,
+      conversationRepository,
+      contactResolutionService,
+      glpiClient,
+      { routing, meta, contactProfile, audit },
+    );
+
+    const summaryPayload = structuredClone(basePayload) as typeof basePayload;
+    summaryPayload.entry[0].changes[0].value.messages[0].id = 'wamid.summary-once';
+    summaryPayload.entry[0].changes[0].value.messages[0].text.body = 'Impressora parada';
+    const repeatedPayload = structuredClone(basePayload) as typeof basePayload;
+    repeatedPayload.entry[0].changes[0].value.messages[0].id = 'wamid.summary-followup';
+    repeatedPayload.entry[0].changes[0].value.messages[0].text.body = 'Tem alguma novidade?';
+
+    await service.process(summaryPayload);
+    await service.process(repeatedPayload);
+
+    expect(contactProfile.savedProfiles).toHaveLength(1);
+    expect(contactProfile.savedProfiles[0]?.last_problem_summary).toBe('Impressora parada');
+    expect(contactProfile.snapshots).toHaveLength(1);
+    expect(conversationRepository.updatedQueuesAndStatuses).toEqual([
+      { conversationId: 'conv-summary-once', queueId: 5, status: 'awaiting_entity_selection' },
+    ]);
+    expect(glpiClient.createTicket).not.toHaveBeenCalled();
+    expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(meta.sendTextMessage).toHaveBeenCalledWith({
+      to: '5511999999999',
+      body: 'Recebemos as suas informações, em breve um de nossos técnicos irá seguir com o atendimento.',
+    });
+    expect(audit.recordAuditEventFireAndForget).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'CONTACT_PROFILE_FINAL_CONFIRMATION_SUPPRESSED',
+      conversationId: 'conv-summary-once',
+      messageId: 'wamid.summary-followup',
+      status: 'ignored',
+      payload: expect.objectContaining({
+        reason: 'entity_selection_already_pending',
+      }),
+    }));
   });
 
   it('with contact profile enabled, incomplete profile remains collecting and asks for missing data', async () => {

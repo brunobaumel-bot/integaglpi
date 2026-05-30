@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Contact } from '../src/domain/entities/Contact.js';
 import type { ContactRepository, UpsertContactInput } from '../src/repositories/contracts/ContactRepository.js';
 import { ContactResolutionService } from '../src/domain/services/ContactResolutionService.js';
+import { normalizePhone } from '../src/domain/utils/normalizePhone.js';
 
 class FakeContactCacheRepository {
   public cachedContact: {
@@ -44,6 +45,17 @@ class FakeContactRepository implements ContactRepository {
 }
 
 describe('ContactResolutionService', () => {
+  it('keeps Brazilian mobile identity stable with or without the ninth digit', () => {
+    expect(normalizePhone('+55 (11) 9999-9999')).toBe('+5511999999999');
+    expect(normalizePhone('+55 (11) 99999-9999')).toBe('+5511999999999');
+    expect(normalizePhone('+55 (11) 3333-4444')).toBe('+551133334444');
+  });
+
+  it('preserves international numbers without Brazilian ninth digit changes', () => {
+    expect(normalizePhone('+1 (415) 555-0100')).toBe('+14155550100');
+    expect(normalizePhone('+44 20 7946 0958')).toBe('+442079460958');
+  });
+
   it('uses Redis cache before querying GLPI', async () => {
     const cacheRepository = new FakeContactCacheRepository();
     cacheRepository.cachedContact = {
@@ -133,4 +145,3 @@ describe('ContactResolutionService', () => {
     expect(contact.name).toBe('+5511999999999');
   });
 });
-
