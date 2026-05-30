@@ -337,6 +337,31 @@ describe('ContactProfileService', () => {
     expect(no.state.step).toBe('asking_company');
   });
 
+  it('preserves remembered reason in confirmation state when the profile is not reloaded', async () => {
+    const service = new ContactProfileService(new FakeSettingsRepository(), new FakeProfileRepository());
+    const profile = service.parseProfileText(
+      '+5511999999999',
+      'Empresa: Etica; Nome: Bruno; Etiqueta: 2022; Problema: internet oscilando',
+    );
+    const state = service.startExistingProfileConfirmationState(profile, 'Suporte');
+
+    const yes = service.processCollectionResponse({
+      phoneE164: '+5511999999999',
+      state,
+      text: 'Sim',
+    });
+
+    expect(state.reason).toBe('internet oscilando');
+    expect(yes.completed).toBe(true);
+    expect(yes.state).toMatchObject({
+      step: 'complete',
+      reason: 'internet oscilando',
+    });
+    expect(yes.profile).toMatchObject({
+      last_problem_summary: 'internet oscilando',
+    });
+  });
+
   it('asks only for reason when confirmed existing profile has no remembered reason', async () => {
     const service = new ContactProfileService(new FakeSettingsRepository(), new FakeProfileRepository());
     const profile = {

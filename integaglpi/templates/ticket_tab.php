@@ -1262,7 +1262,7 @@ if ($isExternalConfigured && $runtime !== null && !$isClosed) {
     <div class="card mt-3" id="<?= $this->escape($replyDomId); ?>" data-reply-card="1">
         <div class="card-header"><?= $this->escape(__('Responder cliente', 'glpiintegaglpi')); ?></div>
         <div class="card-body">
-            <?php // Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001 — Assistente IA was moved below the reply textarea/attachment. Block is rendered after the send button using data-ai-assistant-position="below-reply". ?>
+            <?php // Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001 — Assistente IA stays deferred and is appended below reply + Copiloto using data-ai-assistant-position="below-reply". ?>
             <div class="border rounded p-3 mb-3 bg-white js-integaglpi-ticket-ai-assistant" data-ai-assistant-position="below-reply" data-ai-assistant-render="deferred" hidden>
                 <div class="d-flex justify-content-between align-items-start gap-2 flex-wrap mb-2">
                     <div>
@@ -1369,7 +1369,36 @@ if ($isExternalConfigured && $runtime !== null && !$isClosed) {
                 </div>
                 <small class="js-integaglpi-kb-local-status text-muted d-block mt-2"></small>
             </div>
-            <div class="border rounded p-3 mb-3 bg-light js-integaglpi-copilot" data-draft-hash="">
+            <textarea
+                class="form-control mb-2 js-integaglpi-tab-reply-text"
+                rows="3"
+                maxlength="4096"
+                placeholder="<?= $this->escape(__('Digite a mensagem para enviar ao cliente via WhatsApp...', 'glpiintegaglpi')); ?>"
+            ></textarea>
+            <div class="mb-2">
+                <label class="form-label small mb-1" for="<?= $this->escape($replyDomId); ?>-file">
+                    <?= $this->escape(__('Anexo opcional', 'glpiintegaglpi')); ?>
+                </label>
+                <input
+                    type="file"
+                    class="form-control form-control-sm js-integaglpi-tab-reply-file"
+                    id="<?= $this->escape($replyDomId); ?>-file"
+                    accept="application/pdf,image/jpeg,image/png,image/gif"
+                >
+                <small class="text-muted">
+                    <?= $this->escape(__('PDF e imagens suportadas serão enviados como arquivo real pelo WhatsApp.', 'glpiintegaglpi')); ?>
+                </small>
+            </div>
+            <div class="d-flex gap-2 align-items-center">
+                <button
+                    type="button"
+                    class="btn btn-success js-integaglpi-tab-reply-send"
+                    data-ticket-id="<?= $replyTicketId; ?>"
+                    data-conversation-id="<?= $this->escape($replyConvId); ?>"
+                ><?= $this->escape(__('Enviar resposta', 'glpiintegaglpi')); ?></button>
+                <small class="text-muted js-integaglpi-tab-reply-feedback"></small>
+            </div>
+            <div class="border rounded p-3 mt-3 mb-3 bg-light js-integaglpi-copilot" data-draft-hash="">
                 <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap">
                     <div>
                         <strong><?= $this->escape(__('Copiloto interno', 'glpiintegaglpi')); ?></strong>
@@ -1425,35 +1454,6 @@ if ($isExternalConfigured && $runtime !== null && !$isClosed) {
                     <input type="text" class="form-control form-control-sm js-integaglpi-copilot-notes" style="max-width: 260px;" placeholder="<?= $this->escape(__('Comentário opcional', 'glpiintegaglpi')); ?>">
                     <small class="js-integaglpi-copilot-status text-muted"></small>
                 </div>
-            </div>
-            <textarea
-                class="form-control mb-2 js-integaglpi-tab-reply-text"
-                rows="3"
-                maxlength="4096"
-                placeholder="<?= $this->escape(__('Digite a mensagem para enviar ao cliente via WhatsApp...', 'glpiintegaglpi')); ?>"
-            ></textarea>
-            <div class="mb-2">
-                <label class="form-label small mb-1" for="<?= $this->escape($replyDomId); ?>-file">
-                    <?= $this->escape(__('Anexo opcional', 'glpiintegaglpi')); ?>
-                </label>
-                <input
-                    type="file"
-                    class="form-control form-control-sm js-integaglpi-tab-reply-file"
-                    id="<?= $this->escape($replyDomId); ?>-file"
-                    accept="application/pdf,image/jpeg,image/png,image/gif"
-                >
-                <small class="text-muted">
-                    <?= $this->escape(__('PDF e imagens suportadas serão enviados como arquivo real pelo WhatsApp.', 'glpiintegaglpi')); ?>
-                </small>
-            </div>
-            <div class="d-flex gap-2 align-items-center">
-                <button
-                    type="button"
-                    class="btn btn-success js-integaglpi-tab-reply-send"
-                    data-ticket-id="<?= $replyTicketId; ?>"
-                    data-conversation-id="<?= $this->escape($replyConvId); ?>"
-                ><?= $this->escape(__('Enviar resposta', 'glpiintegaglpi')); ?></button>
-                <small class="text-muted js-integaglpi-tab-reply-feedback"></small>
             </div>
         </div>
     </div>

@@ -259,10 +259,22 @@ final class StabilizationPhaseStaticTest extends TestCase
         $template = (string) file_get_contents($this->pluginPath('templates/ticket_tab.php'));
 
         self::assertStringContainsString('data-ai-assistant-position="below-reply"', $template);
-        // The block is hidden in its original position and revealed/appended
-        // by the inline reposition script.
         self::assertStringContainsString('js-integaglpi-ticket-ai-assistant', $template);
+        self::assertStringContainsString('js-integaglpi-copilot', $template);
         self::assertStringContainsString('removeAttribute(\'hidden\')', $template);
+
+        $textareaPosition = strpos($template, 'Digite a mensagem para enviar ao cliente via WhatsApp...');
+        $sendPosition = strpos($template, 'Enviar resposta');
+        $copilotPosition = strpos($template, 'Copiloto interno');
+
+        self::assertIsInt($textareaPosition);
+        self::assertIsInt($sendPosition);
+        self::assertIsInt($copilotPosition);
+        self::assertGreaterThan($textareaPosition, $sendPosition);
+        self::assertGreaterThan($sendPosition, $copilotPosition);
+        // Assistente IA is appended after the body content at runtime, so it
+        // appears after Copiloto while preserving its existing JS bindings.
+        self::assertStringContainsString('body.appendChild(assistant)', $template);
     }
 
     // ── Items 1 & 2: menu deduplication and grouping ───────────────────

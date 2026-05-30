@@ -128,7 +128,7 @@ export class ContactProfileService {
       promptEquipment: toStr('contact_profile_prompt_equipment',
         toStr('profile_ask_equipment', 'Informe a etiqueta/patrimônio do equipamento.')),
       promptSummary: toStr('contact_profile_prompt_summary',
-        toStr('profile_ask_summary', 'Qual o motivo do seu contato? Resuma em ate 200 caracteres.')),
+        toStr('profile_ask_summary', 'Qual o motivo do seu contato? Resuma em até 200 caracteres.')),
       confirmMessage: toStr('contact_profile_confirm_message',
         toStr('profile_confirmation_message', 'Obrigado. Seus dados foram registrados.')),
     };
@@ -315,6 +315,7 @@ export class ContactProfileService {
       email_status: profile.email_status ?? (profile.email_address ? 'valid' : 'not_provided'),
       last_equipment_tag: profile.last_equipment_tag,
       equipment_tag_unknown: profile.equipment_tag_unknown,
+      reason: profile.last_problem_summary,
     };
   }
 
@@ -363,7 +364,7 @@ export class ContactProfileService {
     }
 
     if (state.step === 'asking_reason') {
-      return cfg?.promptSummary ?? 'Qual o motivo do seu contato? Resuma em ate 200 caracteres.';
+      return cfg?.promptSummary ?? 'Qual o motivo do seu contato? Resuma em até 200 caracteres.';
     }
 
     return cfg?.confirmMessage ?? 'Obrigado. Seus dados foram registrados.';

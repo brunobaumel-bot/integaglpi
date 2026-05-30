@@ -588,6 +588,7 @@ class FakeContactProfileService {
       requester_name: profile.requester_name,
       last_equipment_tag: profile.last_equipment_tag,
       equipment_tag_unknown: profile.equipment_tag_unknown,
+      reason: profile.last_problem_summary,
     };
   }
 
@@ -611,7 +612,7 @@ class FakeContactProfileService {
     }
 
     if (state.step === 'asking_reason') {
-      return 'Qual o motivo do seu contato? Resuma em ate 200 caracteres.';
+      return 'Qual o motivo do seu contato? Resuma em até 200 caracteres.';
     }
 
     return this.prompt;
