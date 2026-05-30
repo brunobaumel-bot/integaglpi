@@ -80,6 +80,27 @@
     return null;
   }
 
+  /**
+   * IntegraGLPI owns the six parent sidebar groups end-to-end.
+   *
+   * Previous approaches kept Bootstrap's data-API toggle installed and tried
+   * to fight it with stopImmediatePropagation + reactive listeners on
+   * show.bs.dropdown / hidden.bs.dropdown — the result was the visible
+   * "abre e fecha" flicker because Bootstrap's internal Dropdown instance
+   * kept toggling its own `_isShown` state behind our backs and auto-closing
+   * sibling groups.
+   *
+   * Definitive contract:
+   *   1. Dispose every Bootstrap Dropdown instance attached to the 6 toggles
+   *      and strip `data-bs-toggle="dropdown"` so Bootstrap never re-binds.
+   *   2. Be the sole owner of `.show` / `aria-expanded` / `.active`.
+   *   3. Persist open labels in sessionStorage; restore them on DOM ready,
+   *      after ajaxComplete and whenever the sidebar is re-rendered (mutation
+   *      observer).
+   *   4. Never auto-close sibling groups — operator may keep several open.
+   *
+   * Phase: integaglpi_ops_console_claim_ui_messaging_stabilization_001_FIX_MENU_TOGGLE.
+   */
   function initSidebarMenuTreePersistence() {
     const labels = [
       'WhatsApp / Central',
@@ -91,6 +112,7 @@
     ];
     const labelSet = new Set(labels);
     const storageKey = 'integaglpi.sidebar.openMenuClasses';
+    const ownedClass = 'integaglpi-sidebar-owned';
 
     function normalizeLabel(text) {
       return String(text || '').replace(/\s+/g, ' ').trim();
@@ -112,7 +134,7 @@
       } catch (e) {}
     }
 
-    function getGroupItems() {
+    function getGroupEntries() {
       return Array.prototype.slice.call(document.querySelectorAll('#navbar-menu .nav-item.dropdown'))
         .map((item) => {
           const link = item.querySelector(':scope > .nav-link.dropdown-toggle');
@@ -130,16 +152,46 @@
       entry.link.classList.toggle('show', open);
       entry.link.setAttribute('aria-expanded', open ? 'true' : 'false');
       entry.menu.classList.toggle('show', open);
+      // Strip residual Bootstrap CSS animation classes so restored groups
+      // don't flash a transition on every page load.
       entry.menu.classList.remove('animate__fadeInLeft', 'animate__zoomIn');
     }
 
-    function restoreOpenGroups() {
+    /**
+     * Detach Bootstrap from this toggle so it never auto-toggles or
+     * auto-closes sibling groups. Idempotent — safe to call on every pass.
+     */
+    function neutralizeBootstrap(entry) {
+      if (!entry.link || entry.link.classList.contains(ownedClass)) {
+        return;
+      }
+      entry.link.classList.add(ownedClass);
+      try {
+        const bs = window.bootstrap;
+        if (bs && bs.Dropdown && typeof bs.Dropdown.getInstance === 'function') {
+          const instance = bs.Dropdown.getInstance(entry.link);
+          if (instance && typeof instance.dispose === 'function') {
+            instance.dispose();
+          }
+        }
+      } catch (e) {}
+      // Remove every attribute Bootstrap's data-API uses to re-bind.
+      entry.link.removeAttribute('data-bs-toggle');
+      entry.link.removeAttribute('data-toggle');
+      entry.link.removeAttribute('data-bs-auto-close');
+    }
+
+    function applyAll() {
       const openLabels = readOpenLabels();
-      getGroupItems().forEach((entry) => {
+      getGroupEntries().forEach((entry) => {
+        neutralizeBootstrap(entry);
         setGroupOpen(entry, openLabels.has(entry.label));
       });
     }
 
+    // Owner click handler. Capture phase + stopImmediatePropagation are kept
+    // as defense in depth: if a future GLPI build re-attaches a global
+    // listener before our applyAll() runs, this still wins.
     document.addEventListener('click', function (event) {
       const link = event.target && event.target.closest
         ? event.target.closest('#navbar-menu .nav-item.dropdown > .nav-link.dropdown-toggle')
@@ -147,47 +199,69 @@
       if (!link) return;
 
       const item = link.closest('.nav-item.dropdown');
-      const label = normalizeLabel(link.querySelector('.menu-label') ? link.querySelector('.menu-label').textContent : '');
-      if (!item || !labelSet.has(label)) return;
+      if (!item) return;
+      const labelEl = link.querySelector('.menu-label');
+      const label = normalizeLabel(labelEl ? labelEl.textContent : '');
+      if (!labelSet.has(label)) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (typeof event.stopImmediatePropagation === 'function') {
+        event.stopImmediatePropagation();
+      }
 
       const menu = item.querySelector(':scope > .dropdown-menu');
-      const openLabels = readOpenLabels();
-      const isOpen = link.classList.contains('show') || (menu && menu.classList.contains('show'));
+      const entry = { item, link, menu, label };
+      neutralizeBootstrap(entry);
 
+      const openLabels = readOpenLabels();
+      const isOpen = openLabels.has(label);
       if (isOpen) {
         openLabels.delete(label);
       } else {
         openLabels.add(label);
       }
       writeOpenLabels(openLabels);
-      window.setTimeout(restoreOpenGroups, 0);
-      window.setTimeout(restoreOpenGroups, 80);
+      setGroupOpen(entry, !isOpen);
     }, true);
 
-    document.addEventListener('show.bs.dropdown', function (event) {
-      const item = event.target && event.target.closest
-        ? event.target.closest('#navbar-menu .nav-item.dropdown')
-        : null;
-      if (!item) return;
+    // GLPI streams the sidebar; first pass + a few retries cover late renders
+    // without depending on a specific event ordering.
+    applyAll();
+    window.setTimeout(applyAll, 50);
+    window.setTimeout(applyAll, 200);
+    window.setTimeout(applyAll, 500);
 
-      const labelEl = item.querySelector(':scope > .nav-link.dropdown-toggle .menu-label');
-      const label = normalizeLabel(labelEl ? labelEl.textContent : '');
-      if (!labelSet.has(label)) return;
+    // Re-apply after any GLPI AJAX cycle that may have re-rendered the sidebar.
+    if (typeof jQuery !== 'undefined' && jQuery && jQuery(document) && jQuery(document).on) {
+      jQuery(document)
+        .off('ajaxComplete.integaglpiSidebar')
+        .on('ajaxComplete.integaglpiSidebar', function () {
+          applyAll();
+        });
+    }
 
-      const openLabels = readOpenLabels();
-      openLabels.add(label);
-      writeOpenLabels(openLabels);
-      window.setTimeout(restoreOpenGroups, 0);
-      window.setTimeout(restoreOpenGroups, 80);
-    }, true);
-
-    document.addEventListener('hidden.bs.dropdown', function () {
-      window.setTimeout(restoreOpenGroups, 0);
-      window.setTimeout(restoreOpenGroups, 80);
-    }, true);
-
-    restoreOpenGroups();
-    window.setTimeout(restoreOpenGroups, 100);
+    // Re-apply when GLPI swaps the navbar (partial reloads, htmx/pjax, etc).
+    if (typeof MutationObserver === 'function') {
+      const observer = new MutationObserver((mutations) => {
+        for (let i = 0; i < mutations.length; i++) {
+          const m = mutations[i];
+          if (!m.addedNodes || !m.addedNodes.length) continue;
+          for (let j = 0; j < m.addedNodes.length; j++) {
+            const node = m.addedNodes[j];
+            if (!node || node.nodeType !== 1) continue;
+            if (node.id === 'navbar-menu' ||
+                (typeof node.querySelector === 'function' && node.querySelector('#navbar-menu'))) {
+              applyAll();
+              return;
+            }
+          }
+        }
+      });
+      try {
+        observer.observe(document.body, { childList: true, subtree: true });
+      } catch (e) {}
+    }
   }
 
   function readQueueEditorPayload(editor) {

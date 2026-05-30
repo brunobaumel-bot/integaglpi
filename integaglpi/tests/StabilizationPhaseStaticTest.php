@@ -418,13 +418,51 @@ final class StabilizationPhaseStaticTest extends TestCase
         $setup = (string) file_get_contents($this->pluginPath('setup.php'));
         $script = (string) file_get_contents($this->pluginPath('js/integaglpi.js'));
 
+        // JS registered via GLPI's official hook so it loads on every page.
         self::assertStringContainsString("[Hooks::ADD_JAVASCRIPT][PLUGIN_INTEGAGLPI_NAME][] = 'front/integaglpi.js.php'", $setup);
-        self::assertStringContainsString('initSidebarMenuTreePersistence', $script);
-        self::assertStringContainsString('integaglpi.sidebar.openMenuClasses', $script);
-        self::assertStringContainsString('restoreOpenGroups', $script);
-        self::assertStringContainsString('show.bs.dropdown', $script);
-        self::assertStringContainsString('hidden.bs.dropdown', $script);
+
+        // Idempotent boot guard and sidebar bootstrap entry point.
         self::assertStringContainsString('window.__integaglpiScriptLoaded', $script);
+        self::assertStringContainsString('initSidebarMenuTreePersistence', $script);
+
+        // Persistence layer (sessionStorage) keeps groups open across navigation.
+        self::assertStringContainsString('integaglpi.sidebar.openMenuClasses', $script);
+        self::assertStringContainsString('sessionStorage', $script);
+
+        // The six group labels must be the only ones eligible for persistence.
+        foreach ([
+            'WhatsApp / Central',
+            'Configuração',
+            'Monitoramento',
+            'IA',
+            'Gestão',
+            'Supervisão',
+        ] as $label) {
+            self::assertStringContainsString($label, $script, $label . ' must be present in the eligible label list.');
+        }
+
+        // Own the click: capture phase + stop propagation so Bootstrap's
+        // data-API never wins the race.
+        self::assertStringContainsString('event.preventDefault()', $script);
+        self::assertStringContainsString('event.stopPropagation()', $script);
+        self::assertStringContainsString('event.stopImmediatePropagation', $script);
+
+        // Definitive fix: neutralize Bootstrap on the 6 toggles instead of
+        // reacting to show.bs.dropdown / hidden.bs.dropdown after the fact.
+        self::assertStringContainsString('neutralizeBootstrap', $script);
+        self::assertStringContainsString("removeAttribute('data-bs-toggle')", $script);
+        self::assertStringContainsString('window.bootstrap', $script);
+        self::assertStringContainsString('Dropdown.getInstance', $script);
+        self::assertStringContainsString('.dispose()', $script);
+
+        // Re-apply state when GLPI re-renders the sidebar (AJAX + DOM mutations).
+        self::assertStringContainsString('ajaxComplete.integaglpiSidebar', $script);
+        self::assertStringContainsString('MutationObserver', $script);
+        self::assertStringContainsString("'#navbar-menu'", $script);
+
+        // The fragile reactive listeners must not be reintroduced.
+        self::assertStringNotContainsString("addEventListener('show.bs.dropdown'", $script);
+        self::assertStringNotContainsString("addEventListener('hidden.bs.dropdown'", $script);
     }
 
     public function testCentralLayoutKeepsMiddleColumnChatOnlyAndMovesDetailsToContext(): void
