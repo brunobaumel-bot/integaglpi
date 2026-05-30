@@ -300,127 +300,73 @@ final class StabilizationPhaseStaticTest extends TestCase
         );
     }
 
-    public function testSetupRegistersMenusInLogicalGroups(): void
+    public function testSetupRegistersOriginalFlatMenus(): void
     {
         $setup = (string) file_get_contents($this->pluginPath('setup.php'));
 
-        // The grouping comments are part of the public contract.
-        self::assertStringContainsString('Grupo: WhatsApp / Central', $setup);
-        self::assertStringContainsString('Grupo: Configuração', $setup);
-        self::assertStringContainsString('Grupo: Monitoramento', $setup);
-        self::assertStringContainsString('Grupo: IA', $setup);
-        self::assertStringContainsString('Grupo: Gestão', $setup);
-        self::assertStringContainsString('Grupo: Supervisão', $setup);
+        $start = strpos($setup, 'MENU_TOADD][PLUGIN_INTEGAGLPI_NAME]');
+        $end = strpos($setup, "\$PLUGIN_HOOKS['config_page']", (int) $start);
+        self::assertNotFalse($start, 'MENU_TOADD assignment must be present in setup.php.');
+        self::assertNotFalse($end, 'config_page assignment must follow MENU_TOADD in setup.php.');
+        $menuBlock = substr($setup, (int) $start, (int) $end - (int) $start);
 
-        // FIX3: MENU_TOADD now references the 6 final parent group classes.
-        self::assertStringContainsString('WhatsAppGroupMenu::class', $setup);
-        self::assertStringContainsString('ConfiguracaoGroupMenu::class', $setup);
-        self::assertStringContainsString('MonitoramentoGroupMenu::class', $setup);
-        self::assertStringContainsString('IaGroupMenu::class', $setup);
-        self::assertStringContainsString('GestaoGroupMenu::class', $setup);
-        self::assertStringContainsString('SupervisaoGroupMenu::class', $setup);
+        $expectedLeafMenus = [
+            'Queue::class',
+            'AttendanceCenterMenu::class',
+            'OnlineMonitorMenu::class',
+            'SupervisorBackofficeMenu::class',
+            'AiOperationsMenu::class',
+            'CoachingMenu::class',
+            'KnowledgeBaseMenu::class',
+            'KbCandidatesMenu::class',
+            'ExternalResearchMenu::class',
+            'ContractsHoursMenu::class',
+            'ServiceCatalogMenu::class',
+            'ContactAgendaImportMenu::class',
+            'QualityDashboardMenu::class',
+            'ObservabilityMenu::class',
+            'OperationalDiagnosticsMenu::class',
+            'OperationLogMenu::class',
+            'RoutingSafetyMenu::class',
+        ];
+
+        foreach ($expectedLeafMenus as $menuClass) {
+            self::assertStringContainsString($menuClass, $menuBlock, $menuClass . ' must be listed directly in MENU_TOADD.');
+        }
+
+        $groupMenus = [
+            'WhatsAppGroupMenu::class',
+            'ConfiguracaoGroupMenu::class',
+            'MonitoramentoGroupMenu::class',
+            'IaGroupMenu::class',
+            'GestaoGroupMenu::class',
+            'SupervisaoGroupMenu::class',
+        ];
+        foreach ($groupMenus as $groupMenu) {
+            self::assertStringNotContainsString($groupMenu, $menuBlock, $groupMenu . ' must not be listed in MENU_TOADD.');
+            self::assertStringNotContainsString('registerClass(' . $groupMenu . ')', $setup, $groupMenu . ' must not be registered as an active menu class.');
+        }
 
         // No experimental Central A/B menus must be reintroduced here.
         self::assertStringNotContainsString('AttendanceCenterModelAMenu::class,', $setup);
         self::assertStringNotContainsString('AttendanceCenterModelBMenu::class,', $setup);
     }
 
-    // ── FIX3: final submenu grouping (6 parent group classes) ────────────
-
-    public function testMenuGroupClassFilesExist(): void
-    {
-        $groups = [
-            'WhatsAppGroupMenu',
-            'ConfiguracaoGroupMenu',
-            'MonitoramentoGroupMenu',
-            'IaGroupMenu',
-            'GestaoGroupMenu',
-            'SupervisaoGroupMenu',
-        ];
-
-        foreach ($groups as $group) {
-            $path = $this->pluginPath("src/{$group}.php");
-            self::assertFileExists($path, "Group menu class file src/{$group}.php must exist.");
-        }
-    }
-
-    public function testGroupMenuClassesHaveOptionsKey(): void
-    {
-        $groups = [
-            'WhatsAppGroupMenu'      => 3,
-            'ConfiguracaoGroupMenu'  => 9,
-            'MonitoramentoGroupMenu' => 3,
-            'IaGroupMenu'            => 5,
-            'GestaoGroupMenu'        => 4,
-            'SupervisaoGroupMenu'    => 4,
-        ];
-
-        foreach ($groups as $group => $expectedChildren) {
-            $src = (string) file_get_contents($this->pluginPath("src/{$group}.php"));
-            self::assertStringContainsString(
-                "'options'",
-                $src,
-                "{$group}::getMenuContent() must return an 'options' key for submenu rendering."
-            );
-            self::assertStringContainsString(
-                'extends CommonDBTM',
-                $src,
-                "{$group} must extend CommonDBTM."
-            );
-            // Verify the expected number of submenu entries are present.
-            self::assertGreaterThanOrEqual(
-                $expectedChildren,
-                substr_count($src, "'title'"),
-                "{$group} must declare at least {$expectedChildren} child title entries."
-            );
-        }
-    }
-
-    public function testSetupMenuToAddContainsOnlyGroupClasses(): void
+    public function testSetupMenuToAddHasNoDuplicateFlatEntries(): void
     {
         $setup = (string) file_get_contents($this->pluginPath('setup.php'));
 
-        // Extract the MENU_TOADD assignment block. 1 500 chars is enough for
-        // the 5-entry array plus the Aggregates documentation comments.
         $start = strpos($setup, 'MENU_TOADD][PLUGIN_INTEGAGLPI_NAME]');
+        $end = strpos($setup, "\$PLUGIN_HOOKS['config_page']", (int) $start);
         self::assertNotFalse($start, 'MENU_TOADD assignment must be present in setup.php.');
-        $menuBlock = substr($setup, (int) $start, 1500);
+        self::assertNotFalse($end, 'config_page assignment must follow MENU_TOADD in setup.php.');
+        $menuBlock = substr($setup, (int) $start, (int) $end - (int) $start);
 
-        // The 6 final group parent classes must be registered in MENU_TOADD.
-        self::assertStringContainsString('WhatsAppGroupMenu::class', $menuBlock);
-        self::assertStringContainsString('ConfiguracaoGroupMenu::class', $menuBlock);
-        self::assertStringContainsString('MonitoramentoGroupMenu::class', $menuBlock);
-        self::assertStringContainsString('IaGroupMenu::class', $menuBlock);
-        self::assertStringContainsString('GestaoGroupMenu::class', $menuBlock);
-        self::assertStringContainsString('SupervisaoGroupMenu::class', $menuBlock);
+        preg_match_all('/([A-Za-z0-9_]+(?:Menu|Queue))::class,/', $menuBlock, $matches);
+        $entries = $matches[1] ?? [];
 
-        // Leaf classes appear only in "Aggregates" documentation comments
-        // inside the MENU_TOADD block so that the cross-repo static safety
-        // tests (phpKnowledgeBaseStatic, phpContractHoursStatic) can still
-        // locate them without runtime GLPI. They must not appear as PHP
-        // array entries — enforced by Cursor review (comment vs code).
-        self::assertStringContainsString('// Aggregates: Queue::class', $menuBlock);
-        self::assertStringContainsString('KbCandidatesMenu::class, ExternalResearchMenu::class', $menuBlock);
-        self::assertStringContainsString('QualityDashboardMenu::class', $menuBlock);
-    }
-
-    public function testFinalMenuHierarchyUsesRequestedLabels(): void
-    {
-        $groups = [
-            'WhatsAppGroupMenu.php'      => ['Central WhatsApp / Monitor Online', 'Conversas WhatsApp / aba do ticket', 'Hub de Mensagens'],
-            'ConfiguracaoGroupMenu.php'  => ['Configurações das Mensagens', 'Recepção Inteligente', 'Avisos e Inatividade', 'CSAT', 'Horário Comercial', 'Mídia', 'Ticket e Solução', 'Templates WhatsApp', 'Configurações Gerais do Plugin'],
-            'MonitoramentoGroupMenu.php' => ['Monitor Online / visão do supervisor', 'Health / Status de Serviços', 'Central de Eventos Operacionais / futura V6'],
-            'IaGroupMenu.php'            => ['Console IA / status, configuração, diagnóstico', 'Copiloto / dentro do chamado', 'Mineração Histórica', 'Candidatos KB', 'Pesquisa Externa'],
-            'GestaoGroupMenu.php'        => ['Contratos e Banco de Horas', 'Entidades e Memória de Contato', 'Perfis e Permissões', 'Auditoria'],
-            'SupervisaoGroupMenu.php'    => ['SLA e Qualidade / métricas, aging, filas', 'Relatórios Operacionais', 'Alertas IA / configuração', 'Inatividade e Autoclose / parâmetros'],
-        ];
-
-        foreach ($groups as $file => $labels) {
-            $src = (string) file_get_contents($this->pluginPath('src/' . $file));
-            foreach ($labels as $label) {
-                self::assertStringContainsString($label, $src, $file . ' must expose ' . $label);
-            }
-        }
+        self::assertNotEmpty($entries, 'MENU_TOADD must contain direct menu class entries.');
+        self::assertSame($entries, array_values(array_unique($entries)), 'MENU_TOADD must not contain duplicate menu class entries.');
     }
 
     public function testCentralLayoutMovesSelectedDetailsAndActionsToMiddleColumn(): void
