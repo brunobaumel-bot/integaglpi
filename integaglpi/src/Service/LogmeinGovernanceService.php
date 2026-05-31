@@ -14,7 +14,11 @@ final class LogmeinGovernanceService
     private const GROUP_MAP_TABLE = 'glpi_plugin_integaglpi_logmein_group_maps';
     private const ASSET_CACHE_TABLE = 'glpi_plugin_integaglpi_logmein_asset_cache';
     private const SYNC_AUDIT_TABLE = 'glpi_plugin_integaglpi_logmein_sync_audit';
+    private const CONTRACTS_TABLE = 'glpi_plugin_integaglpi_entity_contracts';
+    private const HOUR_ADJUSTMENTS_TABLE = 'glpi_plugin_integaglpi_hour_adjustments';
     private const FALLBACK_MESSAGE = 'Contexto de ativo temporariamente indisponível.';
+    private const REPORT_MAX_DAYS = 31;
+    private const REPORT_LIMIT = 50;
 
     private PluginConfigService $pluginConfigService;
 
@@ -50,6 +54,10 @@ final class LogmeinGovernanceService
         SecurityAuditService::logLogmeinContextViewed($ticketId, [
             'conversation_hash' => $this->hash((string) ($conversation['conversation_id'] ?? '')),
             'feature_flag_enabled' => $base['feature_flag_enabled'],
+        ]);
+        SecurityAuditService::logLogmeinEvidenceViewed($ticketId, [
+            'conversation_hash' => $this->hash((string) ($conversation['conversation_id'] ?? '')),
+            'source' => 'ticket_tab_logmein_context',
         ]);
 
         if (!$base['feature_flag_enabled']) {
@@ -439,6 +447,209 @@ final class LogmeinGovernanceService
     }
 
     /**
+     * @param array<string, mixed> $input
+     * @return array<string, mixed>
+     */
+    public function buildOperationalReports(array $input): array
+    {
+        $filters = $this->normalizeReportFilters($input);
+        $base = [
+            'status' => 'unavailable',
+            'filters' => $filters,
+            'entity_options' => $this->listAllowedEntities(),
+            'kpis' => $this->emptyReportKpis(),
+            'rows' => [],
+            'quality' => [],
+            'contracts' => $this->emptyContractSummary(),
+            'pagination' => [
+                'page' => $filters['page'],
+                'limit' => $filters['limit'],
+                'total' => 0,
+                'has_previous' => $filters['page'] > 1,
+                'has_next' => false,
+            ],
+            'errors' => [],
+            'read_only' => true,
+            'non_punitive' => true,
+            'remote_execution' => false,
+            'max_window_days' => self::REPORT_MAX_DAYS,
+            'pagination_limit' => self::REPORT_LIMIT,
+        ];
+
+        if (!$this->canViewLogmeinReports()) {
+            SecurityAuditService::logAccessDenied(SecurityPermissionService::RIGHT_VIEW_CONTRACTS_READONLY, [
+                'endpoint' => 'logmein.reports.php',
+                'action' => 'view',
+            ]);
+
+            return array_merge($base, ['status' => 'access_denied']);
+        }
+        if (!$this->pluginConfigService->isConfigured() || !$this->tableExists(self::ASSET_CACHE_TABLE)) {
+            return array_merge($base, ['status' => 'migration_required']);
+        }
+        if ($filters['entity_id'] <= 0) {
+            return array_merge($base, [
+                'status' => 'filter_required',
+                'errors' => [__('Selecione uma entidade e período para gerar o relatório LogMeIn.', 'glpiintegaglpi')],
+            ]);
+        }
+        if (!SecurityPermissionService::enforceEntityScope($filters['entity_id'])) {
+            SecurityAuditService::logAccessDenied(SecurityPermissionService::RIGHT_VIEW_CONTRACTS_READONLY, [
+                'endpoint' => 'logmein.reports.php',
+                'action' => 'view',
+                'glpi_entity_id' => $filters['entity_id'],
+                'reason' => 'entity_scope_denied',
+            ]);
+
+            return array_merge($base, ['status' => 'access_denied']);
+        }
+
+        SecurityAuditService::logLogmeinReportViewed('logmein_operational_reports', [
+            'glpi_entity_id' => $filters['entity_id'],
+            'date_from' => $filters['date_from'],
+            'date_to' => $filters['date_to'],
+            'report_type' => $filters['report_type'],
+            'page' => $filters['page'],
+            'limit' => $filters['limit'],
+        ]);
+
+        $where = $this->buildReportWhereSql($filters);
+        $total = (int) $this->fetchPreparedScalar(
+            'SELECT COUNT(*) FROM ' . self::ASSET_CACHE_TABLE . ' a ' . $where['join'] . ' WHERE ' . $where['where'],
+            $where['params']
+        );
+        $offset = ($filters['page'] - 1) * $filters['limit'];
+        $rows = $this->fetchPreparedRows(
+            "SELECT
+                a.host_name_sanitized,
+                a.logmein_group_name,
+                a.equipment_tag,
+                a.status,
+                a.glpi_ticket_id,
+                a.cache_updated_at,
+                a.last_seen_at,
+                COALESCE(m.glpi_entity_id, a.glpi_entity_candidate_id) AS report_entity_id
+             FROM " . self::ASSET_CACHE_TABLE . " a
+             " . $where['join'] . "
+             WHERE " . $where['where'] . "
+             ORDER BY COALESCE(a.last_seen_at, a.cache_updated_at) DESC NULLS LAST, a.host_name_sanitized ASC
+             LIMIT :limit OFFSET :offset",
+            array_merge($where['params'], [
+                ':limit' => $filters['limit'],
+                ':offset' => $offset,
+            ])
+        );
+
+        $quality = $this->buildOperationalQuality($filters);
+        $contracts = $this->buildContractSummary($filters);
+
+        return array_merge($base, [
+            'status' => 'available',
+            'kpis' => $this->buildOperationalKpis($filters),
+            'rows' => array_map(fn (array $row): array => $this->sanitizeReportRow($row), $rows),
+            'quality' => $quality,
+            'contracts' => $contracts,
+            'pagination' => [
+                'page' => $filters['page'],
+                'limit' => $filters['limit'],
+                'total' => $total,
+                'has_previous' => $filters['page'] > 1,
+                'has_next' => ($offset + $filters['limit']) < $total,
+            ],
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     * @return array{ok: bool, filename: string, content: string, error: string}
+     */
+    public function exportOperationalReportCsv(array $input): array
+    {
+        if (!$this->canExportLogmeinReports()) {
+            SecurityAuditService::logAccessDenied(SecurityPermissionService::RIGHT_EXPORT_OPERATIONAL_REPORTS, [
+                'endpoint' => 'logmein.reports.php',
+                'action' => 'export_csv',
+            ]);
+
+            return ['ok' => false, 'filename' => '', 'content' => '', 'error' => 'forbidden'];
+        }
+
+        $report = $this->buildOperationalReports(array_merge($input, ['limit' => self::REPORT_LIMIT, 'page' => 1]));
+        if (($report['status'] ?? '') !== 'available') {
+            return ['ok' => false, 'filename' => '', 'content' => '', 'error' => (string) ($report['status'] ?? 'unavailable')];
+        }
+
+        $filters = is_array($report['filters'] ?? null) ? $report['filters'] : $this->normalizeReportFilters($input);
+        $output = fopen('php://temp', 'w+');
+        if ($output === false) {
+            return ['ok' => false, 'filename' => '', 'content' => '', 'error' => 'csv_unavailable'];
+        }
+
+        fputcsv($output, [
+            'entidade_id',
+            'periodo_de',
+            'periodo_ate',
+            'host',
+            'grupo',
+            'etiqueta',
+            'status',
+            'ticket',
+            'ultima_evidencia',
+            'origem',
+        ], ';');
+
+        foreach (($report['rows'] ?? []) as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            fputcsv($output, array_map([$this, 'sanitizeCsvCell'], [
+                (string) ($filters['entity_id'] ?? ''),
+                (string) ($filters['date_from'] ?? ''),
+                (string) ($filters['date_to'] ?? ''),
+                (string) ($row['host_name'] ?? ''),
+                (string) ($row['group_name'] ?? ''),
+                (string) ($row['equipment_tag'] ?? ''),
+                (string) ($row['status'] ?? ''),
+                (string) ($row['ticket_id'] ?? ''),
+                (string) ($row['last_evidence_at'] ?? ''),
+                'logmein_cache_readonly',
+            ]), ';');
+        }
+
+        rewind($output);
+        $content = (string) stream_get_contents($output);
+        fclose($output);
+
+        SecurityAuditService::logLogmeinReportExported('logmein_operational_reports', [
+            'glpi_entity_id' => (int) ($filters['entity_id'] ?? 0),
+            'date_from' => (string) ($filters['date_from'] ?? ''),
+            'date_to' => (string) ($filters['date_to'] ?? ''),
+            'rows_exported' => count($report['rows'] ?? []),
+            'csv_sanitized' => true,
+        ]);
+
+        return [
+            'ok' => true,
+            'filename' => sprintf('integaglpi-logmein-%s-%s.csv', (string) ($filters['entity_id'] ?? 'entity'), gmdate('Ymd-His')),
+            'content' => $content,
+            'error' => '',
+        ];
+    }
+
+    public function canViewLogmeinReports(): bool
+    {
+        return SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_VIEW_CONTRACTS_READONLY)
+            || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_EXPORT_OPERATIONAL_REPORTS)
+            || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_MAPPING);
+    }
+
+    public function canExportLogmeinReports(): bool
+    {
+        return SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_EXPORT_OPERATIONAL_REPORTS)
+            || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_EXPORT_EXECUTIVE_REPORTS);
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     public function getLastSyncStatus(): ?array
@@ -698,6 +909,321 @@ final class LogmeinGovernanceService
         }
 
         return preg_match('/^\d{4}$/', $tag) === 1 ? 'valid' : 'invalid';
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     * @return array{entity_id:int,date_from:string,date_to:string,group_external_id:string,report_type:string,page:int,limit:int}
+     */
+    private function normalizeReportFilters(array $input): array
+    {
+        $today = new \DateTimeImmutable('today');
+        $defaultFrom = $today->modify('-30 days');
+        $dateFrom = $this->parseReportDate((string) ($input['date_from'] ?? ''), $defaultFrom);
+        $dateTo = $this->parseReportDate((string) ($input['date_to'] ?? ''), $today);
+        if ($dateFrom > $dateTo) {
+            [$dateFrom, $dateTo] = [$dateTo, $dateFrom];
+        }
+        if ($dateFrom->diff($dateTo)->days > self::REPORT_MAX_DAYS) {
+            $dateFrom = $dateTo->modify('-' . self::REPORT_MAX_DAYS . ' days');
+        }
+
+        $reportType = $this->sanitizeText((string) ($input['report_type'] ?? 'summary'), 40);
+        if (!in_array($reportType, ['summary', 'quality', 'contracts', 'ticket_evidence'], true)) {
+            $reportType = 'summary';
+        }
+
+        return [
+            'entity_id' => max(0, (int) ($input['entity_id'] ?? 0)),
+            'date_from' => $dateFrom->format('Y-m-d'),
+            'date_to' => $dateTo->format('Y-m-d'),
+            'group_external_id' => $this->sanitizeText((string) ($input['group_external_id'] ?? ''), 160),
+            'report_type' => $reportType,
+            'page' => max(1, (int) ($input['page'] ?? 1)),
+            'limit' => min(self::REPORT_LIMIT, max(10, (int) ($input['limit'] ?? 25))),
+        ];
+    }
+
+    private function parseReportDate(string $value, \DateTimeImmutable $fallback): \DateTimeImmutable
+    {
+        $value = trim($value);
+        if ($value === '' || preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) !== 1) {
+            return $fallback;
+        }
+
+        $date = \DateTimeImmutable::createFromFormat('!Y-m-d', $value);
+        return $date instanceof \DateTimeImmutable ? $date : $fallback;
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return array{join:string,where:string,params:array<string, mixed>}
+     */
+    private function buildReportWhereSql(array $filters): array
+    {
+        $join = 'LEFT JOIN ' . self::GROUP_MAP_TABLE . ' m ON m.logmein_group_external_id = a.logmein_group_external_id AND m.is_active = TRUE';
+        $where = [
+            '(m.glpi_entity_id = :entity_id OR a.glpi_entity_candidate_id = :entity_id)',
+            "COALESCE(a.last_seen_at, a.cache_updated_at) >= CAST(:date_from AS TIMESTAMPTZ)",
+            "COALESCE(a.last_seen_at, a.cache_updated_at) < (CAST(:date_to AS DATE) + INTERVAL '1 day')",
+        ];
+        $params = [
+            ':entity_id' => (int) $filters['entity_id'],
+            ':date_from' => (string) $filters['date_from'],
+            ':date_to' => (string) $filters['date_to'],
+        ];
+        if ((string) ($filters['group_external_id'] ?? '') !== '') {
+            $where[] = 'a.logmein_group_external_id = :group_external_id';
+            $params[':group_external_id'] = (string) $filters['group_external_id'];
+        }
+
+        return [
+            'join' => $join,
+            'where' => implode(' AND ', $where),
+            'params' => $params,
+        ];
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function emptyReportKpis(): array
+    {
+        return [
+            'hosts_total' => 0,
+            'groups_total' => 0,
+            'hosts_without_tag' => 0,
+            'invalid_tags' => 0,
+            'duplicated_tags' => 0,
+            'linked_tickets' => 0,
+            'hosts_without_ticket' => 0,
+            'divergences' => 0,
+            'entities_without_group' => 0,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return array<string, int>
+     */
+    private function buildOperationalKpis(array $filters): array
+    {
+        $where = $this->buildReportWhereSql($filters);
+        $row = $this->fetchPreparedRows(
+            "SELECT
+                COUNT(*) AS hosts_total,
+                COUNT(DISTINCT NULLIF(a.logmein_group_external_id, '')) AS groups_total,
+                COUNT(*) FILTER (WHERE COALESCE(a.equipment_tag, '') = '') AS hosts_without_tag,
+                COUNT(*) FILTER (WHERE COALESCE(a.equipment_tag, '') <> '' AND a.equipment_tag !~ '^[0-9]{4}$') AS invalid_tags,
+                COUNT(*) FILTER (WHERE a.glpi_ticket_id IS NOT NULL AND a.glpi_ticket_id > 0) AS linked_tickets,
+                COUNT(*) FILTER (WHERE a.glpi_ticket_id IS NULL OR a.glpi_ticket_id <= 0) AS hosts_without_ticket,
+                COUNT(*) FILTER (
+                    WHERE a.glpi_entity_candidate_id IS NOT NULL
+                      AND m.glpi_entity_id IS NOT NULL
+                      AND a.glpi_entity_candidate_id <> m.glpi_entity_id
+                ) AS divergences
+             FROM " . self::ASSET_CACHE_TABLE . " a
+             " . $where['join'] . "
+             WHERE " . $where['where'],
+            $where['params']
+        );
+        $first = $row[0] ?? [];
+        $kpis = $this->emptyReportKpis();
+        foreach (array_keys($kpis) as $key) {
+            $kpis[$key] = (int) ($first[$key] ?? 0);
+        }
+        $kpis['duplicated_tags'] = count($this->fetchPreparedRows(
+            "SELECT a.equipment_tag
+             FROM " . self::ASSET_CACHE_TABLE . " a
+             " . $where['join'] . "
+             WHERE " . $where['where'] . "
+               AND COALESCE(a.equipment_tag, '') <> ''
+               AND a.equipment_tag ~ '^[0-9]{4}$'
+             GROUP BY a.equipment_tag
+             HAVING COUNT(*) > 1
+             LIMIT 51",
+            $where['params']
+        ));
+        $kpis['entities_without_group'] = $this->entityHasLogmeinGroup((int) $filters['entity_id']) ? 0 : 1;
+
+        return $kpis;
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return array<string, mixed>
+     */
+    private function buildOperationalQuality(array $filters): array
+    {
+        $where = $this->buildReportWhereSql($filters);
+
+        return [
+            'duplicated_tags' => array_map(fn (array $row): array => [
+                'equipment_tag' => $this->sanitizeText((string) ($row['equipment_tag'] ?? ''), 20),
+                'hosts_count' => (int) ($row['hosts_count'] ?? 0),
+            ], $this->fetchPreparedRows(
+                "SELECT a.equipment_tag, COUNT(*) AS hosts_count
+                 FROM " . self::ASSET_CACHE_TABLE . " a
+                 " . $where['join'] . "
+                 WHERE " . $where['where'] . "
+                   AND COALESCE(a.equipment_tag, '') <> ''
+                   AND a.equipment_tag ~ '^[0-9]{4}$'
+                 GROUP BY a.equipment_tag
+                 HAVING COUNT(*) > 1
+                 ORDER BY hosts_count DESC, a.equipment_tag ASC
+                 LIMIT 20",
+                $where['params']
+            )),
+            'groups_without_entity' => array_map(fn (array $row): array => [
+                'group_name' => $this->sanitizeText((string) ($row['logmein_group_name'] ?? ''), 160),
+                'hosts_count' => (int) ($row['hosts_count'] ?? 0),
+            ], $this->fetchRows(
+                "SELECT a.logmein_group_name, COUNT(*) AS hosts_count
+                 FROM " . self::ASSET_CACHE_TABLE . " a
+                 LEFT JOIN " . self::GROUP_MAP_TABLE . " m
+                   ON m.logmein_group_external_id = a.logmein_group_external_id
+                  AND m.is_active = TRUE
+                 WHERE COALESCE(a.logmein_group_external_id, '') <> ''
+                   AND m.id IS NULL
+                 GROUP BY a.logmein_group_external_id, a.logmein_group_name
+                 ORDER BY hosts_count DESC, a.logmein_group_name ASC
+                 LIMIT 20"
+            )),
+        ];
+    }
+
+    /**
+     * @return array{allocated_hours:float,consumed_hours:float,balance_hours:float,contract_rows:int,source:string}
+     */
+    private function emptyContractSummary(): array
+    {
+        return [
+            'allocated_hours' => 0.0,
+            'consumed_hours' => 0.0,
+            'balance_hours' => 0.0,
+            'contract_rows' => 0,
+            'source' => 'unavailable',
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return array{allocated_hours:float,consumed_hours:float,balance_hours:float,contract_rows:int,source:string}
+     */
+    private function buildContractSummary(array $filters): array
+    {
+        if (!$this->tableExists(self::CONTRACTS_TABLE) || !$this->tableExists(self::HOUR_ADJUSTMENTS_TABLE)) {
+            return $this->emptyContractSummary();
+        }
+
+        $rows = $this->fetchPreparedRows(
+            "SELECT
+                COUNT(*) AS contract_rows,
+                COALESCE(SUM(ec.allocated_hours), 0)::numeric AS allocated_hours,
+                COALESCE((
+                    SELECT SUM(ha.adjusted_hours)
+                    FROM " . self::HOUR_ADJUSTMENTS_TABLE . " ha
+                    INNER JOIN " . self::CONTRACTS_TABLE . " ec2 ON ec2.id = ha.contract_id
+                    WHERE ec2.glpi_entity_id = :entity_id
+                      AND ec2.is_active = TRUE
+                      AND ha.created_at >= CAST(:date_from AS TIMESTAMPTZ)
+                      AND ha.created_at < (CAST(:date_to AS DATE) + INTERVAL '1 day')
+                ), 0)::numeric AS consumed_hours
+             FROM " . self::CONTRACTS_TABLE . " ec
+             WHERE ec.glpi_entity_id = :entity_id
+               AND ec.is_active = TRUE",
+            [
+                ':entity_id' => (int) $filters['entity_id'],
+                ':date_from' => (string) $filters['date_from'],
+                ':date_to' => (string) $filters['date_to'],
+            ]
+        );
+        $row = $rows[0] ?? [];
+        $allocated = (float) ($row['allocated_hours'] ?? 0);
+        $consumed = (float) ($row['consumed_hours'] ?? 0);
+
+        return [
+            'allocated_hours' => round($allocated, 2),
+            'consumed_hours' => round($consumed, 2),
+            'balance_hours' => round($allocated - $consumed, 2),
+            'contract_rows' => (int) ($row['contract_rows'] ?? 0),
+            'source' => 'entity_contracts_readonly',
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private function sanitizeReportRow(array $row): array
+    {
+        $tag = $this->sanitizeText((string) ($row['equipment_tag'] ?? ''), 20);
+        $tagStatus = $this->classifyEquipmentTag($tag);
+        $ticketId = (int) ($row['glpi_ticket_id'] ?? 0);
+
+        return [
+            'host_name' => $this->sanitizeText((string) ($row['host_name_sanitized'] ?? ''), 160),
+            'group_name' => $this->sanitizeText((string) ($row['logmein_group_name'] ?? ''), 160),
+            'equipment_tag' => $tagStatus === 'valid' ? $tag : '',
+            'tag_status' => $tagStatus,
+            'status' => $this->sanitizeStatus((string) ($row['status'] ?? 'unknown')),
+            'ticket_id' => $ticketId > 0 ? $ticketId : 0,
+            'last_evidence_at' => $this->sanitizeText((string) (($row['last_seen_at'] ?? '') ?: ($row['cache_updated_at'] ?? '')), 80),
+            'entity_id' => (int) ($row['report_entity_id'] ?? 0),
+            'evidence_source' => 'logmein_cache_readonly',
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     */
+    private function fetchPreparedScalar(string $sql, array $params): mixed
+    {
+        $statement = $this->getPdo()->prepare($sql);
+        foreach ($params as $key => $value) {
+            $statement->bindValue((string) $key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+        }
+        $statement->execute();
+
+        return $statement->fetchColumn();
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     * @return list<array<string, mixed>>
+     */
+    private function fetchPreparedRows(string $sql, array $params): array
+    {
+        $statement = $this->getPdo()->prepare($sql);
+        foreach ($params as $key => $value) {
+            $statement->bindValue((string) $key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+        }
+        $statement->execute();
+        $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+
+        return is_array($rows) ? $rows : [];
+    }
+
+    private function entityHasLogmeinGroup(int $entityId): bool
+    {
+        if ($entityId <= 0 || !$this->tableExists(self::GROUP_MAP_TABLE)) {
+            return false;
+        }
+
+        return (bool) $this->fetchPreparedScalar(
+            'SELECT 1 FROM ' . self::GROUP_MAP_TABLE . ' WHERE glpi_entity_id = :entity_id AND is_active = TRUE LIMIT 1',
+            [':entity_id' => $entityId]
+        );
+    }
+
+    private function sanitizeCsvCell(string $value): string
+    {
+        $value = $this->sanitizeText($value, 240);
+        if ($value !== '' && preg_match('/^[=+\-@]/', $value) === 1) {
+            return "'" . $value;
+        }
+
+        return $value;
     }
 
     private function entityExists(int $entityId): bool

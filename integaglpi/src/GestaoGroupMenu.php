@@ -83,6 +83,18 @@ final class GestaoGroupMenu extends CommonDBTM
             ];
         }
 
+        if (
+            SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_VIEW_CONTRACTS_READONLY)
+            || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_EXPORT_OPERATIONAL_REPORTS)
+            || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_MAPPING)
+        ) {
+            $children['logmein_operational_reports'] = [
+                'title' => __('Relatórios LogMeIn read-only', 'glpiintegaglpi'),
+                'page'  => Plugin::getLogmeinReportsUrl(),
+                'icon'  => 'ti ti-report-analytics',
+            ];
+        }
+
         // Entrada legacy mantida só como ponteiro para o bootstrap GLPI
         // (Ler/Atualizar). A matriz granular vive na Central de Segurança.
         $children['perfis_permissoes_bootstrap'] = [
@@ -103,6 +115,8 @@ final class GestaoGroupMenu extends CommonDBTM
             || Plugin::canServiceCatalogRead()
             || Plugin::canUpdate()
             || SecurityPermissionService::canViewSecurityCenter()
+            || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_VIEW_CONTRACTS_READONLY)
+            || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_EXPORT_OPERATIONAL_REPORTS)
             || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_MAPPING);
     }
 }

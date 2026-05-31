@@ -388,6 +388,9 @@ describe('V6-E3 LogMeIn read-only governance', () => {
     expect(audit).toContain('LOGMEIN_MAPPING_CREATED');
     expect(audit).toContain('LOGMEIN_MAPPING_UPDATED');
     expect(audit).toContain('LOGMEIN_MAPPING_DISABLED');
+    expect(audit).toContain('LOGMEIN_REPORT_VIEWED');
+    expect(audit).toContain('LOGMEIN_REPORT_EXPORTED');
+    expect(audit).toContain('LOGMEIN_SESSION_EVIDENCE_VIEWED');
     expect(service).toContain('technician_confirmation_required');
     expect(service).toContain('memory_write_requires_confirmation');
     expect(service).toContain('extractEquipmentTags');
@@ -441,6 +444,8 @@ describe('V6-E3 LogMeIn read-only governance', () => {
     expect(ticketTab).toContain('Contexto LogMeIn read-only');
     expect(ticketTab).toContain('Sem sessão remota, sem comando');
     expect(menu).toContain('logmein.mapping.php');
+    expect(menu).toContain('logmein_operational_reports');
+    expect(menu).toContain('Plugin::getLogmeinReportsUrl()');
     expect(nodeService).toContain('hostswithgroups');
     expect(nodeService).toContain('extractCustomFields');
     expect(nodeService).toContain('extractEquipmentTagFromCustomFields');
@@ -462,6 +467,46 @@ describe('V6-E3 LogMeIn read-only governance', () => {
     expect(app).toContain('/internal/glpi/logmein/sync');
     expect(`${front}\n${template}\n${service}\n${ticketTab}`).not.toMatch(/Iniciar acesso remoto|start session|remote execution|RMM|shell_exec|exec\(|curl_setopt\([^;]+CURLOPT_POST/i);
     expect(nodeService).not.toMatch(/method:\s*['"`](POST|PUT|PATCH|DELETE)['"`]/i);
+  });
+
+  it('adds non-punitive LogMeIn reports with bounded filters, CSRF export and sanitized CSV', async () => {
+    const service = await readProjectFile('../integaglpi/src/Service/LogmeinGovernanceService.php');
+    const front = await readProjectFile('../integaglpi/front/logmein.reports.php');
+    const template = await readProjectFile('../integaglpi/templates/logmein_reports.php');
+    const plugin = await readProjectFile('../integaglpi/src/Plugin.php');
+    const menu = await readProjectFile('../integaglpi/src/GestaoGroupMenu.php');
+    const audit = await readProjectFile('../integaglpi/src/Service/SecurityAuditService.php');
+
+    expect(plugin).toContain('getLogmeinReportsUrl');
+    expect(menu).toContain('Relatórios LogMeIn read-only');
+    expect(menu).toContain('getLogmeinReportsUrl');
+    expect(front).toContain('Session::checkLoginUser()');
+    expect(front).toContain('Plugin::isCsrfValid($_POST)');
+    expect(front).toContain('exportOperationalReportCsv');
+    expect(front).toContain('Content-Type: text/csv');
+    expect(service).toContain('REPORT_MAX_DAYS = 31');
+    expect(service).toContain('REPORT_LIMIT = 50');
+    expect(service).toContain('buildOperationalReports');
+    expect(service).toContain('exportOperationalReportCsv');
+    expect(service).toContain('sanitizeCsvCell');
+    expect(service).toContain("preg_match('/^[=+\\-@]/");
+    expect(service).toContain('logLogmeinReportViewed');
+    expect(service).toContain('logLogmeinReportExported');
+    expect(service).toContain('SecurityPermissionService::enforceEntityScope');
+    expect(service).toContain('RIGHT_VIEW_CONTRACTS_READONLY');
+    expect(service).toContain('RIGHT_EXPORT_OPERATIONAL_REPORTS');
+    expect(audit).toContain('SECURITY_REPORT_EXPORTED');
+    expect(audit).toContain('LOGMEIN_REPORT_VIEWED');
+    expect(audit).toContain('LOGMEIN_REPORT_EXPORTED');
+    expect(template).toContain('Janela máxima: 31 dias');
+    expect(template).toContain('Exportar CSV sanitizado');
+    expect(template).toContain('Sem ranking nominal de técnicos');
+    expect(template).toContain('Comparação consultiva');
+    expect(template).toContain('não fatura automaticamente');
+    expect(template).toContain('não bloqueia atendimento');
+    expect(template).not.toMatch(/leaderboard|produtividade nominal/i);
+    expect(`${front}\n${template}\n${service}`).not.toMatch(/Iniciar acesso remoto|start session|RMM|remote execution|shell_exec|exec\(|CURLOPT_POST/i);
+    expect(`${front}\n${template}\n${service}`).not.toMatch(/\bDROP\b|\bTRUNCATE\b|\bDELETE\s+FROM\b|\bFLUSH(?:ALL|DB)?\b/i);
   });
 
   it('documents governance, RACI, monthly permission review and required crisis runbooks', async () => {

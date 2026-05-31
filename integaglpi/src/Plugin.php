@@ -220,6 +220,11 @@ final class Plugin
         return self::getWebBasePath() . '/front/contracts.hours.php';
     }
 
+    public static function getLogmeinReportsUrl(): string
+    {
+        return self::getWebBasePath() . '/front/logmein.reports.php';
+    }
+
     public static function getServiceCatalogUrl(): string
     {
         return self::getWebBasePath() . '/front/service.catalog.php';

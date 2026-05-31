@@ -25,6 +25,9 @@ final class SecurityAuditService
     public const EVENT_LOGMEIN_MAPPING_DISABLED = 'LOGMEIN_MAPPING_DISABLED';
     public const EVENT_LOGMEIN_CUSTOMFIELD_READ = 'LOGMEIN_CUSTOMFIELD_READ';
     public const EVENT_LOGMEIN_REPORT_GENERATED = 'LOGMEIN_REPORT_GENERATED';
+    public const EVENT_LOGMEIN_REPORT_VIEWED = 'LOGMEIN_REPORT_VIEWED';
+    public const EVENT_LOGMEIN_REPORT_EXPORTED = 'LOGMEIN_REPORT_EXPORTED';
+    public const EVENT_LOGMEIN_SESSION_EVIDENCE_VIEWED = 'LOGMEIN_SESSION_EVIDENCE_VIEWED';
     public const EVENT_LOGMEIN_SYNC_STARTED = 'LOGMEIN_SYNC_STARTED';
     public const EVENT_LOGMEIN_SYNC_FAILED = 'LOGMEIN_SYNC_FAILED';
     public const EVENT_LOGMEIN_SYNC_COMPLETED = 'LOGMEIN_SYNC_COMPLETED';
@@ -147,6 +150,34 @@ final class SecurityAuditService
     {
         self::log(self::EVENT_LOGMEIN_REPORT_GENERATED, [
             'report_type' => $reportType,
+            'read_only' => true,
+            'context' => self::sanitize($context),
+        ]);
+    }
+
+    public static function logLogmeinReportViewed(string $reportType, array $context = []): void
+    {
+        self::log(self::EVENT_LOGMEIN_REPORT_VIEWED, [
+            'report_type' => $reportType,
+            'read_only' => true,
+            'context' => self::sanitize($context),
+        ]);
+    }
+
+    public static function logLogmeinReportExported(string $reportType, array $context = []): void
+    {
+        self::log(self::EVENT_LOGMEIN_REPORT_EXPORTED, [
+            'report_type' => $reportType,
+            'read_only' => true,
+            'context' => self::sanitize($context),
+        ]);
+        self::logReportExported($reportType, array_merge($context, ['source' => 'logmein_readonly']));
+    }
+
+    public static function logLogmeinEvidenceViewed(int $ticketId, array $context = []): void
+    {
+        self::log(self::EVENT_LOGMEIN_SESSION_EVIDENCE_VIEWED, [
+            'ticket_id' => $ticketId,
             'read_only' => true,
             'context' => self::sanitize($context),
         ]);
