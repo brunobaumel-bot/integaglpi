@@ -74,6 +74,39 @@ final class StabilizationPhaseStaticTest extends TestCase
         self::assertLessThan($sendOffset, $gateOffset);
     }
 
+    public function testTicketWhatsappReplyRequiresRealEntityBeforeOutbound(): void
+    {
+        $endpoint = (string) file_get_contents(
+            $this->pluginPath('front/ticket.whatsapp.reply.php')
+        );
+
+        self::assertStringContainsString('plugin_integaglpi_resolve_ticket_entity_id', $endpoint);
+        self::assertStringContainsString("'entity_required_before_reply'", $endpoint);
+        self::assertStringContainsString('entity_missing_for_whatsapp_reply', $endpoint);
+        $entityGuard = strpos($endpoint, "'entity_required_before_reply'");
+        $sendOffset = strpos($endpoint, 'integaglpiBuildOutboundPayload(');
+        self::assertNotFalse($entityGuard);
+        self::assertNotFalse($sendOffset);
+        self::assertLessThan($sendOffset, $entityGuard);
+    }
+
+    public function testTicketClaimFallsBackToTicketEntityBeforeBlocking(): void
+    {
+        $runtimeService = (string) file_get_contents(
+            $this->pluginPath('src/Service/TicketRuntimeService.php')
+        );
+        $centralService = (string) file_get_contents(
+            $this->pluginPath('src/Service/AttendanceCenterService.php')
+        );
+
+        self::assertStringContainsString('syncRuntimeEntityFromTicketIfMissing', $runtimeService);
+        self::assertStringContainsString('resolveTicketEntityId', $runtimeService);
+        self::assertStringContainsString("['entities_id']", $runtimeService);
+        self::assertStringContainsString('syncConversationEntityFromTicketIfMissing', $centralService);
+        self::assertStringContainsString("'entity_required_before_claim'", $centralService);
+        self::assertStringContainsString("['entities_id']", $centralService);
+    }
+
     // ── FIX1 GAP 1: ticket tab must require conversation_status === open ──
 
     public function testTicketWhatsappReplyRequiresOpenConversationStatus(): void

@@ -81,10 +81,8 @@ final class TicketRuntimeService
         if ((string) ($runtime['conversation_status'] ?? 'open') === 'closed') {
             throw new RuntimeException(__('Cannot assume a closed WhatsApp conversation.', 'glpiintegaglpi'));
         }
-        if (
-            (int) ($runtime['glpi_entity_id'] ?? 0) <= 0
-            || in_array((string) ($runtime['status'] ?? ''), ['awaiting_entity_selection', 'collecting_contact_profile'], true)
-        ) {
+        $entityId = $this->syncRuntimeEntityFromTicketIfMissing($runtime, $ticketId, $userId);
+        if ($entityId <= 0) {
             throw new RuntimeException(__('Defina uma entidade GLPI real antes de assumir este atendimento.', 'glpiintegaglpi'));
         }
         $previousAssignedUserId = (int) ($runtime['assigned_user_id'] ?? 0);
@@ -430,9 +428,12 @@ final class TicketRuntimeService
             ? $conversationStatus
             : ($runtimeStatus !== '' ? $runtimeStatus : 'open');
         $isClosed = $effectiveStatus === 'closed';
-        $entityId = (int) ($runtime['glpi_entity_id'] ?? 0);
-        $entityPending = in_array($effectiveStatus, ['awaiting_entity_selection', 'collecting_contact_profile'], true)
-            || $entityId <= 0;
+        $entityId = $this->resolveEffectiveEntityId($runtime, (int) ($runtime['glpi_ticket_id'] ?? 0));
+        if ($entityId > 0 && (int) ($runtime['glpi_entity_id'] ?? 0) <= 0) {
+            $runtime['glpi_entity_id'] = $entityId;
+            $runtime['glpi_entity_name'] = $this->resolveGlpiEntityName($entityId);
+        }
+        $entityPending = $entityId <= 0;
         // assigned_user_id is the source of truth for "quem está com o atendimento".
         // claimed_at pode permanecer após transferência de fila (assigned limpo); não deve esconder "Assumir".
         $assignedUserId = isset($runtime['assigned_user_id']) ? (int) $runtime['assigned_user_id'] : 0;
@@ -467,6 +468,75 @@ final class TicketRuntimeService
         $runtime['contact_profile_snapshot'] = $this->decodeProfileSnapshot($runtime['profile_snapshot_json'] ?? null);
 
         return $runtime;
+    }
+
+    /**
+     * @param array<string, mixed> $runtime
+     */
+    private function resolveEffectiveEntityId(array $runtime, int $ticketId): int
+    {
+        $conversationEntityId = (int) ($runtime['glpi_entity_id'] ?? 0);
+        if ($conversationEntityId > 0) {
+            return $conversationEntityId;
+        }
+
+        return $this->resolveTicketEntityId($ticketId);
+    }
+
+    /**
+     * @param array<string, mixed> $runtime
+     */
+    private function syncRuntimeEntityFromTicketIfMissing(array $runtime, int $ticketId, int $userId): int
+    {
+        $conversationEntityId = (int) ($runtime['glpi_entity_id'] ?? 0);
+        if ($conversationEntityId > 0) {
+            return $conversationEntityId;
+        }
+
+        $ticketEntityId = $this->resolveTicketEntityId($ticketId);
+        if ($ticketEntityId <= 0) {
+            return 0;
+        }
+
+        try {
+            $conversationId = trim((string) ($runtime['conversation_id'] ?? ''));
+            if ($conversationId !== '') {
+                $this->getConversationRepository()->updateConversationEntity(
+                    $conversationId,
+                    $ticketEntityId,
+                    $this->resolveGlpiEntityName($ticketEntityId),
+                    $userId
+                );
+            }
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][ticket][entity_sync_from_ticket_failed] ticket_id=' . $ticketId . ' ' . $exception->getMessage());
+        }
+
+        return $ticketEntityId;
+    }
+
+    private function resolveTicketEntityId(int $ticketId): int
+    {
+        if ($ticketId <= 0 || !class_exists('\Ticket')) {
+            return 0;
+        }
+
+        $ticket = new \Ticket();
+        if (!$ticket->getFromDB($ticketId)) {
+            return 0;
+        }
+
+        return max(0, (int) ($ticket->fields['entities_id'] ?? 0));
+    }
+
+    private function resolveGlpiEntityName(int $entityId): string
+    {
+        if ($entityId <= 0) {
+            return '';
+        }
+
+        $name = Dropdown::getDropdownName('glpi_entities', $entityId);
+        return is_string($name) ? $name : '';
     }
 
     /**

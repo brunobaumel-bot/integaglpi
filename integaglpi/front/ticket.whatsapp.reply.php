@@ -93,6 +93,20 @@ function integaglpiMaxBytesForMime(string $mime): int
     return 15_728_640;
 }
 
+function plugin_integaglpi_resolve_ticket_entity_id(int $ticketId): int
+{
+    if ($ticketId <= 0 || !class_exists('\Ticket')) {
+        return 0;
+    }
+
+    $ticket = new \Ticket();
+    if (!$ticket->getFromDB($ticketId)) {
+        return 0;
+    }
+
+    return max(0, (int) ($ticket->fields['entities_id'] ?? 0));
+}
+
 /**
  * Decide whether the current technician may reply on this conversation/ticket.
  *
@@ -159,6 +173,19 @@ function plugin_integaglpi_resolve_reply_gate(int $ticketId, string $conversatio
             'conversation_not_open',
             'conversation_status_' . ($conversationStatus !== '' ? $conversationStatus : 'unknown'),
             'A conversa não está aberta para resposta. Assuma/reabra o atendimento antes de responder.'
+        );
+    }
+
+    $conversationEntityId = (int) ($conversation['glpi_entity_id'] ?? 0);
+    $effectiveEntityId = $conversationEntityId > 0
+        ? $conversationEntityId
+        : plugin_integaglpi_resolve_ticket_entity_id($ticketId);
+    if ($effectiveEntityId <= 0) {
+        return $deny(
+            409,
+            'entity_required_before_reply',
+            'entity_missing_for_whatsapp_reply',
+            'Defina uma entidade GLPI real antes de responder por WhatsApp.'
         );
     }
 

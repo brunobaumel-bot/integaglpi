@@ -51,9 +51,9 @@ const ENTITY_SELECTION_PENDING_MESSAGE =
   'Recebemos as suas informações, em breve um de nossos técnicos irá seguir com o atendimento.';
 const PRETICKET_INVALID_INPUT_EVENT_KEY = 'preticket_invalid_input';
 const PRETICKET_INVALID_INPUT_TEXT =
-  'Neste momento preciso que você responda em texto. Envie uma breve descrição do problema. Se quiser encerrar, digite cancelar.';
+  'Neste momento preciso que você responda em texto. Envie uma breve descrição do problema.';
 const PRETICKET_INVALID_REASON_INPUT_TEXT =
-  'Neste momento preciso que você responda em texto. Envie uma breve descrição do problema. Se quiser encerrar, digite cancelar.';
+  'Neste momento preciso que você responda em texto. Envie uma breve descrição do problema.';
 const PRETICKET_CANCEL_HINT =
   'Se quiser encerrar este atendimento, digite cancelar a qualquer momento.';
 const PRETICKET_USER_CANCELLED_EVENT_KEY = 'preticket_cancelled_by_user';
@@ -3057,13 +3057,30 @@ export class InboundWebhookService {
     return PRETICKET_BLOCKED_INPUT_TYPES.has(messageType.trim().toLowerCase());
   }
 
-  private appendPreTicketCancelHint(body: string): string {
+  private appendPreTicketCancelHint(body: string, state?: ContactProfileCollectionState | null): string {
     const normalized = body.trim();
+    if (!this.shouldAppendPreTicketCancelHint(state)) {
+      return normalized;
+    }
+
     if (normalized.toLowerCase().includes('digite cancelar')) {
       return normalized;
     }
 
     return `${normalized}\n\n${PRETICKET_CANCEL_HINT}`;
+  }
+
+  private shouldAppendPreTicketCancelHint(state?: ContactProfileCollectionState | null): boolean {
+    if (state?.step !== 'asking_company') {
+      return false;
+    }
+
+    return !state.company_name_raw
+      && !state.requester_name
+      && !state.email_address
+      && !state.last_equipment_tag
+      && state.equipment_tag_unknown !== true
+      && !state.reason;
   }
 
   private resolvePreTicketInvalidInputFallback(
@@ -3113,6 +3130,9 @@ export class InboundWebhookService {
       conversationId: input.conversation.id,
       messageId: input.inboundMessage.messageId,
       phoneE164: input.contact.phoneE164,
+      allowCancelHint: this.shouldAppendPreTicketCancelHint(
+        input.state as ContactProfileCollectionState | null,
+      ),
     });
     await this.messageRepository.updateState({
       messageId: input.inboundMessage.messageId,
@@ -3221,6 +3241,9 @@ export class InboundWebhookService {
       conversationId: input.conversation.id,
       messageId: input.inboundMessage.messageId,
       phoneE164: input.contact.phoneE164,
+      allowCancelHint: this.shouldAppendPreTicketCancelHint(
+        input.state as ContactProfileCollectionState | null,
+      ),
     });
     await this.messageRepository.updateState({
       messageId: input.inboundMessage.messageId,
@@ -3267,6 +3290,7 @@ export class InboundWebhookService {
     conversationId: string;
     messageId: string;
     phoneE164: string;
+    allowCancelHint: boolean;
   }): Promise<boolean> {
     const plan = this.messageConfigurationService
       ? await this.messageConfigurationService.resolveSendPlan(input.eventKey, {
@@ -3328,7 +3352,10 @@ export class InboundWebhookService {
           parameters: [],
         });
       } else {
-        await this.metaClient.sendTextMessage({ to: input.toMeta, body: plan.text || input.fallbackText });
+        await this.metaClient.sendTextMessage({
+          to: input.toMeta,
+          body: this.normalizePreTicketCancelHint(plan.text || input.fallbackText, input.allowCancelHint),
+        });
       }
       await this.messageConfigurationService?.recordAutomationEvent({
         conversationId: input.conversationId,
@@ -3378,6 +3405,22 @@ export class InboundWebhookService {
       buttons: [],
       listOptions: [],
     };
+  }
+
+  private normalizePreTicketCancelHint(body: string, allowHint: boolean): string {
+    const normalized = body.trim();
+    if (allowHint) {
+      if (normalized.toLowerCase().includes('digite cancelar')) {
+        return normalized;
+      }
+
+      return `${normalized}\n\n${PRETICKET_CANCEL_HINT}`;
+    }
+
+    return normalized
+      .replace(/\s*Se quiser encerrar este atendimento, digite cancelar a qualquer momento\.?/giu, '')
+      .replace(/\s*Se quiser encerrar, digite cancelar\.?/giu, '')
+      .trim();
   }
 
   private maskPhoneE164(phoneE164: string): string {
@@ -3564,7 +3607,7 @@ export class InboundWebhookService {
     state?: ContactProfileCollectionState | null;
     conversationId?: string | null;
   }): Promise<void> {
-    const bodyWithHint = this.appendPreTicketCancelHint(input.body);
+    const bodyWithHint = this.appendPreTicketCancelHint(input.body, input.state);
     const sendReplyButtons = (this.metaClient as unknown as {
       sendReplyButtons?: (
         to: string,

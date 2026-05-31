@@ -315,7 +315,7 @@ export class ContactProfileService {
       email_status: profile.email_status ?? (profile.email_address ? 'valid' : 'not_provided'),
       last_equipment_tag: profile.last_equipment_tag,
       equipment_tag_unknown: profile.equipment_tag_unknown,
-      reason: profile.last_problem_summary,
+      reason: null,
     };
   }
 
@@ -391,7 +391,7 @@ export class ContactProfileService {
     if (state.step === 'confirming_existing_profile') {
       if (PROFILE_YES_RE.test(text)) {
         const nextState = this.stateFromProfile(
-          input.existingProfile ?? this.profileFromState(input.phoneE164, state),
+          this.profileFromState(input.phoneE164, state),
           state.queue_label,
         );
         if (this.cleanText(nextState.reason) !== '') {

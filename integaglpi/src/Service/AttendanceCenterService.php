@@ -776,10 +776,10 @@ final class AttendanceCenterService
             if ($currentConversation !== null) {
                 $conversationStatus = strtolower(trim((string) ($currentConversation['conversation_status'] ?? '')));
                 $conversationEntityId = (int) ($currentConversation['glpi_entity_id'] ?? 0);
-                if (
-                    in_array($conversationStatus, ['awaiting_entity_selection', 'collecting_contact_profile'], true)
-                    || $conversationEntityId <= 0
-                ) {
+                $effectiveEntityId = $conversationEntityId > 0
+                    ? $conversationEntityId
+                    : $this->syncConversationEntityFromTicketIfMissing($currentConversation, $ticketId, $userId);
+                if ($effectiveEntityId <= 0) {
                     return [
                         'ok' => false,
                         'http_status' => 409,
@@ -959,6 +959,16 @@ final class AttendanceCenterService
                 'http_status' => 409,
                 'error' => 'conversation_not_open',
                 'message' => __('A conversa não está aberta para resposta.', 'glpiintegaglpi'),
+            ];
+        }
+
+        $effectiveEntityId = $this->syncConversationEntityFromTicketIfMissing($conversation, $ticketId, $userId);
+        if ($effectiveEntityId <= 0) {
+            return [
+                'ok' => false,
+                'http_status' => 409,
+                'error' => 'entity_required_before_reply',
+                'message' => __('Defina uma entidade GLPI real antes de responder por WhatsApp.', 'glpiintegaglpi'),
             ];
         }
 
@@ -2539,6 +2549,62 @@ final class AttendanceCenterService
         }
 
         return __('Sem entidade', 'glpiintegaglpi');
+    }
+
+    /**
+     * @param array<string, mixed> $conversation
+     */
+    private function syncConversationEntityFromTicketIfMissing(array $conversation, int $ticketId, int $userId): int
+    {
+        $conversationEntityId = (int) ($conversation['glpi_entity_id'] ?? 0);
+        if ($conversationEntityId > 0) {
+            return $conversationEntityId;
+        }
+
+        $ticketEntityId = $this->resolveTicketEntityId($ticketId);
+        if ($ticketEntityId <= 0) {
+            return 0;
+        }
+
+        try {
+            $conversationId = trim((string) ($conversation['conversation_id'] ?? $conversation['id'] ?? ''));
+            if ($conversationId !== '') {
+                $this->getConversationRepository()->updateConversationEntity(
+                    $conversationId,
+                    $ticketEntityId,
+                    $this->resolveEntityNameById($ticketEntityId),
+                    $userId
+                );
+            }
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][central][entity_sync_from_ticket_failed] ticket_id=' . $ticketId . ' ' . $exception->getMessage());
+        }
+
+        return $ticketEntityId;
+    }
+
+    private function resolveTicketEntityId(int $ticketId): int
+    {
+        if ($ticketId <= 0 || !class_exists(\Ticket::class)) {
+            return 0;
+        }
+
+        $ticket = new \Ticket();
+        if (!$ticket->getFromDB($ticketId)) {
+            return 0;
+        }
+
+        return max(0, (int) ($ticket->fields['entities_id'] ?? 0));
+    }
+
+    private function resolveEntityNameById(int $entityId): string
+    {
+        if ($entityId <= 0 || !class_exists(\Dropdown::class)) {
+            return '';
+        }
+
+        $name = \Dropdown::getDropdownName('glpi_entities', $entityId);
+        return is_string($name) ? $name : '';
     }
 
     /**

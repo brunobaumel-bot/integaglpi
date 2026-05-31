@@ -299,7 +299,7 @@ describe('ContactProfileService', () => {
     });
   });
 
-  it('confirms existing profile and completes when remembered reason is already available', async () => {
+  it('confirms existing profile and asks for a current-cycle reason before completing', async () => {
     const service = new ContactProfileService(new FakeSettingsRepository(), new FakeProfileRepository());
     const profile = service.parseProfileText(
       '+5511999999999',
@@ -321,23 +321,18 @@ describe('ContactProfileService', () => {
     });
 
     expect(yes.state).toMatchObject({
-      step: 'complete',
+      step: 'asking_reason',
       company_name_raw: 'Etica',
       requester_name: 'Bruno',
       last_equipment_tag: '2022',
-      reason: 'ultimo atendimento',
     });
-    expect(yes.completed).toBe(true);
-    expect(yes.profile).toMatchObject({
-      company_name_raw: 'Etica',
-      requester_name: 'Bruno',
-      last_equipment_tag: '2022',
-      last_problem_summary: 'ultimo atendimento',
-    });
+    expect(yes.completed).toBe(false);
+    expect(yes.profile).toBeNull();
+    expect(yes.reply).toContain('Qual o motivo do seu contato?');
     expect(no.state.step).toBe('asking_company');
   });
 
-  it('preserves remembered reason in confirmation state when the profile is not reloaded', async () => {
+  it('does not reuse a remembered reason as the current-cycle reason', async () => {
     const service = new ContactProfileService(new FakeSettingsRepository(), new FakeProfileRepository());
     const profile = service.parseProfileText(
       '+5511999999999',
@@ -351,15 +346,13 @@ describe('ContactProfileService', () => {
       text: 'Sim',
     });
 
-    expect(state.reason).toBe('internet oscilando');
-    expect(yes.completed).toBe(true);
+    expect(state.reason).toBeNull();
+    expect(yes.completed).toBe(false);
     expect(yes.state).toMatchObject({
-      step: 'complete',
-      reason: 'internet oscilando',
+      step: 'asking_reason',
+      reason: null,
     });
-    expect(yes.profile).toMatchObject({
-      last_problem_summary: 'internet oscilando',
-    });
+    expect(yes.profile).toBeNull();
   });
 
   it('asks only for reason when confirmed existing profile has no remembered reason', async () => {

@@ -588,7 +588,7 @@ class FakeContactProfileService {
       requester_name: profile.requester_name,
       last_equipment_tag: profile.last_equipment_tag,
       equipment_tag_unknown: profile.equipment_tag_unknown,
-      reason: profile.last_problem_summary,
+      reason: null,
     };
   }
 
@@ -628,6 +628,23 @@ class FakeContactProfileService {
     }
 
     const step = String(input.state.step ?? 'asking_company');
+    if (step === 'confirming_existing_profile') {
+      if (input.text.trim().toLowerCase() === 'sim') {
+        return {
+          state: { ...input.state, step: 'asking_reason', reason: null },
+          reply: 'Qual o motivo do seu contato? Resuma em até 200 caracteres.',
+          completed: false,
+          profile: null,
+        };
+      }
+      return {
+        state: this.startNewCollectionState(String(input.state.queue_label ?? '') || null),
+        reply: this.prompt,
+        completed: false,
+        profile: null,
+      };
+    }
+
     if (step === 'asking_company') {
       return {
         state: { ...input.state, step: 'asking_name', company_name_raw: input.text },
@@ -2992,7 +3009,7 @@ describe('InboundWebhookService', () => {
     expect(glpiClient.createTicket).not.toHaveBeenCalled();
     expect(meta.sendTextMessage).toHaveBeenCalledWith({
       to: '5511999999999',
-      body: 'Informe seu nome completo.\n\nSe quiser encerrar este atendimento, digite cancelar a qualquer momento.',
+      body: 'Informe seu nome completo.',
     });
   });
 
@@ -3134,7 +3151,7 @@ describe('InboundWebhookService', () => {
     expect(conversationRepository.profileStates).toEqual([]);
     expect(meta.sendTextMessage).toHaveBeenCalledWith({
       to: '5511999999999',
-      body: 'Neste momento preciso que você responda em texto. Envie uma breve descrição do problema. Se quiser encerrar, digite cancelar.',
+      body: 'Neste momento preciso que você responda em texto. Envie uma breve descrição do problema.',
     });
   });
 
@@ -3189,7 +3206,7 @@ describe('InboundWebhookService', () => {
     expect(messageRepository.mediaInfoUpdates).toEqual([]);
     expect(meta.sendTextMessage).toHaveBeenCalledWith({
       to: '5511999999999',
-      body: 'Neste momento preciso que você responda em texto. Envie uma breve descrição do problema. Se quiser encerrar, digite cancelar.',
+      body: 'Neste momento preciso que você responda em texto. Envie uma breve descrição do problema.',
     });
   });
 
