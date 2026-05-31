@@ -9,6 +9,7 @@ use GlpiPlugin\Integaglpi\Service\ContactProfileConfigService;
 use GlpiPlugin\Integaglpi\Service\PluginConfigService;
 use GlpiPlugin\Integaglpi\Service\QueueService;
 use GlpiPlugin\Integaglpi\Service\RoutingOptionService;
+use GlpiPlugin\Integaglpi\Service\SecurityPermissionService;
 
 include '../../../inc/includes.php';
 
@@ -101,6 +102,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     $redirectUrl = Plugin::getQueueAdminUrl();
+    $requiredRight = integaglpi_config_required_right($_POST);
+    if ($requiredRight !== null) {
+        $rbacGate = SecurityPermissionService::requirePermissionOrDeny($requiredRight, [
+            'endpoint' => 'config.form.php',
+            'keys' => array_values(array_intersect(array_keys($_POST), [
+                'save_messages',
+                'save_message_catalog',
+                'save_business_hours',
+                'save_inactivity_timers',
+                'save_contact_profile',
+                'save_contact_profile_hub',
+                'save_inactivity_timers_hub',
+                'save_business_hours_hub',
+                'save_message_catalog_hub',
+                'save_local_template',
+                'disable_local_template',
+                'enable_local_template',
+            ])),
+        ]);
+        if (!$rbacGate['ok']) {
+            if (integaglpi_config_expects_json()) {
+                integaglpi_config_json_response([
+                    'success' => false,
+                    'message' => $rbacGate['message'],
+                ], $rbacGate['http_status']);
+            }
+            Session::addMessageAfterRedirect($rbacGate['message'], false, ERROR);
+            Html::redirect($redirectUrl);
+        }
+    }
 
     try {
         if (isset($_POST['save_connection'])) {
@@ -226,3 +257,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 Html::header(__('WhatsApp plugin configuration', 'glpiintegaglpi'), $_SERVER['PHP_SELF'], 'plugins', Queue::class);
 (new ConfigPageRenderer($queueService, $pluginConfigService))->render();
 Html::footer();
+
+/**
+ * @param array<string, mixed> $post
+ */
+function integaglpi_config_required_right(array $post): ?string
+{
+    foreach ([
+        'save_messages',
+        'save_message_catalog',
+        'save_business_hours',
+        'save_inactivity_timers',
+        'save_contact_profile',
+        'save_contact_profile_hub',
+        'save_inactivity_timers_hub',
+        'save_business_hours_hub',
+        'save_message_catalog_hub',
+    ] as $key) {
+        if (isset($post[$key])) {
+            return SecurityPermissionService::RIGHT_MANAGE_MESSAGE_SETTINGS;
+        }
+    }
+
+    foreach (['save_local_template', 'disable_local_template', 'enable_local_template'] as $key) {
+        if (isset($post[$key])) {
+            return SecurityPermissionService::RIGHT_MANAGE_TEMPLATES;
+        }
+    }
+
+    return null;
+}

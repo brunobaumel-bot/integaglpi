@@ -42,6 +42,35 @@ $canClose = array_key_exists('can_close', $runtimeView)
 $profileSnapshot = is_array($runtimeView['contact_profile_snapshot'] ?? null)
     ? $runtimeView['contact_profile_snapshot']
     : null;
+$canViewRawPii = $replyOwnedByCurrentUser
+    || \GlpiPlugin\Integaglpi\Service\SecurityPermissionService::hasRight(
+        \GlpiPlugin\Integaglpi\Service\SecurityPermissionService::RIGHT_VIEW_UNMASKED_PII
+    );
+$maskPhoneForDisplay = static function (string $phone): string {
+    $digits = preg_replace('/\D+/', '', $phone) ?? '';
+    if ($digits === '') {
+        return '';
+    }
+
+    return str_repeat('*', max(4, strlen($digits) - 4)) . substr($digits, -4);
+};
+$maskEmailForDisplay = static function (string $email): string {
+    $email = trim($email);
+    if ($email === '' || !str_contains($email, '@')) {
+        return $email === '' ? '' : '[email]';
+    }
+
+    [$local, $domain] = explode('@', $email, 2);
+    $prefix = substr($local, 0, min(2, strlen($local)));
+
+    return $prefix . str_repeat('*', max(2, strlen($local) - strlen($prefix))) . '@' . $domain;
+};
+if ($canViewRawPii && $runtime !== null) {
+    \GlpiPlugin\Integaglpi\Service\SecurityAuditService::logPiiUnmaskedView(
+        'ticket_tab',
+        hash('sha256', (string) ($runtimeView['conversation_id'] ?? '') . '|' . $currentUserId)
+    );
+}
 $contextView = is_array($context) ? $context : [];
 $contextConversation = is_array($contextView['conversation'] ?? null) ? $contextView['conversation'] : null;
 $contextRisk = is_array($contextView['risk'] ?? null) ? $contextView['risk'] : null;
@@ -289,7 +318,8 @@ $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
                 </div>
                 <div class="col-md-3">
                     <small class="text-muted d-block"><?= $this->escape(__('Telefone', 'glpiintegaglpi')); ?></small>
-                    <strong><?= $this->escape((string) ($runtime['phone_e164'] ?? '-')); ?></strong>
+                    <?php $runtimePhone = (string) ($runtime['phone_e164'] ?? '-'); ?>
+                    <strong><?= $this->escape($canViewRawPii ? $runtimePhone : $maskPhoneForDisplay($runtimePhone)); ?></strong>
                 </div>
                 <div class="col-md-3">
                     <small class="text-muted d-block"><?= $this->escape(__('Status conversa', 'glpiintegaglpi')); ?></small>
@@ -356,7 +386,8 @@ $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
                     <?= $this->escape(__('Nome', 'glpiintegaglpi')); ?>:
                     <?= $this->escape((string) ($profileSnapshot['requester_name'] ?? '-')); ?><br>
                     <?= $this->escape(__('E-mail', 'glpiintegaglpi')); ?>:
-                    <?= $this->escape((string) ($profileSnapshot['email_address'] ?? $contextConversation['email_address'] ?? '-')); ?><br>
+                    <?php $profileEmail = (string) ($profileSnapshot['email_address'] ?? $contextConversation['email_address'] ?? '-'); ?>
+                    <?= $this->escape($canViewRawPii ? $profileEmail : $maskEmailForDisplay($profileEmail)); ?><br>
                     <?= $this->escape(__('Empresa informada', 'glpiintegaglpi')); ?>:
                     <?= $this->escape((string) ($profileSnapshot['company_name_raw'] ?? '-')); ?><br>
                     <?= $this->escape(__('Equipamento', 'glpiintegaglpi')); ?>:
@@ -791,12 +822,12 @@ if ($auditPanelOk) {
                 <div class="card h-100">
                     <div class="card-header"><?= $this->escape(__('Assume attendance', 'glpiintegaglpi')); ?></div>
                     <div class="card-body">
-                        <form method="post" action="<?= $this->escape($actionBaseUrl); ?>" class="mb-0">
+                        <form method="post" action="<?= $this->escape($actionBaseUrl); ?>" class="mb-0 js-integaglpi-critical-action-form">
                             <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken(); ?>
                             <input type="hidden" name="ticket_id" value="<?= (int) $ticketIdForDebug; ?>">
                             <input type="hidden" name="conversation_id" value="<?= $this->escape($conversationIdForDebug); ?>">
                             <input type="hidden" name="whatsapp_action" value="claim">
-                            <button type="submit" class="btn btn-primary">
+                            <button type="submit" class="btn btn-primary" data-loading-text="<?= $this->escape(__('Processando...', 'glpiintegaglpi')); ?>">
                                 <?= $this->escape($assignedUserId > 0
                                     ? __('Assumir para mim', 'glpiintegaglpi')
                                     : __('Assumir atendimento', 'glpiintegaglpi')); ?>
@@ -1901,4 +1932,25 @@ if ($isExternalConfigured && $runtime !== null && !$isClosed) {
     })();
     </script>
 <?php } ?>
+<script>
+document.addEventListener('submit', function (event) {
+    var form = event.target && event.target.closest
+        ? event.target.closest('.js-integaglpi-critical-action-form')
+        : null;
+    if (!form) {
+        return;
+    }
+    if (form.dataset.submitted === '1') {
+        event.preventDefault();
+        return;
+    }
+    form.dataset.submitted = '1';
+    var button = form.querySelector('button[type="submit"]');
+    if (button) {
+        button.dataset.originalText = button.textContent || '';
+        button.disabled = true;
+        button.textContent = button.dataset.loadingText || 'Processando...';
+    }
+}, true);
+</script>
 <?php } ?>

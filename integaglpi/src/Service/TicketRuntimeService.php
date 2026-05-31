@@ -81,7 +81,16 @@ final class TicketRuntimeService
         if ((string) ($runtime['conversation_status'] ?? 'open') === 'closed') {
             throw new RuntimeException(__('Cannot assume a closed WhatsApp conversation.', 'glpiintegaglpi'));
         }
+        if (
+            (int) ($runtime['glpi_entity_id'] ?? 0) <= 0
+            || in_array((string) ($runtime['status'] ?? ''), ['awaiting_entity_selection', 'collecting_contact_profile'], true)
+        ) {
+            throw new RuntimeException(__('Defina uma entidade GLPI real antes de assumir este atendimento.', 'glpiintegaglpi'));
+        }
         $previousAssignedUserId = (int) ($runtime['assigned_user_id'] ?? 0);
+        if ($previousAssignedUserId === $userId) {
+            return;
+        }
 
         $queue = !empty($runtime['queue_id']) ? $this->getQueueService()->getQueueById((int) $runtime['queue_id']) : null;
         $groupId = isset($queue['default_group_id']) && (int) $queue['default_group_id'] > 0

@@ -496,11 +496,27 @@ final class StabilizationPhaseStaticTest extends TestCase
     public function testTicketTabClaimUsesPostWithCsrf(): void
     {
         $template = (string) file_get_contents($this->pluginPath('templates/ticket_tab.php'));
+        $runtime = (string) file_get_contents($this->pluginPath('src/Service/TicketRuntimeService.php'));
 
         self::assertStringContainsString('<form method="post" action="<?= $this->escape($actionBaseUrl); ?>"', $template);
         self::assertStringContainsString('Plugin::renderCsrfToken()', $template);
         self::assertStringContainsString('name="whatsapp_action" value="claim"', $template);
         self::assertStringNotContainsString("['whatsapp_action' => 'claim']", $template);
+        self::assertStringContainsString("(int) (\$runtime['glpi_entity_id'] ?? 0) <= 0", $runtime);
+        self::assertStringContainsString('$previousAssignedUserId === $userId', $runtime);
+        self::assertStringContainsString('js-integaglpi-critical-action-form', $template);
+        self::assertStringContainsString("form.dataset.submitted === '1'", $template);
+    }
+
+    public function testConfigFormUsesGranularSecurityRightsForOperationalSettings(): void
+    {
+        $config = (string) file_get_contents($this->pluginPath('front/config.form.php'));
+
+        self::assertStringContainsString('integaglpi_config_required_right', $config);
+        self::assertStringContainsString('SecurityPermissionService::RIGHT_MANAGE_MESSAGE_SETTINGS', $config);
+        self::assertStringContainsString('SecurityPermissionService::RIGHT_MANAGE_TEMPLATES', $config);
+        self::assertStringContainsString('SecurityPermissionService::requirePermissionOrDeny', $config);
+        self::assertStringContainsString('Plugin::isCsrfValid($_POST)', $config);
     }
 
     // ── Item 5 sanity: getPageUrl preserves the mine_only choice ───────

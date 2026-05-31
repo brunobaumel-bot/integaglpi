@@ -690,7 +690,7 @@ $operationalFilterMap = [
                         <tr
                             data-conversation-id="<?= $this->escape($conversationId); ?>"
                             data-ticket-id="<?= $ticketId; ?>"
-                            data-phone="<?= $this->escape($phone); ?>"
+                            data-phone="<?= $this->escape(!empty($row['pii_unmasked']) ? $phone : $maskedPhone); ?>"
                             data-masked-phone="<?= $this->escape($maskedPhone); ?>"
                             data-contact-name="<?= $this->escape($contactName); ?>"
                             data-profile-name="<?= $this->escape($profileName); ?>"

@@ -157,5 +157,19 @@ final class CentralEntitySelectionStaticTest extends TestCase
         self::assertStringContainsString('$entityId > 0', $template);
         self::assertStringContainsString('$entityPending', $runtime);
         self::assertStringContainsString('claim_block_reason', $runtime);
+        self::assertStringContainsString('Defina uma entidade GLPI real antes de assumir este atendimento.', $runtime);
+    }
+
+    public function testCentralAppliesBackendPiiGuardBeforeRendering(): void
+    {
+        $service = (string) file_get_contents($this->pluginPath('src/Service/AttendanceCenterService.php'));
+        $template = (string) file_get_contents($this->pluginPath('templates/central.php'));
+
+        self::assertStringContainsString('applyPiiGuard', $service);
+        self::assertStringContainsString('SecurityPermissionService::RIGHT_VIEW_UNMASKED_PII', $service);
+        self::assertStringContainsString('SecurityAuditService::logPiiUnmaskedView', $service);
+        self::assertStringContainsString("\$row['phone_e164'] = \$maskedPhone", $service);
+        self::assertStringContainsString("\$row['profile_context']['email'] = \$maskedEmail", $service);
+        self::assertStringContainsString("!empty(\$row['pii_unmasked']) ? \$phone : \$maskedPhone", $template);
     }
 }

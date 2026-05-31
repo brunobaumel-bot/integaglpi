@@ -9,6 +9,8 @@ use GlpiPlugin\Integaglpi\External\ExternalDatabase;
 use GlpiPlugin\Integaglpi\External\ExternalSchemaManager;
 use GlpiPlugin\Integaglpi\External\Repository\ConversationRepository;
 use GlpiPlugin\Integaglpi\External\Repository\MessageRepository;
+use GlpiPlugin\Integaglpi\Service\SecurityAuditService;
+use GlpiPlugin\Integaglpi\Service\SecurityPermissionService;
 use PDO;
 use Throwable;
 
@@ -787,6 +789,17 @@ final class AttendanceCenterService
                 }
             }
             $previousAssignedUserId = (int) ($currentConversation['assigned_user_id'] ?? 0);
+            if ($previousAssignedUserId === $userId) {
+                return [
+                    'ok' => true,
+                    'http_status' => 200,
+                    'status' => 'already_claimed_by_you',
+                    'message' => __('Atendimento já estava assumido por você.', 'glpiintegaglpi'),
+                    'technician_id' => $userId,
+                    'technician_name' => getUserName($userId),
+                    'glpi_assignment_warning' => false,
+                ];
+            }
             $claim = $this->getConversationRepository()->claimForAttendanceCenter(
                 $ticketId,
                 $conversationId,
@@ -1684,6 +1697,7 @@ final class AttendanceCenterService
             $row['last_outbound_at'] = $this->formatDisplayTimestamp($row['last_outbound_at'] ?? null);
             $row['inactivity_last_checked_at'] = $this->formatDisplayTimestamp($row['inactivity_last_checked_at'] ?? null);
             $row['last_message_preview'] = trim((string) ($row['last_message_preview'] ?? ''));
+            $row = $this->applyPiiGuard($row, $assignedUserId);
 
             return $row;
         }, $rows);
@@ -2448,6 +2462,60 @@ final class AttendanceCenterService
         }
 
         return str_repeat('*', max(4, strlen($digits) - 4)) . substr($digits, -4);
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private function applyPiiGuard(array $row, int $assignedUserId): array
+    {
+        $currentUserId = $this->resolveCurrentUserId();
+        $canViewRawPii = $currentUserId > 0
+            && (
+                ($assignedUserId > 0 && $assignedUserId === $currentUserId)
+                || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_VIEW_UNMASKED_PII)
+            );
+
+        $rawPhone = trim((string) ($row['phone_e164'] ?? ''));
+        $rawEmail = trim((string) ($row['email_address'] ?? ''));
+        $maskedPhone = $this->maskPhone($rawPhone);
+        $maskedEmail = $this->maskEmail($rawEmail);
+
+        if (!$canViewRawPii) {
+            $row['phone_e164'] = $maskedPhone;
+            $row['email_address'] = $maskedEmail;
+            if (is_array($row['contact_profile_snapshot'] ?? null)) {
+                $row['contact_profile_snapshot']['email_address'] = $maskedEmail;
+            }
+            if (is_array($row['profile_context'] ?? null)) {
+                $row['profile_context']['email'] = $maskedEmail;
+            }
+        } elseif ($rawPhone !== '' || $rawEmail !== '') {
+            SecurityAuditService::logPiiUnmaskedView(
+                'conversation',
+                hash('sha256', (string) ($row['conversation_id'] ?? '') . '|' . $currentUserId)
+            );
+        }
+
+        $row['masked_phone'] = $maskedPhone;
+        $row['masked_email'] = $maskedEmail;
+        $row['pii_unmasked'] = $canViewRawPii;
+
+        return $row;
+    }
+
+    private function maskEmail(string $email): string
+    {
+        $email = trim($email);
+        if ($email === '' || !str_contains($email, '@')) {
+            return $email === '' ? '' : '[email]';
+        }
+
+        [$local, $domain] = explode('@', $email, 2);
+        $prefix = substr($local, 0, min(2, strlen($local)));
+
+        return $prefix . str_repeat('*', max(2, strlen($local) - strlen($prefix))) . '@' . $domain;
     }
 
     /**
