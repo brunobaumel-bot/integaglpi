@@ -53,6 +53,8 @@ final class SecurityPermissionService
     public const RIGHT_ENFORCE_ENTITY_ISOLATION      = 'enforce_entity_isolation';
     public const RIGHT_VIEW_MASKED_PII               = 'view_masked_pii';
     public const RIGHT_VIEW_UNMASKED_PII             = 'view_unmasked_pii';
+    public const RIGHT_VIEW_LOGMEIN_CONTEXT          = 'view_logmein_context';
+    public const RIGHT_MANAGE_LOGMEIN_MAPPING        = 'manage_logmein_mapping';
 
     /**
      * @var array<string, list<string>>
@@ -68,6 +70,7 @@ final class SecurityPermissionService
             self::RIGHT_USE_COPILOT_AS_DRAFT,
             self::RIGHT_VIEW_KB_REFERENCE,
             self::RIGHT_VIEW_MASKED_PII,
+            self::RIGHT_VIEW_LOGMEIN_CONTEXT,
         ],
         self::ROLE_SUPERVISAO => [
             self::RIGHT_ENFORCE_ENTITY_ISOLATION,
@@ -96,6 +99,8 @@ final class SecurityPermissionService
             self::RIGHT_VIEW_CONTRACTS_READONLY,
             self::RIGHT_VIEW_MASKED_PII,
             self::RIGHT_VIEW_SECURITY_CENTER,
+            self::RIGHT_VIEW_LOGMEIN_CONTEXT,
+            self::RIGHT_MANAGE_LOGMEIN_MAPPING,
         ],
         self::ROLE_DIRECAO => [
             self::RIGHT_ENFORCE_ENTITY_ISOLATION,
@@ -105,6 +110,7 @@ final class SecurityPermissionService
             self::RIGHT_VIEW_AUDIT_READONLY_SANITIZED,
             self::RIGHT_EXPORT_EXECUTIVE_REPORTS,
             self::RIGHT_VIEW_MASKED_PII,
+            self::RIGHT_VIEW_LOGMEIN_CONTEXT,
         ],
     ];
 
@@ -131,6 +137,7 @@ final class SecurityPermissionService
             self::RIGHT_VIEW_SECURITY_CENTER,
             self::RIGHT_MANAGE_SECURITY_CENTER,
             self::RIGHT_VIEW_UNMASKED_PII,
+            self::RIGHT_MANAGE_LOGMEIN_MAPPING,
         ],
         self::ROLE_SUPERVISAO => [
             self::RIGHT_REPLY_ANY_TICKET,
@@ -156,6 +163,7 @@ final class SecurityPermissionService
             self::RIGHT_REVIEW_AI_ALERTS,
             self::RIGHT_MANAGE_SECURITY_CENTER,
             self::RIGHT_VIEW_UNMASKED_PII,
+            self::RIGHT_MANAGE_LOGMEIN_MAPPING,
         ],
     ];
 

@@ -71,6 +71,8 @@ $rightLabels = [
     SecurityPermissionService::RIGHT_MANAGE_SECURITY_CENTER        => __('Gerenciar Central de Segurança', 'glpiintegaglpi'),
     SecurityPermissionService::RIGHT_VIEW_MASKED_PII               => __('Ver PII mascarada', 'glpiintegaglpi'),
     SecurityPermissionService::RIGHT_VIEW_UNMASKED_PII             => __('Ver PII não mascarada', 'glpiintegaglpi'),
+    SecurityPermissionService::RIGHT_VIEW_LOGMEIN_CONTEXT          => __('Ver contexto LogMeIn read-only', 'glpiintegaglpi'),
+    SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_MAPPING        => __('Gerenciar mapeamento LogMeIn -> entidade', 'glpiintegaglpi'),
 ];
 
 $flagBadges = static function (string $right): string {

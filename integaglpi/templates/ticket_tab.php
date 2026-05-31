@@ -79,6 +79,7 @@ $contextEvents = is_array($contextView['events'] ?? null) ? $contextView['events
 $contextDeadLetter = is_array($contextView['dead_letter'] ?? null) ? $contextView['dead_letter'] : null;
 $contextCsat = is_array($contextView['csat'] ?? null) ? $contextView['csat'] : null;
 $contextAiQuality = is_array($contextView['ai_quality'] ?? null) ? $contextView['ai_quality'] : null;
+$contextLogmein = is_array($contextView['logmein_context'] ?? null) ? $contextView['logmein_context'] : [];
 $aiAssistant = is_array($contextView['ai_assistant'] ?? null) ? $contextView['ai_assistant'] : [];
 $aiAssistantKnowledge = is_array($aiAssistant['local_knowledge'] ?? null) ? $aiAssistant['local_knowledge'] : [];
 $aiAssistantKnowledgeItems = is_array($aiAssistantKnowledge['items'] ?? null) ? $aiAssistantKnowledge['items'] : [];
@@ -398,6 +399,63 @@ $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
                     <?= $this->escape((string) ($profileSnapshot['last_problem_summary'] ?? '-')); ?><br>
                     <?= $this->escape(__('Status', 'glpiintegaglpi')); ?>:
                     <?= $this->escape((string) ($profileSnapshot['profile_status'] ?? 'incomplete')); ?>
+                </div>
+            <?php } ?>
+
+            <?php if ($contextLogmein !== []) { ?>
+                <?php
+                $logmeinItems = is_array($contextLogmein['items'] ?? null) ? $contextLogmein['items'] : [];
+                $logmeinStatus = (string) ($contextLogmein['status'] ?? 'disabled');
+                ?>
+                <div class="border rounded p-3 mt-3 mb-0">
+                    <div class="d-flex align-items-start justify-content-between gap-2">
+                        <div>
+                            <strong><?= $this->escape(__('Contexto LogMeIn read-only', 'glpiintegaglpi')); ?></strong>
+                            <div class="text-muted small">
+                                <?= $this->escape(__('Somente grupo, host, etiqueta e status. Sem sessão remota, sem comando e sem gravação automática de entidade.', 'glpiintegaglpi')); ?>
+                            </div>
+                        </div>
+                        <span class="badge bg-<?= $logmeinStatus === 'available' ? 'success' : 'secondary'; ?>">
+                            <?= $this->escape($logmeinStatus); ?>
+                        </span>
+                    </div>
+
+                    <?php if ($logmeinItems === []) { ?>
+                        <div class="alert alert-light border mt-3 mb-0">
+                            <?= $this->escape((string) ($contextLogmein['message'] ?? __('Contexto de ativo temporariamente indisponível.', 'glpiintegaglpi'))); ?>
+                        </div>
+                    <?php } else { ?>
+                        <div class="table-responsive mt-3">
+                            <table class="table table-sm align-middle mb-0">
+                                <thead>
+                                    <tr>
+                                        <th><?= $this->escape(__('Grupo', 'glpiintegaglpi')); ?></th>
+                                        <th><?= $this->escape(__('Host', 'glpiintegaglpi')); ?></th>
+                                        <th><?= $this->escape(__('Etiqueta', 'glpiintegaglpi')); ?></th>
+                                        <th><?= $this->escape(__('Status', 'glpiintegaglpi')); ?></th>
+                                        <th><?= $this->escape(__('Entidade candidata', 'glpiintegaglpi')); ?></th>
+                                        <th><?= $this->escape(__('Confiança', 'glpiintegaglpi')); ?></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($logmeinItems as $item) { ?>
+                                        <?php $score = (int) ($item['confidence_score'] ?? 0); ?>
+                                        <tr>
+                                            <td><?= $this->escape((string) ($item['group_name'] ?? '-')); ?></td>
+                                            <td><?= $this->escape((string) ($item['host_name'] ?? '-')); ?></td>
+                                            <td><?= $this->escape((string) ($item['equipment_tag'] ?? '-')); ?></td>
+                                            <td><?= $this->escape((string) ($item['status'] ?? 'unknown')); ?></td>
+                                            <td><?= (int) ($item['entity_candidate_id'] ?? 0) > 0 ? '#' . (int) $item['entity_candidate_id'] : '-'; ?></td>
+                                            <td><?= $score; ?>%</td>
+                                        </tr>
+                                    <?php } ?>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="alert alert-warning mt-3 mb-0">
+                            <?= $this->escape(__('Sugestões LogMeIn exigem confirmação técnica antes de gravar vínculo ou memória de entidade.', 'glpiintegaglpi')); ?>
+                        </div>
+                    <?php } ?>
                 </div>
             <?php } ?>
 

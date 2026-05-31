@@ -19,6 +19,16 @@ final class SecurityAuditService
     public const EVENT_PII_UNMASKED_VIEW     = 'SECURITY_PII_UNMASKED_VIEW';
     public const EVENT_MATRIX_VIEWED         = 'SECURITY_MATRIX_VIEWED';
     public const EVENT_MATRIX_SAVE_ATTEMPTED = 'SECURITY_MATRIX_SAVE_ATTEMPTED';
+    public const EVENT_LOGMEIN_CONTEXT_VIEWED = 'LOGMEIN_CONTEXT_VIEWED';
+    public const EVENT_LOGMEIN_MAPPING_CREATED = 'LOGMEIN_MAPPING_CREATED';
+    public const EVENT_LOGMEIN_MAPPING_UPDATED = 'LOGMEIN_MAPPING_UPDATED';
+    public const EVENT_LOGMEIN_MAPPING_DISABLED = 'LOGMEIN_MAPPING_DISABLED';
+    public const EVENT_LOGMEIN_SYNC_STARTED = 'LOGMEIN_SYNC_STARTED';
+    public const EVENT_LOGMEIN_SYNC_FAILED = 'LOGMEIN_SYNC_FAILED';
+    public const EVENT_LOGMEIN_SYNC_COMPLETED = 'LOGMEIN_SYNC_COMPLETED';
+    public const EVENT_PERMISSION_REVIEW_COMPLETED = 'PERMISSION_REVIEW_COMPLETED';
+    public const EVENT_RELEASE_CHECKLIST_APPROVED = 'RELEASE_CHECKLIST_APPROVED';
+    public const EVENT_RUNBOOK_REVIEWED = 'RUNBOOK_REVIEWED';
 
     private const FORBIDDEN_CONTEXT_KEYS = [
         'token',
@@ -101,6 +111,32 @@ final class SecurityAuditService
     {
         self::log(self::EVENT_MATRIX_SAVE_ATTEMPTED, [
             'result' => $result,
+            'context' => self::sanitize($context),
+        ]);
+    }
+
+    public static function logLogmeinContextViewed(int $ticketId, array $context = []): void
+    {
+        self::log(self::EVENT_LOGMEIN_CONTEXT_VIEWED, [
+            'ticket_id' => $ticketId,
+            'read_only' => true,
+            'context' => self::sanitize($context),
+        ]);
+    }
+
+    public static function logLogmeinMappingChanged(string $eventType, array $context = []): void
+    {
+        if (!in_array($eventType, [
+            self::EVENT_LOGMEIN_MAPPING_CREATED,
+            self::EVENT_LOGMEIN_MAPPING_UPDATED,
+            self::EVENT_LOGMEIN_MAPPING_DISABLED,
+        ], true)) {
+            $eventType = self::EVENT_LOGMEIN_MAPPING_UPDATED;
+        }
+
+        self::log($eventType, [
+            'read_only_context_only' => true,
+            'confirmation_required_for_memory_write' => true,
             'context' => self::sanitize($context),
         ]);
     }

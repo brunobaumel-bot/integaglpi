@@ -75,6 +75,14 @@ final class GestaoGroupMenu extends CommonDBTM
             ];
         }
 
+        if (SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_MAPPING)) {
+            $children['logmein_readonly_mapping'] = [
+                'title' => __('Mapeamento LogMeIn read-only', 'glpiintegaglpi'),
+                'page'  => Plugin::getWebBasePath() . '/front/logmein.mapping.php',
+                'icon'  => 'ti ti-sitemap',
+            ];
+        }
+
         // Entrada legacy mantida só como ponteiro para o bootstrap GLPI
         // (Ler/Atualizar). A matriz granular vive na Central de Segurança.
         $children['perfis_permissoes_bootstrap'] = [
@@ -94,6 +102,7 @@ final class GestaoGroupMenu extends CommonDBTM
         return Plugin::canContractRead()
             || Plugin::canServiceCatalogRead()
             || Plugin::canUpdate()
-            || SecurityPermissionService::canViewSecurityCenter();
+            || SecurityPermissionService::canViewSecurityCenter()
+            || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_MAPPING);
     }
 }

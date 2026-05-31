@@ -51,6 +51,17 @@ final class TicketContextService
             'dead_letter' => null,
             'risk' => null,
             'warnings' => [],
+            'logmein_context' => [
+                'status' => 'disabled',
+                'message' => __('Contexto de ativo temporariamente indisponível.', 'glpiintegaglpi'),
+                'items' => [],
+                'suggestions' => [],
+                'feature_flag_enabled' => false,
+                'read_only' => true,
+                'remote_execution' => false,
+                'technician_confirmation_required' => true,
+                'memory_write_requires_confirmation' => true,
+            ],
             'ai_assistant' => [
                 'local_knowledge' => ['items' => [], 'message' => __('Nenhum contexto disponível para consultar KB local.', 'glpiintegaglpi')],
                 'external_research' => ['status' => 'disabled', 'blocked_reason' => 'context_unavailable'],
@@ -106,6 +117,7 @@ final class TicketContextService
                 'ai_supervisor_enabled' => Plugin::isAiSupervisorEnabled(),
                 'risk' => $risk,
                 'correlation_id' => $correlationId,
+                'logmein_context' => (new LogmeinGovernanceService($this->pluginConfigService))->buildTicketContext($ticketId, $conversation),
                 'ai_assistant' => $this->buildTicketAiAssistant($ticket, $conversationId, $conversation),
                 'warnings' => $this->buildWarnings(
                     $conversation,
