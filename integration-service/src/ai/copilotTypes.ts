@@ -14,6 +14,10 @@ export interface CopilotKbReference {
 
 export interface CopilotDraftResult {
   draftResponse: string;
+  sourceType?: 'kb' | 'history' | 'conversation' | 'profile' | 'entity' | 'fallback' | 'ai';
+  sourceName?: string;
+  confidence?: 'low' | 'medium' | 'high';
+  warnings?: string[];
   tone: CopilotTone;
   kbReferences: CopilotKbReference[];
   assumptions: string[];

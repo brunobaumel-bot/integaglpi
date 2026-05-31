@@ -195,8 +195,8 @@ final class CopilotDraftClient
             ), 1000, 12000, 6000),
             'timeout_ms' => $this->boundedInteger($this->aiSettingValue(
                 'copilot_timeout_ms',
-                (string) max(15000, $supervisorTimeout * 1000)
-            ), 15000, 120000, self::COPILOT_DRAFT_TIMEOUT_MS),
+                (string) min(self::COPILOT_DRAFT_TIMEOUT_MS, max(5000, $supervisorTimeout * 1000))
+            ), 5000, self::COPILOT_DRAFT_TIMEOUT_MS, self::COPILOT_DRAFT_TIMEOUT_MS),
             'source' => 'ai_settings_or_env',
             'no_auto_send' => true,
         ];

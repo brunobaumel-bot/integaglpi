@@ -21,22 +21,22 @@ export function buildCopilotDraftPrompt(context: CopilotContext, tone: CopilotTo
     queue: safe(context.queueName, 120),
     sla: safe(context.slaLabel, 120),
     window_notice: context.windowNotice,
-    messages: context.messages.slice(-12).map((message) => ({
+    messages: context.messages.slice(-5).map((message) => ({
       direction: safe(message.direction, 20),
       message_type: safe(message.messageType, 40),
-      text: safe(message.text, 600),
+      text: safe(message.text, 360),
       created_at: safe(message.createdAt, 40),
     })),
-    kb_articles: context.kbArticles.slice(0, 5).map((article) => ({
+    kb_articles: context.kbArticles.slice(0, 3).map((article) => ({
       article_id: article.articleId,
       title: safe(article.title, 180),
       category: safe(article.category, 120),
-      excerpt: safe(article.excerpt, 800),
+      excerpt: safe(article.excerpt, 500),
       internal_url: safe(article.internalUrl, 300),
     })),
     ai_quality: context.aiQuality ?? null,
-    kb_candidates: context.kbCandidates.slice(0, 5),
-    historical_insights: context.historicalInsights.slice(0, 5),
+    kb_candidates: context.kbCandidates.slice(0, 3),
+    historical_insights: context.historicalInsights.slice(0, 3),
   }).slice(0, maxChars);
 
   return [

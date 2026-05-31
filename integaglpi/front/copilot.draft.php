@@ -29,6 +29,10 @@ function integaglpiCopilotJsonResponse(array $payload, int $statusCode = 200): v
 
 function integaglpiCopilotUserMessage(string $message): string
 {
+    if ($message === 'Copiloto temporariamente indisponível. Tente novamente em breve.' || in_array($message, ['COPILOT_CIRCUIT_OPEN', 'COPILOT_PROVIDER_BUSY'], true)) {
+        return __('Copiloto temporariamente indisponível. Tente novamente em breve.', 'glpiintegaglpi');
+    }
+
     if ($message === 'COPILOT_TIMEOUT' || $message === 'COPILOT_PROVIDER_TIMEOUT' || preg_match('/timeout|timed out|aborted/i', $message) === 1) {
         return __('O Copiloto demorou mais que o esperado. Tente novamente ou reduza o contexto do chamado.', 'glpiintegaglpi');
     }

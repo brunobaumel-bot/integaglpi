@@ -46,14 +46,27 @@ interface SupportIssueCoverage {
   missingInformation: string[];
 }
 
-const COPILOT_MAX_CONTEXT_MESSAGES = 8;
+const COPILOT_MAX_CONTEXT_MESSAGES = 5;
 const COPILOT_MESSAGE_TEXT_CHARS = 360;
 const COPILOT_MAX_KB_ARTICLES = 3;
 const COPILOT_KB_EXCERPT_CHARS = 500;
 const COPILOT_MAX_AUXILIARY_ITEMS = 3;
 const COPILOT_MAX_CONTEXT_CHARS = 6_000;
+const COPILOT_FAILURE_THRESHOLD = 3;
+const COPILOT_COOLDOWN_MS = 60_000;
+const COPILOT_MAX_CONCURRENT_CALLS = 3;
+const COPILOT_MIN_TIMEOUT_MS = 5_000;
+const COPILOT_MAX_TIMEOUT_MS = 8_000;
+
+type CopilotCircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 
 export class CopilotDraftService {
+  private circuitState: CopilotCircuitState = 'CLOSED';
+  private consecutiveFailures = 0;
+  private circuitOpenedUntil = 0;
+  private activeProviderCalls = 0;
+  private halfOpenProbeInFlight = false;
+
   public constructor(
     private readonly provider: CopilotDraftProvider,
     private readonly config: CopilotDraftConfig,
@@ -73,7 +86,7 @@ export class CopilotDraftService {
 
     const result = effectiveConfig.dryRun
       ? this.createDryRunDraft(context, input.tone)
-      : await this.provider.generate(buildCopilotDraftPrompt(
+      : await this.generateWithCircuitBreaker(buildCopilotDraftPrompt(
         context,
         input.tone,
         Math.min(effectiveConfig.maxChars, COPILOT_MAX_CONTEXT_CHARS),
@@ -116,8 +129,8 @@ export class CopilotDraftService {
       ? Math.max(1_000, Math.min(12_000, Math.trunc(runtimeConfig.maxChars)))
       : this.config.maxChars;
     const timeoutMs = typeof runtimeConfig?.timeoutMs === 'number' && Number.isFinite(runtimeConfig.timeoutMs)
-      ? Math.max(15_000, Math.min(120_000, Math.trunc(runtimeConfig.timeoutMs)))
-      : undefined;
+      ? Math.max(COPILOT_MIN_TIMEOUT_MS, Math.min(COPILOT_MAX_TIMEOUT_MS, Math.trunc(runtimeConfig.timeoutMs)))
+      : COPILOT_MAX_TIMEOUT_MS;
 
     return {
       enabled: typeof runtimeConfig?.enabled === 'boolean' ? runtimeConfig.enabled : this.config.enabled,
@@ -198,6 +211,88 @@ export class CopilotDraftService {
         no_auto_send: true,
       },
     });
+  }
+
+  private async generateWithCircuitBreaker(
+    prompt: string,
+    runtimeConfig: { model?: string; timeoutMs?: number },
+  ): Promise<CopilotDraftResult> {
+    const now = Date.now();
+    if (this.circuitState === 'OPEN') {
+      if (now < this.circuitOpenedUntil) {
+        throw new Error('COPILOT_CIRCUIT_OPEN');
+      }
+      this.circuitState = 'HALF_OPEN';
+      this.halfOpenProbeInFlight = false;
+    }
+
+    if (this.activeProviderCalls >= COPILOT_MAX_CONCURRENT_CALLS) {
+      throw new Error('COPILOT_PROVIDER_BUSY');
+    }
+
+    if (this.circuitState === 'HALF_OPEN' && this.halfOpenProbeInFlight) {
+      throw new Error('COPILOT_PROVIDER_BUSY');
+    }
+
+    this.activeProviderCalls += 1;
+    if (this.circuitState === 'HALF_OPEN') {
+      this.halfOpenProbeInFlight = true;
+    }
+
+    try {
+      const result = await this.provider.generate(prompt, runtimeConfig);
+      this.recordProviderSuccess();
+
+      return result;
+    } catch (error: unknown) {
+      await this.recordProviderFailure(error);
+      throw error;
+    } finally {
+      this.activeProviderCalls = Math.max(0, this.activeProviderCalls - 1);
+      this.halfOpenProbeInFlight = false;
+    }
+  }
+
+  private recordProviderSuccess(): void {
+    this.consecutiveFailures = 0;
+    this.circuitOpenedUntil = 0;
+    this.circuitState = 'CLOSED';
+  }
+
+  private async recordProviderFailure(error: unknown): Promise<void> {
+    this.consecutiveFailures += 1;
+    if (this.circuitState !== 'HALF_OPEN' && this.consecutiveFailures < COPILOT_FAILURE_THRESHOLD) {
+      return;
+    }
+
+    this.circuitState = 'OPEN';
+    this.circuitOpenedUntil = Date.now() + COPILOT_COOLDOWN_MS;
+    this.halfOpenProbeInFlight = false;
+    await this.auditService?.recordAuditEventSafe({
+      eventType: 'COPILOT_CIRCUIT_OPENED',
+      status: 'failed',
+      severity: 'warning',
+      source: 'CopilotDraftService',
+      payload: {
+        state: this.circuitState,
+        cooldown_ms: COPILOT_COOLDOWN_MS,
+        failure_count: this.consecutiveFailures,
+        error_type: this.safeErrorType(error),
+        no_prompt_logged: true,
+      },
+    });
+  }
+
+  private safeErrorType(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/timeout|timed out|aborted/i.test(message)) {
+      return 'timeout';
+    }
+    if (/fetch failed|econnrefused|COPILOT_OLLAMA_HTTP_/i.test(message)) {
+      return 'provider_unavailable';
+    }
+
+    return 'provider_error';
   }
 
   private normalizeContext(context: CopilotContext): CopilotContext {
@@ -342,6 +437,10 @@ export class CopilotDraftService {
 
     return {
       ...result,
+      sourceType: result.kbReferences.length > 0 ? 'kb' : config.provider === 'ollama' && !config.dryRun ? 'ai' : 'fallback',
+      sourceName: result.kbReferences[0]?.title ?? source.replace(/^\[|\]$/g, ''),
+      confidence: result.confidenceScore >= 70 ? 'high' : result.confidenceScore >= 40 ? 'medium' : 'low',
+      warnings: result.safetyWarnings,
       draftResponse,
       safetyWarnings: this.mergeUnique([
         `Origem do rascunho: ${source}`,

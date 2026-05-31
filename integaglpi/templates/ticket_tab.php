@@ -1459,7 +1459,9 @@ if ($isExternalConfigured && $runtime !== null && !$isClosed) {
                     </div>
                 </div>
                 <textarea class="form-control mt-2 js-integaglpi-copilot-draft" rows="4" maxlength="2000" placeholder="<?= $this->escape(__('O rascunho aparecerá aqui para revisão.', 'glpiintegaglpi')); ?>"></textarea>
-                <div class="mt-2 small js-integaglpi-copilot-meta text-muted"></div>
+                <div class="mt-2 small js-integaglpi-copilot-meta text-muted">
+                    <?= $this->escape(__('Fonte explícita aparecerá aqui após gerar a sugestão.', 'glpiintegaglpi')); ?>
+                </div>
                 <div class="d-flex gap-2 align-items-center mt-2 flex-wrap">
                     <button type="button" class="btn btn-sm btn-outline-secondary js-integaglpi-copilot-copy">
                         <?= $this->escape(__('Copiar rascunho', 'glpiintegaglpi')); ?>
@@ -1676,10 +1678,15 @@ if ($isExternalConfigured && $runtime !== null && !$isClosed) {
             if (copilotMeta) {
                 var notices = [];
                 if (draft.templateNotice || draft.template_notice) { notices.push(draft.templateNotice || draft.template_notice); }
-                if (draft.source || draft.provider || draft.model) {
-                    notices.push(String(draft.source || <?= json_encode((string) ($aiAssistantCopilot['origin_label'] ?? ''), JSON_UNESCAPED_UNICODE); ?> || 'provider efetivo'));
+                if (draft.source_name || draft.sourceName || draft.source_type || draft.sourceType) {
+                    notices.push('Fonte: ' + String(draft.source_name || draft.sourceName || 'Copiloto assistivo')
+                        + ' (' + String(draft.source_type || draft.sourceType || 'fallback') + ')');
+                } else if (draft.source || draft.provider || draft.model) {
+                    notices.push('Fonte: ' + String(draft.source || <?= json_encode((string) ($aiAssistantCopilot['origin_label'] ?? ''), JSON_UNESCAPED_UNICODE); ?> || 'provider efetivo'));
                 }
+                if (draft.request_id || draft.requestId) { notices.push('request_id ' + String(draft.request_id || draft.requestId)); }
                 if (draft.confidenceScore || draft.confidence_score) { notices.push('confiança ' + String(draft.confidenceScore || draft.confidence_score) + '%'); }
+                if (draft.confidence) { notices.push('confiança ' + String(draft.confidence)); }
                 metaText = notices.join(' · ');
                 copilotMeta.textContent = metaText;
             }

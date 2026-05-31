@@ -134,7 +134,7 @@ function normalizeRuntimeConfig(value: unknown): CopilotDraftRuntimeConfig | und
   const enabled = boolOrUndefined(record.enabled);
   const dryRun = boolOrUndefined(record.dry_run ?? record.dryRun);
   const maxChars = boundedNumberOrUndefined(record.max_chars ?? record.maxChars, 1_000, 12_000);
-  const timeoutMs = boundedNumberOrUndefined(record.timeout_ms ?? record.timeoutMs, 15_000, 120_000);
+  const timeoutMs = boundedNumberOrUndefined(record.timeout_ms ?? record.timeoutMs, 5_000, 8_000);
 
   if (enabled !== undefined) {
     runtimeConfig.enabled = enabled;
@@ -174,6 +174,13 @@ function payloadSize(req: Request): number {
 function classifyCopilotError(error: unknown): { code: string; status: number; errorType: string } {
   const message = error instanceof Error ? error.message : 'COPILOT_DRAFT_FAILED';
   const normalized = message.toLowerCase();
+  if (message === 'COPILOT_CIRCUIT_OPEN' || message === 'COPILOT_PROVIDER_BUSY') {
+    return {
+      code: 'Copiloto temporariamente indisponível. Tente novamente em breve.',
+      status: 503,
+      errorType: message === 'COPILOT_PROVIDER_BUSY' ? 'provider_busy' : 'circuit_open',
+    };
+  }
   if (message === 'COPILOT_DISABLED') {
     return { code: 'COPILOT_DISABLED', status: 503, errorType: 'disabled' };
   }
@@ -306,7 +313,18 @@ export function createCopilotDraftController(service: CopilotDraftService) {
         }
 
         if (job.status === 'completed') {
-          res.json({ ok: true, status: job.status, job_id: job.id, draft: job.draft });
+          res.json({
+            ok: true,
+            status: job.status,
+            job_id: job.id,
+            draft: job.draft,
+            suggestion: job.draft?.draftResponse ?? '',
+            source_type: job.draft?.sourceType ?? 'fallback',
+            source_name: job.draft?.sourceName ?? 'Copiloto assistivo',
+            confidence: job.draft?.confidence ?? 'low',
+            warnings: job.draft?.warnings ?? job.draft?.safetyWarnings ?? [],
+            request_id: requestId,
+          });
           return;
         }
 
@@ -333,7 +351,16 @@ export function createCopilotDraftController(service: CopilotDraftService) {
           provider_mode: 'copilot',
           error_type: 'none',
         }, '[integration-service][copilot][draft_generated]');
-        res.status(201).json({ ok: true, draft: result });
+        res.status(201).json({
+          ok: true,
+          suggestion: result.draftResponse,
+          source_type: result.sourceType ?? 'fallback',
+          source_name: result.sourceName ?? 'Copiloto assistivo',
+          confidence: result.confidence ?? 'low',
+          warnings: result.warnings ?? result.safetyWarnings,
+          request_id: requestId,
+          draft: { ...result, requestId },
+        });
         return;
       }
 

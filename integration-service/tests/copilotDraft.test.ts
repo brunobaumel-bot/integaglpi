@@ -239,7 +239,12 @@ describe('internal copilot draft', () => {
 
     expect(response.status).toBe(201);
     expect(provider.generate).toHaveBeenCalledOnce();
-    expect(runtimeOptions).toEqual({ model: 'gemma3:12b', timeoutMs: 90000 });
+    expect(runtimeOptions).toEqual({ model: 'gemma3:12b', timeoutMs: 8000 });
+    expect(response.body.suggestion).toContain('[IA Local - gemma3:12b]');
+    expect(response.body.source_type).toBe('kb');
+    expect(response.body.source_name).toBe('Ativacao Office');
+    expect(response.body.confidence).toBe('medium');
+    expect(response.body.request_id).toMatch(/[a-f0-9-]{36}/i);
     expect(response.body.draft.draftResponse).toContain('[IA Local - gemma3:12b]');
     expect(response.body.draft.noAutoSend).toBe(true);
   });
@@ -283,9 +288,72 @@ describe('internal copilot draft', () => {
     const result = await service.requestDraft({ context, tone: 'technical', requestedBy: 7 });
 
     expect(provider.generate).toHaveBeenCalledOnce();
-    expect(runtimeOptions).toEqual({ model: 'command-r7b:latest', timeoutMs: 45_000 });
+    expect(runtimeOptions).toEqual({ model: 'command-r7b:latest', timeoutMs: 8_000 });
     expect(result.draftResponse).toContain('[IA Local - command-r7b:latest]');
     expect(result.noAutoSend).toBe(true);
+  });
+
+  it('opens the Ollama circuit breaker after consecutive failures and returns a safe fallback message', async () => {
+    const provider = {
+      generate: vi.fn(async () => {
+        throw new Error('fetch failed');
+      }),
+    };
+    const audit = createAudit();
+    const service = new CopilotDraftService(provider, {
+      enabled: true,
+      provider: 'ollama',
+      model: 'llama3.1',
+      dryRun: false,
+      maxChars: 8_000,
+    }, audit as never);
+    const app = createTestApp(service);
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const response = await request(app)
+        .post('/internal/glpi/copilot/draft')
+        .set('Authorization', `Bearer ${apiKey}`)
+        .send({ action: 'generate', tone: 'technical', context, glpi_user_id: 7 });
+      expect(response.status).toBe(503);
+      expect(response.body.error_type).toBe('provider_unavailable');
+    }
+
+    const blocked = await request(app)
+      .post('/internal/glpi/copilot/draft')
+      .set('Authorization', `Bearer ${apiKey}`)
+      .send({ action: 'generate', tone: 'technical', context, glpi_user_id: 7 });
+
+    expect(blocked.status).toBe(503);
+    expect(blocked.body.message).toBe('Copiloto temporariamente indisponível. Tente novamente em breve.');
+    expect(blocked.body.error_type).toBe('circuit_open');
+    expect(provider.generate).toHaveBeenCalledTimes(3);
+    expect(audit.recordAuditEventSafe).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'COPILOT_CIRCUIT_OPENED',
+      payload: expect.objectContaining({
+        cooldown_ms: 60000,
+        no_prompt_logged: true,
+      }),
+    }));
+  });
+
+  it('limits concurrent Ollama calls without queueing indefinitely', async () => {
+    const provider = {
+      generate: vi.fn(async () => new Promise<ReturnType<typeof parseCopilotDraftResult>>(() => undefined)),
+    };
+    const service = new CopilotDraftService(provider, {
+      enabled: true,
+      provider: 'ollama',
+      model: 'llama3.1',
+      dryRun: false,
+      maxChars: 8_000,
+    }, createAudit() as never);
+
+    const pending = Array.from({ length: 3 }, () => service.requestDraft({ context, tone: 'neutral', requestedBy: 7 }).catch((error) => error));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    await expect(service.requestDraft({ context, tone: 'neutral', requestedBy: 7 })).rejects.toThrow('COPILOT_PROVIDER_BUSY');
+    expect(provider.generate).toHaveBeenCalledTimes(3);
+    void pending;
   });
 
   it('classifies missing provider checklist as an operational validation error', async () => {
@@ -381,7 +449,7 @@ describe('internal copilot draft', () => {
 
     expect(provider.generate).toHaveBeenCalledOnce();
     expect(prompt).not.toContain('old-marker-0');
-    expect(prompt).not.toContain('old-marker-11');
+    expect(prompt).not.toContain('old-marker-14');
     expect(prompt).toContain('old-marker-19');
     expect(prompt).not.toContain('x'.repeat(361));
     expect(prompt).not.toContain('Artigo 4');
