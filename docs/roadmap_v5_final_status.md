@@ -103,57 +103,185 @@
 
 ---
 
-## F5 — Backlog V6: Integrações Futuras Read-only
+## Roadmap V6 Lean — SSOT Oficial Pós-Estabilização
 
-**Princípio:** Nenhuma integração externa pode criar, editar, deletar ou sincronizar dados automaticamente. Toda integração V6 começa com leitura, allowlist de endpoints, credencial read-only por contrato e audit trail.
+**Verdict final:** `ROADMAP_V6_LEAN_APROVADO_COM_RESSALVAS`
 
-### LogMeIn (Inventário de Equipamentos)
-- **Modo permitido:** `inventory/list`, `asset/details`, vínculo visual com ticket/contato
-- **Proibido:** `session/start`, `wol`, `deploy`, `remote/control`, qualquer ação remota
-- **Pré-requisitos:** Credential vault estendido (`AiSecretVaultService`); smoke com dados sintéticos; PII assessment se dados de equipamento incluírem owner
+**Status:** backlog pós-estabilização, não bloqueia o go-live atual.
 
-### Zabbix (Alertas e Hosts)
-- **Modo permitido:** `problem.get`, `host.get`, `alert.get` (read); correlação visual com ticket
-- **Proibido:** `acknowledge`, `event.acknowledge`, criação automática de incidente/ticket
-- **Pré-requisitos:** Ambiente Zabbix em TESTE com dados sintéticos; token API read-only por usuário dedicado
+**Gate de produção atual:** o FIX3 de estabilização operacional continua bloqueando produção até smoke aprovado.
 
-### ERP (Cliente / Contrato / Status Comercial)
-- **Modo permitido:** Consulta de contrato ativo, status comercial, horas consumidas
-- **Proibido:** write/update, faturamento, cobrança, qualquer mutação cadastral
-- **Pré-requisitos obrigatórios:** PII assessment jurídico (dados de cliente são sensíveis); token read-only garantido por contrato com fornecedor ERP; masking de CPF/CNPJ/e-mail antes de qualquer log
+**Estrutura oficial:** V6 fica consolidado em 3 pacotes evolutivos: `V6-E1`, `V6-E2`, `V6-E3`. Não criar `V6-E1a`/`V6-E1b` como fases oficiais.
 
-### n8n / Automações Futuras
-- **Modo neste ciclo:** Discovery e mapeamento conceitual apenas
-- **Proibido:** webhook público novo, workflow ativo, execução automática, integração de dados reais
-- **Pré-requisitos:** Definição de scope funcional; Bearer em qualquer endpoint de entrada; revisão de segurança de webhook
+### Requisito Transversal Obrigatório — PII Guard
 
-### Omnichannel (Telegram, E-mail, Voz)
-- **Modo neste ciclo:** Mapeamento de canais futuros apenas
-- **Proibido:** Novo canal ativo sem gate de licenciamento (Meta Business Manager, provedor de voz)
-- **Pré-requisitos:** Análise de licenciamento; nova migration de roteamento; testes de isolamento de canal
+PII Guard é requisito transversal obrigatório do V6 e não deve virar pacote separado.
+
+- Primeiro item de segurança pós-FIX3.
+- Mascaramento deve ocorrer no backend.
+- Payloads devem ser sanitizados sem telefone/e-mail bruto antes do claim.
+- Frontend não é barreira de segurança.
+- Revelação de PII exige sessão válida, RBAC e ação de assumir ou permissão superior.
+- Auditoria obrigatória, sugerida como `SECURITY_PII_UNMASKED_VIEW`.
+
+### V6-E1 — Console Operacional Unificado, Configurações, UX e Telemetria Leve
+
+**Entra:**
+
+- Hub unificado de configurações de mensagens.
+- CSAT.
+- Horário comercial.
+- Inatividade.
+- Templates rápidos com `/`.
+- Ghost Click Guard.
+- PII Guard nas telas operacionais.
+- RBAC backend.
+- Telemetria read-only de GLPI, Node, Postgres, Redis, Meta, workers e filas.
+- Matriz urgência x impacto.
+- Taxonomia Incidente vs Requisição.
+- Checklist de qualidade antes de solucionar.
+- Handoff/passagem de turno interno.
+- Alerta visual de sentimento/risco, sem reordenação automática.
+- SLA conversacional leve somente com paginação, índices, janela temporal e cache.
+
+**Não entra:**
+
+- Preview complexo simulando Meta.
+- Dashboards executivos pesados.
+- Ranking nominal/punitivo.
+- Reordenação automática de fila por IA.
+- Mutação automática de ticket.
+- Full scan em `audit_events`.
+- SLA avançado sem cache/índice.
+
+**Ordem interna obrigatória:**
+
+1. Configurações e segurança.
+2. PII Guard, Ghost Click, RBAC e taxonomia.
+3. Telemetria read-only leve.
+4. SLA conversacional somente se cache/índices estiverem seguros.
+
+### V6-E2 — Copiloto Assistivo com Fonte, Feedback e Circuit Breaker Ollama
+
+**Entra:**
+
+- Copiloto assistivo.
+- Fonte explícita da sugestão.
+- Feedback do técnico.
+- Auditoria estruturada.
+- Health check Ollama.
+- Circuit breaker Ollama obrigatório.
+- Timeout estrito.
+- Cooldown.
+- Fallback honesto.
+- Painel simples de feedback agregado.
+- Candidatos de KB sem publicação automática.
+
+**Não entra:**
+
+- IA agentic.
+- Autoenvio de WhatsApp.
+- Escrita automática em KB.
+- RAG complexo do zero.
+- Cloud AI ativada por padrão.
+- Mutação automática de ticket, fila, entidade, contrato, status ou prioridade.
+- Problem Management/RCA automatizado.
+
+### V6-E3 — Governança, Release, LogMeIn Read-only e Controles COBIT
+
+**Entra:**
+
+- LogMeIn estritamente read-only.
+- Dependência de etiqueta/patrimônio.
+- Vínculo manual por tag/ativo.
+- Sync assíncrona em tabela isolada.
+- Adapter/Proxy com timeout isolado.
+- UI não pode quebrar se LogMeIn cair.
+- Auditoria de visualização de dados sensíveis.
+- Playbook de crise.
+- Runbooks de resiliência.
+- Release notes.
+- Revisão mensal de permissões.
+- Owner por processo.
+- Matriz RACI simples.
+- Evidência de backup/rollback.
+- Revisão de logs de acesso negado.
+- Change Enablement mínimo.
+
+**Não entra:**
+
+- Execução remota.
+- Scripts em endpoint de cliente.
+- RMM ativo.
+- Omnichannel com escrita direta.
+- WhatsApp disparado por Zabbix/n8n sem validação humana.
+- Integrações futuras como implementação ativa.
+
+### Ideias Classificadas
+
+**Implementar agora, dentro da ordem V6 aprovada:**
+
+- PII Guard backend.
+- Ghost Click Guard.
+- Templates rápidos com `/`.
+- Playbook de crise.
+- Runbooks de resiliência.
+- Matriz urgência x impacto.
+- Checklist de qualidade.
+- Handoff interno.
+- Taxonomia Incidente vs Requisição.
+
+**Escopo limitado:**
+
+- Sentimento em tempo real somente como alerta visual.
+- SLA conversacional somente com cache, paginação e índices.
+
+**Diferido para V7:**
+
+- Problem Management/RCA com IA.
+- Major Incident formal.
+- Known Error.
+- Mineração histórica massiva.
+- RAG complexo.
+
+**Rejeitado/cancelado:**
+
+- Gamificação punitiva.
+- Ranking nominal.
+- Agentic AI.
+- Alteração automática de ticket por IA.
+- Autoenvio WhatsApp por IA.
 
 ### Arquitetura Reutilizável para V6
-Os seguintes módulos são extensíveis sem refatoração:
-- `sourceValidator.ts` + `candidateBuilder.ts` (padrão de allowlist por URL)
-- `AiSecretVaultService.php` (vault de credenciais, extensível com novo `ALLOWED_PROVIDERS`)
-- `createInternalBearerMiddleware` (proteção de rotas internas)
-- `AuditService.recordAuditEventFireAndForget` (audit trail)
-- `ObservabilityService.queryCards()` / `eventUnionSql()` (extensível com novo `event_type`)
-- Rate limit Redis (padrão `AiOnlineSupervisorAlertService`: `incr`, `expire`, `cooldownMinutes`)
+
+Os seguintes módulos continuam extensíveis sem refatoração ampla:
+
+- `sourceValidator.ts` + `candidateBuilder.ts` (padrão de allowlist por URL).
+- `AiSecretVaultService.php` (vault de credenciais).
+- `createInternalBearerMiddleware` (proteção de rotas internas).
+- `AuditService.recordAuditEventFireAndForget` (audit trail).
+- `ObservabilityService.queryCards()` / `eventUnionSql()` (extensível com novo `event_type`).
+- Rate limit Redis (padrão `AiOnlineSupervisorAlertService`: `incr`, `expire`, `cooldownMinutes`).
 
 ---
 
-## Gates Obrigatórios para Início de V6
+## Gates Obrigatórios
 
-Antes de qualquer implementação V6:
+### Antes de produção
 
-- [ ] Smoke V5 completo em TESTE (S-F1-01 a S-F5-04) executado e registrado
-- [ ] Commits F2 (`c745a54`, `1a281d4`) promovidos para `origin/main` via push manual
-- [ ] Versão de produção alinhada com HEAD local
-- [ ] PII assessment F5-ERP aprovado juridicamente
-- [ ] Credenciais V6 (LogMeIn, Zabbix, ERP) geradas como read-only por contrato com fornecedor
-- [ ] Novo fase-ID criado: `integaglpi_future_integrations_logmein_readonly_001` (ou equivalente)
-- [ ] `CLAUDE.md` e este documento revisados para incluir novos arquivos congelados de V6
+- [ ] FIX3 de estabilização operacional aprovado em smoke manual.
+- [ ] Nenhum deploy/promoção sem gate humano.
+- [ ] Produção alinhada apenas por procedimento manual.
+
+### Antes de qualquer implementação V6
+
+- [ ] V6 tratado como backlog pós-estabilização, sem bloquear o go-live atual.
+- [ ] Smoke V5/FIX3 completo em TESTE executado e registrado.
+- [ ] PII Guard priorizado como primeiro item de segurança pós-FIX3.
+- [ ] Credenciais futuras geradas como read-only por contrato com fornecedor, quando aplicável.
+- [ ] LogMeIn mantido estritamente read-only.
+- [ ] Circuit breaker Ollama planejado como obrigatório em V6-E2.
+- [ ] Nenhuma integração V6 inicia com escrita, automação ativa ou execução remota.
 
 ---
 
