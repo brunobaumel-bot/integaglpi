@@ -145,4 +145,17 @@ final class CentralEntitySelectionStaticTest extends TestCase
         self::assertStringContainsString('can_confirm_entity', $service);
         self::assertStringContainsString("awaiting_entity_selection", $service);
     }
+
+    public function testClaimRequiresRealEntityBeforeAttendance(): void
+    {
+        $service = (string) file_get_contents($this->pluginPath('src/Service/AttendanceCenterService.php'));
+        $runtime = (string) file_get_contents($this->pluginPath('src/Service/TicketRuntimeService.php'));
+        $template = (string) file_get_contents($this->pluginPath('templates/central.php'));
+
+        self::assertStringContainsString('$entityId > 0', $service);
+        self::assertStringContainsString('entity_required_before_claim', $service);
+        self::assertStringContainsString('$entityId > 0', $template);
+        self::assertStringContainsString('$entityPending', $runtime);
+        self::assertStringContainsString('claim_block_reason', $runtime);
+    }
 }

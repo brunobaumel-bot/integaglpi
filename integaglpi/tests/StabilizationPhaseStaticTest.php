@@ -488,8 +488,19 @@ final class StabilizationPhaseStaticTest extends TestCase
         self::assertIsInt($selectedActions);
         self::assertGreaterThan($chatPanel, $messages, 'The middle column must keep the chat messages area.');
         self::assertGreaterThan($contextPanel, $selectedSummary, 'Selected ticket/context details must live in the third column.');
-        self::assertGreaterThan($contextPanel, $selectedActions, 'Selected operational actions must live in the third column.');
+        self::assertGreaterThan($messages, $selectedActions, 'Reply composer/actions must stay below the chat messages in the middle column.');
+        self::assertLessThan($contextPanel, $selectedActions, 'Reply composer/actions must not be rendered in the third context column.');
         self::assertLessThan($contextPanel, $messages, 'Chat messages must remain before the context panel markup.');
+    }
+
+    public function testTicketTabClaimUsesPostWithCsrf(): void
+    {
+        $template = (string) file_get_contents($this->pluginPath('templates/ticket_tab.php'));
+
+        self::assertStringContainsString('<form method="post" action="<?= $this->escape($actionBaseUrl); ?>"', $template);
+        self::assertStringContainsString('Plugin::renderCsrfToken()', $template);
+        self::assertStringContainsString('name="whatsapp_action" value="claim"', $template);
+        self::assertStringNotContainsString("['whatsapp_action' => 'claim']", $template);
     }
 
     // ── Item 5 sanity: getPageUrl preserves the mine_only choice ───────

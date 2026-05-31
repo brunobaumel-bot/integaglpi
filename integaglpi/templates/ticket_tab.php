@@ -32,6 +32,7 @@ if (!$isClosed && $runtime !== null && $assignedUserId <= 0) {
 $canClaim = array_key_exists('can_claim', $runtimeView)
     ? (bool) $runtimeView['can_claim']
     : !$isClosed;
+$claimBlockReason = trim((string) ($runtimeView['claim_block_reason'] ?? ''));
 $canTransfer = array_key_exists('can_transfer', $runtimeView)
     ? (bool) $runtimeView['can_transfer']
     : !$isClosed;
@@ -790,13 +791,25 @@ if ($auditPanelOk) {
                 <div class="card h-100">
                     <div class="card-header"><?= $this->escape(__('Assume attendance', 'glpiintegaglpi')); ?></div>
                     <div class="card-body">
-                        <a
-                            class="btn btn-primary"
-                            href="<?= $this->escape($buildDebugUrl($debugBaseParams + ['whatsapp_action' => 'claim'])); ?>"
-                        ><?= $this->escape($assignedUserId > 0
-                            ? __('Assumir para mim', 'glpiintegaglpi')
-                            : __('Assumir atendimento', 'glpiintegaglpi')); ?></a>
+                        <form method="post" action="<?= $this->escape($actionBaseUrl); ?>" class="mb-0">
+                            <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken(); ?>
+                            <input type="hidden" name="ticket_id" value="<?= (int) $ticketIdForDebug; ?>">
+                            <input type="hidden" name="conversation_id" value="<?= $this->escape($conversationIdForDebug); ?>">
+                            <input type="hidden" name="whatsapp_action" value="claim">
+                            <button type="submit" class="btn btn-primary">
+                                <?= $this->escape($assignedUserId > 0
+                                    ? __('Assumir para mim', 'glpiintegaglpi')
+                                    : __('Assumir atendimento', 'glpiintegaglpi')); ?>
+                            </button>
+                        </form>
                     </div>
+                </div>
+            </div>
+        <?php } ?>
+        <?php if (!$canClaim && $claimBlockReason !== '') { ?>
+            <div class="col-md-4">
+                <div class="alert alert-warning h-100 mb-0">
+                    <?= $this->escape($claimBlockReason); ?>
                 </div>
             </div>
         <?php } ?>

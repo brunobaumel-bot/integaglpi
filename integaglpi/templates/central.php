@@ -645,6 +645,7 @@ $operationalFilterMap = [
                         $windowOpen = !empty($whatsappWindow['is_open']);
                         $windowAlert = (string) ($whatsappWindow['alert'] ?? '');
                         $memoryEntityId = (int) ($row['memory_entity_id'] ?? 0);
+                        $entityId = (int) ($row['glpi_entity_id'] ?? 0);
                         $memoryEntityName = trim((string) ($row['memory_entity_name'] ?? ''));
                         $memoryEntitySourceLabel = trim((string) ($row['memory_entity_source_label'] ?? ''));
                         $profileSnapshot = is_array($row['contact_profile_snapshot'] ?? null)
@@ -665,6 +666,7 @@ $operationalFilterMap = [
                             && $effectiveStatus === 'open'
                             && $assignedUserId <= 0
                             && $ticketId > 0
+                            && $entityId > 0
                             && $conversationId !== '';
                         $canReply = $effectiveStatus === 'open'
                             && $canUpdateActions
@@ -1136,6 +1138,9 @@ $operationalFilterMap = [
             <small class="text-muted js-integaglpi-central-messages-status"></small>
         </div>
         <div class="itg-chat-body js-integaglpi-central-messages"></div>
+        <div class="itg-selected-actions js-integaglpi-central-selected-actions">
+            <span class="text-muted"><?= $this->escape(__('Selecione uma conversa para responder ou assumir atendimento.', 'glpiintegaglpi')); ?></span>
+        </div>
     </section>
 
     <aside class="itg-panel itg-context-panel">
@@ -1172,9 +1177,6 @@ $operationalFilterMap = [
                             <span class="js-integaglpi-central-selected-sla">-</span>
                         </div>
                     </div>
-                </div>
-                <div class="itg-selected-actions js-integaglpi-central-selected-actions">
-                    <span class="text-muted"><?= $this->escape(__('Selecione uma conversa para responder ou assumir atendimento.', 'glpiintegaglpi')); ?></span>
                 </div>
                 <div class="itg-context-item">
                     <small class="text-muted d-block"><?= $this->escape(__('Contato', 'glpiintegaglpi')); ?></small>

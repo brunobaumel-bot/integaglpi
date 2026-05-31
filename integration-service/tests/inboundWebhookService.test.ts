@@ -4075,11 +4075,26 @@ describe('InboundWebhookService', () => {
       glpiTicketId: 1234,
       queueId: 5,
       status: 'closed',
-      lastMessageAt: new Date(),
+      lastMessageAt: new Date('2026-05-01T10:00:00.000Z'),
       createdAt: new Date(),
       updatedAt: new Date(),
     };
     const meta = { sendTextMessage: vi.fn().mockResolvedValue({}) };
+    const messageConfiguration = {
+      resolveSendPlan: vi.fn().mockImplementation((_eventKey: string, options: { windowOpen: boolean }) => ({
+        eventKey: 'csat_thank_you_closure',
+        sendType: 'text',
+        text: 'Seu chamado foi encerrado. Obrigado pela avaliação.',
+        active: true,
+        shouldSend: options.windowOpen,
+        reason: options.windowOpen ? null : 'window_closed',
+        templateName: null,
+        language: 'pt_BR',
+        buttons: [],
+        listOptions: [],
+      })),
+      recordAutomationEvent: vi.fn().mockResolvedValue(undefined),
+    };
     const glpiClient = {
       createTicket: vi.fn(),
       addFollowUp: vi.fn(),
@@ -4112,7 +4127,7 @@ describe('InboundWebhookService', () => {
       conversationRepository,
       contactResolutionService,
       glpiClient,
-      { meta, solutionActions, audit },
+      { meta, solutionActions, audit, messageConfiguration },
     );
 
     const result = await service.process(payload, { correlationId: 'WA-20260510153022-csat1' });
@@ -4148,6 +4163,10 @@ describe('InboundWebhookService', () => {
     expect(meta.sendTextMessage).toHaveBeenCalledWith({
       to: '5511999999999',
       body: 'Seu chamado foi encerrado. Obrigado pela avaliação.',
+    });
+    expect(messageConfiguration.resolveSendPlan).toHaveBeenCalledWith('csat_thank_you_closure', {
+      windowOpen: true,
+      allowTemplateSend: true,
     });
     expect(audit.recordAuditEventFireAndForget).toHaveBeenCalledWith(
       expect.objectContaining({

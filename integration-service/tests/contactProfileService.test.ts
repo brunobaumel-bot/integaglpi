@@ -388,6 +388,9 @@ describe('ContactProfileService', () => {
       requester_name: 'Bruno',
       last_equipment_tag: '2022',
     });
+    expect(result.reply).toContain('Dados confirmados');
+    expect(result.reply).toContain('empresa Etica');
+    expect(result.reply).toContain('etiqueta 2022');
     expect(result.reply).toContain('motivo');
   });
 

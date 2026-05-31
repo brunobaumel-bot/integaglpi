@@ -421,6 +421,9 @@ final class TicketRuntimeService
             ? $conversationStatus
             : ($runtimeStatus !== '' ? $runtimeStatus : 'open');
         $isClosed = $effectiveStatus === 'closed';
+        $entityId = (int) ($runtime['glpi_entity_id'] ?? 0);
+        $entityPending = in_array($effectiveStatus, ['awaiting_entity_selection', 'collecting_contact_profile'], true)
+            || $entityId <= 0;
         // assigned_user_id is the source of truth for "quem está com o atendimento".
         // claimed_at pode permanecer após transferência de fila (assigned limpo); não deve esconder "Assumir".
         $assignedUserId = isset($runtime['assigned_user_id']) ? (int) $runtime['assigned_user_id'] : 0;
@@ -429,7 +432,10 @@ final class TicketRuntimeService
         }
         $isClaimed = !$isClosed && $assignedUserId > 0;
         // Reatribuição: claim atualiza assigned_user_id; permitir sempre que a conversa estiver aberta.
-        $runtime['can_claim'] = !$isClosed;
+        $runtime['can_claim'] = !$isClosed && !$entityPending;
+        $runtime['claim_block_reason'] = $entityPending
+            ? __('Defina uma entidade GLPI real antes de assumir este atendimento.', 'glpiintegaglpi')
+            : '';
 
         $runtime['status'] = $effectiveStatus;
         $runtime['is_closed'] = $isClosed;

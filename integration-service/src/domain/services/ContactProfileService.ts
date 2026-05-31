@@ -401,7 +401,7 @@ export class ContactProfileService {
           };
           return {
             state: completeState,
-            reply: this.getCollectionPrompt(completeState),
+            reply: `${this.buildConfirmedProfileSummary(completeState)}\n\n${this.getCollectionPrompt(completeState)}`,
             completed: true,
             profile: this.profileFromState(input.phoneE164, completeState),
           };
@@ -409,7 +409,7 @@ export class ContactProfileService {
 
         return {
           state: nextState,
-          reply: this.getCollectionPrompt(nextState),
+          reply: `${this.buildConfirmedProfileSummary(nextState)}\n\n${this.getCollectionPrompt(nextState)}`,
           completed: false,
           profile: null,
         };
@@ -705,6 +705,15 @@ export class ContactProfileService {
       '',
       'As informacoes estao corretas? Responda Sim ou Nao.',
     ].join('\n');
+  }
+
+  private buildConfirmedProfileSummary(state: ContactProfileCollectionState): string {
+    const company = this.cleanText(state.company_name_raw) || '(empresa nao informada)';
+    const equipment = state.equipment_tag_unknown
+      ? 'nao informada'
+      : (this.cleanText(state.last_equipment_tag) || '(nao informada)');
+
+    return `Dados confirmados: empresa ${company}; etiqueta ${equipment}.`;
   }
 
   private stateFromProfile(

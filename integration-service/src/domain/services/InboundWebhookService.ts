@@ -3396,7 +3396,10 @@ export class InboundWebhookService {
     correlationId: string;
     messageId: string;
   }): Promise<void> {
-    const windowOpen = this.nowProvider().getTime() - input.conversation.lastMessageAt.getTime() < 24 * 60 * 60 * 1000;
+    // The CSAT button is an inbound customer interaction; the thank-you reply
+    // is inside the service window even when the stored closed conversation
+    // activity is older than 24h.
+    const windowOpen = true;
     const plan = this.messageConfigurationService
       ? await this.messageConfigurationService.resolveSendPlan(CSAT_THANK_YOU_CLOSURE_EVENT_KEY, {
         windowOpen,

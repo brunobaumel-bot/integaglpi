@@ -197,10 +197,12 @@ final class AttendanceCenterService
                 $conversationId = trim((string) ($row['conversation_id'] ?? ''));
                 $assignedUserId = (int) ($row['assigned_user_id'] ?? 0);
                 $effectiveStatus = (string) ($row['effective_status'] ?? $row['conversation_status'] ?? '');
+                $entityId = (int) ($row['glpi_entity_id'] ?? 0);
 
                 $row['can_claim'] = $effectiveStatus === 'open'
                     && $assignedUserId <= 0
                     && $ticketId > 0
+                    && $entityId > 0
                     && $conversationId !== '';
                 $row['can_reply'] = $effectiveStatus === 'open'
                     && $assignedUserId === $currentUserId
@@ -769,6 +771,21 @@ final class AttendanceCenterService
 
         try {
             $currentConversation = $this->getConversationRepository()->findBoundToTicket($ticketId, $conversationId);
+            if ($currentConversation !== null) {
+                $conversationStatus = strtolower(trim((string) ($currentConversation['conversation_status'] ?? '')));
+                $conversationEntityId = (int) ($currentConversation['glpi_entity_id'] ?? 0);
+                if (
+                    in_array($conversationStatus, ['awaiting_entity_selection', 'collecting_contact_profile'], true)
+                    || $conversationEntityId <= 0
+                ) {
+                    return [
+                        'ok' => false,
+                        'http_status' => 409,
+                        'error' => 'entity_required_before_claim',
+                        'message' => __('Defina uma entidade GLPI real antes de assumir este atendimento.', 'glpiintegaglpi'),
+                    ];
+                }
+            }
             $previousAssignedUserId = (int) ($currentConversation['assigned_user_id'] ?? 0);
             $claim = $this->getConversationRepository()->claimForAttendanceCenter(
                 $ticketId,

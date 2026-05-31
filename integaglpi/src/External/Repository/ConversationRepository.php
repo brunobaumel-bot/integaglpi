@@ -24,6 +24,8 @@ final class ConversationRepository
                 c.contact_id,
                 c.phone_e164,
                 c.glpi_ticket_id,
+                c.glpi_entity_id,
+                c.glpi_entity_name,
                 c.status AS conversation_status,
                 c.last_message_at,
                 c.created_at AS conversation_created_at,
