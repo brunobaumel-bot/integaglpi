@@ -23,6 +23,8 @@ final class SecurityAuditService
     public const EVENT_LOGMEIN_MAPPING_CREATED = 'LOGMEIN_MAPPING_CREATED';
     public const EVENT_LOGMEIN_MAPPING_UPDATED = 'LOGMEIN_MAPPING_UPDATED';
     public const EVENT_LOGMEIN_MAPPING_DISABLED = 'LOGMEIN_MAPPING_DISABLED';
+    public const EVENT_LOGMEIN_CUSTOMFIELD_READ = 'LOGMEIN_CUSTOMFIELD_READ';
+    public const EVENT_LOGMEIN_REPORT_GENERATED = 'LOGMEIN_REPORT_GENERATED';
     public const EVENT_LOGMEIN_SYNC_STARTED = 'LOGMEIN_SYNC_STARTED';
     public const EVENT_LOGMEIN_SYNC_FAILED = 'LOGMEIN_SYNC_FAILED';
     public const EVENT_LOGMEIN_SYNC_COMPLETED = 'LOGMEIN_SYNC_COMPLETED';
@@ -137,6 +139,15 @@ final class SecurityAuditService
         self::log($eventType, [
             'read_only_context_only' => true,
             'confirmation_required_for_memory_write' => true,
+            'context' => self::sanitize($context),
+        ]);
+    }
+
+    public static function logLogmeinReportGenerated(string $reportType, array $context = []): void
+    {
+        self::log(self::EVENT_LOGMEIN_REPORT_GENERATED, [
+            'report_type' => $reportType,
+            'read_only' => true,
             'context' => self::sanitize($context),
         ]);
     }

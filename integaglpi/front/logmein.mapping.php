@@ -48,6 +48,7 @@ $selectedGroupId = trim((string) ($_GET['group_external_id'] ?? ($_POST['logmein
 $hostPreview = $service->listHostsPreview($selectedGroupId);
 $lastSyncStatus = $service->getLastSyncStatus();
 $cacheSummary = $service->getCacheSummary();
+$inventoryQualityReport = $service->getInventoryQualityReport();
 $featureEnabled = $service->isFeatureEnabled();
 
 Html::header(__('Mapeamento LogMeIn read-only', 'glpiintegaglpi'), $_SERVER['PHP_SELF'], 'plugins', GestaoGroupMenu::class);

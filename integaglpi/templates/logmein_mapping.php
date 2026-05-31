@@ -11,10 +11,13 @@ use GlpiPlugin\Integaglpi\Plugin;
 /** @var list<array<string, mixed>> $hostPreview */
 /** @var array<string, mixed>|null $lastSyncStatus */
 /** @var array{groups_count:int,hosts_count:int,last_cache_update:string} $cacheSummary */
+/** @var array<string, mixed> $inventoryQualityReport */
 /** @var string $selectedGroupId */
 /** @var bool $featureEnabled */
 
 $csrfToken = Plugin::getCsrfToken();
+$duplicatedTags = is_array($inventoryQualityReport['duplicated_tags'] ?? null) ? $inventoryQualityReport['duplicated_tags'] : [];
+$groupsWithoutEntity = is_array($inventoryQualityReport['groups_without_entity'] ?? null) ? $inventoryQualityReport['groups_without_entity'] : [];
 ?>
 
 <div class="container-fluid">
@@ -66,6 +69,73 @@ $csrfToken = Plugin::getCsrfToken();
                     <?= __('A sincronização é somente leitura e usa cache local da migration 042.', 'glpiintegaglpi'); ?>
                 </span>
             </form>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-header"><?= __('Qualidade cadastral LogMeIn', 'glpiintegaglpi'); ?></div>
+        <div class="card-body">
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <div class="border rounded p-3 h-100">
+                        <div class="text-muted small"><?= __('Hosts sem etiqueta', 'glpiintegaglpi'); ?></div>
+                        <strong><?= (int) ($inventoryQualityReport['hosts_without_tag'] ?? 0); ?></strong>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="border rounded p-3 h-100">
+                        <div class="text-muted small"><?= __('Etiquetas inválidas', 'glpiintegaglpi'); ?></div>
+                        <strong><?= (int) ($inventoryQualityReport['invalid_tags'] ?? 0); ?></strong>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="border rounded p-3 h-100">
+                        <div class="text-muted small"><?= __('Etiquetas duplicadas', 'glpiintegaglpi'); ?></div>
+                        <strong><?= count($duplicatedTags); ?></strong>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="border rounded p-3 h-100">
+                        <div class="text-muted small"><?= __('Grupos sem entidade', 'glpiintegaglpi'); ?></div>
+                        <strong><?= count($groupsWithoutEntity); ?></strong>
+                    </div>
+                </div>
+            </div>
+            <div class="row g-3 mt-1">
+                <div class="col-lg-6">
+                    <div class="small text-muted mb-1"><?= __('Amostra de etiquetas duplicadas', 'glpiintegaglpi'); ?></div>
+                    <?php if ($duplicatedTags === []) { ?>
+                        <div class="text-muted small"><?= __('Nenhuma duplicidade válida encontrada no cache local.', 'glpiintegaglpi'); ?></div>
+                    <?php } else { ?>
+                        <ul class="small mb-0">
+                            <?php foreach ($duplicatedTags as $tag) { ?>
+                                <li>
+                                    <?= htmlspecialchars((string) ($tag['equipment_tag'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>
+                                    — <?= (int) ($tag['hosts_count'] ?? 0); ?> <?= __('hosts', 'glpiintegaglpi'); ?>
+                                </li>
+                            <?php } ?>
+                        </ul>
+                    <?php } ?>
+                </div>
+                <div class="col-lg-6">
+                    <div class="small text-muted mb-1"><?= __('Grupos sincronizados sem mapeamento ativo', 'glpiintegaglpi'); ?></div>
+                    <?php if ($groupsWithoutEntity === []) { ?>
+                        <div class="text-muted small"><?= __('Nenhum grupo pendente de entidade no cache local.', 'glpiintegaglpi'); ?></div>
+                    <?php } else { ?>
+                        <ul class="small mb-0">
+                            <?php foreach ($groupsWithoutEntity as $group) { ?>
+                                <li>
+                                    <?= htmlspecialchars((string) ($group['logmein_group_name'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>
+                                    — <?= (int) ($group['hosts_count'] ?? 0); ?> <?= __('hosts', 'glpiintegaglpi'); ?>
+                                </li>
+                            <?php } ?>
+                        </ul>
+                    <?php } ?>
+                </div>
+            </div>
+            <div class="form-text mt-2">
+                <?= __('Relatórios são agregados/sanitizados e não medem produtividade nominal. Relatórios de sessão remota permanecem fora do escopo.', 'glpiintegaglpi'); ?>
+            </div>
         </div>
     </div>
 
@@ -179,7 +249,12 @@ $csrfToken = Plugin::getCsrfToken();
                                     <?php foreach ($hostPreview as $host) { ?>
                                         <tr>
                                             <td><?= htmlspecialchars((string) $host['host_name'], ENT_QUOTES, 'UTF-8'); ?></td>
-                                            <td><?= htmlspecialchars((string) $host['equipment_tag'], ENT_QUOTES, 'UTF-8'); ?></td>
+                                            <?php $previewTag = (string) $host['equipment_tag']; ?>
+                                            <td>
+                                                <?= preg_match('/^\d{4}$/', $previewTag) === 1
+                                                    ? htmlspecialchars($previewTag, ENT_QUOTES, 'UTF-8')
+                                                    : htmlspecialchars(__('sem etiqueta válida', 'glpiintegaglpi'), ENT_QUOTES, 'UTF-8'); ?>
+                                            </td>
                                             <td><?= htmlspecialchars((string) $host['status'], ENT_QUOTES, 'UTF-8'); ?></td>
                                         </tr>
                                     <?php } ?>

@@ -210,6 +210,61 @@ describe('V6-E3 LogMeIn read-only governance', () => {
     vi.unstubAllGlobals();
   });
 
+  it('prefers read-only LogMeIn custom fields for the 4 digit asset tag and audits custom field reads', async () => {
+    const repository = {
+      isSchemaReady: vi.fn(async () => true),
+      upsertHosts: vi.fn(async () => ({ groupsImported: 1, hostsImported: 2 })),
+      insertSyncAudit: vi.fn(async () => undefined),
+      listHostsByGroup: vi.fn(async () => []),
+    };
+    const auditService = {
+      recordAuditEventSafe: vi.fn(async () => undefined),
+    };
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        groups: [{ id: 'group-a', name: 'Cliente A' }],
+        hosts: [
+          {
+            id: 'host-1',
+            groupId: 'group-a',
+            description: 'descricao sem etiqueta 9999',
+            customFields: [{ name: 'Etiqueta', value: '1234' }],
+          },
+          {
+            id: 'host-2',
+            groupId: 'group-a',
+            description: 'fallback 8888',
+            customFields: { Patrimônio: 'ABC-12' },
+          },
+        ],
+      }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const service = new LogmeinReadonlyContextService({
+      enabled: true,
+      baseUrl: 'https://secure.logmein.com/public-api/v2',
+      companyId: 'company-id',
+      psk: 'psk-secret',
+      timeoutMs: 50,
+    }, auditService as never, repository);
+
+    await expect(service.syncHostsWithGroups()).resolves.toMatchObject({ ok: true });
+    expect(repository.upsertHosts).toHaveBeenCalledWith(expect.objectContaining({
+      hosts: expect.arrayContaining([
+        expect.objectContaining({ externalId: 'host-1', equipmentTag: '1234', tagQuality: 'valid', tagSource: 'custom_field' }),
+        expect.objectContaining({ externalId: 'host-2', equipmentTag: 'ABC-12', tagQuality: 'invalid', tagSource: 'custom_field' }),
+      ]),
+    }));
+    expect(auditService.recordAuditEventSafe).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'LOGMEIN_CUSTOMFIELD_READ',
+      payload: expect.objectContaining({ read_only: true, no_remote_execution: true }),
+    }));
+
+    vi.unstubAllGlobals();
+  });
+
   it('lists synchronized groups from asset cache rather than mappings table', async () => {
     const service = await readProjectFile('../integaglpi/src/Service/LogmeinGovernanceService.php');
     expect(service).toContain('FROM " . self::ASSET_CACHE_TABLE');
@@ -341,6 +396,8 @@ describe('V6-E3 LogMeIn read-only governance', () => {
     expect(service).toContain('entityExists($entityId)');
     expect(service).toContain('getCacheSummary');
     expect(service).toContain('syncReadonlyCatalog');
+    expect(service).toContain('getInventoryQualityReport');
+    expect(service).toContain('classifyEquipmentTag');
     expect(service).toContain('Plugin::getRuntimeConfigValue(\'LOGMEIN_INTEGRATION_ENABLED\')');
     expect(service).toContain('Selecione uma entidade GLPI existente.');
     expect(service).toContain('SecurityPermissionService::enforceEntityScope($entityId)');
@@ -358,6 +415,7 @@ describe('V6-E3 LogMeIn read-only governance', () => {
     );
     expect(front).toContain('Plugin::isCsrfValid($_POST)');
     expect(front).toContain('$entityOptions = $service->listAllowedEntities();');
+    expect(front).toContain('$inventoryQualityReport = $service->getInventoryQualityReport();');
     expect(front).toContain('sync_logmein');
     expect(front).toContain('RIGHT_MANAGE_LOGMEIN_MAPPING');
     expect(template).toContain('Sincronizar grupos do LogMeIn');
@@ -367,6 +425,12 @@ describe('V6-E3 LogMeIn read-only governance', () => {
     expect(template).toContain('data-entity-filter');
     expect(template).toContain('Digite para buscar uma entidade GLPI');
     expect(template).toContain('A lista usa somente entidades reais dentro do escopo GLPI da sessão atual.');
+    expect(template).toContain('Qualidade cadastral LogMeIn');
+    expect(template).toContain('Hosts sem etiqueta');
+    expect(template).toContain('Etiquetas inválidas');
+    expect(template).toContain('Etiquetas duplicadas');
+    expect(template).toContain('Grupos sem entidade');
+    expect(template).toContain('Relatórios são agregados/sanitizados');
     expect(template).not.toMatch(/<input[^>]+name=["']glpi_entity_id["']/i);
     expect(template).toContain('Prévia de hosts do grupo');
     expect(template).toContain('Cache local:');
@@ -378,6 +442,9 @@ describe('V6-E3 LogMeIn read-only governance', () => {
     expect(ticketTab).toContain('Sem sessão remota, sem comando');
     expect(menu).toContain('logmein.mapping.php');
     expect(nodeService).toContain('hostswithgroups');
+    expect(nodeService).toContain('extractCustomFields');
+    expect(nodeService).toContain('extractEquipmentTagFromCustomFields');
+    expect(nodeService).toContain('LOGMEIN_CUSTOMFIELD_READ');
     expect(nodeService).toContain('groupid');
     expect(nodeService).toContain('groupID');
     expect(nodeService).toContain('hostsGroups');

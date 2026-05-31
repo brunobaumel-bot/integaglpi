@@ -16,6 +16,8 @@ export interface LogmeinHostContext {
   groupName: string;
   hostName: string;
   equipmentTag: string;
+  tagQuality?: 'valid' | 'invalid' | 'missing';
+  tagSource?: 'custom_field' | 'fallback' | 'none';
   status: 'online' | 'offline' | 'unknown';
   lastSeenAt: string | null;
 }
@@ -194,6 +196,13 @@ export class LogmeinReadonlyContextService {
     try {
       const snapshot = await this.fetchHostsWithGroups();
       const imported = await this.repository.upsertHosts(snapshot);
+      if (snapshot.customFieldsReadCount > 0) {
+        await this.audit('LOGMEIN_CUSTOMFIELD_READ', 'success', {
+          endpoint,
+          custom_fields_read: snapshot.customFieldsReadCount,
+          fields_used: ['Etiqueta', 'Patrimônio', 'GLPI_ID', 'Cliente', 'Entidade'],
+        });
+      }
       await this.repository.insertSyncAudit({
         status: 'completed',
         groupsImported: imported.groupsImported,
@@ -243,6 +252,7 @@ export class LogmeinReadonlyContextService {
     groups: Array<{ externalId: string; name: string }>;
     hosts: LogmeinHostContext[];
     sourceSnapshotHash: string;
+    customFieldsReadCount: number;
   }> {
     const endpoint = this.endpoint();
     const controller = new AbortController();
@@ -267,6 +277,7 @@ export class LogmeinReadonlyContextService {
         groups,
         hosts,
         sourceSnapshotHash: this.hash(JSON.stringify({ groups, hosts })),
+        customFieldsReadCount: hosts.filter((host) => host.tagSource === 'custom_field').length,
       };
     } finally {
       clearTimeout(timeout);
@@ -376,16 +387,20 @@ export class LogmeinReadonlyContextService {
       || (groupExternalId !== '' ? groupNames.get(groupExternalId) ?? '' : '')
       || groupExternalId;
     const hostName = firstText(record, ['host_name', 'hostName', 'hostname', 'hostDescription', 'hostdescription', 'name', 'description', 'Description'], 160);
-    const equipmentTag = this.extractEquipmentTag([
+    const customFieldTag = this.extractEquipmentTagFromCustomFields(this.extractCustomFields(record));
+    const explicitTag = this.extractEquipmentTag([
       record.equipment_tag,
       record.tag,
       record.assetTag,
+    ]);
+    const fallbackTag = this.extractEquipmentTag([
       record.description,
       record.Description,
       record.hostDescription,
       record.hostdescription,
       hostName,
-    ]);
+    ], false);
+    const selectedTag = customFieldTag.value !== '' ? customFieldTag : explicitTag.value !== '' ? explicitTag : fallbackTag;
     const status = this.normalizeStatus(record.status ?? record.hostStatus ?? record.isHostOnline ?? record.isOnline ?? record.HostState);
 
     return {
@@ -393,7 +408,9 @@ export class LogmeinReadonlyContextService {
       groupExternalId,
       groupName,
       hostName,
-      equipmentTag,
+      equipmentTag: selectedTag.value,
+      tagQuality: selectedTag.quality,
+      tagSource: selectedTag.source,
       status,
       lastSeenAt: firstText(record, ['last_seen_at', 'lastSeenAt', 'hostStateChangeDate', 'HostStateChangeDate'], 80) || null,
     };
@@ -417,16 +434,72 @@ export class LogmeinReadonlyContextService {
     return 'unknown';
   }
 
-  private extractEquipmentTag(values: unknown[]): string {
+  private extractEquipmentTag(values: unknown[], allowInvalid = true): { value: string; quality: LogmeinHostContext['tagQuality']; source: LogmeinHostContext['tagSource'] } {
     for (const value of values) {
       const clean = sanitizeText(value, 240);
+      if (clean === '') {
+        continue;
+      }
       const match = clean.match(/(?<!\d)(\d{4})(?!\d)/);
       if (match) {
-        return match[1];
+        return { value: match[1], quality: 'valid', source: 'fallback' };
+      }
+      const invalidCandidate = clean.match(/[A-Za-z0-9_-]{3,24}/);
+      if (allowInvalid && invalidCandidate) {
+        return { value: invalidCandidate[0], quality: 'invalid', source: 'fallback' };
       }
     }
 
-    return '';
+    return { value: '', quality: 'missing', source: 'none' };
+  }
+
+  private extractEquipmentTagFromCustomFields(fields: Record<string, string>): { value: string; quality: LogmeinHostContext['tagQuality']; source: LogmeinHostContext['tagSource'] } {
+    for (const fieldName of ['etiqueta', 'patrimonio', 'glpi_id']) {
+      const clean = sanitizeText(fields[fieldName], 80);
+      if (clean === '') {
+        continue;
+      }
+
+      return {
+        value: clean,
+        quality: /^\d{4}$/.test(clean) ? 'valid' : 'invalid',
+        source: 'custom_field',
+      };
+    }
+
+    return { value: '', quality: 'missing', source: 'none' };
+  }
+
+  private extractCustomFields(record: Record<string, unknown>): Record<string, string> {
+    const fields: Record<string, string> = {};
+    const objectFields = selectRecord(record.customFields, record.customfields, record.CustomFields, record.custom_fields);
+    for (const [name, value] of Object.entries(objectFields)) {
+      const normalizedName = this.normalizeCustomFieldName(name);
+      const cleanValue = sanitizeText(value, 120);
+      if (normalizedName !== '' && cleanValue !== '') {
+        fields[normalizedName] = cleanValue;
+      }
+    }
+
+    for (const item of selectArray(record.customFields, record.customfields, record.CustomFields, record.custom_fields, record.fields, record.Fields)) {
+      const field = selectRecord(item);
+      const normalizedName = this.normalizeCustomFieldName(firstText(field, ['name', 'fieldName', 'field_name', 'label', 'key', 'Name'], 80));
+      const cleanValue = firstText(field, ['value', 'fieldValue', 'field_value', 'text', 'Value'], 120);
+      if (normalizedName !== '' && cleanValue !== '') {
+        fields[normalizedName] = cleanValue;
+      }
+    }
+
+    return fields;
+  }
+
+  private normalizeCustomFieldName(value: string): string {
+    return sanitizeText(value, 80)
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
   }
 
   private fallback(status: LogmeinReadonlyResult['status'], message: string): LogmeinReadonlyResult {

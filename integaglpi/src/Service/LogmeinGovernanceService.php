@@ -106,20 +106,31 @@ final class LogmeinGovernanceService
             foreach ($rows as $row) {
                 $mappedEntityId = (int) ($row['mapped_entity_id'] ?? 0);
                 $cacheEntityId = (int) ($row['glpi_entity_candidate_id'] ?? 0);
+                $rawTag = $this->sanitizeText((string) ($row['equipment_tag'] ?? ''), 80);
+                $tagQuality = $this->classifyEquipmentTag($rawTag);
                 $confidence = max(
                     (int) ($row['confidence_score'] ?? 0),
                     (int) ($row['mapped_confidence_score'] ?? 0)
                 );
+                $warnings = [];
+                if ($tagQuality === 'missing') {
+                    $warnings[] = __('Sem etiqueta válida no LogMeIn.', 'glpiintegaglpi');
+                } elseif ($tagQuality === 'invalid') {
+                    $warnings[] = __('Etiqueta LogMeIn fora do padrão de 4 dígitos.', 'glpiintegaglpi');
+                }
                 $items[] = [
                     'host_external_hash' => $this->hash((string) ($row['logmein_host_external_id'] ?? '')),
                     'group_external_hash' => $this->hash((string) ($row['logmein_group_external_id'] ?? '')),
                     'group_name' => $this->sanitizeText((string) ($row['logmein_group_name'] ?? '')),
                     'host_name' => $this->sanitizeText((string) ($row['host_name_sanitized'] ?? '')),
-                    'equipment_tag' => $this->sanitizeText((string) ($row['equipment_tag'] ?? '')),
+                    'equipment_tag' => $tagQuality === 'valid' ? $rawTag : '',
+                    'raw_equipment_tag_status' => $tagQuality,
                     'status' => $this->sanitizeStatus((string) ($row['status'] ?? 'unknown')),
                     'last_seen_at' => $this->sanitizeText((string) ($row['last_seen_at'] ?? ''), 80),
+                    'last_sync_at' => $this->sanitizeText((string) ($row['cache_updated_at'] ?? ''), 80),
                     'entity_candidate_id' => $mappedEntityId > 0 ? $mappedEntityId : $cacheEntityId,
                     'confidence_score' => min(100, max(0, $confidence)),
+                    'warnings' => $warnings,
                     'confirmation_required' => true,
                 ];
             }
@@ -343,6 +354,87 @@ final class LogmeinGovernanceService
             'groups_count' => (int) ($row['groups_count'] ?? 0),
             'hosts_count' => (int) ($row['hosts_count'] ?? 0),
             'last_cache_update' => $this->sanitizeText((string) ($row['last_cache_update'] ?? ''), 80),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function getInventoryQualityReport(): array
+    {
+        $base = [
+            'status' => 'unavailable',
+            'hosts_without_tag' => 0,
+            'invalid_tags' => 0,
+            'duplicated_tags' => [],
+            'groups_without_entity' => [],
+            'generated_at' => gmdate('c'),
+            'read_only' => true,
+        ];
+        if (!$this->pluginConfigService->isConfigured() || !$this->tableExists(self::ASSET_CACHE_TABLE)) {
+            return $base;
+        }
+
+        SecurityAuditService::logLogmeinReportGenerated('logmein_inventory_quality', [
+            'read_only' => true,
+            'scope' => 'cache_summary',
+        ]);
+
+        $hostsWithoutTag = (int) $this->fetchScalar(
+            "SELECT COUNT(*)
+             FROM " . self::ASSET_CACHE_TABLE . "
+             WHERE COALESCE(equipment_tag, '') = ''"
+        );
+        $invalidTags = (int) $this->fetchScalar(
+            "SELECT COUNT(*)
+             FROM " . self::ASSET_CACHE_TABLE . "
+             WHERE COALESCE(equipment_tag, '') <> ''
+               AND equipment_tag !~ '^[0-9]{4}$'"
+        );
+        $duplicates = $this->fetchRows(
+            "SELECT equipment_tag, COUNT(*) AS hosts_count
+             FROM " . self::ASSET_CACHE_TABLE . "
+             WHERE COALESCE(equipment_tag, '') <> ''
+               AND equipment_tag ~ '^[0-9]{4}$'
+             GROUP BY equipment_tag
+             HAVING COUNT(*) > 1
+             ORDER BY hosts_count DESC, equipment_tag ASC
+             LIMIT 20"
+        );
+        $groupsWithoutEntity = [];
+        if ($this->tableExists(self::GROUP_MAP_TABLE)) {
+            $groupsWithoutEntity = $this->fetchRows(
+                "SELECT a.logmein_group_external_id, a.logmein_group_name, COUNT(*) AS hosts_count
+                 FROM " . self::ASSET_CACHE_TABLE . " a
+                 LEFT JOIN " . self::GROUP_MAP_TABLE . " m
+                   ON m.logmein_group_external_id = a.logmein_group_external_id
+                  AND m.is_active = TRUE
+                 WHERE COALESCE(a.logmein_group_external_id, '') <> ''
+                   AND m.id IS NULL
+                 GROUP BY a.logmein_group_external_id, a.logmein_group_name
+                 ORDER BY hosts_count DESC, a.logmein_group_name ASC
+                 LIMIT 20"
+            );
+        }
+
+        return [
+            ...$base,
+            'status' => 'available',
+            'hosts_without_tag' => $hostsWithoutTag,
+            'invalid_tags' => $invalidTags,
+            'duplicated_tags' => array_map(function (array $row): array {
+                return [
+                    'equipment_tag' => $this->sanitizeText((string) ($row['equipment_tag'] ?? ''), 20),
+                    'hosts_count' => (int) ($row['hosts_count'] ?? 0),
+                ];
+            }, $duplicates),
+            'groups_without_entity' => array_map(function (array $row): array {
+                return [
+                    'logmein_group_external_id_hash' => $this->hash((string) ($row['logmein_group_external_id'] ?? '')),
+                    'logmein_group_name' => $this->sanitizeText((string) ($row['logmein_group_name'] ?? '')),
+                    'hosts_count' => (int) ($row['hosts_count'] ?? 0),
+                ];
+            }, $groupsWithoutEntity),
         ];
     }
 
@@ -572,6 +664,40 @@ final class LogmeinGovernanceService
         $value = $statement->fetchColumn();
 
         return $value === false || $value === null ? 0 : (int) $value;
+    }
+
+    private function fetchScalar(string $sql): mixed
+    {
+        $statement = $this->getPdo()->query($sql);
+        if ($statement === false) {
+            return null;
+        }
+
+        return $statement->fetchColumn();
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function fetchRows(string $sql): array
+    {
+        $statement = $this->getPdo()->query($sql);
+        if ($statement === false) {
+            return [];
+        }
+        $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+
+        return is_array($rows) ? $rows : [];
+    }
+
+    private function classifyEquipmentTag(string $tag): string
+    {
+        $tag = trim($tag);
+        if ($tag === '') {
+            return 'missing';
+        }
+
+        return preg_match('/^\d{4}$/', $tag) === 1 ? 'valid' : 'invalid';
     }
 
     private function entityExists(int $entityId): bool

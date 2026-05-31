@@ -433,6 +433,8 @@ $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
                                         <th><?= $this->escape(__('Host', 'glpiintegaglpi')); ?></th>
                                         <th><?= $this->escape(__('Etiqueta', 'glpiintegaglpi')); ?></th>
                                         <th><?= $this->escape(__('Status', 'glpiintegaglpi')); ?></th>
+                                        <th><?= $this->escape(__('Último sync', 'glpiintegaglpi')); ?></th>
+                                        <th><?= $this->escape(__('Alertas', 'glpiintegaglpi')); ?></th>
                                         <th><?= $this->escape(__('Entidade candidata', 'glpiintegaglpi')); ?></th>
                                         <th><?= $this->escape(__('Confiança', 'glpiintegaglpi')); ?></th>
                                     </tr>
@@ -443,8 +445,17 @@ $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
                                         <tr>
                                             <td><?= $this->escape((string) ($item['group_name'] ?? '-')); ?></td>
                                             <td><?= $this->escape((string) ($item['host_name'] ?? '-')); ?></td>
-                                            <td><?= $this->escape((string) ($item['equipment_tag'] ?? '-')); ?></td>
+                                            <td>
+                                                <?= $this->escape((string) (($item['equipment_tag'] ?? '') !== '' ? $item['equipment_tag'] : __('sem etiqueta válida', 'glpiintegaglpi'))); ?>
+                                            </td>
                                             <td><?= $this->escape((string) ($item['status'] ?? 'unknown')); ?></td>
+                                            <td><?= $this->escape((string) ($item['last_sync_at'] ?? '-')); ?></td>
+                                            <td>
+                                                <?php $warnings = is_array($item['warnings'] ?? null) ? $item['warnings'] : []; ?>
+                                                <?= $warnings === []
+                                                    ? $this->escape(__('sem alerta', 'glpiintegaglpi'))
+                                                    : $this->escape(implode(' | ', array_map('strval', $warnings))); ?>
+                                            </td>
                                             <td><?= (int) ($item['entity_candidate_id'] ?? 0) > 0 ? '#' . (int) $item['entity_candidate_id'] : '-'; ?></td>
                                             <td><?= $score; ?>%</td>
                                         </tr>
