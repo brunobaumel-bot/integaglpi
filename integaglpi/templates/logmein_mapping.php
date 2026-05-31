@@ -12,15 +12,129 @@ use GlpiPlugin\Integaglpi\Plugin;
 /** @var array<string, mixed>|null $lastSyncStatus */
 /** @var array{groups_count:int,hosts_count:int,last_cache_update:string} $cacheSummary */
 /** @var array<string, mixed> $inventoryQualityReport */
+/** @var array<string, mixed> $healthSummary */
 /** @var string $selectedGroupId */
 /** @var bool $featureEnabled */
 
 $csrfToken = Plugin::getCsrfToken();
 $duplicatedTags = is_array($inventoryQualityReport['duplicated_tags'] ?? null) ? $inventoryQualityReport['duplicated_tags'] : [];
 $groupsWithoutEntity = is_array($inventoryQualityReport['groups_without_entity'] ?? null) ? $inventoryQualityReport['groups_without_entity'] : [];
+
+// Health summary helpers.
+$hStatus        = (string) ($healthSummary['status'] ?? 'unavailable');
+$hAlerts        = is_array($healthSummary['alerts'] ?? null) ? $healthSummary['alerts'] : [];
+$hTagPct        = isset($healthSummary['tag_coverage_percent']) ? (int) $healthSummary['tag_coverage_percent'] : null;
+$hCacheAge      = isset($healthSummary['cache_age_hours']) ? (float) $healthSummary['cache_age_hours'] : null;
+$hLastSyncAt    = (string) ($healthSummary['last_sync_timestamp'] ?? '');
+$hLastSyncSt    = (string) ($healthSummary['last_sync_status'] ?? '');
+$hDurationMs    = isset($healthSummary['last_sync_duration_ms']) ? (int) $healthSummary['last_sync_duration_ms'] : null;
+$hConsecFail    = (int) ($healthSummary['consecutive_failures'] ?? 0);
+$hSyncError     = isset($healthSummary['last_sync_error']) ? (string) $healthSummary['last_sync_error'] : null;
+$hStatusClass   = match($hStatus) {
+    'ok'       => 'success',
+    'warning'  => 'warning',
+    'critical' => 'danger',
+    default    => 'secondary',
+};
 ?>
 
 <div class="container-fluid">
+
+    <?php
+    /* ── Health summary card ───────────────────────────────────────────────── */
+    ?>
+    <div class="card mb-3 border-<?= htmlspecialchars($hStatusClass, ENT_QUOTES, 'UTF-8'); ?>">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <strong><?= __('Saúde do cache LogMeIn', 'glpiintegaglpi'); ?></strong>
+            <span class="badge bg-<?= htmlspecialchars($hStatusClass, ENT_QUOTES, 'UTF-8'); ?>">
+                <?= htmlspecialchars(strtoupper($hStatus !== '' ? $hStatus : 'unavailable'), ENT_QUOTES, 'UTF-8'); ?>
+            </span>
+        </div>
+        <div class="card-body">
+
+            <?php /* Visual alert banners — UI only, no WhatsApp/email/ticket. */ ?>
+
+            <?php if (!empty($hAlerts['sync_failing'])) { ?>
+                <div class="alert alert-danger d-flex align-items-center gap-2 py-2 mb-2">
+                    <i class="ti ti-alert-triangle"></i>
+                    <?= sprintf(
+                        htmlspecialchars(__('Sync LogMeIn falhou %d vezes consecutivas. Verifique credenciais e conectividade.', 'glpiintegaglpi'), ENT_QUOTES, 'UTF-8'),
+                        $hConsecFail
+                    ); ?>
+                    <?php if ($hSyncError !== null && $hSyncError !== '') { ?>
+                        <code class="ms-2 small"><?= htmlspecialchars($hSyncError, ENT_QUOTES, 'UTF-8'); ?></code>
+                    <?php } ?>
+                </div>
+            <?php } ?>
+
+            <?php if (!empty($hAlerts['cache_stale'])) { ?>
+                <?php $cacheAlertClass = ($hCacheAge !== null && $hCacheAge > 48.0) ? 'danger' : 'warning'; ?>
+                <div class="alert alert-<?= $cacheAlertClass; ?> d-flex align-items-center gap-2 py-2 mb-2">
+                    <i class="ti ti-clock-exclamation"></i>
+                    <?= sprintf(
+                        htmlspecialchars(__('Cache LogMeIn com %.1f horas de idade (limite aviso: 24 h, crítico: 48 h). Execute sync manual.', 'glpiintegaglpi'), ENT_QUOTES, 'UTF-8'),
+                        (float) ($hCacheAge ?? 0)
+                    ); ?>
+                </div>
+            <?php } ?>
+
+            <?php if (!empty($hAlerts['low_tag_coverage'])) { ?>
+                <div class="alert alert-warning d-flex align-items-center gap-2 py-2 mb-2">
+                    <i class="ti ti-tag-off"></i>
+                    <?= sprintf(
+                        htmlspecialchars(__('Cobertura de etiquetas: %d%% (limiar mínimo: 85%%). Verifique etiquetas inválidas ou ausentes.', 'glpiintegaglpi'), ENT_QUOTES, 'UTF-8'),
+                        (int) ($hTagPct ?? 0)
+                    ); ?>
+                </div>
+            <?php } ?>
+
+            <?php if (!empty($hAlerts['groups_without_entity'])) { ?>
+                <div class="alert alert-warning d-flex align-items-center gap-2 py-2 mb-2">
+                    <i class="ti ti-building-off"></i>
+                    <?= htmlspecialchars(__('Há grupos LogMeIn sem entidade GLPI mapeada. Adicione mapeamentos abaixo.', 'glpiintegaglpi'), ENT_QUOTES, 'UTF-8'); ?>
+                </div>
+            <?php } ?>
+
+            <?php /* Metric grid */ ?>
+            <div class="row g-2">
+                <?php
+                $metrics = [
+                    ['label' => 'Hosts no cache', 'value' => (int) ($healthSummary['total_hosts'] ?? 0), 'extra' => ''],
+                    ['label' => 'Etiquetas válidas', 'value' => (int) ($healthSummary['tags_valid'] ?? 0), 'extra' => $hTagPct !== null ? " ({$hTagPct}%)" : ''],
+                    ['label' => 'Etiquetas inválidas', 'value' => (int) ($healthSummary['tags_invalid'] ?? 0), 'extra' => ''],
+                    ['label' => 'Hosts sem etiqueta', 'value' => (int) ($healthSummary['hosts_without_tag'] ?? 0), 'extra' => ''],
+                    ['label' => 'Grupos sem entidade', 'value' => (int) ($healthSummary['groups_without_entity'] ?? 0), 'extra' => ''],
+                    ['label' => 'Falhas consecutivas', 'value' => $hConsecFail, 'extra' => ''],
+                ];
+                if ($hCacheAge !== null) {
+                    $metrics[] = ['label' => 'Idade do cache', 'value' => round($hCacheAge, 1) . 'h', 'extra' => ''];
+                }
+                if ($hDurationMs !== null) {
+                    $metrics[] = ['label' => 'Duração último sync', 'value' => round($hDurationMs / 1000, 1) . 's', 'extra' => ''];
+                }
+                foreach ($metrics as $m): ?>
+                    <div class="col-md-3 col-xl-2">
+                        <div class="border rounded p-2 h-100">
+                            <div class="text-muted small"><?= htmlspecialchars(__($m['label'], 'glpiintegaglpi'), ENT_QUOTES, 'UTF-8'); ?></div>
+                            <strong><?= htmlspecialchars((string) $m['value'] . $m['extra'], ENT_QUOTES, 'UTF-8'); ?></strong>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+
+            <?php if ($hLastSyncAt !== '' || $hLastSyncSt !== '') { ?>
+                <div class="form-text mt-2">
+                    <?= __('Último sync:', 'glpiintegaglpi'); ?>
+                    <strong><?= htmlspecialchars($hLastSyncSt, ENT_QUOTES, 'UTF-8'); ?></strong>
+                    <?php if ($hLastSyncAt !== '') { ?>
+                        — <?= htmlspecialchars($hLastSyncAt, ENT_QUOTES, 'UTF-8'); ?>
+                    <?php } ?>
+                    | <?= __('Nenhum alerta gera WhatsApp, e-mail ou ticket automático.', 'glpiintegaglpi'); ?>
+                </div>
+            <?php } ?>
+        </div>
+    </div>
+
     <div class="card mb-3">
         <div class="card-header">
             <strong><?= __('Mapeamento LogMeIn read-only', 'glpiintegaglpi'); ?></strong>

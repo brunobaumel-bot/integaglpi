@@ -1,8 +1,9 @@
 # V6 Governance, Release, and LogMeIn Read-only Closure
 
-Phase: `integaglpi_v6_e3_governanca_logmein_release_001`
+Phase: `integaglpi_v6_e3_governanca_logmein_release_001` → hardening:
+`integaglpi_logmein_operational_hardening_release_001`
 
-Status: implementation package ready for Cursor review and manual smoke. Production remains blocked.
+Status: hardening package ready for Cursor review and manual smoke. Production remains blocked.
 
 Itens de governanca cobertos: Release checklist, release notes, Matriz RACI,
 Owners por processo, Revisão mensal de permissões, Change Enablement,
@@ -13,6 +14,7 @@ backup/rollback evidenciado e runbooks de crise.
 - V6-E1: operational console guards, configuration RBAC, PII guard, and ghost-click protections.
 - V6-E2: assistive Copilot with explicit source, feedback, short timeout, circuit breaker, sanitized context, and no auto-send.
 - V6-E3: governance closure, release readiness, crisis runbooks, permission review cadence, and LogMeIn read-only design gates.
+- V6-E4 (hardening): Redis cross-process sync lock, duration tracking, health summary endpoint (`/internal/glpi/logmein/health`), visual alert banners in UI, retention policy, and updated release checklist.
 
 ## Release Checklist
 
@@ -21,9 +23,12 @@ backup/rollback evidenciado e runbooks de crise.
 | `git status --short` clean before deploy | Release owner | terminal output | PENDING_MANUAL |
 | Cursor review `CLOSE` or `CLOSE_COM_RESSALVAS` | Cursor reviewer | review report | PENDING |
 | TypeScript clean | Backend owner | `npx tsc --noEmit` | PENDING |
-| Focused Vitest clean | Backend owner | V6-E3 tests | PENDING |
+| Focused Vitest clean (logmeinReadonlyStatic + logmeinHardeningStatic) | Backend owner | vitest output | PENDING |
 | PHP lint clean | Plugin owner | `php -l` changed PHP files | PENDING |
-| Feature flags reviewed | Security owner | config screenshot/export | PENDING |
+| Feature flags reviewed (`LOGMEIN_INTEGRATION_ENABLED=false` in prod) | Security owner | config screenshot/export | PENDING |
+| Redis lock smoke: concurrent sync returns `sync_in_progress` | Backend owner | manual test log | PENDING_MANUAL |
+| Health endpoint smoke: `GET /internal/glpi/logmein/health` returns metrics | Backend owner | curl output | PENDING_MANUAL |
+| Visual alerts smoke: mapping UI shows health card | Plugin owner | screenshot | PENDING_MANUAL |
 | Backup verified | Infra owner | backup job id or snapshot id | PENDING_MANUAL |
 | Rollback path reviewed | Release owner | rollback checklist below | PENDING_MANUAL |
 | Test smoke approved | Operator | smoke checklist T01-T17 | PENDING_MANUAL |
@@ -64,6 +69,80 @@ backup/rollback evidenciado e runbooks de crise.
 - Rollback is manual only.
 - Feature flags remain conservative and OFF by default for external integrations.
 - No emergency fix may bypass CSRF, RBAC, PII guard, or audit requirements.
+
+## Operational Hardening (V6-E4)
+
+### Sync Concurrency Lock
+
+- Redis `SET NX PX` lock (key: `glpi_plugin_whatsapp:lock:logmein_sync`, TTL: 5 min default).
+- Static in-process flag retained as secondary guard (same-process safety).
+- If Redis is unavailable the lock fails-open: static flag governs; no sync is blocked unnecessarily.
+- `LOGMEIN_SYNC_LOCK_TTL_MS` env var overrides the default (range 30 000–1 800 000 ms).
+- Concurrent attempt emits audit event `LOGMEIN_SYNC_CONCURRENCY_BLOCKED`.
+
+### Sync Performance
+
+- Hosts upserted in batches of 100 rows (`HOST_UPSERT_BATCH_SIZE`).
+- HTTP timeout governed by `LOGMEIN_TIMEOUT_MS` (default 5 s, max 30 s).
+- Sync duration tracked in `payload_json.duration_ms` of the audit row.
+- Cache is NOT cleared on sync failure; previous data remains available.
+
+### Health Endpoint
+
+- `GET /internal/glpi/logmein/health` (bearer-gated, same key as `/sync`).
+- Returns `LogmeinHealthSummary` with: sync status, duration, groups/hosts, tag coverage, cache age, consecutive failures, alert flags.
+- HTTP 503 on `critical` status; 200 otherwise. Never exposes secrets or PII.
+
+### Visual Alerts (UI only)
+
+Displayed in `Mapeamento LogMeIn read-only` card header. No WhatsApp, e-mail, or ticket is created automatically.
+
+| Alert | Condition | Severity |
+| --- | --- | --- |
+| `sync_failing` | ≥ 2 consecutive `failed` sync events | DANGER |
+| `cache_stale` | Cache age > 24 h | WARNING; > 48 h → DANGER |
+| `low_tag_coverage` | Valid-tag coverage < 85% | WARNING |
+| `groups_without_entity` | Any group with no active GLPI mapping | WARNING |
+
+### Health Thresholds
+
+| Metric | Warning | Critical |
+| --- | --- | --- |
+| Tag coverage (valid/total) | < 85% | — |
+| Cache age | > 24 h | > 48 h |
+| Consecutive sync failures | ≥ 2 | ≥ 4 |
+
+### Scheduled Sync (optional)
+
+- Scheduled sync is disabled by default (`LOGMEIN_INTEGRATION_ENABLED=false`).
+- To enable in HOMOLOGAÇÃO: set `LOGMEIN_INTEGRATION_ENABLED=true` and call `/internal/glpi/logmein/sync` from a cron or scheduler.
+- Lock ensures a running sync blocks any scheduled duplicate.
+- Production: manual sync only via operator action; gate `LOGMEIN_INTEGRATION_ENABLED` must remain OFF until human review.
+
+## Retenção de Dados LogMeIn
+
+| Tabela | Dado | Política documentada |
+| --- | --- | --- |
+| `glpi_plugin_integaglpi_logmein_sync_audit` | Eventos de sync (status, payload) | 90 dias — arquivar ou soft-delete via job externo; DELETE físico nunca automático |
+| `glpi_plugin_integaglpi_logmein_asset_cache` | Cache de hosts/grupos | Invalidade lógica: `cache_updated_at` antigo sinaliza stale; purga manual autorizada pelo Infra owner após consenso |
+| `glpi_plugin_integaglpi_logmein_group_maps` | Mapeamentos grupo→entidade | Retenção indefinida (dados de mapeamento operacional); desativação via `is_active=FALSE` |
+| Logs PHP (`error_log`) | Erros sanitizados | Rotação conforme política do servidor (sugere-se 30 dias) |
+| Logs Node.js (pino) | Erros de sync | Rotação conforme política do servidor |
+
+**Princípios:**
+- Nenhum DELETE automático sem gate humano.
+- Dados PII (e-mail, telefone) já são mascarados em escrita; não há PII em tabelas LogMeIn.
+- Credenciais LogMeIn nunca persistidas em banco, log ou UI.
+- `LOGMEIN_COMPANY_ID` e `LOGMEIN_PSK` residem apenas no `.env` do servidor e são lidos em runtime.
+
+## Rollback por Feature Flag
+
+1. Setar `LOGMEIN_INTEGRATION_ENABLED=false` no `.env` do servidor de HOMOLOGAÇÃO/Produção.
+2. Reiniciar `integration-service` (`docker compose restart integration-service` ou equivalente manual).
+3. Verificar: `/health` retorna `ok`, `/internal/glpi/logmein/sync` retorna `{"status":"disabled"}`.
+4. Verificar no GLPI: tab LogMeIn no ticket exibe "Contexto de ativo temporariamente indisponível." (comportamento esperado).
+5. Mappping e relatórios podem permanecer acessíveis no PHP (lêem apenas o cache local); ou desabilitar via RBAC removendo `RIGHT_MANAGE_LOGMEIN_MAPPING` do perfil.
+6. Registrar: operator, timestamp, commit hash do rollback, resultado.
 
 ## Backup And Rollback Evidence
 

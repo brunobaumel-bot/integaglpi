@@ -49,6 +49,7 @@ $hostPreview = $service->listHostsPreview($selectedGroupId);
 $lastSyncStatus = $service->getLastSyncStatus();
 $cacheSummary = $service->getCacheSummary();
 $inventoryQualityReport = $service->getInventoryQualityReport();
+$healthSummary = $service->getHealthSummary();
 $featureEnabled = $service->isFeatureEnabled();
 
 Html::header(__('Mapeamento LogMeIn read-only', 'glpiintegaglpi'), $_SERVER['PHP_SELF'], 'plugins', GestaoGroupMenu::class);

@@ -687,6 +687,162 @@ final class LogmeinGovernanceService
         ];
     }
 
+    // ── Health summary thresholds ──────────────────────────────────────────────
+    private const HEALTH_TAG_COVERAGE_WARNING_PCT  = 85;
+    private const HEALTH_CACHE_STALE_WARNING_H     = 24;
+    private const HEALTH_CACHE_STALE_CRITICAL_H    = 48;
+    private const HEALTH_CONSECUTIVE_FAIL_WARNING   = 2;
+
+    /**
+     * Returns a health summary for display in the LogMeIn mapping UI.
+     * Never throws. All metrics are aggregated/sanitized.
+     *
+     * @return array<string, mixed>
+     */
+    public function getHealthSummary(): array
+    {
+        $empty = [
+            'ok' => false,
+            'status' => 'unavailable',
+            'last_sync_timestamp' => null,
+            'last_sync_status' => null,
+            'last_sync_duration_ms' => null,
+            'groups_imported' => 0,
+            'hosts_imported' => 0,
+            'last_sync_error' => null,
+            'total_hosts' => 0,
+            'tags_valid' => 0,
+            'tags_invalid' => 0,
+            'hosts_without_tag' => 0,
+            'groups_without_entity' => 0,
+            'cache_age_hours' => null,
+            'tag_coverage_percent' => null,
+            'consecutive_failures' => 0,
+            'alerts' => [
+                'sync_failing' => false,
+                'cache_stale' => false,
+                'low_tag_coverage' => false,
+                'groups_without_entity' => false,
+            ],
+            'thresholds' => [
+                'tag_coverage_warning_pct' => self::HEALTH_TAG_COVERAGE_WARNING_PCT,
+                'cache_stale_warning_h' => self::HEALTH_CACHE_STALE_WARNING_H,
+                'cache_stale_critical_h' => self::HEALTH_CACHE_STALE_CRITICAL_H,
+                'consecutive_fail_warning' => self::HEALTH_CONSECUTIVE_FAIL_WARNING,
+            ],
+            'read_only' => true,
+        ];
+
+        if (!$this->pluginConfigService->isConfigured()
+            || !$this->tableExists(self::SYNC_AUDIT_TABLE)
+            || !$this->tableExists(self::ASSET_CACHE_TABLE)) {
+            return $empty;
+        }
+
+        try {
+            // 1. Last N sync events (completed|failed) for consecutive-failure count.
+            $stmt = $this->getPdo()->query(
+                "SELECT status, payload_json, created_at
+                 FROM " . self::SYNC_AUDIT_TABLE . "
+                 WHERE status IN ('completed', 'failed')
+                 ORDER BY id DESC
+                 LIMIT 5"
+            );
+            $syncRows = ($stmt !== false) ? ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+            $lastSync = $syncRows[0] ?? null;
+            $lastPayload = [];
+            if ($lastSync !== null) {
+                $decoded = json_decode((string) ($lastSync['payload_json'] ?? '{}'), true);
+                $lastPayload = is_array($decoded) ? $decoded : [];
+            }
+            $consecutiveFailures = 0;
+            foreach ($syncRows as $row) {
+                if (($row['status'] ?? '') === 'failed') {
+                    $consecutiveFailures++;
+                } else {
+                    break;
+                }
+            }
+
+            // 2. Cache stats.
+            $cacheStmt = $this->getPdo()->query(
+                "SELECT
+                    COUNT(*)::text AS total_hosts,
+                    COUNT(*) FILTER (WHERE equipment_tag ~ '^[0-9]{4}$')::text AS tags_valid,
+                    COUNT(*) FILTER (WHERE COALESCE(equipment_tag,'') = '')::text AS hosts_without_tag,
+                    COUNT(*) FILTER (WHERE COALESCE(equipment_tag,'') <> '' AND equipment_tag !~ '^[0-9]{4}$')::text AS tags_invalid,
+                    ROUND(EXTRACT(EPOCH FROM (NOW() - MAX(cache_updated_at))) / 3600.0, 2)::text AS cache_age_hours
+                 FROM " . self::ASSET_CACHE_TABLE
+            );
+            $cs = ($cacheStmt !== false) ? ($cacheStmt->fetch(PDO::FETCH_ASSOC) ?: []) : [];
+            $totalHosts = (int) ($cs['total_hosts'] ?? 0);
+            $tagsValid = (int) ($cs['tags_valid'] ?? 0);
+            $hostsWithoutTag = (int) ($cs['hosts_without_tag'] ?? 0);
+            $tagsInvalid = (int) ($cs['tags_invalid'] ?? 0);
+            $cacheAgeHours = isset($cs['cache_age_hours']) && $cs['cache_age_hours'] !== null
+                ? (float) $cs['cache_age_hours'] : null;
+
+            // 3. Groups without entity mapping.
+            $gwStmt = $this->getPdo()->query(
+                "SELECT COUNT(DISTINCT a.logmein_group_external_id)::text AS cnt
+                 FROM " . self::ASSET_CACHE_TABLE . " a
+                 LEFT JOIN " . self::GROUP_MAP_TABLE . " m
+                   ON m.logmein_group_external_id = a.logmein_group_external_id
+                  AND m.is_active = TRUE
+                 WHERE COALESCE(a.logmein_group_external_id,'') <> ''
+                   AND m.id IS NULL"
+            );
+            $gwRow = ($gwStmt !== false) ? ($gwStmt->fetch(PDO::FETCH_ASSOC) ?: []) : [];
+            $groupsWithoutEntity = (int) ($gwRow['cnt'] ?? 0);
+
+            // 4. Derive metrics and alert flags.
+            $tagCoveragePercent = $totalHosts > 0 ? (int) round(($tagsValid / $totalHosts) * 100) : null;
+            $syncFailing = $consecutiveFailures >= self::HEALTH_CONSECUTIVE_FAIL_WARNING;
+            $cacheStale = $cacheAgeHours !== null && $cacheAgeHours > self::HEALTH_CACHE_STALE_WARNING_H;
+            $lowTagCoverage = $tagCoveragePercent !== null
+                && $tagCoveragePercent < self::HEALTH_TAG_COVERAGE_WARNING_PCT;
+            $hasGroupsWithoutEntity = $groupsWithoutEntity > 0;
+
+            $isWarning = $syncFailing || $cacheStale || $lowTagCoverage || $hasGroupsWithoutEntity;
+            $isCritical = ($cacheAgeHours !== null && $cacheAgeHours > self::HEALTH_CACHE_STALE_CRITICAL_H)
+                || ($consecutiveFailures >= self::HEALTH_CONSECUTIVE_FAIL_WARNING * 2);
+
+            return [
+                'ok' => !$isWarning && !$isCritical,
+                'status' => $isCritical ? 'critical' : ($isWarning ? 'warning' : 'ok'),
+                'last_sync_timestamp' => $lastSync !== null
+                    ? $this->sanitizeText((string) ($lastSync['created_at'] ?? ''), 80) : null,
+                'last_sync_status' => $lastSync !== null
+                    ? $this->sanitizeText((string) ($lastSync['status'] ?? ''), 40) : 'never',
+                'last_sync_duration_ms' => isset($lastPayload['duration_ms'])
+                    ? (int) $lastPayload['duration_ms'] : null,
+                'groups_imported' => (int) ($lastPayload['groups_imported'] ?? 0),
+                'hosts_imported' => (int) ($lastPayload['hosts_imported'] ?? 0),
+                'last_sync_error' => isset($lastPayload['error_message_sanitized'])
+                    ? $this->sanitizeText((string) $lastPayload['error_message_sanitized'], 240) : null,
+                'total_hosts' => $totalHosts,
+                'tags_valid' => $tagsValid,
+                'tags_invalid' => $tagsInvalid,
+                'hosts_without_tag' => $hostsWithoutTag,
+                'groups_without_entity' => $groupsWithoutEntity,
+                'cache_age_hours' => $cacheAgeHours,
+                'tag_coverage_percent' => $tagCoveragePercent,
+                'consecutive_failures' => $consecutiveFailures,
+                'alerts' => [
+                    'sync_failing' => $syncFailing,
+                    'cache_stale' => $cacheStale,
+                    'low_tag_coverage' => $lowTagCoverage,
+                    'groups_without_entity' => $hasGroupsWithoutEntity,
+                ],
+                'thresholds' => $empty['thresholds'],
+                'read_only' => true,
+            ];
+        } catch (\Throwable $exception) {
+            error_log('[integaglpi][logmein_health][fallback] ' . $this->sanitizeText($exception->getMessage(), 180));
+            return $empty;
+        }
+    }
+
     /**
      * @return array{type:string,message:string}
      */

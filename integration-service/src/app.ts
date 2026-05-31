@@ -40,7 +40,7 @@ import {
   createManualTicketWhatsappResolveController,
   createManualTicketWhatsappStartTemplateController,
 } from './controllers/createManualTicketWhatsappController.js';
-import { createLogmeinReadonlySyncController } from './controllers/createLogmeinReadonlyController.js';
+import { createLogmeinHealthController, createLogmeinReadonlySyncController } from './controllers/createLogmeinReadonlyController.js';
 import {
   createConversationEntityController,
   createConversationEntityStatusController,
@@ -99,6 +99,7 @@ export function createApp(dependencies: AppDependencies) {
         || req.path.startsWith('/internal/glpi/manual-ticket-whatsapp')
         || req.path.startsWith('/internal/glpi/contact-agenda/import')
         || req.path === '/internal/glpi/logmein/sync'
+        || req.path === '/internal/glpi/logmein/health'
       )
     ) {
       next();
@@ -206,6 +207,12 @@ export function createApp(dependencies: AppDependencies) {
       createInternalBearerMiddleware(dependencies.integrationServiceApiKey),
       createJsonParser(),
       createLogmeinReadonlySyncController(dependencies.logmeinReadonlyContextService),
+    );
+    // Health summary endpoint — GET, no body needed.
+    app.get(
+      '/internal/glpi/logmein/health',
+      createInternalBearerMiddleware(dependencies.integrationServiceApiKey),
+      createLogmeinHealthController(dependencies.logmeinReadonlyContextService),
     );
   }
   app.post(

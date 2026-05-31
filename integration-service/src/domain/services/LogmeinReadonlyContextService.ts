@@ -36,6 +36,55 @@ export interface LogmeinSyncResult {
   groupsImported: number;
   hostsImported: number;
   endpoint: string;
+  /** Wall-clock milliseconds for the completed/failed sync. 0 for early-exit results. */
+  durationMs: number;
+}
+
+/** Thresholds used to compute alert flags in a health summary. */
+export const LOGMEIN_HEALTH_THRESHOLDS = {
+  tagCoverageWarningPercent: 85,
+  cacheStaleWarningHours: 24,
+  cacheStaleCriticalHours: 48,
+  consecutiveFailuresWarning: 2,
+} as const;
+
+export interface LogmeinHealthSummary {
+  ok: boolean;
+  status: 'ok' | 'warning' | 'critical' | 'unavailable';
+  lastSyncTimestamp: string | null;
+  lastSyncStatus: 'completed' | 'failed' | 'never' | null;
+  lastSyncDurationMs: number | null;
+  groupsImported: number;
+  hostsImported: number;
+  lastSyncErrorSanitized: string | null;
+  totalHosts: number;
+  tagsValid: number;
+  tagsInvalid: number;
+  hostsWithoutTag: number;
+  groupsWithoutEntity: number;
+  cacheAgeHours: number | null;
+  tagCoveragePercent: number | null;
+  consecutiveFailures: number;
+  alerts: {
+    syncFailing: boolean;
+    cacheStale: boolean;
+    lowTagCoverage: boolean;
+    groupsWithoutEntity: boolean;
+  };
+  thresholds: typeof LOGMEIN_HEALTH_THRESHOLDS;
+  readOnly: true;
+}
+
+/**
+ * Optional lock adapter for cross-process sync exclusion.
+ * The implementation (e.g. Redis SET NX PX) is injected; the domain only sees this interface.
+ * If not provided the service falls back to the in-process static flag.
+ */
+export interface LogmeinSyncLockAdapter {
+  /** Try ONCE to acquire the lock. Returns true if acquired. Never retries. */
+  tryAcquire(): Promise<boolean>;
+  /** Release the lock. Best-effort; errors must be swallowed. */
+  release(): Promise<void>;
 }
 
 export interface LogmeinReadonlyCacheRepository {
@@ -50,8 +99,11 @@ export interface LogmeinReadonlyCacheRepository {
     groupsImported: number;
     hostsImported: number;
     errorMessageSanitized?: string | null;
+    durationMs?: number | null;
   }): Promise<void>;
   listHostsByGroup(groupExternalId: string, limit: number): Promise<LogmeinHostContext[]>;
+  /** Optional — present in PostgresLogmeinReadonlyRepository but mocks may omit it. */
+  getHealthSummary?(): Promise<LogmeinHealthSummary>;
 }
 
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -115,6 +167,8 @@ function firstText(record: Record<string, unknown>, keys: string[], max = 160): 
   return '';
 }
 
+const SYNC_LOCK_KEY = 'logmein_sync';
+
 export class LogmeinReadonlyContextService {
   private static syncInProgress = false;
 
@@ -122,6 +176,7 @@ export class LogmeinReadonlyContextService {
     private readonly config: LogmeinReadonlyConfig,
     private readonly auditService?: AuditService,
     private readonly repository?: LogmeinReadonlyCacheRepository,
+    private readonly syncLock?: LogmeinSyncLockAdapter,
   ) {}
 
   public async listHostsByGroup(groupExternalId: string): Promise<LogmeinReadonlyResult> {
@@ -180,22 +235,40 @@ export class LogmeinReadonlyContextService {
     if (!this.repository || !await this.repository.isSchemaReady()) {
       return this.syncFallback('migration_required', 'MIGRATION_042_REQUIRED', endpoint);
     }
-    if (LogmeinReadonlyContextService.syncInProgress) {
-      await this.audit('LOGMEIN_SYNC_FAILED', 'failed', {
-        endpoint,
-        reason: 'sync_in_progress',
-      });
 
+    // Step 1: Redis cross-process lock (try once, no retry).
+    const redisLockAcquired = this.syncLock !== undefined ? await this.syncLock.tryAcquire() : true;
+    if (!redisLockAcquired) {
+      await this.audit('LOGMEIN_SYNC_CONCURRENCY_BLOCKED', 'failed', {
+        endpoint,
+        reason: 'redis_lock_busy',
+        lock_key: SYNC_LOCK_KEY,
+      });
+      return this.syncFallback('sync_in_progress', 'LOGMEIN_SYNC_IN_PROGRESS', endpoint);
+    }
+
+    // Step 2: In-process static flag guard.
+    if (LogmeinReadonlyContextService.syncInProgress) {
+      if (this.syncLock && redisLockAcquired) {
+        await this.syncLock.release().catch(() => undefined);
+      }
+      await this.audit('LOGMEIN_SYNC_CONCURRENCY_BLOCKED', 'failed', {
+        endpoint,
+        reason: 'in_process_flag_set',
+        lock_key: SYNC_LOCK_KEY,
+      });
       return this.syncFallback('sync_in_progress', 'LOGMEIN_SYNC_IN_PROGRESS', endpoint);
     }
 
     LogmeinReadonlyContextService.syncInProgress = true;
+    const startMs = Date.now();
     await this.repository.insertSyncAudit({ status: 'started', groupsImported: 0, hostsImported: 0 });
     await this.audit('LOGMEIN_SYNC_STARTED', 'success', { endpoint });
 
     try {
       const snapshot = await this.fetchHostsWithGroups();
       const imported = await this.repository.upsertHosts(snapshot);
+      const durationMs = Date.now() - startMs;
       if (snapshot.customFieldsReadCount > 0) {
         await this.audit('LOGMEIN_CUSTOMFIELD_READ', 'success', {
           endpoint,
@@ -207,11 +280,13 @@ export class LogmeinReadonlyContextService {
         status: 'completed',
         groupsImported: imported.groupsImported,
         hostsImported: imported.hostsImported,
+        durationMs,
       });
       await this.audit('LOGMEIN_SYNC_COMPLETED', 'success', {
         endpoint,
         groups_imported: imported.groupsImported,
         hosts_imported: imported.hostsImported,
+        duration_ms: durationMs,
       });
 
       return {
@@ -221,18 +296,22 @@ export class LogmeinReadonlyContextService {
         groupsImported: imported.groupsImported,
         hostsImported: imported.hostsImported,
         endpoint,
+        durationMs,
       };
     } catch (error: unknown) {
+      const durationMs = Date.now() - startMs;
       const errorMessage = sanitizeText(error instanceof Error ? error.message : String(error), 240);
       await this.repository.insertSyncAudit({
         status: 'failed',
         groupsImported: 0,
         hostsImported: 0,
         errorMessageSanitized: errorMessage,
+        durationMs,
       });
       await this.audit('LOGMEIN_SYNC_FAILED', 'failed', {
         endpoint,
         error_type: this.errorType(error),
+        duration_ms: durationMs,
       });
 
       return {
@@ -242,10 +321,53 @@ export class LogmeinReadonlyContextService {
         groupsImported: 0,
         hostsImported: 0,
         endpoint,
+        durationMs,
       };
     } finally {
       LogmeinReadonlyContextService.syncInProgress = false;
+      if (this.syncLock && redisLockAcquired) {
+        await this.syncLock.release().catch(() => undefined);
+      }
     }
+  }
+
+  /** Returns a health summary for monitoring/alerting. Never throws. */
+  public async getHealthSummary(): Promise<LogmeinHealthSummary> {
+    if (!this.config.enabled) {
+      return this.buildEmptyHealthSummary('unavailable');
+    }
+    if (!this.repository?.getHealthSummary) {
+      return this.buildEmptyHealthSummary('unavailable');
+    }
+    try {
+      return await this.repository.getHealthSummary();
+    } catch {
+      return this.buildEmptyHealthSummary('unavailable');
+    }
+  }
+
+  private buildEmptyHealthSummary(status: LogmeinHealthSummary['status']): LogmeinHealthSummary {
+    return {
+      ok: status === 'ok',
+      status,
+      lastSyncTimestamp: null,
+      lastSyncStatus: null,
+      lastSyncDurationMs: null,
+      groupsImported: 0,
+      hostsImported: 0,
+      lastSyncErrorSanitized: null,
+      totalHosts: 0,
+      tagsValid: 0,
+      tagsInvalid: 0,
+      hostsWithoutTag: 0,
+      groupsWithoutEntity: 0,
+      cacheAgeHours: null,
+      tagCoveragePercent: null,
+      consecutiveFailures: 0,
+      alerts: { syncFailing: false, cacheStale: false, lowTagCoverage: false, groupsWithoutEntity: false },
+      thresholds: LOGMEIN_HEALTH_THRESHOLDS,
+      readOnly: true,
+    };
   }
 
   private async fetchHostsWithGroups(): Promise<{
@@ -514,6 +636,7 @@ export class LogmeinReadonlyContextService {
       groupsImported: 0,
       hostsImported: 0,
       endpoint,
+      durationMs: 0,
     };
   }
 

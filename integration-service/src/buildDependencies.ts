@@ -1,5 +1,6 @@
 import { ContactCacheRepository } from './cache/ContactCacheRepository.js';
 import { RedisKeyLock } from './cache/RedisKeyLock.js';
+import { LogmeinRedisSyncLock } from './cache/LogmeinRedisSyncLock.js';
 import { MetaClient } from './adapters/meta/MetaClient.js';
 import { OllamaClient } from './ai/OllamaClient.js';
 import { env } from './config/env.js';
@@ -229,6 +230,10 @@ export function buildDependencies() {
     keyLock,
     auditService,
   );
+  const logmeinSyncLock = new LogmeinRedisSyncLock(
+    // TTL covers worst-case large sync; auto-expires if process dies.
+    envInt('LOGMEIN_SYNC_LOCK_TTL_MS', 5 * 60 * 1_000, 30_000, 30 * 60 * 1_000),
+  );
   const logmeinReadonlyContextService = new LogmeinReadonlyContextService(
     {
       enabled: envBool('LOGMEIN_INTEGRATION_ENABLED', false),
@@ -239,6 +244,7 @@ export function buildDependencies() {
     },
     auditService,
     logmeinReadonlyRepository,
+    logmeinSyncLock,
   );
   const inactivityAutomationService = new InactivityAutomationService(
     inactivityTrackingRepository,
