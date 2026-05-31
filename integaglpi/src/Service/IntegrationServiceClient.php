@@ -22,6 +22,7 @@ final class IntegrationServiceClient
     private const PATH_CONTACT_AGENDA_IMPORT_ROLLBACK = '/internal/glpi/contact-agenda/import/%s/rollback';
     private const PATH_MANUAL_TICKET_WHATSAPP_RESOLVE = '/internal/glpi/manual-ticket-whatsapp/%d/resolve';
     private const PATH_MANUAL_TICKET_WHATSAPP_START_TEMPLATE = '/internal/glpi/manual-ticket-whatsapp/%d/start-template';
+    private const PATH_LOGMEIN_SYNC = '/internal/glpi/logmein/sync';
     private const PATH_AI_QUALITY_ANALYZE = '/internal/glpi/ai-quality/analyze';
     private const PATH_AI_QUALITY_FEEDBACK = '/internal/glpi/ai-quality/feedback';
     private const PATH_HISTORICAL_MINING_PREVIEW = '/internal/glpi/historical-mining/preview';
@@ -271,6 +272,17 @@ final class IntegrationServiceClient
                 ],
             ];
         }
+    }
+
+    /**
+     * Requests a read-only LogMeIn groups/hosts synchronization in Node.
+     *
+     * @param array<string, mixed> $payload
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function syncLogmeinReadonly(array $payload): array
+    {
+        return $this->postJson($this->endpoint(self::PATH_LOGMEIN_SYNC), $payload, 'logmein][sync', 30);
     }
 
     /**

@@ -12,6 +12,7 @@ import type { AiPilotService } from './domain/services/AiPilotService.js';
 import type { AiOperationsService } from './domain/services/AiOperationsService.js';
 import type { ContactAgendaImportService } from './domain/services/ContactAgendaImportService.js';
 import type { ManualTicketWhatsappLinkService } from './domain/services/ManualTicketWhatsappLinkService.js';
+import type { LogmeinReadonlyContextService } from './domain/services/LogmeinReadonlyContextService.js';
 import type { GlpiClient } from './adapters/glpi/GlpiClient.js';
 import type { QualityDashboardService } from './services/QualityDashboardService.js';
 import type { ObservabilityService } from './services/ObservabilityService.js';
@@ -39,6 +40,7 @@ import {
   createManualTicketWhatsappResolveController,
   createManualTicketWhatsappStartTemplateController,
 } from './controllers/createManualTicketWhatsappController.js';
+import { createLogmeinReadonlySyncController } from './controllers/createLogmeinReadonlyController.js';
 import {
   createConversationEntityController,
   createConversationEntityStatusController,
@@ -73,6 +75,7 @@ export interface AppDependencies {
   observabilityService?: ObservabilityService;
   contactAgendaImportService?: ContactAgendaImportService;
   manualTicketWhatsappLinkService?: ManualTicketWhatsappLinkService;
+  logmeinReadonlyContextService?: LogmeinReadonlyContextService;
 }
 
 function createJsonParser(options: { limit?: string } = {}) {
@@ -95,6 +98,7 @@ export function createApp(dependencies: AppDependencies) {
         req.path === '/internal/glpi/messages/outbound'
         || req.path.startsWith('/internal/glpi/manual-ticket-whatsapp')
         || req.path.startsWith('/internal/glpi/contact-agenda/import')
+        || req.path === '/internal/glpi/logmein/sync'
       )
     ) {
       next();
@@ -194,6 +198,14 @@ export function createApp(dependencies: AppDependencies) {
       internalAuth,
       createJsonParser(),
       createManualTicketWhatsappStartTemplateController(dependencies.manualTicketWhatsappLinkService),
+    );
+  }
+  if (dependencies.logmeinReadonlyContextService) {
+    app.post(
+      '/internal/glpi/logmein/sync',
+      createInternalBearerMiddleware(dependencies.integrationServiceApiKey),
+      createJsonParser(),
+      createLogmeinReadonlySyncController(dependencies.logmeinReadonlyContextService),
     );
   }
   app.post(

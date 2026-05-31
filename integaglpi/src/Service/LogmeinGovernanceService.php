@@ -13,6 +13,7 @@ final class LogmeinGovernanceService
 {
     private const GROUP_MAP_TABLE = 'glpi_plugin_integaglpi_logmein_group_maps';
     private const ASSET_CACHE_TABLE = 'glpi_plugin_integaglpi_logmein_asset_cache';
+    private const SYNC_AUDIT_TABLE = 'glpi_plugin_integaglpi_logmein_sync_audit';
     private const FALLBACK_MESSAGE = 'Contexto de ativo temporariamente indisponível.';
 
     private PluginConfigService $pluginConfigService;
@@ -64,6 +65,15 @@ final class LogmeinGovernanceService
                 return array_merge($base, ['status' => 'migration_required']);
             }
 
+            $tagPlaceholders = [];
+            $params = [':ticket_id' => $ticketId];
+            foreach ($this->extractEquipmentTags($ticketId, $conversation) as $index => $tag) {
+                $placeholder = ':tag_' . $index;
+                $tagPlaceholders[] = $placeholder;
+                $params[$placeholder] = $tag;
+            }
+            $tagWhere = $tagPlaceholders === [] ? '' : ' OR a.equipment_tag IN (' . implode(', ', $tagPlaceholders) . ')';
+
             $statement = $this->getPdo()->prepare(
                 "SELECT
                     a.logmein_host_external_id,
@@ -82,11 +92,11 @@ final class LogmeinGovernanceService
                  LEFT JOIN " . self::GROUP_MAP_TABLE . " m
                     ON m.logmein_group_external_id = a.logmein_group_external_id
                    AND m.is_active = TRUE
-                 WHERE a.glpi_ticket_id = :ticket_id
+                 WHERE a.glpi_ticket_id = :ticket_id" . $tagWhere . "
                  ORDER BY a.cache_updated_at DESC NULLS LAST, a.id DESC
                  LIMIT 5"
             );
-            $statement->execute([':ticket_id' => $ticketId]);
+            $statement->execute($params);
             $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
             if (!is_array($rows) || $rows === []) {
                 return array_merge($base, ['status' => 'empty_cache']);
@@ -158,15 +168,260 @@ final class LogmeinGovernanceService
         }
 
         return array_map(function (array $row): array {
+            $entityId = (int) ($row['glpi_entity_id'] ?? 0);
+
             return [
                 'id' => (int) ($row['id'] ?? 0),
                 'logmein_group_name' => $this->sanitizeText((string) ($row['logmein_group_name'] ?? '')),
-                'glpi_entity_id' => (int) ($row['glpi_entity_id'] ?? 0),
+                'glpi_entity_id' => $entityId,
+                'glpi_entity_label' => $this->findGlpiEntityLabel($entityId) ?? '',
                 'confidence_score' => (int) ($row['confidence_score'] ?? 0),
                 'is_active' => (bool) ($row['is_active'] ?? false),
                 'updated_at' => $this->sanitizeText((string) ($row['updated_at'] ?? ''), 80),
             ];
         }, $rows);
+    }
+
+    /**
+     * @return list<array{id:int,name:string}>
+     */
+    public function listAllowedEntities(): array
+    {
+        global $DB;
+
+        if (!isset($DB) || !is_object($DB) || !method_exists($DB, 'request')) {
+            return [];
+        }
+
+        try {
+            if (method_exists($DB, 'tableExists') && !$DB->tableExists('glpi_entities')) {
+                return [];
+            }
+
+            $criteria = [
+                'SELECT' => ['id', 'name', 'completename'],
+                'FROM' => 'glpi_entities',
+                'ORDER' => ['completename', 'name', 'id'],
+                'LIMIT' => 500,
+            ];
+
+            $activeEntityIds = $this->getActiveEntityIds();
+            if ($activeEntityIds !== []) {
+                $criteria['WHERE'] = ['id' => $activeEntityIds];
+            }
+
+            $entities = [];
+            foreach ($DB->request($criteria) as $row) {
+                $id = (int) ($row['id'] ?? 0);
+                if ($id <= 0 || !$this->canUseEntity($id)) {
+                    continue;
+                }
+
+                $label = $this->formatGlpiEntityLabel($row);
+                if ($label === '') {
+                    $label = sprintf(__('Entidade #%d', 'glpiintegaglpi'), $id);
+                }
+
+                $entities[] = [
+                    'id' => $id,
+                    'name' => $label,
+                ];
+            }
+
+            return $entities;
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][logmein_mapping][entities] ' . $this->sanitizeText($exception->getMessage(), 180));
+
+            return [];
+        }
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function listCachedGroups(): array
+    {
+        if (!$this->pluginConfigService->isConfigured() || !$this->tableExists(self::ASSET_CACHE_TABLE)) {
+            return [];
+        }
+
+        $statement = $this->getPdo()->query(
+            "SELECT
+                logmein_group_external_id,
+                logmein_group_name,
+                COUNT(*) AS hosts_count,
+                MAX(cache_updated_at) AS last_cache_update
+             FROM " . self::ASSET_CACHE_TABLE . "
+             WHERE logmein_group_external_id IS NOT NULL
+               AND logmein_group_external_id <> ''
+             GROUP BY logmein_group_external_id, logmein_group_name
+             ORDER BY logmein_group_name ASC
+             LIMIT 200"
+        );
+        if ($statement === false) {
+            return [];
+        }
+
+        $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+        if (!is_array($rows)) {
+            return [];
+        }
+
+        return array_map(function (array $row): array {
+            return [
+                'logmein_group_external_id' => $this->sanitizeText((string) ($row['logmein_group_external_id'] ?? ''), 160),
+                'logmein_group_name' => $this->sanitizeText((string) ($row['logmein_group_name'] ?? ''), 160),
+                'hosts_count' => (int) ($row['hosts_count'] ?? 0),
+                'last_cache_update' => $this->sanitizeText((string) ($row['last_cache_update'] ?? ''), 80),
+            ];
+        }, $rows);
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function listHostsPreview(string $groupExternalId): array
+    {
+        $groupExternalId = $this->sanitizeText($groupExternalId, 160);
+        if ($groupExternalId === '' || !$this->pluginConfigService->isConfigured() || !$this->tableExists(self::ASSET_CACHE_TABLE)) {
+            return [];
+        }
+
+        $statement = $this->getPdo()->prepare(
+            "SELECT host_name_sanitized, equipment_tag, status, last_seen_at
+             FROM " . self::ASSET_CACHE_TABLE . "
+             WHERE logmein_group_external_id = :group_id
+             ORDER BY cache_updated_at DESC NULLS LAST, host_name_sanitized ASC
+             LIMIT 10"
+        );
+        $statement->execute([':group_id' => $groupExternalId]);
+        $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+        if (!is_array($rows)) {
+            return [];
+        }
+
+        return array_map(function (array $row): array {
+            return [
+                'host_name' => $this->sanitizeText((string) ($row['host_name_sanitized'] ?? ''), 160),
+                'equipment_tag' => $this->sanitizeText((string) ($row['equipment_tag'] ?? ''), 20),
+                'status' => $this->sanitizeStatus((string) ($row['status'] ?? 'unknown')),
+                'last_seen_at' => $this->sanitizeText((string) ($row['last_seen_at'] ?? ''), 80),
+            ];
+        }, $rows);
+    }
+
+    /**
+     * @return array{groups_count:int,hosts_count:int,last_cache_update:string}
+     */
+    public function getCacheSummary(): array
+    {
+        $base = [
+            'groups_count' => 0,
+            'hosts_count' => 0,
+            'last_cache_update' => '',
+        ];
+        if (!$this->pluginConfigService->isConfigured() || !$this->tableExists(self::ASSET_CACHE_TABLE)) {
+            return $base;
+        }
+
+        $statement = $this->getPdo()->query(
+            "SELECT
+                COUNT(*) AS hosts_count,
+                COUNT(DISTINCT NULLIF(logmein_group_external_id, '')) AS groups_count,
+                MAX(cache_updated_at) AS last_cache_update
+             FROM " . self::ASSET_CACHE_TABLE
+        );
+        if ($statement === false) {
+            return $base;
+        }
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($row)) {
+            return $base;
+        }
+
+        return [
+            'groups_count' => (int) ($row['groups_count'] ?? 0),
+            'hosts_count' => (int) ($row['hosts_count'] ?? 0),
+            'last_cache_update' => $this->sanitizeText((string) ($row['last_cache_update'] ?? ''), 80),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function getLastSyncStatus(): ?array
+    {
+        if (!$this->pluginConfigService->isConfigured() || !$this->tableExists(self::SYNC_AUDIT_TABLE)) {
+            return null;
+        }
+
+        $statement = $this->getPdo()->query(
+            "SELECT event_type, status, payload_json, created_at
+             FROM " . self::SYNC_AUDIT_TABLE . "
+             ORDER BY id DESC
+             LIMIT 1"
+        );
+        if ($statement === false) {
+            return null;
+        }
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($row)) {
+            return null;
+        }
+
+        $payload = json_decode((string) ($row['payload_json'] ?? '{}'), true);
+        if (!is_array($payload)) {
+            $payload = [];
+        }
+
+        return [
+            'sync_status' => $this->sanitizeText((string) ($row['status'] ?? ''), 40),
+            'event_type' => $this->sanitizeText((string) ($row['event_type'] ?? ''), 80),
+            'groups_imported' => (int) ($payload['groups_imported'] ?? 0),
+            'hosts_imported' => (int) ($payload['hosts_imported'] ?? 0),
+            'error_message_sanitized' => $this->sanitizeText((string) ($payload['error_message_sanitized'] ?? ''), 240),
+            'created_at' => $this->sanitizeText((string) ($row['created_at'] ?? ''), 80),
+        ];
+    }
+
+    /**
+     * @return array{type:string,message:string}
+     */
+    public function syncReadonlyCatalog(int $userId): array
+    {
+        if (!SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_MAPPING)) {
+            SecurityAuditService::logAccessDenied(SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_MAPPING, [
+                'endpoint' => 'logmein.mapping.php',
+                'action' => 'sync_logmein',
+            ]);
+
+            return ['type' => 'danger', 'message' => __('Sem permissão para sincronizar catálogo LogMeIn.', 'glpiintegaglpi')];
+        }
+
+        try {
+            $response = (new IntegrationServiceClient($this->pluginConfigService))->syncLogmeinReadonly([
+                'requested_by_glpi_user_id' => $userId > 0 ? $userId : null,
+                'read_only' => true,
+            ]);
+            $body = is_array($response['body'] ?? null) ? $response['body'] : [];
+            if (!($response['success'] ?? false)) {
+                $message = (string) ($body['message'] ?? __('Sincronização LogMeIn indisponível.', 'glpiintegaglpi'));
+                return ['type' => 'warning', 'message' => $this->sanitizeText($message, 240)];
+            }
+
+            return [
+                'type' => 'success',
+                'message' => sprintf(
+                    __('Sincronização read-only concluída: %d grupos e %d hosts em cache.', 'glpiintegaglpi'),
+                    (int) ($body['groups_imported'] ?? 0),
+                    (int) ($body['hosts_imported'] ?? 0)
+                ),
+            ];
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][logmein_sync][fallback] ' . $this->sanitizeText($exception->getMessage(), 180));
+
+            return ['type' => 'warning', 'message' => __('Sincronização LogMeIn indisponível. Nenhuma alteração foi feita no inventário.', 'glpiintegaglpi')];
+        }
     }
 
     /**
@@ -193,6 +448,9 @@ final class LogmeinGovernanceService
         $confidence = max(0, min(100, (int) ($input['confidence_score'] ?? 80)));
         if ($groupId === '' || $groupName === '' || $entityId <= 0) {
             return ['type' => 'danger', 'message' => __('Informe grupo LogMeIn e entidade GLPI válidos.', 'glpiintegaglpi')];
+        }
+        if (!$this->entityExists($entityId)) {
+            return ['type' => 'danger', 'message' => __('Selecione uma entidade GLPI existente.', 'glpiintegaglpi')];
         }
         if (!SecurityPermissionService::enforceEntityScope($entityId)) {
             SecurityAuditService::logAccessDenied(SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_MAPPING, [
@@ -314,6 +572,161 @@ final class LogmeinGovernanceService
         $value = $statement->fetchColumn();
 
         return $value === false || $value === null ? 0 : (int) $value;
+    }
+
+    private function entityExists(int $entityId): bool
+    {
+        return $this->findGlpiEntityLabel($entityId, false) !== null;
+    }
+
+    private function findGlpiEntityLabel(int $entityId, bool $requireScope = true): ?string
+    {
+        global $DB;
+
+        if ($entityId <= 0 || !isset($DB) || !is_object($DB) || !method_exists($DB, 'request')) {
+            return null;
+        }
+        if ($requireScope && !$this->canUseEntity($entityId)) {
+            return null;
+        }
+
+        try {
+            if (method_exists($DB, 'tableExists') && !$DB->tableExists('glpi_entities')) {
+                return null;
+            }
+
+            foreach ($DB->request([
+                'SELECT' => ['id', 'name', 'completename'],
+                'FROM' => 'glpi_entities',
+                'WHERE' => ['id' => $entityId],
+                'LIMIT' => 1,
+            ]) as $row) {
+                $id = (int) ($row['id'] ?? 0);
+                if ($id <= 0) {
+                    return null;
+                }
+                if ($requireScope && !$this->canUseEntity($id)) {
+                    return null;
+                }
+
+                $label = $this->formatGlpiEntityLabel($row);
+
+                return $label !== '' ? $label : sprintf(__('Entidade #%d', 'glpiintegaglpi'), $id);
+            }
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][logmein_mapping][entity_lookup] ' . $this->sanitizeText($exception->getMessage(), 180));
+
+            return null;
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     */
+    private function formatGlpiEntityLabel(array $row): string
+    {
+        $label = $this->sanitizeText((string) ($row['completename'] ?? ''), 220);
+        if ($label === '') {
+            $label = $this->sanitizeText((string) ($row['name'] ?? ''), 220);
+        }
+
+        return $label;
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function getActiveEntityIds(): array
+    {
+        try {
+            if (class_exists('\Session') && method_exists('\Session', 'getActiveEntities')) {
+                $ids = \Session::getActiveEntities();
+                if (is_array($ids)) {
+                    return array_values(array_filter(array_map('intval', $ids), static fn (int $id): bool => $id > 0));
+                }
+            }
+        } catch (Throwable) {
+            return [];
+        }
+
+        $entities = $_SESSION['glpiactiveentities'] ?? [];
+        if (!is_array($entities)) {
+            return [];
+        }
+
+        return array_values(array_filter(array_map('intval', $entities), static fn (int $id): bool => $id > 0));
+    }
+
+    private function canUseEntity(int $entityId): bool
+    {
+        if ($entityId <= 0 || !class_exists('\Session')) {
+            return false;
+        }
+
+        try {
+            if (method_exists('\Session', 'haveAccessToEntity')) {
+                return (bool) \Session::haveAccessToEntity($entityId);
+            }
+        } catch (Throwable) {
+            return false;
+        }
+
+        return in_array($entityId, $this->getActiveEntityIds(), true);
+    }
+
+    /**
+     * @param array<string, mixed> $conversation
+     * @return list<string>
+     */
+    private function extractEquipmentTags(int $ticketId, array $conversation): array
+    {
+        $candidates = [
+            (string) ($conversation['last_equipment_tag'] ?? ''),
+            (string) ($conversation['equipment_tag'] ?? ''),
+            (string) ($conversation['last_problem_summary'] ?? ''),
+            (string) ($conversation['profile_summary'] ?? ''),
+        ];
+
+        foreach (['profile_snapshot', 'profile_snapshot_json', 'contact_profile_snapshot'] as $key) {
+            $snapshot = $conversation[$key] ?? null;
+            if (is_string($snapshot) && $snapshot !== '') {
+                $decoded = json_decode($snapshot, true);
+                if (is_array($decoded)) {
+                    $candidates[] = (string) ($decoded['last_equipment_tag'] ?? '');
+                    $candidates[] = (string) ($decoded['equipment_tag'] ?? '');
+                    $candidates[] = (string) ($decoded['last_problem_summary'] ?? '');
+                }
+            } elseif (is_array($snapshot)) {
+                $candidates[] = (string) ($snapshot['last_equipment_tag'] ?? '');
+                $candidates[] = (string) ($snapshot['equipment_tag'] ?? '');
+                $candidates[] = (string) ($snapshot['last_problem_summary'] ?? '');
+            }
+        }
+
+        if ($ticketId > 0 && class_exists('\Ticket')) {
+            try {
+                $ticket = new \Ticket();
+                if ($ticket->getFromDB($ticketId)) {
+                    $candidates[] = (string) ($ticket->fields['name'] ?? '');
+                    $candidates[] = (string) ($ticket->fields['content'] ?? '');
+                }
+            } catch (Throwable) {
+                // Ticket context is optional; fallback remains cache-by-ticket.
+            }
+        }
+
+        $tags = [];
+        foreach ($candidates as $candidate) {
+            if (preg_match_all('/(?<!\d)(\d{4})(?!\d)/', $candidate, $matches)) {
+                foreach ($matches[1] as $tag) {
+                    $tags[$tag] = $tag;
+                }
+            }
+        }
+
+        return array_values($tags);
     }
 
     private function tableExists(string $table): bool

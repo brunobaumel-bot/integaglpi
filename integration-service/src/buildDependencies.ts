@@ -20,6 +20,7 @@ import { ContactProfileService } from './domain/services/ContactProfileService.j
 import { CustomerExperienceService } from './domain/services/CustomerExperienceService.js';
 import { ContactAgendaImportService } from './domain/services/ContactAgendaImportService.js';
 import { ManualTicketWhatsappLinkService } from './domain/services/ManualTicketWhatsappLinkService.js';
+import { LogmeinReadonlyContextService } from './domain/services/LogmeinReadonlyContextService.js';
 import { EntitySelectionService } from './domain/services/EntitySelectionService.js';
 import { ConversationSoftCloseService } from './domain/services/ConversationSoftCloseService.js';
 import { AiSupervisorService, type AiSupervisorConfig } from './domain/services/AiSupervisorService.js';
@@ -47,6 +48,7 @@ import { PostgresSolutionActionRepository } from './repositories/postgres/Postgr
 import { PostgresAuditEventRepository } from './repositories/postgres/PostgresAuditEventRepository.js';
 import { PostgresAiQualityAnalysisRepository } from './repositories/postgres/PostgresAiQualityAnalysisRepository.js';
 import { PostgresMessageFlowRepository } from './repositories/postgres/PostgresMessageFlowRepository.js';
+import { PostgresLogmeinReadonlyRepository } from './repositories/postgres/PostgresLogmeinReadonlyRepository.js';
 import { redisClient } from './cache/redisClient.js';
 import { QualityDashboardService } from './services/QualityDashboardService.js';
 import { ObservabilityService } from './services/ObservabilityService.js';
@@ -106,6 +108,25 @@ function settingProvider(settings: Map<string, unknown>, key: string, fallback: 
 function settingModel(settings: Map<string, unknown>, key: string, fallback: string): string {
   const value = settingText(settings, key).replace(/[^A-Za-z0-9_.:/-]+/g, '').slice(0, 120);
   return value !== '' ? value : fallback;
+}
+
+function envBool(name: string, fallback: boolean): boolean {
+  const value = String(process.env[name] ?? '').trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(value)) {
+    return true;
+  }
+  if (['0', 'false', 'no', 'off'].includes(value)) {
+    return false;
+  }
+  return fallback;
+}
+
+function envInt(name: string, fallback: number, min: number, max: number): number {
+  const parsed = Number(String(process.env[name] ?? '').trim());
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, Math.trunc(parsed)));
 }
 
 function hasDbAiSettings(settings: Map<string, unknown>): boolean {
@@ -175,6 +196,7 @@ export function buildDependencies() {
   const aiQualityAnalysisRepository = new PostgresAiQualityAnalysisRepository(postgresPool);
   const aiPilotRepository = new AiPilotRepository(postgresPool);
   const messageFlowRepository = new PostgresMessageFlowRepository(postgresPool);
+  const logmeinReadonlyRepository = new PostgresLogmeinReadonlyRepository(postgresPool);
   const qualityDashboardService = new QualityDashboardService(postgresPool, redisClient);
   const observabilityService = new ObservabilityService(postgresPool, redisClient, glpiClient);
   const aiOperationsService = new AiOperationsService(postgresPool);
@@ -206,6 +228,17 @@ export function buildDependencies() {
     outboundMessageService,
     keyLock,
     auditService,
+  );
+  const logmeinReadonlyContextService = new LogmeinReadonlyContextService(
+    {
+      enabled: envBool('LOGMEIN_INTEGRATION_ENABLED', false),
+      baseUrl: process.env.LOGMEIN_API_BASE_URL,
+      companyId: process.env.LOGMEIN_COMPANY_ID,
+      psk: process.env.LOGMEIN_PSK,
+      timeoutMs: envInt('LOGMEIN_TIMEOUT_MS', envInt('LOGMEIN_HTTP_TIMEOUT_MS', 5_000, 1_000, 30_000), 1_000, 30_000),
+    },
+    auditService,
+    logmeinReadonlyRepository,
   );
   const inactivityAutomationService = new InactivityAutomationService(
     inactivityTrackingRepository,
@@ -460,6 +493,7 @@ export function buildDependencies() {
     observabilityService,
     contactAgendaImportService,
     manualTicketWhatsappLinkService,
+    logmeinReadonlyContextService,
     integrationServiceApiKey: env.INTEGRATION_SERVICE_API_KEY,
     glpiClient,
     metaClient,

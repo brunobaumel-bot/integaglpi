@@ -30,6 +30,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $flash = $service->saveMapping($_POST, Plugin::getCurrentUserId());
         } elseif ($action === 'disable_mapping') {
             $flash = $service->disableMapping((int) ($_POST['mapping_id'] ?? 0), Plugin::getCurrentUserId());
+        } elseif ($action === 'sync_logmein') {
+            $flash = $service->syncReadonlyCatalog(Plugin::getCurrentUserId());
         } else {
             $flash = [
                 'type' => 'danger',
@@ -40,6 +42,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $mappings = $service->listMappings();
+$cachedGroups = $service->listCachedGroups();
+$entityOptions = $service->listAllowedEntities();
+$selectedGroupId = trim((string) ($_GET['group_external_id'] ?? ($_POST['logmein_group_external_id'] ?? '')));
+$hostPreview = $service->listHostsPreview($selectedGroupId);
+$lastSyncStatus = $service->getLastSyncStatus();
+$cacheSummary = $service->getCacheSummary();
 $featureEnabled = $service->isFeatureEnabled();
 
 Html::header(__('Mapeamento LogMeIn read-only', 'glpiintegaglpi'), $_SERVER['PHP_SELF'], 'plugins', GestaoGroupMenu::class);
