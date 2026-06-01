@@ -42,6 +42,11 @@ final class SupervisaoGroupMenu extends CommonDBTM
         return [
             'title'            => self::getMenuName(),
             'is_multi_entries' => true,
+                'command_center' => [
+                    'title' => __('Dashboard Geral do Supervisor', 'glpiintegaglpi'),
+                    'page'  => Plugin::getWebBasePath() . '/front/supervisor.command.php',
+                    'icon'  => 'ti ti-layout-dashboard',
+                ],
                 'backoffice_supervisor'  => [
                     'title' => __('Backoffice Supervisor', 'glpiintegaglpi'),
                     'page'  => Plugin::getSupervisorBackofficeUrl(),

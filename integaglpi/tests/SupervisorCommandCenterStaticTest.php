@@ -1,0 +1,99 @@
+<?php
+
+declare(strict_types=1);
+
+namespace GlpiPlugin\Integaglpi\Tests;
+
+use PHPUnit\Framework\TestCase;
+
+final class SupervisorCommandCenterStaticTest extends TestCase
+{
+    private function pluginPath(string $relative): string
+    {
+        return dirname(__DIR__) . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relative);
+    }
+
+    private function read(string $relative): string
+    {
+        return (string) file_get_contents($this->pluginPath($relative));
+    }
+
+    public function testFilesExist(): void
+    {
+        self::assertFileExists($this->pluginPath('front/supervisor.command.php'));
+        self::assertFileExists($this->pluginPath('src/Service/SupervisorCommandCenterService.php'));
+        self::assertFileExists($this->pluginPath('templates/supervisor_command_center.php'));
+    }
+
+    public function testMenuChildRegisteredUnderSupervisao(): void
+    {
+        $menu = $this->read('src/SupervisaoGroupMenu.php');
+        self::assertStringContainsString('command_center', $menu);
+        self::assertStringContainsString('Dashboard Geral do Supervisor', $menu);
+        self::assertStringContainsString('supervisor.command.php', $menu);
+    }
+
+    public function testFrontControllerRequiresSupervisorRead(): void
+    {
+        $front = $this->read('front/supervisor.command.php');
+        self::assertStringContainsString('Session::checkLoginUser();', $front);
+        self::assertStringContainsString('Session::checkRight(Plugin::RIGHT_NAME, READ);', $front);
+        self::assertStringContainsString('Plugin::requireSupervisorRead();', $front);
+        self::assertStringContainsString('SupervisaoGroupMenu::class', $front);
+    }
+
+    public function testServiceIsReadOnlyAndDelegatesToExistingServices(): void
+    {
+        $service = $this->read('src/Service/SupervisorCommandCenterService.php');
+        foreach ([
+            'SupervisorBackofficeService',
+            'QualityDashboardService',
+            'OnlineMonitorService',
+            'TechnicalHealthDashboardService',
+        ] as $expected) {
+            self::assertStringContainsString($expected, $service);
+        }
+
+        $forbiddenTerms = [
+            'send' . 'WhatsApp',
+            'send' . 'Text' . 'Message',
+            'create' . 'Ticket',
+            'Ticket' . 'Task',
+            'ITIL' . 'Followup',
+            'sync' . 'Logmein',
+        ];
+        foreach ($forbiddenTerms as $forbidden) {
+            self::assertStringNotContainsString($forbidden, $service);
+        }
+    }
+
+    public function testTemplateHasNoMutationFormOrDangerousAction(): void
+    {
+        $template = $this->read('templates/supervisor_command_center.php');
+        self::assertStringContainsString('method="get"', $template);
+        self::assertStringNotContainsString('method="' . 'post"', $template);
+
+        foreach (['Assumir', 'Transferir', 'Solucionar', 'Reabrir', 'Enviar WhatsApp'] as $forbidden) {
+            self::assertStringNotContainsString($forbidden, $template);
+        }
+    }
+
+    public function testPiiGuardAndDrilldownsArePresent(): void
+    {
+        $template = $this->read('templates/supervisor_command_center.php');
+        self::assertStringContainsString('PII Guard ativo', $template);
+        self::assertStringContainsString('payload bruto', $template);
+        self::assertStringContainsString('getSupervisorBackofficeUrl()', $template);
+        self::assertStringContainsString('getQualityDashboardUrl()', $template);
+        self::assertStringContainsString('getOnlineMonitorUrl()', $template);
+        self::assertStringContainsString('getTechnicalHealthUrl()', $template);
+    }
+
+    public function testLogmeinReconciliationIsDisplayedAsOff(): void
+    {
+        $service = $this->read('src/Service/SupervisorCommandCenterService.php');
+        self::assertStringContainsString('logmein_reconciliation', $service);
+        self::assertStringContainsString("'status' => 'off'", $service);
+        self::assertStringContainsString('Sem botão de sync', $service);
+    }
+}
