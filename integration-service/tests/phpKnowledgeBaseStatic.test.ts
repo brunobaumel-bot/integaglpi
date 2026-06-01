@@ -60,14 +60,20 @@ describe('plugin knowledge base foundation static safety', () => {
     const plugin = await readProjectFile('integaglpi/src/Plugin.php');
     const setup = await readProjectFile('integaglpi/setup.php');
     const menu = await readProjectFile('integaglpi/src/KnowledgeBaseMenu.php');
+    const iaGroupMenu = await readProjectFile('integaglpi/src/IaGroupMenu.php');
 
     expect(plugin).toContain('getKnowledgeBaseUrl');
     expect(plugin).toContain('getNativeKnowledgeBaseUrl');
     expect(plugin).toContain('canKnowledgeBaseRead');
     expect(plugin).toContain('requireKnowledgeBaseUpdate');
     const menuBlock = setup.match(/\$PLUGIN_HOOKS\[Hooks::MENU_TOADD\][\s\S]+?\];/)?.[0] ?? '';
-    expect(menuBlock).toContain('KnowledgeBaseMenu::class');
+    expect(menuBlock).toContain('IaGroupMenu::class');
+    expect(menuBlock).not.toContain('KnowledgeBaseMenu::class');
     expect(setup).toContain('\\Plugin::registerClass(KnowledgeBaseMenu::class);');
+    expect(iaGroupMenu).toContain("'base_conhecimento'");
+    expect(iaGroupMenu).toContain('Base de Conhecimento GLPI');
+    expect(iaGroupMenu).toContain('Plugin::getNativeKnowledgeBaseUrl()');
+    expect(iaGroupMenu).toContain('Plugin::canKnowledgeBaseRead()');
     expect(menu).toContain('Base de Conhecimento GLPI');
     expect(menu).toContain('Plugin::getNativeKnowledgeBaseUrl()');
     expect(menu).not.toContain('Plugin::getKnowledgeBaseUrl()');
@@ -78,11 +84,17 @@ describe('plugin knowledge base foundation static safety', () => {
     const setup = await readProjectFile('integaglpi/setup.php');
     const menu = await readProjectFile('integaglpi/src/KbCandidatesMenu.php');
     const front = await readProjectFile('integaglpi/front/kb.candidates.php');
+    const iaGroupMenu = await readProjectFile('integaglpi/src/IaGroupMenu.php');
 
     const menuBlock = setup.match(/\$PLUGIN_HOOKS\[Hooks::MENU_TOADD\][\s\S]+?\];/)?.[0] ?? '';
     expect(setup).toContain('use GlpiPlugin\\Integaglpi\\KbCandidatesMenu;');
-    expect(menuBlock).toMatch(/KnowledgeBaseMenu::class,\s*KbCandidatesMenu::class/);
+    expect(menuBlock).toContain('IaGroupMenu::class');
+    expect(menuBlock).not.toContain('KbCandidatesMenu::class');
     expect(setup).toContain('\\Plugin::registerClass(KbCandidatesMenu::class);');
+    expect(iaGroupMenu).toContain("'base_conhecimento'");
+    expect(iaGroupMenu).toContain("'candidatos_kb'");
+    expect(iaGroupMenu).toContain('Plugin::getNativeKnowledgeBaseUrl()');
+    expect(iaGroupMenu).toContain('Plugin::getKbCandidatesUrl()');
     expect(menu).toContain('final class KbCandidatesMenu');
     expect(menu).toContain('Candidatos de KB por IA');
     expect(menu).toContain('Plugin::getKbCandidatesUrl()');

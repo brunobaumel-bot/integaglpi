@@ -201,12 +201,20 @@ describe('PHP contract hours backoffice (static)', () => {
 
   it('keeps only one Filas e Roteamento menu entry while registering both classes', async () => {
     const setup = await readRel('integaglpi/setup.php');
+    const monitoramentoGroupMenu = await readRel('integaglpi/src/MonitoramentoGroupMenu.php');
     const menuStart = setup.indexOf('$PLUGIN_HOOKS[Hooks::MENU_TOADD]');
     const menuEnd = setup.indexOf("$PLUGIN_HOOKS['config_page']", menuStart);
     const menuBlock = setup.slice(menuStart, menuEnd);
 
-    expect(menuBlock).toContain('RoutingSafetyMenu::class');
+    expect(menuBlock).toContain('MonitoramentoGroupMenu::class');
+    expect(menuBlock).not.toContain('RoutingSafetyMenu::class');
     expect(menuBlock).not.toContain('RoutingOptionsMenu::class');
+    expect(monitoramentoGroupMenu).toContain("'filas_roteamento'");
+    expect(monitoramentoGroupMenu).toContain('Filas e Roteamento');
+    expect(monitoramentoGroupMenu).toContain('Plugin::getRoutingOptionsAdminUrl()');
+    expect(monitoramentoGroupMenu).toContain("'roteamento_seguro'");
+    expect(monitoramentoGroupMenu).toContain('Roteamento Seguro');
+    expect(monitoramentoGroupMenu).toContain('Plugin::getRoutingSafetyUrl()');
     expect(setup).toContain('\\Plugin::registerClass(RoutingSafetyMenu::class);');
     expect(setup).toContain('\\Plugin::registerClass(RoutingOptionsMenu::class);');
   });

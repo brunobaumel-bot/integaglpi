@@ -90,10 +90,16 @@ describe('native GLPI knowledge base read-only adapter static safety', () => {
   it('adds the native KB menu while preserving custom files and migration 028', async () => {
     const setup = await readProjectFile('integaglpi/setup.php');
     const menu = await readProjectFile('integaglpi/src/KnowledgeBaseMenu.php');
+    const iaGroupMenu = await readProjectFile('integaglpi/src/IaGroupMenu.php');
     const migration = await readProjectFile('integration-service/schema-migrations/028_knowledge_base_foundation.sql');
 
     const menuBlock = setup.match(/\$PLUGIN_HOOKS\[Hooks::MENU_TOADD\][\s\S]+?\];/)?.[0] ?? '';
-    expect(menuBlock).toContain('KnowledgeBaseMenu::class');
+    expect(menuBlock).toContain('IaGroupMenu::class');
+    expect(menuBlock).not.toContain('KnowledgeBaseMenu::class');
+    expect(iaGroupMenu).toContain("'base_conhecimento'");
+    expect(iaGroupMenu).toContain('Base de Conhecimento GLPI');
+    expect(iaGroupMenu).toContain('Plugin::getNativeKnowledgeBaseUrl()');
+    expect(iaGroupMenu).toContain('Plugin::canKnowledgeBaseRead()');
     expect(menu).toContain('Base de Conhecimento GLPI');
     expect(menu).toContain('Plugin::getNativeKnowledgeBaseUrl()');
     expect(menu).not.toContain('Plugin::getKnowledgeBaseUrl()');
