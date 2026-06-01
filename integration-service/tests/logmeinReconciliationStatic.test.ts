@@ -29,6 +29,7 @@ import {
   RECONCILIATION_REPORT_PATH,
   REPORT_ERROR_CATEGORIES,
 } from '../src/domain/services/LogmeinReconciliationService.js';
+import { createLogmeinReconciliationSyncController } from '../src/controllers/createLogmeinReconciliationController.js';
 import { PostgresLogmeinReconciliationRepository } from '../src/repositories/postgres/PostgresLogmeinReconciliationRepository.js';
 
 async function readProjectFile(path: string): Promise<string> {
@@ -73,7 +74,10 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
       companyId: 'c',
       psk: 'p',
     });
-    const result = await service.syncRemoteAccessSessions();
+    const result = await service.syncRemoteAccessSessions(
+      new Date('2026-06-01T00:00:00Z'),
+      new Date('2026-06-01T00:30:00Z'),
+    );
     expect(result.ok).toBe(false);
     expect(result.status).toBe('disabled');
     expect(result.durationMs).toBe(0);
@@ -84,7 +88,10 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
       enabled: true,
       reconciliationEnabled: true,
     });
-    const result = await service.syncRemoteAccessSessions();
+    const result = await service.syncRemoteAccessSessions(
+      new Date('2026-06-01T00:00:00Z'),
+      new Date('2026-06-01T00:30:00Z'),
+    );
     expect(result.ok).toBe(false);
     expect(result.status).toBe('unconfigured');
   });
@@ -115,7 +122,10 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
       repository as never,
       lockBusy,
     );
-    const result = await service.syncRemoteAccessSessions();
+    const result = await service.syncRemoteAccessSessions(
+      new Date('2026-06-01T00:00:00Z'),
+      new Date('2026-06-01T00:30:00Z'),
+    );
     expect(result.ok).toBe(false);
     expect(result.status).toBe('sync_in_progress');
     expect(auditEvents).toContain('LOGMEIN_SESSION_SYNC_STARTED');
@@ -242,7 +252,10 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
       undefined,
       repository as never,
     );
-    const result = await service.syncRemoteAccessSessions();
+    const result = await service.syncRemoteAccessSessions(
+      new Date('2026-06-01T00:00:00Z'),
+      new Date('2026-06-01T00:30:00Z'),
+    );
     expect(result.sessionsInserted).toBe(0);
     expect(result.sessionsSkippedDuplicate).toBe(1);
     expect(repository.upsertQueueItem).not.toHaveBeenCalled();
@@ -338,7 +351,10 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
       undefined,
       repository as never,
     );
-    const result = await service.syncRemoteAccessSessions();
+    const result = await service.syncRemoteAccessSessions(
+      new Date('2026-06-01T00:00:00Z'),
+      new Date('2026-06-01T00:30:00Z'),
+    );
 
     // Sync must succeed AND the URL must be the allowlisted report path — NOT the
     // connection path the config tried to inject.
@@ -378,7 +394,10 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
       undefined,
       repository as never,
     );
-    const result = await service.syncRemoteAccessSessions();
+    const result = await service.syncRemoteAccessSessions(
+      new Date('2026-06-01T00:00:00Z'),
+      new Date('2026-06-01T00:30:00Z'),
+    );
 
     // Sync fails safely; fetch is never called against the http origin.
     expect(result.ok).toBe(false);
@@ -509,6 +528,36 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     expect(classifyReportHttpStatus(503)).toBe(REPORT_ERROR_CATEGORIES.HTTP_500);
   });
 
+  it('persists report fallback metadata in reconciliation audit payload_json', async () => {
+    const repoSource = await readProjectFile('src/repositories/postgres/PostgresLogmeinReconciliationRepository.ts');
+    for (const key of [
+      'report_error',
+      'report_status_code',
+      'primary_status_code',
+      'fallback_status_code',
+      'fallback_used',
+      'report_path_label',
+      'chunk_minutes',
+      'overlap_minutes',
+      'max_retries',
+      'lookback_hours',
+      'cooldown_seconds',
+    ]) {
+      expect(repoSource).toContain(key);
+    }
+    expect(repoSource).not.toMatch(/authorization|bearer|psk|raw_payload|headers/i);
+  });
+
+  it('wires reconciliation timing env vars in buildDependencies', async () => {
+    const depsSource = await readProjectFile('src/buildDependencies.ts');
+    expect(depsSource).toContain('LOGMEIN_RECONCILIATION_LOOKBACK_HOURS');
+    expect(depsSource).toContain('LOGMEIN_RECONCILIATION_CHUNK_MINUTES');
+    expect(depsSource).toContain('LOGMEIN_RECONCILIATION_OVERLAP_MINUTES');
+    expect(depsSource).toContain('LOGMEIN_RECONCILIATION_MAX_RETRIES');
+    expect(depsSource).toContain('LOGMEIN_RECONCILIATION_CIRCUIT_COOLDOWN_SECONDS');
+    expect(depsSource).toMatch(/lookbackHoursRaw[\s\S]*LOGMEIN_RECONCILIATION_LOOKBACK_HOURS/);
+  });
+
   function makeRepoMock() {
     return {
       isSchemaReady: vi.fn(async () => true),
@@ -520,14 +569,20 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     };
   }
 
+  function report500(errorCode = 'provider-500') {
+    return {
+      ok: false,
+      status: 500,
+      text: async () => `)]}', {"errorCode":"${errorCode}","message":"Provider unavailable","psk":"psk-LEAK"}`,
+    };
+  }
+
   it('falls back from primary HTTP 500 to fallback report with zero sessions as success', async () => {
     const repository = makeRepoMock();
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        json: async () => ({ secret_token: 'psk-LEAK', error: 'internal' }),
-      })
+      .mockResolvedValueOnce(report500('primary-zero-1'))
+      .mockResolvedValueOnce(report500('primary-zero-2'))
+      .mockResolvedValueOnce(report500('primary-zero-3'))
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ items: [] }) });
     vi.stubGlobal('fetch', fetchMock);
 
@@ -536,7 +591,10 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
       undefined,
       repository as never,
     );
-    const result = await service.syncRemoteAccessSessions();
+    const result = await service.syncRemoteAccessSessions(
+      new Date('2026-06-01T00:00:00Z'),
+      new Date('2026-06-01T00:30:00Z'),
+    );
 
     expect(result.ok).toBe(true);
     expect(result.status).toBe('completed');
@@ -546,9 +604,18 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     expect(result.fallbackStatusCode).toBe(200);
     expect(result.fallbackUsed).toBe(true);
     expect(result.reportError).toBeNull();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const completedAudit = repository.insertReconciliationAudit.mock.calls
+      .map((call) => call[0] as Record<string, unknown>)
+      .find((payload) => payload.status === 'completed');
+    expect(completedAudit?.primaryStatusCode).toBe(500);
+    expect(completedAudit?.fallbackStatusCode).toBe(200);
+    expect(completedAudit?.fallbackUsed).toBe(true);
+    expect(completedAudit?.reportPathLabel).toBe('fallback');
+    expect(completedAudit?.reportError).toBeNull();
+    expect(completedAudit?.retriesPerformed).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain(RECONCILIATION_REPORT_PATH);
-    expect(String(fetchMock.mock.calls[1]?.[0])).toContain(RECONCILIATION_FALLBACK_PATH);
+    expect(String(fetchMock.mock.calls[3]?.[0])).toContain(RECONCILIATION_FALLBACK_PATH);
     expect(JSON.stringify(result)).not.toContain('psk-LEAK');
     expect(JSON.stringify(result)).not.toContain('secret_token');
     expect(repository.upsertSession).not.toHaveBeenCalled();
@@ -559,7 +626,9 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
   it('falls back from primary HTTP 500 and imports sessions returned by fallback', async () => {
     const repository = makeRepoMock();
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) })
+      .mockResolvedValueOnce(report500('primary-import-1'))
+      .mockResolvedValueOnce(report500('primary-import-2'))
+      .mockResolvedValueOnce(report500('primary-import-3'))
       .mockResolvedValueOnce({
         ok: true,
         status: 200,
@@ -582,7 +651,10 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
       undefined,
       repository as never,
     );
-    const result = await service.syncRemoteAccessSessions();
+    const result = await service.syncRemoteAccessSessions(
+      new Date('2026-06-01T00:00:00Z'),
+      new Date('2026-06-01T00:30:00Z'),
+    );
 
     expect(result.ok).toBe(true);
     expect(result.sessionsFound).toBe(1);
@@ -590,6 +662,7 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     expect(result.primaryStatusCode).toBe(500);
     expect(result.fallbackStatusCode).toBe(200);
     expect(result.fallbackUsed).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(repository.upsertSession).toHaveBeenCalledTimes(1);
     expect(repository.upsertQueueItem).toHaveBeenCalledTimes(1);
 
@@ -606,16 +679,12 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     };
     // Report APIs return HTTP 500 with bodies that must NEVER be surfaced.
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        json: async () => ({ secret_token: 'psk-LEAK', error: 'primary' }),
-      })
-      .mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        json: async () => ({ secret_token: 'psk-FALLBACK-LEAK', error: 'fallback' }),
-      });
+      .mockResolvedValueOnce(report500('primary-fail-1'))
+      .mockResolvedValueOnce(report500('primary-fail-2'))
+      .mockResolvedValueOnce(report500('primary-fail-3'))
+      .mockResolvedValueOnce(report500('fallback-fail-1'))
+      .mockResolvedValueOnce(report500('fallback-fail-2'))
+      .mockResolvedValueOnce(report500('fallback-fail-3'));
     vi.stubGlobal('fetch', fetchMock);
 
     const service = new LogmeinReconciliationService(
@@ -632,12 +701,25 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     expect(result.primaryStatusCode).toBe(500);
     expect(result.fallbackStatusCode).toBe(500);
     expect(result.fallbackUsed).toBe(true);
+    const failedAudit = repository.insertReconciliationAudit.mock.calls
+      .map((call) => call[0] as Record<string, unknown>)
+      .find((payload) => payload.status === 'failed');
+    expect(failedAudit?.reportError).toBe(REPORT_ERROR_CATEGORIES.HTTP_500);
+    expect(failedAudit?.reportStatusCode).toBe(500);
+    expect(failedAudit?.primaryStatusCode).toBe(500);
+    expect(failedAudit?.fallbackStatusCode).toBe(500);
+    expect(failedAudit?.fallbackUsed).toBe(true);
+    expect(failedAudit?.reportPathLabel).toBe('fallback');
+    expect(failedAudit?.retriesPerformed).toBe(4);
+    expect(JSON.stringify(failedAudit ?? {})).not.toContain('psk-LEAK');
+    expect(JSON.stringify(failedAudit ?? {})).not.toContain('psk-FALLBACK-LEAK');
+    expect(JSON.stringify(failedAudit ?? {})).not.toContain('secret_token');
     // Message is operator-friendly and sanitized — no token, no raw body.
     expect(result.message).toContain('HTTP 5xx');
     expect(JSON.stringify(result)).not.toContain('psk-LEAK');
     expect(JSON.stringify(result)).not.toContain('psk-FALLBACK-LEAK');
     expect(JSON.stringify(result)).not.toContain('secret_token');
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
     // Audit FAILED event present with sanitized context only.
     const failed = auditEvents.find((e) => e.type === 'LOGMEIN_SESSION_SYNC_FAILED');
     expect(failed).toBeDefined();
@@ -653,6 +735,108 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     expect(JSON.stringify(failed?.payload ?? {})).not.toContain('secret_token');
 
     vi.unstubAllGlobals();
+  });
+
+  it('opens a temporary circuit breaker after repeated primary and fallback 5xx failures', async () => {
+    const warmupRepository = makeRepoMock();
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ items: [] }) })));
+    await new LogmeinReconciliationService(
+      { enabled: true, reconciliationEnabled: true, companyId: 'c', psk: 'p', timeoutMs: 100 },
+      undefined,
+      warmupRepository as never,
+    ).syncRemoteAccessSessions();
+    vi.unstubAllGlobals();
+
+    for (let run = 0; run < 2; run++) {
+      vi.stubGlobal('fetch', vi.fn(async () => report500(`breaker-${run}`)));
+      const service = new LogmeinReconciliationService(
+        { enabled: true, reconciliationEnabled: true, companyId: 'c', psk: 'p', timeoutMs: 100 },
+        undefined,
+        makeRepoMock() as never,
+      );
+      const result = await service.syncRemoteAccessSessions();
+      expect(result.ok).toBe(false);
+      expect(result.reportError).toBe(REPORT_ERROR_CATEGORIES.HTTP_500);
+      vi.unstubAllGlobals();
+    }
+
+    const blockedFetch = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ items: [] }) }));
+    vi.stubGlobal('fetch', blockedFetch);
+    const blocked = await new LogmeinReconciliationService(
+      { enabled: true, reconciliationEnabled: true, companyId: 'c', psk: 'p', timeoutMs: 100 },
+      undefined,
+      makeRepoMock() as never,
+    ).syncRemoteAccessSessions();
+    expect(blocked.status).toBe('circuit_open');
+    expect(blocked.message).toContain('cooldown');
+    expect(blockedFetch).not.toHaveBeenCalled();
+    const serviceClass = LogmeinReconciliationService as unknown as {
+      circuitOpenUntilMs: number;
+      consecutiveProvider5xxFailures: number;
+    };
+    serviceClass.circuitOpenUntilMs = 0;
+    serviceClass.consecutiveProvider5xxFailures = 0;
+    vi.unstubAllGlobals();
+  });
+
+  it('returns reconciliation metadata from the sync controller response', async () => {
+    const service = {
+      syncRemoteAccessSessions: vi.fn(async () => ({
+        ok: false,
+        status: 'failed',
+        message: 'Relatório LogMeIn indisponível.',
+        sessionsFound: 0,
+        sessionsInserted: 0,
+        sessionsSkippedDuplicate: 0,
+        windowFrom: '2026-06-01',
+        windowTo: '2026-06-01',
+        durationMs: 12,
+        reportError: REPORT_ERROR_CATEGORIES.HTTP_500,
+        reportStatusCode: 500,
+        reportReason: null,
+        primaryStatusCode: 500,
+        fallbackStatusCode: 500,
+        fallbackUsed: true,
+        lookbackHours: 1,
+        lookbackDays: null,
+        chunkMinutes: 15,
+        overlapMinutes: 5,
+        maxRetries: 1,
+        cooldownSeconds: 60,
+        circuitOpenUntil: null,
+      })),
+    };
+    const responseBody: Record<string, unknown>[] = [];
+    const response: {
+      status: ReturnType<typeof vi.fn>;
+      json: ReturnType<typeof vi.fn>;
+    } = {
+      status: vi.fn(),
+      json: vi.fn(),
+    };
+    response.status.mockReturnValue(response);
+    response.json.mockImplementation((body: Record<string, unknown>) => {
+        responseBody.push(body);
+        return response;
+    });
+
+    await createLogmeinReconciliationSyncController(service as never)(
+      { body: {} } as never,
+      response as never,
+    );
+
+    expect(response.status).toHaveBeenCalledWith(503);
+    expect(responseBody[0]?.report_error).toBe(REPORT_ERROR_CATEGORIES.HTTP_500);
+    expect(responseBody[0]?.report_status_code).toBe(500);
+    expect(responseBody[0]?.primary_status_code).toBe(500);
+    expect(responseBody[0]?.fallback_status_code).toBe(500);
+    expect(responseBody[0]?.fallback_used).toBe(true);
+    expect(responseBody[0]?.lookback_hours).toBe(1);
+    expect(responseBody[0]?.chunk_minutes).toBe(15);
+    expect(responseBody[0]?.overlap_minutes).toBe(5);
+    expect(responseBody[0]?.max_retries).toBe(1);
+    expect(responseBody[0]?.cooldown_seconds).toBe(60);
+    expect(JSON.stringify(responseBody[0])).not.toMatch(/token|bearer|psk-secret/i);
   });
 
   it('treats HTTP 200 with zero sessions as success, not error', async () => {
@@ -677,6 +861,122 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     expect(result.message).toContain('nenhuma sessão remota');
     // No session was upserted.
     expect(repository.upsertSession).not.toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+
+  it('splits larger report windows into smaller chunks with overlap while preserving idempotency', async () => {
+    const repository = makeRepoMock();
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ items: [{ sessionId: 'same-session', hostId: 'h-1', startTime: '2026-06-01T10:00:00Z' }] }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await new LogmeinReconciliationService(
+      { enabled: true, reconciliationEnabled: true, companyId: 'c', psk: 'p', timeoutMs: 100 },
+      undefined,
+      repository as never,
+    ).syncRemoteAccessSessions(
+      new Date('2026-06-01T00:00:00Z'),
+      new Date('2026-06-01T05:00:00Z'),
+    );
+
+    const completedAudit = repository.insertReconciliationAudit.mock.calls
+      .map((call) => call[0] as Record<string, unknown>)
+      .find((payload) => payload.status === 'completed');
+    expect(result.ok).toBe(true);
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
+    expect(completedAudit?.chunksRequested).toBeGreaterThan(1);
+    expect(completedAudit?.chunkMinutes).toBe(120);
+    expect(completedAudit?.overlapMinutes).toBe(10);
+    expect(repository.upsertSession).toHaveBeenCalledTimes(1);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('supports 15 minute chunks, 5 minute overlap, and one-hour lookback from config', async () => {
+    const repository = makeRepoMock();
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ items: [] }) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const service = new LogmeinReconciliationService(
+      {
+        enabled: true,
+        reconciliationEnabled: true,
+        companyId: 'c',
+        psk: 'p',
+        timeoutMs: 100,
+        lookbackDays: 7,
+        lookbackHours: 1,
+        chunkMinutes: 15,
+        overlapMinutes: 5,
+        maxRetries: 1,
+        circuitCooldownSeconds: 60,
+      },
+      undefined,
+      repository as never,
+    );
+    const result = await service.syncRemoteAccessSessions();
+
+    const startedAudit = repository.insertReconciliationAudit.mock.calls
+      .map((call) => call[0] as Record<string, unknown>)
+      .find((payload) => payload.status === 'started');
+    const completedAudit = repository.insertReconciliationAudit.mock.calls
+      .map((call) => call[0] as Record<string, unknown>)
+      .find((payload) => payload.status === 'completed');
+    expect(result.lookbackHours).toBe(1);
+    expect(result.lookbackDays).toBeNull();
+    expect(result.chunkMinutes).toBe(15);
+    expect(result.overlapMinutes).toBe(5);
+    expect(result.maxRetries).toBe(1);
+    expect(result.cooldownSeconds).toBe(60);
+    expect(startedAudit?.lookbackHours).toBe(1);
+    expect(startedAudit?.lookbackDays).toBeNull();
+    expect(completedAudit?.chunkMinutes).toBe(15);
+    expect(completedAudit?.overlapMinutes).toBe(5);
+    expect(completedAudit?.maxRetries).toBe(1);
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('caps overlap below chunk size and preserves safe defaults for invalid timing values', async () => {
+    const repository = makeRepoMock();
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ items: [] }) })));
+
+    const service = new LogmeinReconciliationService(
+      {
+        enabled: true,
+        reconciliationEnabled: true,
+        companyId: 'c',
+        psk: 'p',
+        timeoutMs: 100,
+        chunkMinutes: Number.NaN,
+        overlapMinutes: 999,
+        maxRetries: Number.NaN,
+        circuitCooldownSeconds: Number.NaN,
+      },
+      undefined,
+      repository as never,
+    );
+    const result = await service.syncRemoteAccessSessions(
+      new Date('2026-06-01T00:00:00Z'),
+      new Date('2026-06-01T05:00:00Z'),
+    );
+    const completedAudit = repository.insertReconciliationAudit.mock.calls
+      .map((call) => call[0] as Record<string, unknown>)
+      .find((payload) => payload.status === 'completed');
+
+    expect(result.chunkMinutes).toBe(120);
+    expect(result.overlapMinutes).toBe(119);
+    expect(result.maxRetries).toBe(2);
+    expect(result.cooldownSeconds).toBe(900);
+    expect(completedAudit?.chunkMinutes).toBe(120);
+    expect(completedAudit?.overlapMinutes).toBe(119);
+    expect(completedAudit?.maxRetries).toBe(2);
+    expect(completedAudit?.cooldownSeconds).toBe(900);
 
     vi.unstubAllGlobals();
   });
@@ -740,6 +1040,74 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     vi.unstubAllGlobals();
   });
 
+  it("strips the GoTo/LogMeIn )]}' anti-hijack guard before parsing a successful report", async () => {
+    const repository = makeRepoMock();
+    const sessionJson = JSON.stringify({
+      items: [{
+        sessionId: 'guard-1',
+        hostId: 'h-1',
+        groupId: 'g-1',
+        startTime: '2026-05-31T10:00:00Z',
+        endTime: '2026-05-31T10:20:00Z',
+      }],
+    });
+    // Real LogMeIn reports prefix the body with the anti-hijack guard.
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => `)]}',\n${sessionJson}`,
+    })));
+
+    const service = new LogmeinReconciliationService(
+      { enabled: true, reconciliationEnabled: true, companyId: 'c', psk: 'p', timeoutMs: 100 },
+      undefined,
+      repository as never,
+    );
+    const result = await service.syncRemoteAccessSessions();
+
+    // Guard stripped → JSON parsed → session imported (NOT a parse failure).
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe('completed');
+    expect(result.sessionsFound).toBe(1);
+    expect(result.reportError).toBeNull();
+    expect(repository.upsertSession).toHaveBeenCalledTimes(1);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('captures a sanitized diagnostic reason from the 500 body without leaking secrets', async () => {
+    const repository = makeRepoMock();
+    // The 500 body carries a useful error reason AND a credential that must be stripped.
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 500,
+      // text() is what extractSanitizedErrorReason reads.
+      text: async () => JSON.stringify({
+        error: 'Unknown report type remote-access-with-groups',
+        psk: 'psk-LEAKED-VALUE',
+        message: 'Report definition not found',
+      }),
+    })));
+
+    const service = new LogmeinReconciliationService(
+      { enabled: true, reconciliationEnabled: true, companyId: 'c', psk: 'p', timeoutMs: 100 },
+      undefined,
+      repository as never,
+    );
+    const result = await service.syncRemoteAccessSessions();
+
+    expect(result.ok).toBe(false);
+    expect(result.reportError).toBe(REPORT_ERROR_CATEGORIES.HTTP_500);
+    // The diagnostic reason surfaces the useful upstream message...
+    expect(result.reportReason).toContain('Unknown report type');
+    expect(result.reportReason).toContain('Report definition not found');
+    // ...but the leaked credential is stripped and never present anywhere.
+    expect(JSON.stringify(result)).not.toContain('psk-LEAKED-VALUE');
+    expect(result.reportReason ?? '').not.toContain('psk-LEAKED-VALUE');
+
+    vi.unstubAllGlobals();
+  });
+
   it('classifies a 401/403 report response distinctly from 500', async () => {
     const repository = makeRepoMock();
     const fetchMock = vi.fn(async () => ({ ok: false, status: 403, json: async () => ({}) }));
@@ -756,6 +1124,27 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     expect(result.reportError).toBe(REPORT_ERROR_CATEGORIES.HTTP_401_403);
     expect(result.reportStatusCode).toBe(403);
     expect(result.message).toContain('401/403');
+    expect(result.fallbackUsed).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('does not retry or fallback aggressively on non-auth 4xx report responses', async () => {
+    const repository = makeRepoMock();
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 409, text: async () => '{"message":"conflict"}' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const service = new LogmeinReconciliationService(
+      { enabled: true, reconciliationEnabled: true, companyId: 'c', psk: 'p', timeoutMs: 100 },
+      undefined,
+      repository as never,
+    );
+    const result = await service.syncRemoteAccessSessions();
+
+    expect(result.ok).toBe(false);
+    expect(result.reportError).toBe(REPORT_ERROR_CATEGORIES.HTTP_400);
+    expect(result.reportStatusCode).toBe(409);
     expect(result.fallbackUsed).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(1);
 

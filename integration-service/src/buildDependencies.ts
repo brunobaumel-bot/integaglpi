@@ -242,8 +242,9 @@ export function buildDependencies() {
   );
   const logmeinReconciliationRepository = new PostgresLogmeinReconciliationRepository(postgresPool);
   const logmeinReconciliationService = envBool('LOGMEIN_RECONCILIATION_ENABLED', false)
-    ? new LogmeinReconciliationService(
-        {
+    ? (() => {
+        const lookbackHoursRaw = String(process.env.LOGMEIN_RECONCILIATION_LOOKBACK_HOURS ?? '').trim();
+        const config = {
           enabled: true,
           reconciliationEnabled: true,
           baseUrl: process.env.LOGMEIN_API_BASE_URL,
@@ -251,11 +252,21 @@ export function buildDependencies() {
           psk: process.env.LOGMEIN_PSK,
           timeoutMs: envInt('LOGMEIN_TIMEOUT_MS', envInt('LOGMEIN_HTTP_TIMEOUT_MS', 15_000, 1_000, 60_000), 1_000, 60_000),
           lookbackDays: envInt('LOGMEIN_RECONCILIATION_LOOKBACK_DAYS', 7, 1, 90),
-        },
-        auditService,
-        logmeinReconciliationRepository,
-        logmeinReconciliationLock,
-      )
+          lookbackHours: lookbackHoursRaw !== ''
+            ? envInt('LOGMEIN_RECONCILIATION_LOOKBACK_HOURS', 7 * 24, 1, 2_160)
+            : undefined,
+          chunkMinutes: envInt('LOGMEIN_RECONCILIATION_CHUNK_MINUTES', 120, 5, 120),
+          overlapMinutes: envInt('LOGMEIN_RECONCILIATION_OVERLAP_MINUTES', 10, 0, 119),
+          maxRetries: envInt('LOGMEIN_RECONCILIATION_MAX_RETRIES', 2, 0, 3),
+          circuitCooldownSeconds: envInt('LOGMEIN_RECONCILIATION_CIRCUIT_COOLDOWN_SECONDS', 900, 60, 3_600),
+        };
+        return new LogmeinReconciliationService(
+          config,
+          auditService,
+          logmeinReconciliationRepository,
+          logmeinReconciliationLock,
+        );
+      })()
     : undefined;
   const logmeinReadonlyContextService = new LogmeinReadonlyContextService(
     {

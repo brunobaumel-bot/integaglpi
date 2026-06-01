@@ -27,6 +27,7 @@ use GlpiPlugin\Integaglpi\Queue;
 use GlpiPlugin\Integaglpi\RoutingOptionsMenu;
 use GlpiPlugin\Integaglpi\RoutingSafetyMenu;
 use GlpiPlugin\Integaglpi\SecurityCenterMenu;
+use GlpiPlugin\Integaglpi\TechnicalHealthMenu;
 use GlpiPlugin\Integaglpi\ServiceCatalogMenu;
 use GlpiPlugin\Integaglpi\Service\TicketSyncService;
 use GlpiPlugin\Integaglpi\SupervisaoGroupMenu;
@@ -259,6 +260,7 @@ function plugin_init_integaglpi(): void
     \Plugin::registerClass(ExternalResearchMenu::class);
     \Plugin::registerClass(ObservabilityMenu::class);
     \Plugin::registerClass(OperationalDiagnosticsMenu::class);
+    \Plugin::registerClass(TechnicalHealthMenu::class);
     \Plugin::registerClass(ContractsHoursMenu::class);
     \Plugin::registerClass(ServiceCatalogMenu::class);
     \Plugin::registerClass(KnowledgeBaseMenu::class);

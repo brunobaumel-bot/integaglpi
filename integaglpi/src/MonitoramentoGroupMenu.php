@@ -40,6 +40,11 @@ final class MonitoramentoGroupMenu extends CommonDBTM
         return [
             'title'            => self::getMenuName(),
             'is_multi_entries' => true,
+                'saude_tecnica' => [
+                    'title' => __('Saúde Técnica IntegraGLPI', 'glpiintegaglpi'),
+                    'page'  => Plugin::getTechnicalHealthUrl(),
+                    'icon'  => 'ti ti-dashboard',
+                ],
                 'observabilidade_whatsapp' => [
                     'title' => __('Observabilidade WhatsApp', 'glpiintegaglpi'),
                     'page'  => Plugin::getObservabilityUrl(),

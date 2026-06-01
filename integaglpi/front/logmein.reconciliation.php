@@ -241,11 +241,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $reportError = (string) ($body['report_error'] ?? '');
                     $reportCode  = isset($body['report_status_code']) && $body['report_status_code'] !== null
                         ? (int) $body['report_status_code'] : 0;
+                    $primaryCode = isset($body['primary_status_code']) && $body['primary_status_code'] !== null
+                        ? (int) $body['primary_status_code'] : 0;
+                    $fallbackCode = isset($body['fallback_status_code']) && $body['fallback_status_code'] !== null
+                        ? (int) $body['fallback_status_code'] : 0;
+                    $fallbackUsed = !empty($body['fallback_used']);
+                    // Bounded, sanitized diagnostic reason from the LogMeIn 500 response.
+                    $reportReason = (string) ($body['report_reason'] ?? '');
                     $errMsg = (string) ($body['message'] ?? __('Indisponível.', 'glpiintegaglpi'));
                     $suffix = '';
+                    if ($primaryCode > 0) {
+                        $suffix .= ' ' . sprintf(__('Relatório primário HTTP %d; ', 'glpiintegaglpi'), $primaryCode);
+                        if ($fallbackUsed && $fallbackCode > 0) {
+                            $suffix .= sprintf(__('fallback HTTP %d.', 'glpiintegaglpi'), $fallbackCode);
+                        } elseif ($fallbackUsed) {
+                            $suffix .= __('fallback executado sem status HTTP informado.', 'glpiintegaglpi');
+                        } else {
+                            $suffix .= __('fallback não executado.', 'glpiintegaglpi');
+                        }
+                    }
                     if ($reportError !== '') {
-                        $suffix = ' [' . htmlspecialchars($reportError, ENT_QUOTES, 'UTF-8')
+                        $suffix .= ' [' . htmlspecialchars($reportError, ENT_QUOTES, 'UTF-8')
                             . ($reportCode > 0 ? ' / HTTP ' . $reportCode : '') . ']';
+                    }
+                    if ($reportReason !== '') {
+                        $suffix .= ' — ' . __('motivo LogMeIn: ', 'glpiintegaglpi')
+                            . htmlspecialchars(mb_substr($reportReason, 0, 240), ENT_QUOTES, 'UTF-8');
                     }
                     $flash  = [
                         'type'    => 'danger',

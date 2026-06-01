@@ -246,6 +246,11 @@ final class Plugin
         return rtrim($configured, '/');
     }
 
+    public static function getTechnicalHealthUrl(): string
+    {
+        return self::getWebBasePath() . '/front/technical.health.php';
+    }
+
     public static function getServiceCatalogUrl(): string
     {
         return self::getWebBasePath() . '/front/service.catalog.php';

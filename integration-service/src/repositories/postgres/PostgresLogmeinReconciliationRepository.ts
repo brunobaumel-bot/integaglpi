@@ -275,6 +275,23 @@ export class PostgresLogmeinReconciliationRepository implements LogmeinReconcili
     windowTo: string;
     errorMessageSanitized?: string | null;
     durationMs?: number | null;
+    reportError?: string | null;
+    reportStatusCode?: number | null;
+    primaryStatusCode?: number | null;
+    fallbackStatusCode?: number | null;
+    fallbackUsed?: boolean;
+    reportPathLabel?: 'primary' | 'fallback' | null;
+    reportReason?: string | null;
+    chunksRequested?: number | null;
+    chunkMinutes?: number | null;
+    maxChunkHours?: number | null;
+    overlapMinutes?: number | null;
+    retriesPerformed?: number | null;
+    maxRetries?: number | null;
+    lookbackHours?: number | null;
+    lookbackDays?: number | null;
+    cooldownSeconds?: number | null;
+    circuitOpenUntil?: string | null;
   }): Promise<void> {
     const eventType = input.status === 'started'
       ? 'LOGMEIN_SESSION_SYNC_STARTED'
@@ -300,6 +317,23 @@ export class PostgresLogmeinReconciliationRepository implements LogmeinReconcili
           window_to: input.windowTo,
           error_message_sanitized: input.errorMessageSanitized ?? null,
           duration_ms: input.durationMs ?? null,
+          report_error: input.reportError ?? null,
+          report_status_code: input.reportStatusCode ?? null,
+          primary_status_code: input.primaryStatusCode ?? null,
+          fallback_status_code: input.fallbackStatusCode ?? null,
+          fallback_used: input.fallbackUsed ?? false,
+          report_path_label: input.reportPathLabel ?? null,
+          report_reason: input.reportReason ?? null,
+          chunks_requested: input.chunksRequested ?? null,
+          chunk_minutes: input.chunkMinutes ?? null,
+          max_chunk_hours: input.maxChunkHours ?? null,
+          overlap_minutes: input.overlapMinutes ?? null,
+          retries_performed: input.retriesPerformed ?? null,
+          max_retries: input.maxRetries ?? null,
+          lookback_hours: input.lookbackHours ?? null,
+          lookback_days: input.lookbackDays ?? null,
+          cooldown_seconds: input.cooldownSeconds ?? null,
+          circuit_open_until: input.circuitOpenUntil ?? null,
           read_only: true,
           remote_execution: false,
           post_action_only_reports: true,

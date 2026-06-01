@@ -60,6 +60,8 @@ export const REPORT_ERROR_CATEGORIES = {
   TRANSPORT: 'LOGMEIN_REPORT_TRANSPORT',
 } as const;
 
+const XSSI_PREFIX_RE = /^\)\]\}'[,\s]*/;
+
 /**
  * Raised when the LogMeIn report API returns a non-OK status or an unparseable
  * body. Carries the sanitized category and the numeric status code only — no
@@ -72,12 +74,19 @@ export class ReportApiError extends Error {
   public readonly fallbackStatusCode: number | null;
   public readonly fallbackUsed: boolean;
   public readonly reportPathLabel: 'primary' | 'fallback';
+  /** Sanitized, bounded diagnostic reason from the error response (never raw/secret). */
+  public readonly reason: string;
+  public readonly chunksRequested: number | null;
+  public readonly retriesPerformed: number | null;
 
   public constructor(category: string, statusCode: number, details: {
     primaryStatusCode?: number | null;
     fallbackStatusCode?: number | null;
     fallbackUsed?: boolean;
     reportPathLabel?: 'primary' | 'fallback';
+    reason?: string;
+    chunksRequested?: number | null;
+    retriesPerformed?: number | null;
   } = {}) {
     super(category); // message is the stable category id, safe to log
     this.name = 'ReportApiError';
@@ -87,6 +96,9 @@ export class ReportApiError extends Error {
     this.fallbackStatusCode = details.fallbackStatusCode ?? (details.reportPathLabel === 'fallback' ? statusCode : null);
     this.fallbackUsed = details.fallbackUsed ?? false;
     this.reportPathLabel = details.reportPathLabel ?? 'primary';
+    this.reason = details.reason ?? '';
+    this.chunksRequested = details.chunksRequested ?? null;
+    this.retriesPerformed = details.retriesPerformed ?? null;
   }
 }
 
@@ -94,9 +106,8 @@ export class ReportApiError extends Error {
 export function classifyReportHttpStatus(status: number): string {
   if (status === 400) return REPORT_ERROR_CATEGORIES.HTTP_400;
   if (status === 401 || status === 403) return REPORT_ERROR_CATEGORIES.HTTP_401_403;
+  if (status >= 400 && status < 500) return REPORT_ERROR_CATEGORIES.HTTP_400;
   if (status >= 500) return REPORT_ERROR_CATEGORIES.HTTP_500;
-  // Any other non-OK status collapses to the generic HTTP_500 bucket for the
-  // operator message, but the exact code is preserved on the error object.
   return REPORT_ERROR_CATEGORIES.HTTP_500;
 }
 
@@ -194,6 +205,7 @@ export interface ReconciliationSyncResult {
     | 'unconfigured'
     | 'migration_required'
     | 'sync_in_progress'
+    | 'circuit_open'
     | 'completed'
     | 'failed';
   message: string;
@@ -210,6 +222,15 @@ export interface ReconciliationSyncResult {
   primaryStatusCode: number | null;
   fallbackStatusCode: number | null;
   fallbackUsed: boolean;
+  /** Bounded, sanitized diagnostic reason from the report error response (else null). */
+  reportReason: string | null;
+  lookbackHours: number;
+  lookbackDays: number | null;
+  chunkMinutes: number;
+  overlapMinutes: number;
+  maxRetries: number;
+  cooldownSeconds: number;
+  circuitOpenUntil: string | null;
 }
 
 interface ReportFetchResult {
@@ -218,6 +239,10 @@ interface ReportFetchResult {
   fallbackStatusCode: number | null;
   fallbackUsed: boolean;
   reportPathLabel: 'primary' | 'fallback';
+  chunksRequested: number;
+  chunkMinutes: number;
+  overlapMinutes: number;
+  retriesPerformed: number;
 }
 
 /** Repository contract — implemented by PostgresLogmeinReconciliationRepository. */
@@ -246,15 +271,81 @@ export interface LogmeinReconciliationRepository {
     windowTo: string;
     errorMessageSanitized?: string | null;
     durationMs?: number | null;
+    reportError?: string | null;
+    reportStatusCode?: number | null;
+    primaryStatusCode?: number | null;
+    fallbackStatusCode?: number | null;
+    fallbackUsed?: boolean;
+    reportPathLabel?: 'primary' | 'fallback' | null;
+    reportReason?: string | null;
+    chunksRequested?: number | null;
+    chunkMinutes?: number | null;
+    maxChunkHours?: number | null;
+    overlapMinutes?: number | null;
+    retriesPerformed?: number | null;
+    maxRetries?: number | null;
+    lookbackHours?: number | null;
+    lookbackDays?: number | null;
+    cooldownSeconds?: number | null;
+    circuitOpenUntil?: string | null;
   }): Promise<void>;
 }
 
 // ── Default configuration ─────────────────────────────────────────────────────
 const DEFAULT_TIMEOUT_MS = 15_000;  // report API can be slower than sync API
 const DEFAULT_LOOKBACK_DAYS = 7;
+const DEFAULT_CHUNK_MINUTES = 120;
+const DEFAULT_CHUNK_OVERLAP_MINUTES = 10;
+const DEFAULT_MAX_REPORT_RETRIES = 2;
+const RETRY_BASE_DELAY_MS = 25;
+const CIRCUIT_BREAKER_FAILURE_THRESHOLD = 2;
+const DEFAULT_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 900;
 const MAX_PAGES = 5;                 // max 5 pages × 500 items = 2500 sessions/run
 const PAGE_SIZE = 500;
 const LOCK_KEY = 'logmein_reconciliation_sync';
+
+interface ReconciliationTimingConfig {
+  lookbackHours: number;
+  lookbackDays: number | null;
+  chunkMinutes: number;
+  overlapMinutes: number;
+  maxRetries: number;
+  cooldownSeconds: number;
+}
+
+function clampInt(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
+function resolveTimingConfig(config: {
+  lookbackDays?: number;
+  lookbackHours?: number;
+  chunkMinutes?: number;
+  overlapMinutes?: number;
+  maxRetries?: number;
+  circuitCooldownSeconds?: number;
+}): ReconciliationTimingConfig {
+  const fallbackLookbackDays = clampInt(config.lookbackDays, DEFAULT_LOOKBACK_DAYS, 1, 90);
+  const lookbackHours = config.lookbackHours !== undefined
+    ? clampInt(config.lookbackHours, fallbackLookbackDays * 24, 1, 2_160)
+    : fallbackLookbackDays * 24;
+  const chunkMinutes = clampInt(config.chunkMinutes, DEFAULT_CHUNK_MINUTES, 5, 120);
+  const overlapMinutes = Math.min(
+    clampInt(config.overlapMinutes, DEFAULT_CHUNK_OVERLAP_MINUTES, 0, Math.max(0, chunkMinutes - 1)),
+    Math.max(0, chunkMinutes - 1),
+  );
+
+  return {
+    lookbackHours,
+    lookbackDays: config.lookbackHours !== undefined ? null : fallbackLookbackDays,
+    chunkMinutes,
+    overlapMinutes,
+    maxRetries: clampInt(config.maxRetries, DEFAULT_MAX_REPORT_RETRIES, 0, 3),
+    cooldownSeconds: clampInt(config.circuitCooldownSeconds, DEFAULT_CIRCUIT_BREAKER_COOLDOWN_SECONDS, 60, 3_600),
+  };
+}
 
 function sanitizeText(value: unknown, max = 160): string {
   return String(value ?? '')
@@ -268,6 +359,103 @@ function sanitizeText(value: unknown, max = 160): string {
 
 function sha256(value: string): string {
   return value !== '' ? createHash('sha256').update(value).digest('hex') : '';
+}
+
+/**
+ * Extracts a bounded, sanitized diagnostic reason from an ERROR response body.
+ *
+ * SECURITY: used ONLY on the non-OK (error) path — never on the success/session
+ * path. Reads at most 2 KB of the body, pulls only well-known top-level error
+ * fields, strips HTML, and runs the result through sanitizeText() (which removes
+ * emails, phones, and token/secret/psk/companyid patterns). The raw text is
+ * discarded after extraction. No auth header, no request body, and no full
+ * session payload is ever read, logged or persisted.
+ */
+const ERROR_REASON_MAX_CHARS = 240;
+async function extractSanitizedErrorReason(response: Response): Promise<string> {
+  try {
+    const raw = await response.text();
+    if (raw === '') return '';
+    const bounded = raw.slice(0, 2_000).replace(XSSI_PREFIX_RE, ''); // hard cap before any processing
+    let candidate = '';
+    try {
+      const parsed = JSON.parse(bounded) as unknown;
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const rec = parsed as Record<string, unknown>;
+        for (const key of ['error', 'message', 'error_description', 'code', 'title', 'detail', 'reason', 'errorCode']) {
+          const v = rec[key];
+          if (typeof v === 'string' && v.trim() !== '') {
+            candidate = candidate === '' ? v : `${candidate} | ${v}`;
+          } else if (typeof v === 'number') {
+            candidate = candidate === '' ? String(v) : `${candidate} | ${v}`;
+          }
+        }
+      }
+    } catch {
+      // Not JSON — likely an HTML/proxy error page. Strip tags, keep a snippet.
+      candidate = bounded.replace(/<[^>]*>/g, ' ');
+    }
+    if (candidate.trim() === '') {
+      candidate = bounded;
+    }
+    return sanitizeText(candidate, ERROR_REASON_MAX_CHARS);
+  } catch {
+    return '';
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
+function retryDelayMs(attempt: number): number {
+  const jitter = Math.floor(Math.random() * RETRY_BASE_DELAY_MS);
+  return RETRY_BASE_DELAY_MS * (2 ** Math.max(0, attempt - 1)) + jitter;
+}
+
+function shouldRetryReportError(error: unknown): boolean {
+  if (error instanceof ReportApiError) {
+    return error.category === REPORT_ERROR_CATEGORIES.HTTP_500
+      || error.category === REPORT_ERROR_CATEGORIES.TIMEOUT
+      || error.category === REPORT_ERROR_CATEGORIES.TRANSPORT;
+  }
+  if (error instanceof ForbiddenEndpointError) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  return /abort|timeout|fetch failed|network|ECONNRESET|ETIMEDOUT/i.test(message);
+}
+
+function splitWindowIntoChunks(
+  from: Date,
+  to: Date,
+  chunkMinutes: number,
+  overlapMinutes: number,
+): Array<{ from: Date; to: Date }> {
+  const startMs = from.getTime();
+  const endMs = to.getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs >= endMs) {
+    return [{ from, to }];
+  }
+
+  const chunkMs = Math.max(5, chunkMinutes) * 60_000;
+  const overlapMs = Math.max(0, Math.min(overlapMinutes, Math.max(0, chunkMinutes - 1))) * 60_000;
+  const chunks: Array<{ from: Date; to: Date }> = [];
+  let cursor = startMs;
+  while (cursor < endMs) {
+    const chunkEnd = Math.min(cursor + chunkMs, endMs);
+    chunks.push({ from: new Date(cursor), to: new Date(chunkEnd) });
+    if (chunkEnd >= endMs) break;
+    cursor = Math.max(cursor + 1, chunkEnd - overlapMs);
+  }
+  return chunks;
+}
+
+function rawSessionKey(item: Record<string, unknown>): string {
+  for (const key of ['sessionId', 'session_id', 'id', 'SessionID', 'sessionID']) {
+    const value = item[key];
+    if (typeof value === 'string' && value.trim() !== '') return value.trim();
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  }
+  return '';
 }
 
 function isoDateString(date: Date): string {
@@ -296,16 +484,26 @@ function buildBasicAuthHeader(companyId: string, psk: string): string {
 // ── Service ───────────────────────────────────────────────────────────────────
 export class LogmeinReconciliationService {
   private static syncInProgress = false;
+  private static consecutiveProvider5xxFailures = 0;
+  private static circuitOpenUntilMs = 0;
+  private readonly timingConfig: ReconciliationTimingConfig;
 
   public constructor(
     private readonly config: LogmeinReadonlyConfig & {
       reconciliationEnabled?: boolean;
       lookbackDays?: number;
+      lookbackHours?: number;
+      chunkMinutes?: number;
+      overlapMinutes?: number;
+      maxRetries?: number;
+      circuitCooldownSeconds?: number;
     },
     private readonly auditService?: AuditService,
     private readonly repository?: LogmeinReconciliationRepository,
     private readonly syncLock?: LogmeinSyncLockAdapter,
-  ) {}
+  ) {
+    this.timingConfig = resolveTimingConfig(config);
+  }
 
   /** Fetch remote-access sessions from LogMeIn reports API, upsert into ledger. */
   public async syncRemoteAccessSessions(
@@ -320,6 +518,70 @@ export class LogmeinReconciliationService {
     }
     if (!this.repository || !await this.repository.isSchemaReady()) {
       return this.fallback('migration_required', 'MIGRATION_043_REQUIRED');
+    }
+
+    const circuitOpenUntil = LogmeinReconciliationService.circuitOpenUntilMs;
+    if (circuitOpenUntil > Date.now()) {
+      const circuitOpenUntilIso = new Date(circuitOpenUntil).toISOString();
+      await this.repository.insertReconciliationAudit({
+        status: 'failed',
+        sessionsFound: 0,
+        sessionsInserted: 0,
+        windowFrom: '',
+        windowTo: '',
+        errorMessageSanitized: 'LOGMEIN_REPORT_CIRCUIT_OPEN',
+        durationMs: 0,
+        reportError: REPORT_ERROR_CATEGORIES.HTTP_500,
+        reportStatusCode: null,
+        primaryStatusCode: null,
+        fallbackStatusCode: null,
+        fallbackUsed: true,
+        reportPathLabel: 'fallback',
+        reportReason: 'circuit_open',
+        chunksRequested: 0,
+        chunkMinutes: this.timingConfig.chunkMinutes,
+        overlapMinutes: this.timingConfig.overlapMinutes,
+        retriesPerformed: 0,
+        maxRetries: this.timingConfig.maxRetries,
+        lookbackHours: this.timingConfig.lookbackHours,
+        lookbackDays: this.timingConfig.lookbackDays,
+        cooldownSeconds: this.timingConfig.cooldownSeconds,
+        circuitOpenUntil: circuitOpenUntilIso,
+      });
+      await this.audit('LOGMEIN_SESSION_SYNC_FAILED', 'failed', {
+        report_error: REPORT_ERROR_CATEGORIES.HTTP_500,
+        report_reason: 'circuit_open',
+        fallback_used: true,
+        chunk_minutes: this.timingConfig.chunkMinutes,
+        overlap_minutes: this.timingConfig.overlapMinutes,
+        max_retries: this.timingConfig.maxRetries,
+        cooldown_seconds: this.timingConfig.cooldownSeconds,
+        circuit_open_until: circuitOpenUntilIso,
+      });
+      return {
+        ok: false,
+        status: 'circuit_open',
+        message: 'LogMeIn Reporting API indisponível temporariamente. Aguarde o cooldown antes de tentar novamente.',
+        sessionsFound: 0,
+        sessionsInserted: 0,
+        sessionsSkippedDuplicate: 0,
+        windowFrom: '',
+        windowTo: '',
+        durationMs: 0,
+        reportError: REPORT_ERROR_CATEGORIES.HTTP_500,
+        reportStatusCode: null,
+        primaryStatusCode: null,
+        fallbackStatusCode: null,
+        fallbackUsed: true,
+        reportReason: 'circuit_open',
+        lookbackHours: this.timingConfig.lookbackHours,
+        lookbackDays: this.timingConfig.lookbackDays,
+        chunkMinutes: this.timingConfig.chunkMinutes,
+        overlapMinutes: this.timingConfig.overlapMinutes,
+        maxRetries: this.timingConfig.maxRetries,
+        cooldownSeconds: this.timingConfig.cooldownSeconds,
+        circuitOpenUntil: circuitOpenUntilIso,
+      };
     }
 
     // Redis cross-process lock.
@@ -345,9 +607,8 @@ export class LogmeinReconciliationService {
     LogmeinReconciliationService.syncInProgress = true;
     const startMs = Date.now();
 
-    const lookbackDays = Math.max(1, Math.min(90, this.config.lookbackDays ?? DEFAULT_LOOKBACK_DAYS));
     const windowTo = overrideWindowTo ?? new Date();
-    const windowFrom = overrideWindowFrom ?? new Date(windowTo.getTime() - lookbackDays * 86_400_000);
+    const windowFrom = overrideWindowFrom ?? new Date(windowTo.getTime() - this.timingConfig.lookbackHours * 3_600_000);
     const windowFromStr = isoDateString(windowFrom);
     const windowToStr = isoDateString(windowTo);
 
@@ -357,11 +618,32 @@ export class LogmeinReconciliationService {
       sessionsInserted: 0,
       windowFrom: windowFromStr,
       windowTo: windowToStr,
+      reportError: null,
+      reportStatusCode: null,
+      primaryStatusCode: null,
+      fallbackStatusCode: null,
+      fallbackUsed: false,
+      reportPathLabel: null,
+      reportReason: null,
+      chunksRequested: null,
+      chunkMinutes: this.timingConfig.chunkMinutes,
+      overlapMinutes: this.timingConfig.overlapMinutes,
+      retriesPerformed: 0,
+      maxRetries: this.timingConfig.maxRetries,
+      lookbackHours: this.timingConfig.lookbackHours,
+      lookbackDays: this.timingConfig.lookbackDays,
+      cooldownSeconds: this.timingConfig.cooldownSeconds,
+      circuitOpenUntil: null,
     });
     await this.audit('LOGMEIN_SESSION_SYNC_STARTED', 'success', {
       window_from: windowFromStr,
       window_to: windowToStr,
-      lookback_days: lookbackDays,
+      lookback_days: this.timingConfig.lookbackDays,
+      lookback_hours: this.timingConfig.lookbackHours,
+      chunk_minutes: this.timingConfig.chunkMinutes,
+      overlap_minutes: this.timingConfig.overlapMinutes,
+      max_retries: this.timingConfig.maxRetries,
+      cooldown_seconds: this.timingConfig.cooldownSeconds,
     });
 
     try {
@@ -403,6 +685,22 @@ export class LogmeinReconciliationService {
         windowFrom: windowFromStr,
         windowTo: windowToStr,
         durationMs,
+        reportError: null,
+        reportStatusCode: null,
+        primaryStatusCode: reportFetch.primaryStatusCode,
+        fallbackStatusCode: reportFetch.fallbackStatusCode,
+        fallbackUsed: reportFetch.fallbackUsed,
+        reportPathLabel: reportFetch.reportPathLabel,
+        reportReason: null,
+        chunksRequested: reportFetch.chunksRequested,
+        chunkMinutes: reportFetch.chunkMinutes,
+        overlapMinutes: reportFetch.overlapMinutes,
+        retriesPerformed: reportFetch.retriesPerformed,
+        maxRetries: this.timingConfig.maxRetries,
+        lookbackHours: this.timingConfig.lookbackHours,
+        lookbackDays: this.timingConfig.lookbackDays,
+        cooldownSeconds: this.timingConfig.cooldownSeconds,
+        circuitOpenUntil: null,
       });
       await this.audit('LOGMEIN_SESSION_SYNC_COMPLETED', 'success', {
         sessions_found: rawSessions.length,
@@ -415,7 +713,18 @@ export class LogmeinReconciliationService {
         primary_status_code: reportFetch.primaryStatusCode,
         fallback_status_code: reportFetch.fallbackStatusCode,
         fallback_used: reportFetch.fallbackUsed,
+        chunks_requested: reportFetch.chunksRequested,
+        chunk_minutes: reportFetch.chunkMinutes,
+        overlap_minutes: reportFetch.overlapMinutes,
+        retries_performed: reportFetch.retriesPerformed,
+        max_retries: this.timingConfig.maxRetries,
+        lookback_hours: this.timingConfig.lookbackHours,
+        lookback_days: this.timingConfig.lookbackDays,
+        cooldown_seconds: this.timingConfig.cooldownSeconds,
       });
+
+      LogmeinReconciliationService.consecutiveProvider5xxFailures = 0;
+      LogmeinReconciliationService.circuitOpenUntilMs = 0;
 
       // HTTP 200 with zero sessions is a SUCCESS, not an error.
       const completedMessage = rawSessions.length === 0
@@ -437,6 +746,14 @@ export class LogmeinReconciliationService {
         primaryStatusCode: reportFetch.primaryStatusCode,
         fallbackStatusCode: reportFetch.fallbackStatusCode,
         fallbackUsed: reportFetch.fallbackUsed,
+        reportReason: null,
+        lookbackHours: this.timingConfig.lookbackHours,
+        lookbackDays: this.timingConfig.lookbackDays,
+        chunkMinutes: this.timingConfig.chunkMinutes,
+        overlapMinutes: this.timingConfig.overlapMinutes,
+        maxRetries: this.timingConfig.maxRetries,
+        cooldownSeconds: this.timingConfig.cooldownSeconds,
+        circuitOpenUntil: null,
       };
     } catch (error: unknown) {
       const durationMs = Date.now() - startMs;
@@ -451,6 +768,25 @@ export class LogmeinReconciliationService {
       const fallbackStatusCode = error instanceof ReportApiError ? error.fallbackStatusCode : null;
       const fallbackUsed = error instanceof ReportApiError ? error.fallbackUsed : false;
       const reportPathLabel = error instanceof ReportApiError ? error.reportPathLabel : 'primary';
+      // Bounded, sanitized diagnostic reason (only present on ReportApiError).
+      const reportReason = error instanceof ReportApiError && error.reason !== '' ? error.reason : null;
+      const chunksRequested = error instanceof ReportApiError ? error.chunksRequested : null;
+      const retriesPerformed = error instanceof ReportApiError ? error.retriesPerformed : null;
+      let circuitOpenUntilIso: string | null = null;
+      if (
+        error instanceof ReportApiError
+        && reportCategory === REPORT_ERROR_CATEGORIES.HTTP_500
+        && fallbackUsed
+        && (fallbackStatusCode ?? 0) >= 500
+      ) {
+        LogmeinReconciliationService.consecutiveProvider5xxFailures += 1;
+        if (LogmeinReconciliationService.consecutiveProvider5xxFailures >= CIRCUIT_BREAKER_FAILURE_THRESHOLD) {
+          LogmeinReconciliationService.circuitOpenUntilMs = Date.now() + this.timingConfig.cooldownSeconds * 1_000;
+          circuitOpenUntilIso = new Date(LogmeinReconciliationService.circuitOpenUntilMs).toISOString();
+        }
+      } else {
+        LogmeinReconciliationService.consecutiveProvider5xxFailures = 0;
+      }
       // errorMessageSanitized is the stable category id (never a raw message/body).
       const errorMessage = sanitizeText(reportCategory, 240);
 
@@ -462,6 +798,22 @@ export class LogmeinReconciliationService {
         windowTo: windowToStr,
         errorMessageSanitized: errorMessage,
         durationMs,
+        reportError: reportCategory,
+        reportStatusCode,
+        primaryStatusCode,
+        fallbackStatusCode,
+        fallbackUsed,
+        reportPathLabel,
+        reportReason,
+        chunksRequested,
+        chunkMinutes: this.timingConfig.chunkMinutes,
+        overlapMinutes: this.timingConfig.overlapMinutes,
+        retriesPerformed,
+        maxRetries: this.timingConfig.maxRetries,
+        lookbackHours: this.timingConfig.lookbackHours,
+        lookbackDays: this.timingConfig.lookbackDays,
+        cooldownSeconds: this.timingConfig.cooldownSeconds,
+        circuitOpenUntil: circuitOpenUntilIso,
       });
       await this.audit('LOGMEIN_SESSION_SYNC_FAILED', 'failed', {
         error_type: this.errorType(error),
@@ -472,6 +824,17 @@ export class LogmeinReconciliationService {
         fallback_status_code: fallbackStatusCode,
         fallback_used: fallbackUsed,
         status_code: reportStatusCode,
+        // Bounded sanitized reason for operator diagnosis (no body/token/headers).
+        report_reason: reportReason,
+        chunks_requested: chunksRequested,
+        chunk_minutes: this.timingConfig.chunkMinutes,
+        overlap_minutes: this.timingConfig.overlapMinutes,
+        retries_performed: retriesPerformed,
+        max_retries: this.timingConfig.maxRetries,
+        lookback_hours: this.timingConfig.lookbackHours,
+        lookback_days: this.timingConfig.lookbackDays,
+        cooldown_seconds: this.timingConfig.cooldownSeconds,
+        circuit_open_until: circuitOpenUntilIso,
         duration_ms: durationMs,
         window_from: windowFromStr,
         window_to: windowToStr,
@@ -491,6 +854,14 @@ export class LogmeinReconciliationService {
         primaryStatusCode,
         fallbackStatusCode,
         fallbackUsed,
+        reportReason,
+        lookbackHours: this.timingConfig.lookbackHours,
+        lookbackDays: this.timingConfig.lookbackDays,
+        chunkMinutes: this.timingConfig.chunkMinutes,
+        overlapMinutes: this.timingConfig.overlapMinutes,
+        maxRetries: this.timingConfig.maxRetries,
+        cooldownSeconds: this.timingConfig.cooldownSeconds,
+        circuitOpenUntil: circuitOpenUntilIso,
       };
     } finally {
       LogmeinReconciliationService.syncInProgress = false;
@@ -544,6 +915,61 @@ export class LogmeinReconciliationService {
   // ── Private helpers ─────────────────────────────────────────────────────────
 
   private async fetchAllSessionPages(from: Date, to: Date): Promise<ReportFetchResult> {
+    const chunks = splitWindowIntoChunks(
+      from,
+      to,
+      this.timingConfig.chunkMinutes,
+      this.timingConfig.overlapMinutes,
+    );
+    const itemsBySessionId = new Map<string, Record<string, unknown>>();
+    let primaryStatusCode: number | null = null;
+    let fallbackStatusCode: number | null = null;
+    let fallbackUsed = false;
+    let reportPathLabel: 'primary' | 'fallback' = 'primary';
+    let retriesPerformed = 0;
+
+    for (const chunk of chunks) {
+      try {
+        const result = await this.fetchSessionWindowWithFallback(chunk.from, chunk.to);
+        primaryStatusCode = result.primaryStatusCode ?? primaryStatusCode;
+        fallbackStatusCode = result.fallbackStatusCode ?? fallbackStatusCode;
+        fallbackUsed = fallbackUsed || result.fallbackUsed;
+        reportPathLabel = result.reportPathLabel === 'fallback' ? 'fallback' : reportPathLabel;
+        retriesPerformed += result.retriesPerformed;
+        for (const item of result.items) {
+          const key = rawSessionKey(item);
+          itemsBySessionId.set(key !== '' ? key : `__no_session_id_${itemsBySessionId.size}`, item);
+        }
+      } catch (error: unknown) {
+        if (error instanceof ReportApiError) {
+          throw new ReportApiError(error.category, error.statusCode, {
+            primaryStatusCode: error.primaryStatusCode,
+            fallbackStatusCode: error.fallbackStatusCode,
+            fallbackUsed: error.fallbackUsed,
+            reportPathLabel: error.reportPathLabel,
+            reason: error.reason,
+            chunksRequested: chunks.length,
+            retriesPerformed: retriesPerformed + (error.retriesPerformed ?? 0),
+          });
+        }
+        throw error;
+      }
+    }
+
+    return {
+      items: Array.from(itemsBySessionId.values()),
+      primaryStatusCode,
+      fallbackStatusCode,
+      fallbackUsed,
+      reportPathLabel,
+      chunksRequested: chunks.length,
+      chunkMinutes: this.timingConfig.chunkMinutes,
+      overlapMinutes: this.timingConfig.overlapMinutes,
+      retriesPerformed,
+    };
+  }
+
+  private async fetchSessionWindowWithFallback(from: Date, to: Date): Promise<ReportFetchResult> {
     try {
       const primary = await this.fetchSessionPagesFromPath(RECONCILIATION_REPORT_PATH, from, to, 'primary');
       return {
@@ -552,6 +978,10 @@ export class LogmeinReconciliationService {
         fallbackStatusCode: null,
         fallbackUsed: false,
         reportPathLabel: 'primary',
+        chunksRequested: 1,
+        chunkMinutes: this.timingConfig.chunkMinutes,
+        overlapMinutes: this.timingConfig.overlapMinutes,
+        retriesPerformed: primary.retriesPerformed,
       };
     } catch (error: unknown) {
       if (!(error instanceof ReportApiError) || error.category !== REPORT_ERROR_CATEGORIES.HTTP_500) {
@@ -566,14 +996,23 @@ export class LogmeinReconciliationService {
           fallbackStatusCode: fallback.statusCode,
           fallbackUsed: true,
           reportPathLabel: 'fallback',
+          chunksRequested: 1,
+          chunkMinutes: this.timingConfig.chunkMinutes,
+          overlapMinutes: this.timingConfig.overlapMinutes,
+          retriesPerformed: (error.retriesPerformed ?? 0) + fallback.retriesPerformed,
         };
       } catch (fallbackError: unknown) {
         if (fallbackError instanceof ReportApiError) {
+          // Prefer the fallback reason; fall back to the primary reason if empty.
+          const combinedReason = fallbackError.reason !== '' ? fallbackError.reason : error.reason;
           throw new ReportApiError(fallbackError.category, fallbackError.statusCode, {
             primaryStatusCode: error.statusCode,
             fallbackStatusCode: fallbackError.statusCode,
             fallbackUsed: true,
             reportPathLabel: 'fallback',
+            reason: combinedReason,
+            chunksRequested: 1,
+            retriesPerformed: (error.retriesPerformed ?? 0) + (fallbackError.retriesPerformed ?? 0),
           });
         }
         throw fallbackError;
@@ -586,7 +1025,7 @@ export class LogmeinReconciliationService {
     from: Date,
     to: Date,
     label: 'primary' | 'fallback',
-  ): Promise<{ items: Record<string, unknown>[]; statusCode: number }> {
+  ): Promise<{ items: Record<string, unknown>[]; statusCode: number; retriesPerformed: number }> {
     const allItems: Record<string, unknown>[] = [];
     const url = this.reportEndpoint(path);
     const authHeader = this.basicAuthHeader();
@@ -595,41 +1034,84 @@ export class LogmeinReconciliationService {
       to: to.toISOString(),
       count: PAGE_SIZE,
     };
+    let retriesPerformed = 0;
+    let lastStatusCode = 200;
 
     for (let page = 0; page < MAX_PAGES; page++) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-
-      let response: Response;
-      try {
-        response = await fetch(url, {
-          method: 'POST',                        // POST is allowlisted for passive reports
-          signal: controller.signal,
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-            Authorization: authHeader,           // header value never logged
-          },
-          body: JSON.stringify({ ...body, offset: page * PAGE_SIZE }),
-        });
-      } finally {
-        clearTimeout(timeout);
+      let response: Response | null = null;
+      for (let attempt = 0; attempt <= this.timingConfig.maxRetries; attempt++) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+        try {
+          response = await fetch(url, {
+            method: 'POST',                        // POST is allowlisted for passive reports
+            signal: controller.signal,
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+              Authorization: authHeader,           // header value never logged
+            },
+            body: JSON.stringify({ ...body, offset: page * PAGE_SIZE }),
+          });
+          if (response.ok || response.status < 500) {
+            break;
+          }
+          if (attempt >= this.timingConfig.maxRetries) break;
+          retriesPerformed++;
+          await delay(retryDelayMs(attempt + 1));
+        } catch (error: unknown) {
+          if (attempt >= this.timingConfig.maxRetries || !shouldRetryReportError(error)) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw new ReportApiError(REPORT_ERROR_CATEGORIES.TRANSPORT, 0, {
+              reportPathLabel: label,
+              retriesPerformed,
+              reason: sanitizeText(message, ERROR_REASON_MAX_CHARS),
+            });
+          }
+          retriesPerformed++;
+          await delay(retryDelayMs(attempt + 1));
+        } finally {
+          clearTimeout(timeout);
+        }
       }
 
+      if (response === null) {
+        throw new ReportApiError(REPORT_ERROR_CATEGORIES.TRANSPORT, 0, {
+          reportPathLabel: label,
+          retriesPerformed,
+        });
+      }
+      lastStatusCode = typeof response.status === 'number' ? response.status : 200;
+
       if (!response.ok) {
-        // Sanitized classification — no body, headers or token are read/logged.
+        // Sanitized classification + bounded diagnostic reason. The reason reads
+        // only well-known top-level error fields, stripped of secrets — never the
+        // full body, request, or auth header.
+        const reason = await extractSanitizedErrorReason(response);
         throw new ReportApiError(classifyReportHttpStatus(response.status), response.status, {
           reportPathLabel: label,
+          reason,
+          retriesPerformed,
         });
       }
 
       let raw: unknown;
       try {
-        raw = await response.json();
+        // GoTo/LogMeIn reports wrap the body in the anti-JSON-hijacking guard
+        // `)]}'` (same convention as Google APIs). Strip it before parsing so the
+        // success path works. The hostswithgroups (asset) endpoint does NOT use
+        // this guard, which is why the existing asset sync parses cleanly.
+        // Prefer raw text (required to strip the guard); tolerate json-only bodies.
+        const text = typeof response.text === 'function'
+          ? await response.text()
+          : JSON.stringify(await response.json());
+        const cleaned = text.replace(/^\)\]\}'[,\s]*/, '');
+        raw = JSON.parse(cleaned);
       } catch {
         // Body present but not valid JSON / unexpected shape.
         throw new ReportApiError(REPORT_ERROR_CATEGORIES.PARSE_FAILED, response.status, {
           reportPathLabel: label,
+          retriesPerformed,
         });
       }
 
@@ -640,7 +1122,7 @@ export class LogmeinReconciliationService {
       if (items.length < PAGE_SIZE) break;
     }
 
-    return { items: allItems, statusCode: 200 };
+    return { items: allItems, statusCode: lastStatusCode, retriesPerformed };
   }
 
   private extractItems(body: unknown): Record<string, unknown>[] {
@@ -846,6 +1328,14 @@ export class LogmeinReconciliationService {
       primaryStatusCode: null,
       fallbackStatusCode: null,
       fallbackUsed: false,
+      reportReason: null,
+      lookbackHours: this.timingConfig.lookbackHours,
+      lookbackDays: this.timingConfig.lookbackDays,
+      chunkMinutes: this.timingConfig.chunkMinutes,
+      overlapMinutes: this.timingConfig.overlapMinutes,
+      maxRetries: this.timingConfig.maxRetries,
+      cooldownSeconds: this.timingConfig.cooldownSeconds,
+      circuitOpenUntil: null,
     };
   }
 
