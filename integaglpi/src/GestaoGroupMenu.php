@@ -95,6 +95,15 @@ final class GestaoGroupMenu extends CommonDBTM
             ];
         }
 
+        // V7 — Conciliação de acessos remotos (feature flag LOGMEIN_RECONCILIATION_ENABLED=false por padrão).
+        if (SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_RECONCILIATION)) {
+            $children['logmein_reconciliation'] = [
+                'title' => __('Conciliação de Acessos Remotos', 'glpiintegaglpi'),
+                'page'  => Plugin::getLogmeinReconciliationUrl(),
+                'icon'  => 'ti ti-link',
+            ];
+        }
+
         // Entrada legacy mantida só como ponteiro para o bootstrap GLPI
         // (Ler/Atualizar). A matriz granular vive na Central de Segurança.
         $children['perfis_permissoes_bootstrap'] = [
@@ -117,6 +126,7 @@ final class GestaoGroupMenu extends CommonDBTM
             || SecurityPermissionService::canViewSecurityCenter()
             || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_VIEW_CONTRACTS_READONLY)
             || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_EXPORT_OPERATIONAL_REPORTS)
-            || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_MAPPING);
+            || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_MAPPING)
+            || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_RECONCILIATION);
     }
 }

@@ -34,6 +34,14 @@ final class SecurityAuditService
     public const EVENT_PERMISSION_REVIEW_COMPLETED = 'PERMISSION_REVIEW_COMPLETED';
     public const EVENT_RELEASE_CHECKLIST_APPROVED = 'RELEASE_CHECKLIST_APPROVED';
     public const EVENT_RUNBOOK_REVIEWED = 'RUNBOOK_REVIEWED';
+    // V7 — remote-access reconciliation events.
+    public const EVENT_LOGMEIN_SESSION_SYNC_STARTED = 'LOGMEIN_SESSION_SYNC_STARTED';
+    public const EVENT_LOGMEIN_SESSION_SYNC_COMPLETED = 'LOGMEIN_SESSION_SYNC_COMPLETED';
+    public const EVENT_LOGMEIN_SESSION_SYNC_FAILED = 'LOGMEIN_SESSION_SYNC_FAILED';
+    public const EVENT_LOGMEIN_SESSION_MATCHED = 'LOGMEIN_SESSION_MATCHED';
+    public const EVENT_LOGMEIN_SESSION_REGULARIZATION_CREATED = 'LOGMEIN_SESSION_REGULARIZATION_CREATED';
+    public const EVENT_LOGMEIN_SESSION_REGULARIZATION_RESOLVED = 'LOGMEIN_SESSION_REGULARIZATION_RESOLVED';
+    public const EVENT_SECURITY_LOGMEIN_RECONCILIATION_ACTION = 'SECURITY_LOGMEIN_RECONCILIATION_ACTION';
 
     private const FORBIDDEN_CONTEXT_KEYS = [
         'token',
@@ -246,6 +254,37 @@ final class SecurityAuditService
         } catch (Throwable $exception) {
             error_log('[integaglpi][security_audit][persist_failed] ' . $exception->getMessage());
         }
+    }
+
+    /**
+     * V7: log a reconciliation UI action (resolve, link ticket, create task, ignore).
+     *
+     * @param array<string, mixed> $context
+     */
+    public static function logReconciliationAction(string $action, int $queueItemId, array $context = []): void
+    {
+        self::log(self::EVENT_SECURITY_LOGMEIN_RECONCILIATION_ACTION, [
+            'action' => $action,
+            'queue_item_id' => $queueItemId,
+            'read_only' => false,  // operator is taking an action
+            'remote_execution' => false,
+            'context' => self::sanitize($context),
+        ]);
+    }
+
+    /**
+     * V7: log when a task is created in GLPI after human confirmation.
+     *
+     * @param array<string, mixed> $context
+     */
+    public static function logGlpiTaskCreated(int $ticketId, int $taskId, array $context = []): void
+    {
+        self::log(self::EVENT_LOGMEIN_SESSION_REGULARIZATION_RESOLVED, [
+            'ticket_id' => $ticketId,
+            'task_id' => $taskId,
+            'remote_execution' => false,
+            'context' => self::sanitize($context),
+        ]);
     }
 
     private static function auditTableExists(PDO $pdo): bool

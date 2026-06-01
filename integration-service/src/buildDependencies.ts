@@ -1,6 +1,8 @@
 import { ContactCacheRepository } from './cache/ContactCacheRepository.js';
 import { RedisKeyLock } from './cache/RedisKeyLock.js';
 import { LogmeinRedisSyncLock } from './cache/LogmeinRedisSyncLock.js';
+import { LogmeinReconciliationService } from './domain/services/LogmeinReconciliationService.js';
+import { PostgresLogmeinReconciliationRepository } from './repositories/postgres/PostgresLogmeinReconciliationRepository.js';
 import { MetaClient } from './adapters/meta/MetaClient.js';
 import { OllamaClient } from './ai/OllamaClient.js';
 import { env } from './config/env.js';
@@ -234,6 +236,27 @@ export function buildDependencies() {
     // TTL covers worst-case large sync; auto-expires if process dies.
     envInt('LOGMEIN_SYNC_LOCK_TTL_MS', 5 * 60 * 1_000, 30_000, 30 * 60 * 1_000),
   );
+  const logmeinReconciliationLock = new LogmeinRedisSyncLock(
+    // Reconciliation lock: longer TTL — report API + matching can take up to 10 min.
+    envInt('LOGMEIN_RECONCILIATION_LOCK_TTL_MS', 10 * 60 * 1_000, 60_000, 30 * 60 * 1_000),
+  );
+  const logmeinReconciliationRepository = new PostgresLogmeinReconciliationRepository(postgresPool);
+  const logmeinReconciliationService = envBool('LOGMEIN_RECONCILIATION_ENABLED', false)
+    ? new LogmeinReconciliationService(
+        {
+          enabled: true,
+          reconciliationEnabled: true,
+          baseUrl: process.env.LOGMEIN_API_BASE_URL,
+          companyId: process.env.LOGMEIN_COMPANY_ID,
+          psk: process.env.LOGMEIN_PSK,
+          timeoutMs: envInt('LOGMEIN_TIMEOUT_MS', envInt('LOGMEIN_HTTP_TIMEOUT_MS', 15_000, 1_000, 60_000), 1_000, 60_000),
+          lookbackDays: envInt('LOGMEIN_RECONCILIATION_LOOKBACK_DAYS', 7, 1, 90),
+        },
+        auditService,
+        logmeinReconciliationRepository,
+        logmeinReconciliationLock,
+      )
+    : undefined;
   const logmeinReadonlyContextService = new LogmeinReadonlyContextService(
     {
       enabled: envBool('LOGMEIN_INTEGRATION_ENABLED', false),
@@ -500,6 +523,7 @@ export function buildDependencies() {
     contactAgendaImportService,
     manualTicketWhatsappLinkService,
     logmeinReadonlyContextService,
+    logmeinReconciliationService,
     integrationServiceApiKey: env.INTEGRATION_SERVICE_API_KEY,
     glpiClient,
     metaClient,

@@ -1,9 +1,42 @@
-# V6 Governance, Release, and LogMeIn Read-only Closure
+# V6/V7 Governance, Release, and LogMeIn Read-only Closure
 
-Phase: `integaglpi_v6_e3_governanca_logmein_release_001` → hardening:
-`integaglpi_logmein_operational_hardening_release_001`
+Phases:
+- V6-E3: `integaglpi_v6_e3_governanca_logmein_release_001`
+- V6-E4 (hardening): `integaglpi_logmein_operational_hardening_release_001`
+- V7 (reconciliation): `integaglpi_v7_logmein_remote_access_evidence_reconciliation_001`
 
-Status: hardening package ready for Cursor review and manual smoke. Production remains blocked.
+Status: V6 closed. V7 reconciliation implementation ready for Cursor review. Production remains blocked.
+
+## Read-Only Allowlist Policy (effective from V7)
+
+The term "GET-only" is superseded by "read-only allowlist".
+
+**Allowed external calls to LogMeIn Central API:**
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| GET | `/public-api/v2/hostswithgroups` | Host/group cache sync (V6) |
+| POST | `/public-api/v1/reports/remote-access-with-groups` | Passive session report (V7 allowlisted) |
+| POST | `/public-api/v1/reports/remote-access` | Fallback passive report (V7 allowlisted) |
+
+**Permanently forbidden:**
+
+- Any `PUT`, `DELETE`, `PATCH` against LogMeIn
+- `/hosts/{id}/connection` — remote session initiation
+- `/start-session`, `/deploy`, `/execute`, `/run-script`
+- Any RMM automation endpoint
+- Any endpoint that mutates LogMeIn state
+
+**V7 reconciliation safety:**
+- `sessionId` is unique; re-syncing the same window inserts nothing.
+- `userIp` is never stored — SHA-256 of the IP is computed internally for snapshot hash only, not persisted.
+- Technician identity stored only as SHA-256 hash — never plaintext in DB, log, or UI.
+- No automatic GLPI ticket created from reconciliation.
+- No automatic WhatsApp notification.
+- No billing automation.
+- No ranking or nominal technician report.
+- GLPI task creation requires explicit human confirmation per session.
+- `LOGMEIN_RECONCILIATION_ENABLED=false` by default in all environments.
 
 Itens de governanca cobertos: Release checklist, release notes, Matriz RACI,
 Owners por processo, Revisão mensal de permissões, Change Enablement,

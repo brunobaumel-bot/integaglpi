@@ -42,6 +42,11 @@ import {
 } from './controllers/createManualTicketWhatsappController.js';
 import { createLogmeinHealthController, createLogmeinReadonlySyncController } from './controllers/createLogmeinReadonlyController.js';
 import {
+  createLogmeinReconciliationQueueController,
+  createLogmeinReconciliationResolveController,
+  createLogmeinReconciliationSyncController,
+} from './controllers/createLogmeinReconciliationController.js';
+import {
   createConversationEntityController,
   createConversationEntityStatusController,
 } from './controllers/createConversationEntityController.js';
@@ -76,6 +81,7 @@ export interface AppDependencies {
   contactAgendaImportService?: ContactAgendaImportService;
   manualTicketWhatsappLinkService?: ManualTicketWhatsappLinkService;
   logmeinReadonlyContextService?: LogmeinReadonlyContextService;
+  logmeinReconciliationService?: import('./domain/services/LogmeinReconciliationService.js').LogmeinReconciliationService;
 }
 
 function createJsonParser(options: { limit?: string } = {}) {
@@ -100,6 +106,8 @@ export function createApp(dependencies: AppDependencies) {
         || req.path.startsWith('/internal/glpi/contact-agenda/import')
         || req.path === '/internal/glpi/logmein/sync'
         || req.path === '/internal/glpi/logmein/health'
+        || req.path === '/internal/glpi/logmein/reconciliation/sync'
+        || req.path.startsWith('/internal/glpi/logmein/reconciliation/queue')
       )
     ) {
       next();
@@ -213,6 +221,29 @@ export function createApp(dependencies: AppDependencies) {
       '/internal/glpi/logmein/health',
       createInternalBearerMiddleware(dependencies.integrationServiceApiKey),
       createLogmeinHealthController(dependencies.logmeinReadonlyContextService),
+    );
+  }
+  if (dependencies.logmeinReconciliationService) {
+    const internalAuth = createInternalBearerMiddleware(dependencies.integrationServiceApiKey);
+    const jsonParser = createJsonParser();
+    // POST-only report allowlist: active fetch from LogMeIn reports API.
+    app.post(
+      '/internal/glpi/logmein/reconciliation/sync',
+      internalAuth,
+      jsonParser,
+      createLogmeinReconciliationSyncController(dependencies.logmeinReconciliationService),
+    );
+    // Queue management (read + resolve).
+    app.get(
+      '/internal/glpi/logmein/reconciliation/queue',
+      internalAuth,
+      createLogmeinReconciliationQueueController(dependencies.logmeinReconciliationService),
+    );
+    app.post(
+      '/internal/glpi/logmein/reconciliation/queue/:id/resolve',
+      internalAuth,
+      jsonParser,
+      createLogmeinReconciliationResolveController(dependencies.logmeinReconciliationService),
     );
   }
   app.post(

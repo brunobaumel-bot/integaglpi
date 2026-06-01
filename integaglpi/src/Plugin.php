@@ -225,6 +225,11 @@ final class Plugin
         return self::getWebBasePath() . '/front/logmein.reports.php';
     }
 
+    public static function getLogmeinReconciliationUrl(): string
+    {
+        return self::getWebBasePath() . '/front/logmein.reconciliation.php';
+    }
+
     public static function getServiceCatalogUrl(): string
     {
         return self::getWebBasePath() . '/front/service.catalog.php';

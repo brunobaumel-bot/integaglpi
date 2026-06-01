@@ -55,6 +55,8 @@ final class SecurityPermissionService
     public const RIGHT_VIEW_UNMASKED_PII             = 'view_unmasked_pii';
     public const RIGHT_VIEW_LOGMEIN_CONTEXT          = 'view_logmein_context';
     public const RIGHT_MANAGE_LOGMEIN_MAPPING        = 'manage_logmein_mapping';
+    // V7 — remote-access reconciliation.
+    public const RIGHT_MANAGE_LOGMEIN_RECONCILIATION = 'manage_logmein_reconciliation';
 
     /**
      * @var array<string, list<string>>
@@ -101,6 +103,7 @@ final class SecurityPermissionService
             self::RIGHT_VIEW_SECURITY_CENTER,
             self::RIGHT_VIEW_LOGMEIN_CONTEXT,
             self::RIGHT_MANAGE_LOGMEIN_MAPPING,
+            self::RIGHT_MANAGE_LOGMEIN_RECONCILIATION,
         ],
         self::ROLE_DIRECAO => [
             self::RIGHT_ENFORCE_ENTITY_ISOLATION,
@@ -138,6 +141,7 @@ final class SecurityPermissionService
             self::RIGHT_MANAGE_SECURITY_CENTER,
             self::RIGHT_VIEW_UNMASKED_PII,
             self::RIGHT_MANAGE_LOGMEIN_MAPPING,
+            self::RIGHT_MANAGE_LOGMEIN_RECONCILIATION,
         ],
         self::ROLE_SUPERVISAO => [
             self::RIGHT_REPLY_ANY_TICKET,
@@ -164,6 +168,7 @@ final class SecurityPermissionService
             self::RIGHT_MANAGE_SECURITY_CENTER,
             self::RIGHT_VIEW_UNMASKED_PII,
             self::RIGHT_MANAGE_LOGMEIN_MAPPING,
+            self::RIGHT_MANAGE_LOGMEIN_RECONCILIATION,
         ],
     ];
 
