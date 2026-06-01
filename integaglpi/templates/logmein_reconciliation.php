@@ -60,6 +60,26 @@ $confidenceLabels = [
             <?php if ($queueError !== null) { ?>
                 <div class="alert alert-warning"><?= $escape($queueError); ?></div>
             <?php } ?>
+
+            <?php /* ── Manual sync trigger ────────────────────────────── */ ?>
+            <form method="post" action="<?= $escape($selfUrl); ?>" class="mt-2">
+                <input type="hidden" name="_glpi_csrf_token" value="<?= $escape($csrfToken); ?>">
+                <input type="hidden" name="action" value="sync_reconciliation">
+                <button type="submit" class="btn btn-outline-primary">
+                    <i class="ti ti-refresh me-1"></i>
+                    <?= $escape(__('Sincronizar sessões para conciliação', 'glpiintegaglpi')); ?>
+                </button>
+                <div class="form-text mt-1">
+                    <?= $escape(__('POST passivo/read-only ao LogMeIn. Não inicia sessão remota. Não envia WhatsApp. Não altera tickets sem confirmação humana.', 'glpiintegaglpi')); ?>
+                </div>
+            </form>
+
+            <?php if ($items === [] && $queueError === null) { ?>
+                <div class="alert alert-secondary mt-3">
+                    <i class="ti ti-info-circle me-1"></i>
+                    <?= $escape(__('Nenhuma sessão remota sincronizada ainda. Execute a sincronização manual acima para popular o ledger de acessos remotos.', 'glpiintegaglpi')); ?>
+                </div>
+            <?php } ?>
         </div>
     </div>
 

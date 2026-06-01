@@ -230,6 +230,22 @@ final class Plugin
         return self::getWebBasePath() . '/front/logmein.reconciliation.php';
     }
 
+    public static function getIntegrationServiceApiBase(): string
+    {
+        try {
+            $configured = (new PluginConfigService())->getIntegrationServiceUrl();
+        } catch (\Throwable) {
+            $configured = self::getRuntimeConfigValue('INTEGRATION_SERVICE_URL');
+        }
+
+        $configured = trim($configured);
+        if ($configured === '') {
+            $configured = 'http://127.0.0.1:3001';
+        }
+
+        return rtrim($configured, '/');
+    }
+
     public static function getServiceCatalogUrl(): string
     {
         return self::getWebBasePath() . '/front/service.catalog.php';

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 use GlpiPlugin\Integaglpi\GestaoGroupMenu;
 use GlpiPlugin\Integaglpi\Plugin;
+use GlpiPlugin\Integaglpi\Service\IntegrationServiceClient;
+use GlpiPlugin\Integaglpi\Service\PluginConfigService;
 use GlpiPlugin\Integaglpi\Service\SecurityAuditService;
 use GlpiPlugin\Integaglpi\Service\SecurityPermissionService;
 
@@ -19,7 +21,10 @@ $escape   = static fn (mixed $v): string => htmlspecialchars((string) $v, ENT_QU
 $csrfToken = Plugin::getCsrfToken();
 $flash     = null;
 $apiBase   = Plugin::getIntegrationServiceApiBase();
-$apiKey    = Plugin::getRuntimeConfigValue('INTEGRATION_SERVICE_API_KEY');
+$apiKey    = trim((new PluginConfigService())->getIntegrationAuthKey());
+if ($apiKey === '') {
+    $apiKey = Plugin::getRuntimeConfigValue('INTEGRATION_SERVICE_API_KEY');
+}
 
 // ── POST actions ─────────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -187,6 +192,73 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             } else {
                 $flash = ['type' => 'warning', 'message' => __('Informe ticket_id, duração e item válidos.', 'glpiintegaglpi')];
+            }
+        } elseif ($action === 'sync_reconciliation') {
+            // ── Manual read-only reconciliation sync ──────────────────────────
+            // Calls POST /internal/glpi/logmein/reconciliation/sync on the Node.
+            // This fetches remote-access session data from the LogMeIn reports API
+            // and populates the local ledger. No session is initiated remotely.
+            // No ticket is created or modified. No WhatsApp is sent.
+            $client   = new IntegrationServiceClient(new PluginConfigService());
+            try {
+                $response = $client->syncLogmeinReconciliation([
+                    'requested_by_glpi_user_id' => Plugin::getCurrentUserId(),
+                    'read_only'                 => true,
+                ]);
+                $body     = is_array($response['body'] ?? null) ? $response['body'] : [];
+                $httpCode = (int) ($response['status'] ?? 0);
+
+                if ($response['success'] ?? false) {
+                    $sessionsFound   = (int) ($body['sessions_found']   ?? $body['sessionsFound']   ?? 0);
+                    $sessionsInserted= (int) ($body['sessions_inserted']?? $body['sessionsInserted']?? 0);
+                    $syncStatus      = (string) ($body['status'] ?? 'completed');
+                    $flash = [
+                        'type'    => 'success',
+                        'message' => sprintf(
+                            __('Sync de conciliação executado (%s): %d sessões encontradas, %d inseridas no ledger.', 'glpiintegaglpi'),
+                            htmlspecialchars($syncStatus, ENT_QUOTES, 'UTF-8'),
+                            $sessionsFound,
+                            $sessionsInserted
+                        ),
+                    ];
+                } elseif ($httpCode === 404) {
+                    $flash = [
+                        'type'    => 'warning',
+                        'message' => __('Rota de sync de conciliação não encontrada (404). Verifique se a feature flag LOGMEIN_RECONCILIATION_ENABLED está ativa no integration-service e se o container foi reconstruído.', 'glpiintegaglpi'),
+                    ];
+                } elseif ($httpCode === 401 || $httpCode === 403) {
+                    $flash = [
+                        'type'    => 'danger',
+                        'message' => __('Autenticação interna inválida (401/403). Verifique integration_auth_key na configuração do plugin.', 'glpiintegaglpi'),
+                    ];
+                } elseif ($httpCode === 409) {
+                    $flash = [
+                        'type'    => 'info',
+                        'message' => __('Sync em andamento ou migration 043 pendente. Aguarde e tente novamente.', 'glpiintegaglpi'),
+                    ];
+                } else {
+                    // The Node returns a sanitized report-error category (no body/token).
+                    $reportError = (string) ($body['report_error'] ?? '');
+                    $reportCode  = isset($body['report_status_code']) && $body['report_status_code'] !== null
+                        ? (int) $body['report_status_code'] : 0;
+                    $errMsg = (string) ($body['message'] ?? __('Indisponível.', 'glpiintegaglpi'));
+                    $suffix = '';
+                    if ($reportError !== '') {
+                        $suffix = ' [' . htmlspecialchars($reportError, ENT_QUOTES, 'UTF-8')
+                            . ($reportCode > 0 ? ' / HTTP ' . $reportCode : '') . ']';
+                    }
+                    $flash  = [
+                        'type'    => 'danger',
+                        'message' => __('Falha no sync de conciliação: ', 'glpiintegaglpi')
+                            . htmlspecialchars(mb_substr($errMsg, 0, 200), ENT_QUOTES, 'UTF-8') . $suffix,
+                    ];
+                }
+            } catch (\Throwable $e) {
+                $flash = [
+                    'type'    => 'danger',
+                    'message' => __('Erro ao acionar sync de conciliação: integration-service inacessível.', 'glpiintegaglpi'),
+                ];
+                error_log('[integaglpi][reconciliation][sync_trigger] ' . mb_substr(strip_tags($e->getMessage()), 0, 240));
             }
         } else {
             $flash = ['type' => 'danger', 'message' => __('Ação desconhecida.', 'glpiintegaglpi')];

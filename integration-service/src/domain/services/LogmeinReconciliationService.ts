@@ -45,6 +45,79 @@ export class ForbiddenEndpointError extends Error {
   }
 }
 
+/**
+ * Sanitized error categories surfaced to the plugin/operator when the LogMeIn
+ * report API itself fails. These are stable identifiers — never raw bodies,
+ * headers, tokens or response payloads.
+ */
+export const REPORT_ERROR_CATEGORIES = {
+  HTTP_400: 'LOGMEIN_REPORT_HTTP_400',
+  HTTP_401_403: 'LOGMEIN_REPORT_HTTP_401_403',
+  HTTP_500: 'LOGMEIN_REPORT_HTTP_500',
+  EMPTY: 'LOGMEIN_REPORT_EMPTY',
+  PARSE_FAILED: 'LOGMEIN_REPORT_PARSE_FAILED',
+  TIMEOUT: 'LOGMEIN_REPORT_TIMEOUT',
+  TRANSPORT: 'LOGMEIN_REPORT_TRANSPORT',
+} as const;
+
+/**
+ * Raised when the LogMeIn report API returns a non-OK status or an unparseable
+ * body. Carries the sanitized category and the numeric status code only — no
+ * response body, headers or credentials are ever attached.
+ */
+export class ReportApiError extends Error {
+  public readonly category: string;
+  public readonly statusCode: number;
+  public readonly primaryStatusCode: number | null;
+  public readonly fallbackStatusCode: number | null;
+  public readonly fallbackUsed: boolean;
+  public readonly reportPathLabel: 'primary' | 'fallback';
+
+  public constructor(category: string, statusCode: number, details: {
+    primaryStatusCode?: number | null;
+    fallbackStatusCode?: number | null;
+    fallbackUsed?: boolean;
+    reportPathLabel?: 'primary' | 'fallback';
+  } = {}) {
+    super(category); // message is the stable category id, safe to log
+    this.name = 'ReportApiError';
+    this.category = category;
+    this.statusCode = statusCode;
+    this.primaryStatusCode = details.primaryStatusCode ?? (details.reportPathLabel === 'fallback' ? null : statusCode);
+    this.fallbackStatusCode = details.fallbackStatusCode ?? (details.reportPathLabel === 'fallback' ? statusCode : null);
+    this.fallbackUsed = details.fallbackUsed ?? false;
+    this.reportPathLabel = details.reportPathLabel ?? 'primary';
+  }
+}
+
+/** Maps an HTTP status code from the report API to a sanitized category. */
+export function classifyReportHttpStatus(status: number): string {
+  if (status === 400) return REPORT_ERROR_CATEGORIES.HTTP_400;
+  if (status === 401 || status === 403) return REPORT_ERROR_CATEGORIES.HTTP_401_403;
+  if (status >= 500) return REPORT_ERROR_CATEGORIES.HTTP_500;
+  // Any other non-OK status collapses to the generic HTTP_500 bucket for the
+  // operator message, but the exact code is preserved on the error object.
+  return REPORT_ERROR_CATEGORIES.HTTP_500;
+}
+
+/** Human-readable, sanitized operator message per category. */
+export function reportErrorMessage(category: string): string {
+  switch (category) {
+    case REPORT_ERROR_CATEGORIES.HTTP_400:
+      return 'A API de relatórios LogMeIn rejeitou os parâmetros do período (HTTP 400). Revise a janela de datas.';
+    case REPORT_ERROR_CATEGORIES.HTTP_401_403:
+      return 'Credenciais da API de relatórios LogMeIn inválidas ou sem permissão (HTTP 401/403).';
+    case REPORT_ERROR_CATEGORIES.HTTP_500:
+      return 'A API de relatórios LogMeIn retornou erro interno (HTTP 5xx). Tente novamente mais tarde.';
+    case REPORT_ERROR_CATEGORIES.PARSE_FAILED:
+      return 'A resposta da API de relatórios LogMeIn não pôde ser interpretada (formato inesperado).';
+    case REPORT_ERROR_CATEGORIES.TIMEOUT:
+      return 'A API de relatórios LogMeIn excedeu o tempo limite. Tente novamente.';
+    default:
+      return 'Conciliação LogMeIn temporariamente indisponível.';
+  }
+}
+
 // Explicitly forbidden endpoints — checked in tests.
 export const FORBIDDEN_ENDPOINTS = [
   '/hosts/',           // connection, commands, script execution
@@ -130,6 +203,21 @@ export interface ReconciliationSyncResult {
   windowFrom: string;
   windowTo: string;
   durationMs: number;
+  /** Sanitized report-error category when the LogMeIn report API failed (else null). */
+  reportError: string | null;
+  /** HTTP status code from the report API when applicable (else null). */
+  reportStatusCode: number | null;
+  primaryStatusCode: number | null;
+  fallbackStatusCode: number | null;
+  fallbackUsed: boolean;
+}
+
+interface ReportFetchResult {
+  items: Record<string, unknown>[];
+  primaryStatusCode: number | null;
+  fallbackStatusCode: number | null;
+  fallbackUsed: boolean;
+  reportPathLabel: 'primary' | 'fallback';
 }
 
 /** Repository contract — implemented by PostgresLogmeinReconciliationRepository. */
@@ -277,7 +365,8 @@ export class LogmeinReconciliationService {
     });
 
     try {
-      const rawSessions = await this.fetchAllSessionPages(windowFrom, windowTo);
+      const reportFetch = await this.fetchAllSessionPages(windowFrom, windowTo);
+      const rawSessions = reportFetch.items;
       let inserted = 0;
       let skipped = 0;
 
@@ -322,22 +411,49 @@ export class LogmeinReconciliationService {
         duration_ms: durationMs,
         window_from: windowFromStr,
         window_to: windowToStr,
+        report_path_label: reportFetch.reportPathLabel,
+        primary_status_code: reportFetch.primaryStatusCode,
+        fallback_status_code: reportFetch.fallbackStatusCode,
+        fallback_used: reportFetch.fallbackUsed,
       });
+
+      // HTTP 200 with zero sessions is a SUCCESS, not an error.
+      const completedMessage = rawSessions.length === 0
+        ? 'Sync concluído: nenhuma sessão remota no período.'
+        : '';
 
       return {
         ok: true,
         status: 'completed',
-        message: '',
+        message: completedMessage,
         sessionsFound: rawSessions.length,
         sessionsInserted: inserted,
         sessionsSkippedDuplicate: skipped,
         windowFrom: windowFromStr,
         windowTo: windowToStr,
         durationMs,
+        reportError: null,
+        reportStatusCode: null,
+        primaryStatusCode: reportFetch.primaryStatusCode,
+        fallbackStatusCode: reportFetch.fallbackStatusCode,
+        fallbackUsed: reportFetch.fallbackUsed,
       };
     } catch (error: unknown) {
       const durationMs = Date.now() - startMs;
-      const errorMessage = sanitizeText(error instanceof Error ? error.message : String(error), 240);
+      // Resolve sanitized category + status code without ever touching the body.
+      const reportCategory = error instanceof ReportApiError
+        ? error.category
+        : (error instanceof Error && /abort|timeout/i.test(error.message)
+            ? REPORT_ERROR_CATEGORIES.TIMEOUT
+            : REPORT_ERROR_CATEGORIES.TRANSPORT);
+      const reportStatusCode = error instanceof ReportApiError ? error.statusCode : null;
+      const primaryStatusCode = error instanceof ReportApiError ? error.primaryStatusCode : null;
+      const fallbackStatusCode = error instanceof ReportApiError ? error.fallbackStatusCode : null;
+      const fallbackUsed = error instanceof ReportApiError ? error.fallbackUsed : false;
+      const reportPathLabel = error instanceof ReportApiError ? error.reportPathLabel : 'primary';
+      // errorMessageSanitized is the stable category id (never a raw message/body).
+      const errorMessage = sanitizeText(reportCategory, 240);
+
       await this.repository.insertReconciliationAudit({
         status: 'failed',
         sessionsFound: 0,
@@ -349,6 +465,13 @@ export class LogmeinReconciliationService {
       });
       await this.audit('LOGMEIN_SESSION_SYNC_FAILED', 'failed', {
         error_type: this.errorType(error),
+        report_error: reportCategory,
+        // Logical labels only — never the full URL with query/host credentials.
+        report_path_label: reportPathLabel,
+        primary_status_code: primaryStatusCode,
+        fallback_status_code: fallbackStatusCode,
+        fallback_used: fallbackUsed,
+        status_code: reportStatusCode,
         duration_ms: durationMs,
         window_from: windowFromStr,
         window_to: windowToStr,
@@ -356,13 +479,18 @@ export class LogmeinReconciliationService {
       return {
         ok: false,
         status: 'failed',
-        message: 'Conciliação LogMeIn temporariamente indisponível.',
+        message: reportErrorMessage(reportCategory),
         sessionsFound: 0,
         sessionsInserted: 0,
         sessionsSkippedDuplicate: 0,
         windowFrom: windowFromStr,
         windowTo: windowToStr,
         durationMs,
+        reportError: reportCategory,
+        reportStatusCode,
+        primaryStatusCode,
+        fallbackStatusCode,
+        fallbackUsed,
       };
     } finally {
       LogmeinReconciliationService.syncInProgress = false;
@@ -415,9 +543,52 @@ export class LogmeinReconciliationService {
 
   // ── Private helpers ─────────────────────────────────────────────────────────
 
-  private async fetchAllSessionPages(from: Date, to: Date): Promise<Record<string, unknown>[]> {
+  private async fetchAllSessionPages(from: Date, to: Date): Promise<ReportFetchResult> {
+    try {
+      const primary = await this.fetchSessionPagesFromPath(RECONCILIATION_REPORT_PATH, from, to, 'primary');
+      return {
+        items: primary.items,
+        primaryStatusCode: primary.statusCode,
+        fallbackStatusCode: null,
+        fallbackUsed: false,
+        reportPathLabel: 'primary',
+      };
+    } catch (error: unknown) {
+      if (!(error instanceof ReportApiError) || error.category !== REPORT_ERROR_CATEGORIES.HTTP_500) {
+        throw error;
+      }
+
+      try {
+        const fallback = await this.fetchSessionPagesFromPath(RECONCILIATION_FALLBACK_PATH, from, to, 'fallback');
+        return {
+          items: fallback.items,
+          primaryStatusCode: error.statusCode,
+          fallbackStatusCode: fallback.statusCode,
+          fallbackUsed: true,
+          reportPathLabel: 'fallback',
+        };
+      } catch (fallbackError: unknown) {
+        if (fallbackError instanceof ReportApiError) {
+          throw new ReportApiError(fallbackError.category, fallbackError.statusCode, {
+            primaryStatusCode: error.statusCode,
+            fallbackStatusCode: fallbackError.statusCode,
+            fallbackUsed: true,
+            reportPathLabel: 'fallback',
+          });
+        }
+        throw fallbackError;
+      }
+    }
+  }
+
+  private async fetchSessionPagesFromPath(
+    path: string,
+    from: Date,
+    to: Date,
+    label: 'primary' | 'fallback',
+  ): Promise<{ items: Record<string, unknown>[]; statusCode: number }> {
     const allItems: Record<string, unknown>[] = [];
-    const url = this.reportEndpoint();
+    const url = this.reportEndpoint(path);
     const authHeader = this.basicAuthHeader();
     const body = {
       from: from.toISOString(),
@@ -446,10 +617,22 @@ export class LogmeinReconciliationService {
       }
 
       if (!response.ok) {
-        throw new Error(`LOGMEIN_REPORT_HTTP_${response.status}`);
+        // Sanitized classification — no body, headers or token are read/logged.
+        throw new ReportApiError(classifyReportHttpStatus(response.status), response.status, {
+          reportPathLabel: label,
+        });
       }
 
-      const raw = await response.json() as unknown;
+      let raw: unknown;
+      try {
+        raw = await response.json();
+      } catch {
+        // Body present but not valid JSON / unexpected shape.
+        throw new ReportApiError(REPORT_ERROR_CATEGORIES.PARSE_FAILED, response.status, {
+          reportPathLabel: label,
+        });
+      }
+
       const items = this.extractItems(raw);
       allItems.push(...items);
 
@@ -457,7 +640,7 @@ export class LogmeinReconciliationService {
       if (items.length < PAGE_SIZE) break;
     }
 
-    return allItems;
+    return { items: allItems, statusCode: 200 };
   }
 
   private extractItems(body: unknown): Record<string, unknown>[] {
@@ -658,6 +841,11 @@ export class LogmeinReconciliationService {
       windowFrom: '',
       windowTo: '',
       durationMs: 0,
+      reportError: null,
+      reportStatusCode: null,
+      primaryStatusCode: null,
+      fallbackStatusCode: null,
+      fallbackUsed: false,
     };
   }
 
@@ -678,6 +866,10 @@ export class LogmeinReconciliationService {
 
   private errorType(error: unknown): string {
     if (error instanceof ForbiddenEndpointError) return 'forbidden_endpoint';
+    if (error instanceof ReportApiError) {
+      if (error.category === REPORT_ERROR_CATEGORIES.PARSE_FAILED) return 'parse';
+      return 'http';
+    }
     const message = error instanceof Error ? error.message : String(error);
     if (/LOGMEIN_FORBIDDEN_ENDPOINT/i.test(message)) return 'forbidden_endpoint';
     if (/abort|timeout/i.test(message)) return 'timeout';

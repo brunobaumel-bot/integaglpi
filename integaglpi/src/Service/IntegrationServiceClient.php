@@ -23,6 +23,7 @@ final class IntegrationServiceClient
     private const PATH_MANUAL_TICKET_WHATSAPP_RESOLVE = '/internal/glpi/manual-ticket-whatsapp/%d/resolve';
     private const PATH_MANUAL_TICKET_WHATSAPP_START_TEMPLATE = '/internal/glpi/manual-ticket-whatsapp/%d/start-template';
     private const PATH_LOGMEIN_SYNC = '/internal/glpi/logmein/sync';
+    private const PATH_LOGMEIN_RECONCILIATION_SYNC = '/internal/glpi/logmein/reconciliation/sync';
     private const PATH_AI_QUALITY_ANALYZE = '/internal/glpi/ai-quality/analyze';
     private const PATH_AI_QUALITY_FEEDBACK = '/internal/glpi/ai-quality/feedback';
     private const PATH_HISTORICAL_MINING_PREVIEW = '/internal/glpi/historical-mining/preview';
@@ -283,6 +284,26 @@ final class IntegrationServiceClient
     public function syncLogmeinReadonly(array $payload): array
     {
         return $this->postJson($this->endpoint(self::PATH_LOGMEIN_SYNC), $payload, 'logmein][sync', 30);
+    }
+
+    /**
+     * Trigger a read-only reconciliation sync that fetches remote-access sessions
+     * from the LogMeIn reports API and populates the local ledger and queue tables.
+     *
+     * This is a POST to a passive/report endpoint — no session is initiated.
+     * Credentials are handled by the Node service via its own env config.
+     *
+     * @param array<string, mixed> $payload Optional sync parameters (e.g. window overrides).
+     * @return array{status: int, body: array<string, mixed>, success: bool}
+     */
+    public function syncLogmeinReconciliation(array $payload = []): array
+    {
+        return $this->postJson(
+            $this->endpoint(self::PATH_LOGMEIN_RECONCILIATION_SYNC),
+            $payload,
+            'logmein][reconciliation][sync',
+            60   // allow up to 60 s — report API may be slow
+        );
     }
 
     /**

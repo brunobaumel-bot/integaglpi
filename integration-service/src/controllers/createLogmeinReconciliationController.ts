@@ -56,6 +56,12 @@ export function createLogmeinReconciliationSyncController(service: LogmeinReconc
         window_from: result.windowFrom,
         window_to: result.windowTo,
         duration_ms: result.durationMs,
+        // Sanitized report-error context for the plugin (category + status only).
+        report_error: result.reportError,
+        report_status_code: result.reportStatusCode,
+        primary_status_code: result.primaryStatusCode,
+        fallback_status_code: result.fallbackStatusCode,
+        fallback_used: result.fallbackUsed,
         read_only: true,
         remote_execution: false,
         post_action_only_reports: true,

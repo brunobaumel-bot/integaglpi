@@ -19,12 +19,15 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  classifyReportHttpStatus,
   FORBIDDEN_ENDPOINTS,
   ForbiddenEndpointError,
   MATCH_STATUSES,
   LogmeinReconciliationService,
   RECONCILIATION_ALLOWED_PATHS,
+  RECONCILIATION_FALLBACK_PATH,
   RECONCILIATION_REPORT_PATH,
+  REPORT_ERROR_CATEGORIES,
 } from '../src/domain/services/LogmeinReconciliationService.js';
 import { PostgresLogmeinReconciliationRepository } from '../src/repositories/postgres/PostgresLogmeinReconciliationRepository.js';
 
@@ -494,5 +497,268 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     // (FORBIDDEN_ENDPOINTS array may list them as documentation — that's correct.)
     expect(combined).not.toMatch(/fetch\s*\([^)]*(?:connection|start-session|execute-remote|run-script)/i);
     expect(combined).not.toMatch(/curl_setopt[^;]*(?:\/hosts\/[a-zA-Z0-9-]+\/connection)/i);
+  });
+
+  // ── Report-error classification (HTTP 500 fix) ─────────────────────────────
+  it('classifies report HTTP status codes into sanitized categories', () => {
+    expect(classifyReportHttpStatus(400)).toBe(REPORT_ERROR_CATEGORIES.HTTP_400);
+    expect(classifyReportHttpStatus(401)).toBe(REPORT_ERROR_CATEGORIES.HTTP_401_403);
+    expect(classifyReportHttpStatus(403)).toBe(REPORT_ERROR_CATEGORIES.HTTP_401_403);
+    expect(classifyReportHttpStatus(500)).toBe(REPORT_ERROR_CATEGORIES.HTTP_500);
+    expect(classifyReportHttpStatus(502)).toBe(REPORT_ERROR_CATEGORIES.HTTP_500);
+    expect(classifyReportHttpStatus(503)).toBe(REPORT_ERROR_CATEGORIES.HTTP_500);
+  });
+
+  function makeRepoMock() {
+    return {
+      isSchemaReady: vi.fn(async () => true),
+      upsertSession: vi.fn(async () => ({ inserted: true })),
+      upsertQueueItem: vi.fn(async () => undefined),
+      getEntityForGroup: vi.fn(async () => 42),
+      getEquipmentTagForHost: vi.fn(async () => '1234'),
+      insertReconciliationAudit: vi.fn(async () => undefined),
+    };
+  }
+
+  it('falls back from primary HTTP 500 to fallback report with zero sessions as success', async () => {
+    const repository = makeRepoMock();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: async () => ({ secret_token: 'psk-LEAK', error: 'internal' }),
+      })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ items: [] }) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const service = new LogmeinReconciliationService(
+      { enabled: true, reconciliationEnabled: true, companyId: 'company-id', psk: 'psk-secret', timeoutMs: 100 },
+      undefined,
+      repository as never,
+    );
+    const result = await service.syncRemoteAccessSessions();
+
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe('completed');
+    expect(result.sessionsFound).toBe(0);
+    expect(result.sessionsInserted).toBe(0);
+    expect(result.primaryStatusCode).toBe(500);
+    expect(result.fallbackStatusCode).toBe(200);
+    expect(result.fallbackUsed).toBe(true);
+    expect(result.reportError).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(RECONCILIATION_REPORT_PATH);
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain(RECONCILIATION_FALLBACK_PATH);
+    expect(JSON.stringify(result)).not.toContain('psk-LEAK');
+    expect(JSON.stringify(result)).not.toContain('secret_token');
+    expect(repository.upsertSession).not.toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+
+  it('falls back from primary HTTP 500 and imports sessions returned by fallback', async () => {
+    const repository = makeRepoMock();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          items: [
+            {
+              sessionId: 'sess-fallback-1',
+              hostId: 'host-1',
+              groupId: 'group-1',
+              startTime: '2026-05-31T10:00:00Z',
+              endTime: '2026-05-31T10:30:00Z',
+            },
+          ],
+        }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const service = new LogmeinReconciliationService(
+      { enabled: true, reconciliationEnabled: true, companyId: 'c', psk: 'p', timeoutMs: 100 },
+      undefined,
+      repository as never,
+    );
+    const result = await service.syncRemoteAccessSessions();
+
+    expect(result.ok).toBe(true);
+    expect(result.sessionsFound).toBe(1);
+    expect(result.sessionsInserted).toBe(1);
+    expect(result.primaryStatusCode).toBe(500);
+    expect(result.fallbackStatusCode).toBe(200);
+    expect(result.fallbackUsed).toBe(true);
+    expect(repository.upsertSession).toHaveBeenCalledTimes(1);
+    expect(repository.upsertQueueItem).toHaveBeenCalledTimes(1);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('returns a sanitized error when primary and fallback both fail without leaking body or token', async () => {
+    const repository = makeRepoMock();
+    const auditEvents: { type: string; payload: Record<string, unknown> }[] = [];
+    const auditService = {
+      recordAuditEventSafe: vi.fn(async (e: { eventType: string; payload?: Record<string, unknown> }) => {
+        auditEvents.push({ type: e.eventType, payload: e.payload ?? {} });
+      }),
+    };
+    // Report APIs return HTTP 500 with bodies that must NEVER be surfaced.
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: async () => ({ secret_token: 'psk-LEAK', error: 'primary' }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: async () => ({ secret_token: 'psk-FALLBACK-LEAK', error: 'fallback' }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const service = new LogmeinReconciliationService(
+      { enabled: true, reconciliationEnabled: true, companyId: 'company-id', psk: 'psk-secret', timeoutMs: 100 },
+      auditService as never,
+      repository as never,
+    );
+    const result = await service.syncRemoteAccessSessions();
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe('failed');
+    expect(result.reportError).toBe(REPORT_ERROR_CATEGORIES.HTTP_500);
+    expect(result.reportStatusCode).toBe(500);
+    expect(result.primaryStatusCode).toBe(500);
+    expect(result.fallbackStatusCode).toBe(500);
+    expect(result.fallbackUsed).toBe(true);
+    // Message is operator-friendly and sanitized — no token, no raw body.
+    expect(result.message).toContain('HTTP 5xx');
+    expect(JSON.stringify(result)).not.toContain('psk-LEAK');
+    expect(JSON.stringify(result)).not.toContain('psk-FALLBACK-LEAK');
+    expect(JSON.stringify(result)).not.toContain('secret_token');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // Audit FAILED event present with sanitized context only.
+    const failed = auditEvents.find((e) => e.type === 'LOGMEIN_SESSION_SYNC_FAILED');
+    expect(failed).toBeDefined();
+    expect(failed?.payload.report_error).toBe(REPORT_ERROR_CATEGORIES.HTTP_500);
+    expect(failed?.payload.status_code).toBe(500);
+    expect(failed?.payload.report_path_label).toBe('fallback');
+    expect(failed?.payload.primary_status_code).toBe(500);
+    expect(failed?.payload.fallback_status_code).toBe(500);
+    expect(failed?.payload.fallback_used).toBe(true);
+    // No raw body / token in the audit payload.
+    expect(JSON.stringify(failed?.payload ?? {})).not.toContain('psk-LEAK');
+    expect(JSON.stringify(failed?.payload ?? {})).not.toContain('psk-FALLBACK-LEAK');
+    expect(JSON.stringify(failed?.payload ?? {})).not.toContain('secret_token');
+
+    vi.unstubAllGlobals();
+  });
+
+  it('treats HTTP 200 with zero sessions as success, not error', async () => {
+    const repository = makeRepoMock();
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ items: [] }) })));
+
+    const service = new LogmeinReconciliationService(
+      { enabled: true, reconciliationEnabled: true, companyId: 'c', psk: 'p', timeoutMs: 100 },
+      undefined,
+      repository as never,
+    );
+    const result = await service.syncRemoteAccessSessions();
+
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe('completed');
+    expect(result.sessionsFound).toBe(0);
+    expect(result.sessionsInserted).toBe(0);
+    expect(result.reportError).toBeNull();
+    expect(result.primaryStatusCode).toBe(200);
+    expect(result.fallbackStatusCode).toBeNull();
+    expect(result.fallbackUsed).toBe(false);
+    expect(result.message).toContain('nenhuma sessão remota');
+    // No session was upserted.
+    expect(repository.upsertSession).not.toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+
+  it('imports sessions and populates the queue when the API returns valid sessions', async () => {
+    const repository = makeRepoMock();
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        items: [
+          {
+            sessionId: 'sess-1',
+            hostId: 'host-1',
+            groupId: 'group-1',
+            startTime: '2026-05-31T10:00:00Z',
+            endTime: '2026-05-31T10:30:00Z',
+          },
+        ],
+      }),
+    })));
+
+    const service = new LogmeinReconciliationService(
+      { enabled: true, reconciliationEnabled: true, companyId: 'c', psk: 'p', timeoutMs: 100 },
+      undefined,
+      repository as never,
+    );
+    const result = await service.syncRemoteAccessSessions();
+
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe('completed');
+    expect(result.sessionsFound).toBe(1);
+    expect(result.sessionsInserted).toBe(1);
+    expect(repository.upsertSession).toHaveBeenCalledTimes(1);
+    expect(repository.upsertQueueItem).toHaveBeenCalledTimes(1);
+    // Never persists raw IP / technician in plaintext (technician is hashed).
+    const upsertArg = repository.upsertSession.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(JSON.stringify(upsertArg)).not.toMatch(/userIp|user_ip|clientIp/i);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('returns LOGMEIN_REPORT_PARSE_FAILED when the report body is not valid JSON', async () => {
+    const repository = makeRepoMock();
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => { throw new SyntaxError('Unexpected token < in JSON'); },
+    })));
+
+    const service = new LogmeinReconciliationService(
+      { enabled: true, reconciliationEnabled: true, companyId: 'c', psk: 'p', timeoutMs: 100 },
+      undefined,
+      repository as never,
+    );
+    const result = await service.syncRemoteAccessSessions();
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe('failed');
+    expect(result.reportError).toBe(REPORT_ERROR_CATEGORIES.PARSE_FAILED);
+    expect(result.fallbackUsed).toBe(false);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('classifies a 401/403 report response distinctly from 500', async () => {
+    const repository = makeRepoMock();
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 403, json: async () => ({}) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const service = new LogmeinReconciliationService(
+      { enabled: true, reconciliationEnabled: true, companyId: 'c', psk: 'p', timeoutMs: 100 },
+      undefined,
+      repository as never,
+    );
+    const result = await service.syncRemoteAccessSessions();
+
+    expect(result.ok).toBe(false);
+    expect(result.reportError).toBe(REPORT_ERROR_CATEGORIES.HTTP_401_403);
+    expect(result.reportStatusCode).toBe(403);
+    expect(result.message).toContain('401/403');
+    expect(result.fallbackUsed).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    vi.unstubAllGlobals();
   });
 });
