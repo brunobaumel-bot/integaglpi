@@ -226,7 +226,7 @@ final class SecurityAuditService
         try {
             $userId = (int) Session::getLoginUserID();
             $profileId = (int) ($_SESSION['glpiactiveprofile']['id'] ?? 0);
-        } catch (Throwable) {
+        } catch (Throwable $exception) {
             // Continue with anonymous audit context.
         }
 

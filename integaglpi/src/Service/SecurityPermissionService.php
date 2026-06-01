@@ -178,7 +178,7 @@ final class SecurityPermissionService
             if ((int) Session::getLoginUserID() <= 0) {
                 return self::ROLE_UNKNOWN;
             }
-        } catch (Throwable) {
+        } catch (Throwable $exception) {
             return self::ROLE_UNKNOWN;
         }
 
@@ -187,11 +187,11 @@ final class SecurityPermissionService
             return self::ROLE_UNKNOWN;
         }
 
-        if (str_contains($profileName, 'diret') || str_contains($profileName, 'executiv')) {
+        if (strpos($profileName, 'diret') !== false || strpos($profileName, 'executiv') !== false) {
             return self::ROLE_DIRECAO;
         }
 
-        if (str_contains($profileName, 'supervis') || str_contains($profileName, 'coordenador')) {
+        if (strpos($profileName, 'supervis') !== false || strpos($profileName, 'coordenador') !== false) {
             return self::ROLE_SUPERVISAO;
         }
 
@@ -203,7 +203,7 @@ final class SecurityPermissionService
             if (Session::haveRight(Plugin::RIGHT_NAME, READ)) {
                 return self::ROLE_TECNICO;
             }
-        } catch (Throwable) {
+        } catch (Throwable $exception) {
             return self::ROLE_UNKNOWN;
         }
 
@@ -303,7 +303,7 @@ final class SecurityPermissionService
             if ((int) Session::getLoginUserID() <= 0) {
                 return false;
             }
-        } catch (Throwable) {
+        } catch (Throwable $exception) {
             return false;
         }
 
@@ -319,7 +319,7 @@ final class SecurityPermissionService
                 if (Session::haveRight($right, $level)) {
                     return true;
                 }
-            } catch (Throwable) {
+            } catch (Throwable $exception) {
                 // continue
             }
         }
@@ -332,7 +332,7 @@ final class SecurityPermissionService
                 if (Session::haveRight(Plugin::RIGHT_NAME, UPDATE)) {
                     return true;
                 }
-            } catch (Throwable) {
+            } catch (Throwable $exception) {
                 // fall through
             }
         }
@@ -488,7 +488,7 @@ final class SecurityPermissionService
             if (class_exists('\Session') && method_exists('\Session', 'haveAccessToEntity')) {
                 return (bool) \Session::haveAccessToEntity($entityId);
             }
-        } catch (Throwable) {
+        } catch (Throwable $exception) {
             return false;
         }
 
@@ -511,7 +511,7 @@ final class SecurityPermissionService
             return $value;
         }
 
-        if ($field === 'email' || str_contains($value, '@')) {
+        if ($field === 'email' || strpos($value, '@') !== false) {
             $parts = explode('@', $value, 2);
             $local = $parts[0] ?? '';
             $domain = $parts[1] ?? '';
