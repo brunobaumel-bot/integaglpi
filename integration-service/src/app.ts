@@ -42,6 +42,18 @@ import {
 } from './controllers/createManualTicketWhatsappController.js';
 import { createLogmeinHealthController, createLogmeinReadonlySyncController } from './controllers/createLogmeinReadonlyController.js';
 import {
+  createAiMetricsController,
+  createCoachingChecklistController,
+  createCoachingSuggestKbController,
+  createExternalResearchDynamicController,
+  createSmartHelpController,
+} from './controllers/ai.controller.js';
+import type { SmartHelpService } from './domain/services/SmartHelpService.js';
+import type { ExternalResearchService } from './domain/services/ExternalResearchService.js';
+import type { CoachingService } from './domain/services/CoachingService.js';
+import type { FeedbackService } from './domain/services/FeedbackService.js';
+import type { CloudAuditRepository } from './repositories/postgres/PostgresCloudAuditRepository.js';
+import {
   createLogmeinReconciliationQueueController,
   createLogmeinReconciliationResolveController,
   createLogmeinReconciliationSyncController,
@@ -82,6 +94,11 @@ export interface AppDependencies {
   manualTicketWhatsappLinkService?: ManualTicketWhatsappLinkService;
   logmeinReadonlyContextService?: LogmeinReadonlyContextService;
   logmeinReconciliationService?: import('./domain/services/LogmeinReconciliationService.js').LogmeinReconciliationService;
+  smartHelpService?: SmartHelpService;
+  externalResearchService?: ExternalResearchService;
+  coachingService?: CoachingService;
+  feedbackService?: FeedbackService;
+  cloudAuditRepository?: CloudAuditRepository;
 }
 
 function createJsonParser(options: { limit?: string } = {}) {
@@ -246,6 +263,48 @@ export function createApp(dependencies: AppDependencies) {
       createLogmeinReconciliationResolveController(dependencies.logmeinReconciliationService),
     );
   }
+
+  // ── AI/KB ecosystem endpoints (bearer-gated; RBAC + CSRF enforced by the PHP plugin) ──
+  {
+    const aiAuth = createInternalBearerMiddleware(dependencies.integrationServiceApiKey);
+    if (dependencies.smartHelpService) {
+      app.post(
+        '/internal/glpi/ai/smart-help',
+        aiAuth,
+        createJsonParser(),
+        createSmartHelpController(dependencies.smartHelpService),
+      );
+    }
+    if (dependencies.externalResearchService) {
+      app.post(
+        '/internal/glpi/ai/external-research/dynamic',
+        aiAuth,
+        createJsonParser(),
+        createExternalResearchDynamicController(dependencies.externalResearchService),
+      );
+    }
+    if (dependencies.coachingService) {
+      app.get(
+        '/internal/glpi/ai/coaching/checklist',
+        aiAuth,
+        createCoachingChecklistController(dependencies.coachingService),
+      );
+      app.post(
+        '/internal/glpi/ai/coaching/suggest-kb',
+        aiAuth,
+        createJsonParser(),
+        createCoachingSuggestKbController(dependencies.coachingService),
+      );
+    }
+    if (dependencies.feedbackService && dependencies.cloudAuditRepository) {
+      app.get(
+        '/internal/glpi/ai/metrics/effectiveness',
+        aiAuth,
+        createAiMetricsController(dependencies.feedbackService, dependencies.cloudAuditRepository),
+      );
+    }
+  }
+
   app.post(
     '/internal/glpi/messages/outbound',
     createInternalBearerMiddleware(dependencies.integrationServiceApiKey),

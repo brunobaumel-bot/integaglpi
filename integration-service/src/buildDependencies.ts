@@ -52,6 +52,10 @@ import { PostgresAuditEventRepository } from './repositories/postgres/PostgresAu
 import { PostgresAiQualityAnalysisRepository } from './repositories/postgres/PostgresAiQualityAnalysisRepository.js';
 import { PostgresMessageFlowRepository } from './repositories/postgres/PostgresMessageFlowRepository.js';
 import { PostgresLogmeinReadonlyRepository } from './repositories/postgres/PostgresLogmeinReadonlyRepository.js';
+import { PostgresKbFeedbackRepository } from './repositories/postgres/PostgresKbFeedbackRepository.js';
+import { PostgresCloudAuditRepository } from './repositories/postgres/PostgresCloudAuditRepository.js';
+import { FeedbackService } from './domain/services/FeedbackService.js';
+import { ExternalResearchService } from './domain/services/ExternalResearchService.js';
 import { redisClient } from './cache/redisClient.js';
 import { QualityDashboardService } from './services/QualityDashboardService.js';
 import { ObservabilityService } from './services/ObservabilityService.js';
@@ -268,6 +272,18 @@ export function buildDependencies() {
         );
       })()
     : undefined;
+
+  // ── AI/KB ecosystem services (backed by migration 044) ──────────────────────
+  const cloudAuditRepository = new PostgresCloudAuditRepository(postgresPool);
+  const kbFeedbackRepository = new PostgresKbFeedbackRepository(postgresPool);
+  const feedbackService = new FeedbackService(kbFeedbackRepository, auditService);
+  // Cloud provider is intentionally NOT wired yet — researchDynamic enforces
+  // human consent + PII sanitization + audit regardless, and returns a safe
+  // 'failed' for the cloud step until a provider is configured. SmartHelp and
+  // Coaching data ports (native GLPI KB search, onboarding status) are sourced
+  // PHP-side and wired in a later slice.
+  const externalResearchService = new ExternalResearchService(undefined, cloudAuditRepository);
+
   const logmeinReadonlyContextService = new LogmeinReadonlyContextService(
     {
       enabled: envBool('LOGMEIN_INTEGRATION_ENABLED', false),
@@ -535,6 +551,9 @@ export function buildDependencies() {
     manualTicketWhatsappLinkService,
     logmeinReadonlyContextService,
     logmeinReconciliationService,
+    feedbackService,
+    externalResearchService,
+    cloudAuditRepository,
     integrationServiceApiKey: env.INTEGRATION_SERVICE_API_KEY,
     glpiClient,
     metaClient,
