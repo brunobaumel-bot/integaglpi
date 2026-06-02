@@ -92,34 +92,151 @@ function candidateTypeFor(pattern: KbCandidateSourcePattern, insight?: KbCandida
   return 'faq_interno';
 }
 
-function confidenceFor(pattern: KbCandidateSourcePattern, insight?: KbCandidateSourceInsight, evidenceCount = 0): number {
+// Hard cap on confidence — an evidence-backed candidate should never claim a
+// perfect, artificial 100%. Human review is always required.
+const CONFIDENCE_HARD_CAP = 92;
+
+interface ConfidenceResult {
+  score: number;
+  reason: string;
+}
+
+function confidenceFor(
+  pattern: KbCandidateSourcePattern,
+  insight: KbCandidateSourceInsight | undefined,
+  evidenceCount: number,
+  recurrenceThreshold: number,
+): ConfidenceResult {
   const severityBonus = pattern.severity === 'high' ? 18 : pattern.severity === 'medium' ? 10 : 3;
   const priorityBonus = insight?.priority === 'high' ? 14 : insight?.priority === 'medium' ? 8 : 2;
   const frequencyBonus = Math.min(28, pattern.frequencyAbs * 4);
   const insightScore = insight ? Math.round(insight.confidenceScore * 0.25) : 0;
   const evidenceBonus = Math.min(10, evidenceCount * 2);
 
-  return clamp(35 + severityBonus + priorityBonus + frequencyBonus + insightScore + evidenceBonus, 0, 100);
+  let score = 35 + severityBonus + priorityBonus + frequencyBonus + insightScore + evidenceBonus;
+  const reasons: string[] = [
+    `${pattern.frequencyAbs} ocorrência(s) recorrentes`,
+    `severidade ${pattern.severity}`,
+  ];
+
+  // Realism penalties: without evidence or confirmed cause, the score is capped.
+  if (evidenceCount === 0) {
+    score = Math.min(score, 60);
+    reasons.push('sem evidência anonimizada vinculada (teto 60)');
+  } else {
+    reasons.push(`${evidenceCount} evidência(s) anonimizada(s)`);
+  }
+  if (pattern.frequencyAbs < recurrenceThreshold) {
+    score = Math.min(score, 55);
+    reasons.push(`abaixo do limiar de recorrência (${recurrenceThreshold}) → teto 55`);
+  }
+  if (!insight) {
+    reasons.push('sem insight de suporte');
+  }
+
+  // Never artificial 100%.
+  score = clamp(score, 0, CONFIDENCE_HARD_CAP);
+  reasons.push('revisão humana obrigatória');
+
+  return {
+    score,
+    reason: `Score ${score}: ${reasons.join('; ')}.`,
+  };
 }
 
-function titleFor(type: KbCandidateArticleType, category: string): string {
-  const label = sanitizeHistoricalText(category || 'Atendimento recorrente', 80);
+/**
+ * Build a SPECIFIC title from the problem signature, not just the category.
+ * Generic category-only titles ("Hardware", "FAQ interno") are what made the
+ * old candidates useless; here we combine an action verb (by article type) with
+ * the system/category AND a short, distinctive descriptor pulled from the
+ * sanitized pattern description.
+ */
+function titleFor(
+  type: KbCandidateArticleType,
+  category: string,
+  pattern: KbCandidateSourcePattern,
+): string {
+  const system = sanitizeHistoricalText(category || 'sistema não identificado', 60);
+  const descriptor = distinctiveDescriptor(pattern.descriptionSanitized);
+  const subject = descriptor !== '' ? `${system} — ${descriptor}` : system;
+
   if (type === 'resposta_padrao_humanizada') {
-    return `Resposta humanizada para ${label}`;
+    return `Resposta padrão: ${subject}`;
   }
   if (type === 'checklist_diagnostico') {
-    return `Checklist de diagnóstico: ${label}`;
+    return `Checklist de diagnóstico: ${subject}`;
   }
   if (type === 'pergunta_inicial_recomendada') {
-    return `Perguntas iniciais para ${label}`;
+    return `Perguntas iniciais: ${subject}`;
   }
   if (type === 'solucao_comum') {
-    return `Solução comum: ${label}`;
+    return `Solução recorrente: ${subject}`;
   }
-  return `Procedimento sugerido: ${label}`;
+  if (type === 'alerta_operacional') {
+    return `Alerta operacional: ${subject}`;
+  }
+  return `Procedimento técnico: ${subject}`;
 }
 
-function findRelatedNativeArticles(title: string, category: string, nativeArticles: KbCandidateNativeArticle[]): {
+/** Extracts a short distinctive phrase (first 3-6 meaningful tokens) from the description. */
+function distinctiveDescriptor(description: string): string {
+  const tokens = tokensFor(description).filter((t) => t.length >= 4).slice(0, 6);
+  return sanitizeHistoricalText(tokens.join(' '), 70);
+}
+
+/** Known generic/low-value labels that must never stand alone as a title. */
+const GENERIC_TITLE_TERMS = [
+  'hardware', 'software', 'faq interno', 'faq', 'duvidas tecnicas', 'dúvidas técnicas',
+  'resposta humanizada', 'atendimento recorrente', 'diversos', 'outros', 'geral',
+  'suporte', 'chamado', 'ticket', 'problema',
+];
+
+/**
+ * A title is "generic" if, after removing the article-type prefix and the system
+ * label, nothing distinctive remains — i.e. it is just a bare category word or a
+ * known low-value label. Such candidates are rejected, not published as noise.
+ */
+function isGenericTitle(title: string, pattern: KbCandidateSourcePattern): boolean {
+  const normalized = normalizeTokenText(title);
+  // No distinctive descriptor was available AND the category itself is generic.
+  const hasDescriptor = distinctiveDescriptor(pattern.descriptionSanitized) !== '';
+  if (hasDescriptor) {
+    return false;
+  }
+  const categoryNorm = normalizeTokenText(pattern.category);
+  if (categoryNorm === '' || GENERIC_TITLE_TERMS.includes(categoryNorm)) {
+    return true;
+  }
+  // If the whole title collapses to a single known-generic term, reject.
+  return GENERIC_TITLE_TERMS.some((term) => normalized.endsWith(normalizeTokenText(term)) && categoryNorm.length <= 4);
+}
+
+function difficultyFor(pattern: KbCandidateSourcePattern, type: KbCandidateArticleType): 'basico' | 'intermediario' | 'avancado' {
+  if (pattern.patternType === 'reopen_hotspot' || pattern.severity === 'high') {
+    return 'avancado';
+  }
+  if (type === 'pergunta_inicial_recomendada' || type === 'resposta_padrao_humanizada') {
+    return 'basico';
+  }
+  return 'intermediario';
+}
+
+function targetAudienceFor(type: KbCandidateArticleType, difficulty: 'basico' | 'intermediario' | 'avancado'): string {
+  if (difficulty === 'avancado') {
+    return 'Técnico N2/N3';
+  }
+  if (type === 'pergunta_inicial_recomendada' || type === 'resposta_padrao_humanizada') {
+    return 'Atendimento N1';
+  }
+  return 'Técnico N1/N2';
+}
+
+function findRelatedNativeArticles(
+  title: string,
+  category: string,
+  nativeArticles: KbCandidateNativeArticle[],
+  duplicateThreshold: number,
+): {
   related: KbCandidateNativeArticle[];
   duplicateReason: string | null;
 } {
@@ -135,7 +252,8 @@ function findRelatedNativeArticles(title: string, category: string, nativeArticl
     .sort((a, b) => b.score - a.score)
     .slice(0, 3);
 
-  const duplicate = scored.find((item) => item.score >= 0.55);
+  // Duplicate decision uses the configured similarity threshold (default 0.75).
+  const duplicate = scored.find((item) => item.score >= duplicateThreshold);
   return {
     related: scored.map((item) => ({
       articleId: item.article.articleId,
@@ -145,7 +263,7 @@ function findRelatedNativeArticles(title: string, category: string, nativeArticl
       excerpt: sanitizeHistoricalText(item.article.excerpt ?? '', 240),
     })),
     duplicateReason: duplicate
-      ? `Possivel artigo nativo semelhante: ${sanitizeHistoricalText(duplicate.article.title, 120)}`
+      ? `Possível artigo nativo semelhante (similaridade ${Math.round(duplicate.score * 100)}%): ${sanitizeHistoricalText(duplicate.article.title, 120)}. Considere complementar o artigo existente em vez de criar um novo.`
       : null,
   };
 }
@@ -159,19 +277,36 @@ function buildMarkdown(candidate: Omit<GeneratedKbCandidate, 'contentMarkdown'>)
   return sanitizeHistoricalText(`
 # ${candidate.title}
 
-## Padrao observado
+## Resumo executivo
 ${candidate.problemPattern}
 
-## Sintomas
-${symptoms || '- Evidencia insuficiente para detalhar sintomas sem revisao humana.'}
+## Público-alvo e dificuldade
+- Público-alvo: ${candidate.targetAudience}
+- Nível de dificuldade: ${candidate.difficultyLevel}
 
-## Causa provavel
+## Quando usar
+- Quando o cenário abaixo (sintomas) for confirmado com o usuário.
+
+## Quando NÃO usar
+- Se os sintomas não baterem ou houver indício de causa diferente — revisar antes.
+
+## Quando escalar
+- Se o procedimento não resolver após validação, ou houver risco de impacto amplo.
+
+## Sintomas
+${symptoms || '- Evidência insuficiente para detalhar sintomas sem revisão humana.'}
+
+## Causa provável
 ${candidate.probableCause}
 
-## Procedimento recomendado
-${procedure || '1. Revisar evidencias anonimizadas antes de publicar.'}
+## Procedimento técnico (passo a passo)
+${procedure || '1. Revisar evidências anonimizadas antes de publicar.'}
 
-## Checklist
+## Como validar que resolveu
+- [ ] Confirmar com o usuário que o sintoma original cessou.
+- [ ] Registrar a solução aplicada no chamado.
+
+## Checklist de diagnóstico
 ${checklist || '- [ ] Validar contexto com supervisor.'}
 
 ## Resposta humanizada sugerida
@@ -180,10 +315,16 @@ ${candidate.humanizedCustomerResponse}
 ## Tags sugeridas
 ${tags || '`revisao-humana`'}
 
-## Evidencias anonimizadas
+## Categoria GLPI sugerida
+${candidate.categorySuggestion || 'A definir na revisão'}
+
+## Confiança (justificativa)
+${candidate.confidenceReason}
+
+## Evidências anonimizadas
 ${candidate.evidenceSummarySanitized}
 
-## Limitacoes
+## Limitações
 ${candidate.limitations.map((item) => `- ${item}`).join('\n')}
 `, 6_000);
 }
@@ -230,10 +371,17 @@ export function generateKbCandidatesFromHistory(
 ): GeneratedKbCandidate[] {
   const minConfidence = clamp(options.minConfidence ?? DEFAULT_MIN_CONFIDENCE, 1, 100);
   const maxCandidates = clamp(options.maxCandidates ?? 20, 1, 100);
+  // Recurrence threshold: default 5; homologação/baixo volume may relax to 3.
+  const recurrenceThreshold = clamp(options.recurrenceThreshold ?? 5, 1, 100);
+  const duplicateThreshold = clamp(options.duplicateSimilarityThreshold ?? 0.75, 0.5, 0.99);
   const nativeArticles = input.nativeArticles ?? [];
   const candidates: GeneratedKbCandidate[] = [];
 
   for (const pattern of input.patterns) {
+    // Recurrence gate — do not generate KB candidates for one-off patterns.
+    if (pattern.frequencyAbs < recurrenceThreshold) {
+      continue;
+    }
     const insight = bestInsightFor(pattern, input.insights);
     const evidence = input.evidence.filter((item) => pattern.evidenceHashes.includes(item.ticketIdHash)).slice(0, 5);
     const evidenceText = evidence.map((item) => item.anonymizedExcerpt).join(' | ');
@@ -241,9 +389,16 @@ export function generateKbCandidatesFromHistory(
       continue;
     }
     const articleType = candidateTypeFor(pattern, insight);
-    const title = titleFor(articleType, pattern.category);
-    const confidenceScore = confidenceFor(pattern, insight, evidence.length);
-    const dedupe = findRelatedNativeArticles(title, pattern.category, nativeArticles);
+    const title = titleFor(articleType, pattern.category, pattern);
+    // Reject generic, non-reusable titles ("Hardware", "FAQ interno", …).
+    if (isGenericTitle(title, pattern)) {
+      continue;
+    }
+    const difficultyLevel = difficultyFor(pattern, articleType);
+    const targetAudience = targetAudienceFor(articleType, difficultyLevel);
+    const confidence = confidenceFor(pattern, insight, evidence.length, recurrenceThreshold);
+    const confidenceScore = confidence.score;
+    const dedupe = findRelatedNativeArticles(title, pattern.category, nativeArticles, duplicateThreshold);
     const possibleDuplicate = dedupe.duplicateReason !== null;
     const status: KbCandidateStatus = possibleDuplicate
       ? 'possible_duplicate'
@@ -305,6 +460,9 @@ export function generateKbCandidatesFromHistory(
       ),
       evidenceHashes: pattern.evidenceHashes.slice(0, 10),
       confidenceScore,
+      confidenceReason: confidence.reason,
+      difficultyLevel,
+      targetAudience,
       limitations: [
         'Gerado somente a partir de dados historicos sanitizados da P2.',
         'Revisao humana obrigatoria antes de qualquer uso ou publicacao manual.',

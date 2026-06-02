@@ -64,9 +64,16 @@ export interface KbCandidateGenerationInput {
   nativeArticles?: KbCandidateNativeArticle[];
 }
 
+export const KB_CANDIDATE_DIFFICULTY_LEVELS = ['basico', 'intermediario', 'avancado'] as const;
+export type KbCandidateDifficultyLevel = typeof KB_CANDIDATE_DIFFICULTY_LEVELS[number];
+
 export interface KbCandidateGenerationOptions {
   minConfidence: number;
   maxCandidates: number;
+  /** Minimum recurrence (frequencyAbs) for a pattern to yield a candidate. Default 5. */
+  recurrenceThreshold: number;
+  /** Token-overlap ratio above which a candidate is flagged as a duplicate. Default 0.75. */
+  duplicateSimilarityThreshold: number;
 }
 
 export interface GeneratedKbCandidate {
@@ -92,6 +99,12 @@ export interface GeneratedKbCandidate {
   evidenceSummarySanitized: string;
   evidenceHashes: string[];
   confidenceScore: number;
+  /** Human-readable justification for the confidence score (never artificial 100%). */
+  confidenceReason: string;
+  /** Estimated difficulty of executing the procedure. */
+  difficultyLevel: KbCandidateDifficultyLevel;
+  /** Intended reader of the article (e.g. "Técnico N1", "Técnico N2"). */
+  targetAudience: string;
   limitations: string[];
 }
 
