@@ -303,6 +303,35 @@ export function createApp(dependencies: AppDependencies) {
         createAiMetricsController(dependencies.feedbackService, dependencies.cloudAuditRepository),
       );
     }
+    if (dependencies.feedbackService) {
+      const feedbackService = dependencies.feedbackService;
+      app.post(
+        '/internal/glpi/ai/kb-feedback',
+        aiAuth,
+        createJsonParser(),
+        async (req, res): Promise<void> => {
+          try {
+            const body = (req.body ?? {}) as Record<string, unknown>;
+            const result = await feedbackService.recordFeedback({
+              kbCandidateId: body.kb_candidate_id !== undefined ? Number(body.kb_candidate_id) : null,
+              glpiKnowbaseitemId: body.glpi_knowbaseitem_id !== undefined ? Number(body.glpi_knowbaseitem_id) : null,
+              glpiTicketId: body.ticket_id !== undefined ? Number(body.ticket_id) : null,
+              technicianId: body.technician_id !== undefined ? Number(body.technician_id) : null,
+              helpful: body.helpful === true || body.helpful === 'true',
+              feedbackText: typeof body.feedback_text === 'string' ? body.feedback_text : null,
+            });
+            const code = result.ok ? 200 : result.status === 'invalid_target' ? 400 : 500;
+            res.status(code).json(result);
+          } catch (error: unknown) {
+            logger.error(
+              { error_message: error instanceof Error ? error.message : String(error) },
+              '[ai][kb-feedback]',
+            );
+            res.status(500).json({ ok: false, status: 'failed', message: 'Feedback indisponível.' });
+          }
+        },
+      );
+    }
   }
 
   app.post(

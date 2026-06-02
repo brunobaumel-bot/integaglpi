@@ -171,12 +171,16 @@ export async function persistKbCandidates(
           evidence_summary_sanitized,
           confidence_score,
           limitations_json,
+          confidence_reason,
+          difficulty_level,
+          target_audience,
           created_by_glpi_user_id
         )
         VALUES (
           $1, $2, $3, $4, $5, $6, $7,
           $8::jsonb, $9, $10::jsonb, $11::jsonb, $12, $13::jsonb, $14, $15::jsonb,
-          $16, $17, $18::jsonb, $19::jsonb, $20::jsonb, $21, $22, $23::jsonb, $24
+          $16, $17, $18::jsonb, $19::jsonb, $20::jsonb, $21, $22, $23::jsonb,
+          $24, $25, $26, $27
         )
         ON CONFLICT (candidate_key) DO NOTHING
         RETURNING id
@@ -205,6 +209,10 @@ export async function persistKbCandidates(
         candidate.evidenceSummarySanitized,
         candidate.confidenceScore,
         JSON.stringify(candidate.limitations),
+        // ── migration 044 structured columns (mirror content_markdown) ──
+        candidate.confidenceReason ?? null,
+        candidate.difficultyLevel ?? null,
+        candidate.targetAudience ?? null,
         createdByGlpiUserId,
       ],
     );
