@@ -59,6 +59,7 @@ import { ExternalResearchService } from './domain/services/ExternalResearchServi
 import { SmartHelpService } from './domain/services/SmartHelpService.js';
 import type { KbSearchPort } from './domain/services/SmartHelpService.js';
 import { CoachingService } from './domain/services/CoachingService.js';
+import { HttpKbSearchPort } from './infra/http/HttpKbSearchPort.js';
 import { redisClient } from './cache/redisClient.js';
 import { QualityDashboardService } from './services/QualityDashboardService.js';
 import { ObservabilityService } from './services/ObservabilityService.js';
@@ -291,16 +292,23 @@ export function buildDependencies() {
     externalResearchCloudEnabled,
   );
 
-  // Native GLPI KB search is sourced PHP-side (NativeKnowledgeBaseService over
-  // GLPI's MariaDB). On the Node side the search port returns no local hits, so
-  // SmartHelp still serves the proactive checklist + suggested questions and the
-  // cloud-offer gate; the PHP panel supplies the native KB articles. This keeps
-  // the route mounted and accessible at runtime.
-  const nodeKbSearchPort: KbSearchPort = {
-    async searchNativeKb(): Promise<[]> {
-      return [];
-    },
-  };
+  // Native GLPI KB search lives in MariaDB, owned by PHP. When GLPI_KB_SEARCH_URL
+  // is configured, Node queries it through the bearer-gated PHP endpoint
+  // (front/kb.search.php) via HttpKbSearchPort. Otherwise it falls back to an
+  // empty stub — SmartHelp still serves checklist + questions + cloud-offer, and
+  // the PHP panel supplies native articles directly. Either way the route mounts.
+  const kbSearchUrl = String(process.env.GLPI_KB_SEARCH_URL ?? '').trim();
+  const nodeKbSearchPort: KbSearchPort = kbSearchUrl !== ''
+    ? new HttpKbSearchPort({
+        endpointUrl: kbSearchUrl,
+        apiKey: env.INTEGRATION_SERVICE_API_KEY,
+        timeoutMs: envInt('GLPI_KB_SEARCH_TIMEOUT_MS', 4_000, 1_000, 15_000),
+      })
+    : {
+        async searchNativeKb(): Promise<[]> {
+          return [];
+        },
+      };
   // feedbackService doubles as the RankingBiasPort (it exposes getRankingBias).
   const smartHelpService = new SmartHelpService(nodeKbSearchPort, feedbackService);
   const coachingService = new CoachingService(postgresPool, auditService);
