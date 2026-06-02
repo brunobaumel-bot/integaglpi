@@ -1492,6 +1492,61 @@ if ($isExternalConfigured && $runtime !== null && !$isClosed) {
                 ><?= $this->escape(__('Enviar resposta', 'glpiintegaglpi')); ?></button>
                 <small class="text-muted js-integaglpi-tab-reply-feedback"></small>
             </div>
+            <?php /* ── Ajuda Inteligente (IA/KB local-first) — read-only, no ticket mutation ── */ ?>
+            <?php if (\GlpiPlugin\Integaglpi\Service\SmartHelpService::canViewPanel()) { ?>
+                <div class="border rounded p-3 mt-3 mb-3 integaglpi-smart-help"
+                     data-ticket-id="<?= (int) $replyTicketId; ?>"
+                     data-action-url="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getTicketActionUrl()); ?>"
+                     data-csrf="<?= $this->escape($replyCsrfToken); ?>">
+                    <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap mb-2">
+                        <strong><i class="ti ti-bulb me-1"></i><?= $this->escape(__('Ajuda Inteligente', 'glpiintegaglpi')); ?></strong>
+                        <div class="d-flex gap-2">
+                            <button type="button" class="btn btn-sm btn-primary js-smart-help-run">
+                                <?= $this->escape(__('Ajuda Inteligente', 'glpiintegaglpi')); ?>
+                            </button>
+                            <span class="badge bg-secondary js-smart-help-status"><?= $this->escape(__('pronto', 'glpiintegaglpi')); ?></span>
+                        </div>
+                    </div>
+                    <div class="text-muted small mb-2">
+                        <?= $this->escape(__('Busca primeiro na Base de Conhecimento local. A pesquisa externa (nuvem) só ocorre com seu clique e o contexto é sanitizado antes de sair.', 'glpiintegaglpi')); ?>
+                    </div>
+
+                    <?php /* KB articles */ ?>
+                    <div class="js-smart-help-articles small"></div>
+
+                    <?php /* checklist + questions */ ?>
+                    <div class="row g-2 mt-1">
+                        <div class="col-md-6">
+                            <div class="fw-bold small"><?= $this->escape(__('Checklist de diagnóstico', 'glpiintegaglpi')); ?></div>
+                            <ul class="small mb-0 js-smart-help-checklist"></ul>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="fw-bold small"><?= $this->escape(__('Perguntas sugeridas ao cliente', 'glpiintegaglpi')); ?></div>
+                            <ul class="small mb-0 list-unstyled js-smart-help-questions"></ul>
+                        </div>
+                    </div>
+
+                    <?php /* cloud offer / states */ ?>
+                    <div class="mt-2 js-smart-help-cloud"></div>
+                    <div class="mt-2 small js-smart-help-message text-muted"></div>
+
+                    <div class="d-flex gap-2 mt-2 flex-wrap">
+                        <button type="button" class="btn btn-sm btn-outline-warning d-none js-smart-help-external">
+                            <i class="ti ti-cloud-search me-1"></i><?= $this->escape(__('Pedir ajuda externa (nuvem)', 'glpiintegaglpi')); ?>
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-success js-smart-help-suggest-kb">
+                            <i class="ti ti-file-plus me-1"></i><?= $this->escape(__('Virar artigo KB', 'glpiintegaglpi')); ?>
+                        </button>
+                        <a class="btn btn-sm btn-outline-secondary" href="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getKbCandidatesUrl()); ?>" target="_blank" rel="noopener noreferrer">
+                            <?= $this->escape(__('Ver candidatos de KB', 'glpiintegaglpi')); ?>
+                        </a>
+                    </div>
+                    <div class="form-text mt-1">
+                        <?= $this->escape(__('Somente leitura: nada é enviado ao cliente nem altera o chamado automaticamente. Publicação na KB é manual.', 'glpiintegaglpi')); ?>
+                    </div>
+                </div>
+            <?php } ?>
+
             <div class="border rounded p-3 mt-3 mb-3 bg-light js-integaglpi-copilot" data-draft-hash="">
                 <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap">
                     <div>
@@ -2030,3 +2085,18 @@ document.addEventListener('submit', function (event) {
 }, true);
 </script>
 <?php } ?>
+
+<?php
+/* Inline-inject the Smart Help panel assets (404-safe: some installs do not
+   serve /plugins/... static files). Only when the panel is visible. */
+if (\GlpiPlugin\Integaglpi\Service\SmartHelpService::canViewPanel()) {
+    $integaglpiSmartHelpCss = dirname(__DIR__) . '/css/ticket_ai_panel.css';
+    $integaglpiSmartHelpJs  = dirname(__DIR__) . '/js/ticket_ai_panel.js';
+    if (is_file($integaglpiSmartHelpCss)) {
+        echo "<style>\n" . file_get_contents($integaglpiSmartHelpCss) . "\n</style>";
+    }
+    if (is_file($integaglpiSmartHelpJs)) {
+        echo "<script>\n" . file_get_contents($integaglpiSmartHelpJs) . "\n</script>";
+    }
+}
+?>

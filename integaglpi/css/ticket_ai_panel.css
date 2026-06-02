@@ -1,0 +1,20 @@
+/* IntegraGLPI — Ajuda Inteligente panel styles. */
+.integaglpi-smart-help {
+  background: #f8fafc;
+  border-color: #dbe3ea !important;
+}
+.integaglpi-smart-help .js-smart-help-status {
+  font-weight: 500;
+}
+.integaglpi-smart-help .js-smart-help-articles > div {
+  font-size: 0.875rem;
+}
+.integaglpi-smart-help ul {
+  padding-left: 1.1rem;
+}
+.integaglpi-smart-help .js-smart-help-questions li {
+  border-bottom: 1px dashed #e2e8f0;
+}
+.integaglpi-smart-help .js-smart-help-cloud .border {
+  background: #fffdf5;
+}

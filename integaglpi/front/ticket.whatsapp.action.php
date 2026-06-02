@@ -48,6 +48,66 @@ error_log('[integaglpi][action] ' . json_encode([
     'post_keys' => array_keys($_POST),
 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 
+// ── Read-only AI/KB assist actions (Smart Help panel) ───────────────────────
+// These are handled BEFORE the ticket-mutation action map. They never mutate the
+// ticket, never send WhatsApp, never publish KB. CSRF was validated above and the
+// page already requires plugin UPDATE (technicians/supervisors). Each call proxies
+// to the Node AI services via SmartHelpService.php (local-KB-first; cloud only with
+// explicit consent; PII sanitized server-side by the Node sanitizer).
+$aiAssistActions = ['smart_help', 'kb_feedback', 'smart_external', 'suggest_kb'];
+if (in_array($action, $aiAssistActions, true)) {
+    $smartHelp = new \GlpiPlugin\Integaglpi\Service\SmartHelpService();
+
+    if (!\GlpiPlugin\Integaglpi\Service\SmartHelpService::canViewPanel()) {
+        plugin_integaglpi_ticket_action_json(['ok' => false, 'error' => 'forbidden'], 403);
+    }
+    if ($ticketId <= 0) {
+        plugin_integaglpi_ticket_action_json(['ok' => false, 'error' => 'invalid_ticket'], 400);
+    }
+
+    if ($action === 'smart_help') {
+        // Build the summary SERVER-SIDE from the ticket (don't trust client text).
+        $summary = '';
+        $ticket = new \Ticket();
+        if ($ticket->getFromDB($ticketId) && $ticket->can($ticketId, READ)) {
+            $name = (string) ($ticket->fields['name'] ?? '');
+            $content = trim(strip_tags((string) ($ticket->fields['content'] ?? '')));
+            $summary = mb_substr(trim($name . '. ' . $content), 0, 2000, 'UTF-8');
+        } else {
+            plugin_integaglpi_ticket_action_json(['ok' => false, 'error' => 'forbidden_ticket'], 403);
+        }
+        plugin_integaglpi_ticket_action_json(['ok' => true, 'result' => $smartHelp->assist($ticketId, $summary)], 200);
+    }
+    if ($action === 'kb_feedback') {
+        $kbCandidateId = (int) ($_POST['kb_candidate_id'] ?? 0);
+        $helpful = ($_POST['helpful'] ?? '') === '1' || ($_POST['helpful'] ?? '') === 'true';
+        $note = trim((string) ($_POST['feedback_text'] ?? ''));
+        plugin_integaglpi_ticket_action_json(['ok' => true, 'result' => $smartHelp->recordFeedback($ticketId, $kbCandidateId, $helpful, $note)], 200);
+    }
+    if ($action === 'smart_external') {
+        // Cloud requires explicit human consent (the panel sends consent=1 on click).
+        $consent = ($_POST['consent'] ?? '') === '1' || ($_POST['consent'] ?? '') === 'true';
+        // Context built server-side from the ticket; the Node sanitizer strips PII
+        // before anything leaves to the cloud.
+        $context = '';
+        $ticket = new \Ticket();
+        if ($ticket->getFromDB($ticketId) && $ticket->can($ticketId, READ)) {
+            $context = mb_substr(
+                trim((string) ($ticket->fields['name'] ?? '') . '. ' . strip_tags((string) ($ticket->fields['content'] ?? ''))),
+                0,
+                6000,
+                'UTF-8'
+            );
+        } else {
+            plugin_integaglpi_ticket_action_json(['ok' => false, 'error' => 'forbidden_ticket'], 403);
+        }
+        plugin_integaglpi_ticket_action_json(['ok' => true, 'result' => $smartHelp->externalResearch($ticketId, $context, $consent)], 200);
+    }
+    if ($action === 'suggest_kb') {
+        plugin_integaglpi_ticket_action_json(['ok' => true, 'result' => $smartHelp->suggestKb($ticketId)], 200);
+    }
+}
+
 $actionRightMap = [
     'claim' => SecurityPermissionService::RIGHT_CLAIM_TICKET,
     'reclaim' => SecurityPermissionService::RIGHT_CLAIM_TICKET,
