@@ -83,13 +83,19 @@ final class SupervisorCommandCenterService
 
         $kpis = $this->buildKpis($supervisor, $quality, $online, $technical);
         $actionQueue = $this->buildActionQueue($supervisor);
+        $teamManagement = $this->buildTeamManagement($supervisor, $actionQueue);
+        $clientEntityRisk = $this->buildClientEntityRisk($actionQueue);
+        $qualityAi = $this->buildQualityAi($supervisor, $online, $quality, $actionQueue);
 
         return [
             'generated_at' => gmdate('c'),
             'filters' => $filters,
             'kpis' => $kpis,
             'action_queue' => $actionQueue,
-            'integration_status' => $this->buildIntegrationStatus($technical),
+            'team_management' => $teamManagement,
+            'client_entity_risk' => $clientEntityRisk,
+            'quality_ai' => $qualityAi,
+            'technical_footer' => $this->buildTechnicalFooter($technical),
             'drilldowns' => $this->buildDrilldowns(),
             'source_errors' => $sourceErrors,
             'entity_scope_label' => (string) ($supervisor['entity_scope_label'] ?? $quality['entity_scope_label'] ?? ''),
@@ -172,27 +178,35 @@ final class SupervisorCommandCenterService
         $supervisorKpis = is_array($supervisor['kpis'] ?? null) ? $supervisor['kpis'] : [];
         $qualityKpis = is_array($quality['kpis'] ?? null) ? $quality['kpis'] : [];
         $onlineKpis = is_array($online['kpis'] ?? null) ? $online['kpis'] : [];
+        $actionRows = is_array($supervisor['review_rows'] ?? null) ? $supervisor['review_rows'] : [];
 
-        $integrationDegraded = $this->isTechnicalDegraded($technical) ? 1 : 0;
         $slaRisk = $this->firstInt($qualityKpis, ['sla_risk', 'sla_at_risk', 'risk_sla', 'violated_sla']);
         $aiAlerts = $this->firstInt($onlineKpis, ['ai_alerts', 'unreviewed_ai_alerts', 'supervisor_alerts']);
+        $unassigned = $this->countRowsMatching($actionRows, static function (array $row): bool {
+            return (int) ($row['assigned_user_id'] ?? 0) <= 0;
+        });
+        $newUnclaimed = $this->countRowsMatching($actionRows, static function (array $row): bool {
+            return (int) ($row['assigned_user_id'] ?? 0) <= 0
+                && in_array((string) ($row['conversation_status'] ?? ''), ['open', 'awaiting_entity_selection', 'awaiting_queue_selection'], true);
+        });
+        $reopened = $this->firstInt($supervisorKpis, ['reopened_tickets', 'reopen_tickets', 'reopened']);
 
         return [
-            $this->kpi('open_tickets', __('Chamados abertos', 'glpiintegaglpi'), $this->intValue($supervisorKpis['open_tickets'] ?? 0), 'primary', Plugin::getSupervisorBackofficeUrl()),
-            $this->kpi('sla_risk', __('SLA em risco', 'glpiintegaglpi'), $slaRisk, $slaRisk > 0 ? 'warning' : 'success', Plugin::getQualityDashboardUrl() . '?sla=risk'),
-            $this->kpi('critical_inactivity', __('Inatividade crítica', 'glpiintegaglpi'), $this->intValue($supervisorKpis['inactivity_attention_tickets'] ?? 0), 'warning', Plugin::getSupervisorBackofficeUrl() . '?quality=inactivity_failed'),
-            $this->kpi('csat_reopen', __('CSAT/reabertura', 'glpiintegaglpi'), $this->intValue($supervisorKpis['dissatisfied_tickets'] ?? 0), 'danger', Plugin::getQualityDashboardUrl() . '?csat=dissatisfied'),
-            $this->kpi('ai_alerts', __('Alertas IA pendentes', 'glpiintegaglpi'), $aiAlerts, $aiAlerts > 0 ? 'warning' : 'success', Plugin::getOnlineMonitorUrl() . '?tab=ai_alerts'),
-            $this->kpi('queue_pressure', __('Filas sob pressão', 'glpiintegaglpi'), $this->countQueuePressure($supervisor), 'warning', Plugin::getOnlineMonitorUrl() . '?view=all'),
-            $this->kpi('contracts_attention', __('Contratos/horas em atenção', 'glpiintegaglpi'), 0, 'secondary', Plugin::getContractHoursUrl()),
-            $this->kpi('integrations_degraded', __('Integrações degradadas', 'glpiintegaglpi'), $integrationDegraded, $integrationDegraded > 0 ? 'danger' : 'success', Plugin::getTechnicalHealthUrl()),
+            $this->kpi('open_tickets', __('Chamados abertos', 'glpiintegaglpi'), $this->intValue($supervisorKpis['open_tickets'] ?? 0), 'primary', Plugin::getSupervisorBackofficeUrl(), __('Total dentro do escopo e período filtrado.', 'glpiintegaglpi')),
+            $this->kpi('new_unclaimed', __('Novos sem assumir', 'glpiintegaglpi'), $newUnclaimed, $newUnclaimed > 0 ? 'warning' : 'success', Plugin::getSupervisorBackofficeUrl() . '?status=open', __('Atendimentos ativos sem responsável na amostra operacional.', 'glpiintegaglpi')),
+            $this->kpi('unassigned', __('Sem responsável', 'glpiintegaglpi'), $unassigned, $unassigned > 0 ? 'warning' : 'success', Plugin::getOnlineMonitorUrl() . '?view=all', __('Conversas que precisam de dono operacional.', 'glpiintegaglpi')),
+            $this->kpi('sla_risk', __('SLA em risco', 'glpiintegaglpi'), $slaRisk, $slaRisk > 0 ? 'danger' : 'success', Plugin::getQualityDashboardUrl() . '?sla=risk', __('0 indica nenhum SLA em risco conhecido ou fonte sem dado.', 'glpiintegaglpi')),
+            $this->kpi('critical_inactivity', __('Inatividade crítica', 'glpiintegaglpi'), $this->intValue($supervisorKpis['inactivity_attention_tickets'] ?? 0), 'warning', Plugin::getSupervisorBackofficeUrl() . '?quality=inactivity_failed', __('Atendimentos parados que exigem ação humana.', 'glpiintegaglpi')),
+            $this->kpi('reopened', __('Reabertos', 'glpiintegaglpi'), $reopened, $reopened > 0 ? 'warning' : 'success', Plugin::getQualityDashboardUrl(), __('Reincidência operacional quando disponível na fonte.', 'glpiintegaglpi')),
+            $this->kpi('csat', __('CSAT insatisfeito', 'glpiintegaglpi'), $this->intValue($supervisorKpis['dissatisfied_tickets'] ?? 0), 'danger', Plugin::getQualityDashboardUrl() . '?csat=dissatisfied', __('Tickets com experiência negativa sinalizada.', 'glpiintegaglpi')),
+            $this->kpi('ai_alerts', __('Alertas IA críticos', 'glpiintegaglpi'), $aiAlerts, $aiAlerts > 0 ? 'danger' : 'success', Plugin::getOnlineMonitorUrl() . '?tab=ai_alerts', __('Alertas que precisam de revisão humana.', 'glpiintegaglpi')),
         ];
     }
 
     /**
      * @return array<string, mixed>
      */
-    private function kpi(string $key, string $label, int $value, string $tone, string $url): array
+    private function kpi(string $key, string $label, int $value, string $tone, string $url, string $hint): array
     {
         return [
             'key' => $key,
@@ -200,6 +214,7 @@ final class SupervisorCommandCenterService
             'value' => $value,
             'tone' => $tone,
             'url' => $url,
+            'hint' => $hint,
         ];
     }
 
@@ -219,6 +234,7 @@ final class SupervisorCommandCenterService
 
             $ticketId = $this->intValue($row['glpi_ticket_id'] ?? 0);
             $reasons = is_array($row['review_reasons'] ?? null) ? $row['review_reasons'] : [];
+            $reasonText = implode('; ', array_map('strval', $reasons));
             $queue[] = [
                 'ticket_id' => $ticketId,
                 'ticket_url' => $ticketId > 0 ? Plugin::getTicketUrl($ticketId) : '',
@@ -228,7 +244,10 @@ final class SupervisorCommandCenterService
                 'technician' => $this->truncate((string) ($row['assigned_user_name'] ?? __('Sem técnico', 'glpiintegaglpi')), 60),
                 'status' => $this->truncate((string) ($row['conversation_status'] ?? $row['runtime_status'] ?? '-'), 40),
                 'sla_remaining' => $this->truncate((string) ($row['sla_remaining'] ?? $row['sla_status'] ?? '-'), 40),
-                'reason' => $this->truncate(implode('; ', array_map('strval', $reasons)), 140),
+                'age_label' => $this->buildAgeLabel($row),
+                'last_interaction' => $this->truncate((string) ($row['last_message_at'] ?? $row['conversation_updated_at'] ?? $row['updated_at'] ?? '-'), 60),
+                'priority' => $this->priorityFromReasons($reasonText),
+                'reason' => $this->truncate($reasonText, 140),
                 'suggested_action' => $this->suggestAction($reasons),
                 'phone_masked' => $this->truncate((string) ($row['phone_masked'] ?? ''), 32),
             ];
@@ -241,16 +260,15 @@ final class SupervisorCommandCenterService
      * @param array<string, mixed> $technical
      * @return list<array<string, string>>
      */
-    private function buildIntegrationStatus(array $technical): array
+    private function buildTechnicalFooter(array $technical): array
     {
         $node = is_array($technical['node'] ?? null) ? $technical['node'] : [];
         $ai = is_array($technical['ai'] ?? null) ? $technical['ai'] : [];
 
         return [
+            $this->integration('technical_health', 'Saúde Técnica', $this->isTechnicalDegraded($technical) ? 'degraded' : 'ok', Plugin::getTechnicalHealthUrl()),
             $this->integration('whatsapp_meta', 'WhatsApp / Meta', $this->statusFromNodePart($node['meta'] ?? null), Plugin::getTechnicalHealthUrl()),
             $this->integration('integration_service', 'Node integration-service', ($node['ok'] ?? false) ? 'ok' : 'degraded', Plugin::getTechnicalHealthUrl()),
-            $this->integration('postgres', 'PostgreSQL externo', $this->statusFromNodePart($node['postgres'] ?? null), Plugin::getTechnicalHealthUrl()),
-            $this->integration('redis', 'Redis', $this->statusFromNodePart($node['redis'] ?? null), Plugin::getTechnicalHealthUrl()),
             $this->integration('ai', 'IA / Copiloto', !empty($ai['available']) ? 'ok' : 'degraded', Plugin::getAiConfigUrl()),
             $this->integration('logmein_readonly', 'LogMeIn read-only', 'ok', Plugin::getLogmeinReportsUrl()),
             [
@@ -260,6 +278,73 @@ final class SupervisorCommandCenterService
                 'detail' => __('OFF: provider GoTo/LogMeIn ainda bloqueado por HTTP 500. Sem botão de sync neste dashboard.', 'glpiintegaglpi'),
                 'url' => Plugin::getLogmeinReconciliationUrl(),
             ],
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $supervisor
+     * @param list<array<string, mixed>> $actionQueue
+     * @return array<string, mixed>
+     */
+    private function buildTeamManagement(array $supervisor, array $actionQueue): array
+    {
+        $queues = is_array($supervisor['queues'] ?? null) ? $supervisor['queues'] : [];
+
+        return [
+            'queue_load' => $this->aggregateBy($actionQueue, 'queue', 'queue'),
+            'assignee_load' => $this->aggregateBy($actionQueue, 'technician', 'technician'),
+            'risk_by_assignee' => $this->aggregateRiskBy($actionQueue, 'technician'),
+            'unassigned_tickets' => $this->countRowsMatching($actionQueue, static function (array $row): bool {
+                return trim((string) ($row['technician'] ?? '')) === __('Sem técnico', 'glpiintegaglpi');
+            }),
+            'aging_by_queue' => $this->buildAgingByQueue($queues, $actionQueue),
+            'note' => __('Distribuição operacional de carga, sem comparação punitiva entre técnicos.', 'glpiintegaglpi'),
+        ];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $actionQueue
+     * @return array<string, mixed>
+     */
+    private function buildClientEntityRisk(array $actionQueue): array
+    {
+        return [
+            'entities_with_open_tickets' => $this->aggregateBy($actionQueue, 'entity', 'entity'),
+            'entities_with_sla_risk' => $this->aggregateRiskBy($actionQueue, 'entity', 'sla'),
+            'entities_with_csat_risk' => $this->aggregateRiskBy($actionQueue, 'entity', 'csat'),
+            'contracts_attention' => [
+                'count' => 0,
+                'url' => Plugin::getContractHoursUrl(),
+                'label' => __('Ver contratos e banco de horas', 'glpiintegaglpi'),
+            ],
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $supervisor
+     * @param array<string, mixed> $online
+     * @param array<string, mixed> $quality
+     * @param list<array<string, mixed>> $actionQueue
+     * @return array<string, mixed>
+     */
+    private function buildQualityAi(array $supervisor, array $online, array $quality, array $actionQueue): array
+    {
+        $supervisorKpis = is_array($supervisor['kpis'] ?? null) ? $supervisor['kpis'] : [];
+        $onlineKpis = is_array($online['kpis'] ?? null) ? $online['kpis'] : [];
+        $qualityKpis = is_array($quality['kpis'] ?? null) ? $quality['kpis'] : [];
+
+        return [
+            'critical_ai_alerts' => $this->firstInt($onlineKpis, ['ai_alerts', 'unreviewed_ai_alerts', 'supervisor_alerts']),
+            'bad_csat' => $this->intValue($supervisorKpis['dissatisfied_tickets'] ?? 0),
+            'reopened' => $this->firstInt($supervisorKpis, ['reopened_tickets', 'reopen_tickets', 'reopened']),
+            'frustration_risk' => $this->countRowsMatching($actionQueue, static function (array $row): bool {
+                $reason = strtolower((string) ($row['reason'] ?? ''));
+                return str_contains($reason, 'csat') || str_contains($reason, 'frustra');
+            }),
+            'supervisor_review_candidates' => $this->intValue($supervisorKpis['supervisor_review_tickets'] ?? 0),
+            'sla_risk' => $this->firstInt($qualityKpis, ['sla_risk', 'sla_at_risk', 'risk_sla', 'violated_sla']),
+            'quality_url' => Plugin::getQualityDashboardUrl(),
+            'ai_alerts_url' => Plugin::getOnlineMonitorUrl() . '?tab=ai_alerts',
         ];
     }
 
@@ -306,6 +391,12 @@ final class SupervisorCommandCenterService
         if (str_contains($text, 'inatividade')) {
             return __('Verificar fila e destravar atendimento parado.', 'glpiintegaglpi');
         }
+        if (str_contains($text, 'sla')) {
+            return __('Checar SLA antes de vencer e redistribuir se necessário.', 'glpiintegaglpi');
+        }
+        if (str_contains($text, 'ia') || str_contains($text, 'frustra')) {
+            return __('Revisar conversa por risco de frustração.', 'glpiintegaglpi');
+        }
         if (str_contains($text, 'erro')) {
             return __('Abrir diagnóstico operacional antes de nova ação.', 'glpiintegaglpi');
         }
@@ -330,6 +421,134 @@ final class SupervisorCommandCenterService
         }
 
         return $count;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $rows
+     * @param callable(array<string, mixed>): bool $predicate
+     */
+    private function countRowsMatching(array $rows, callable $predicate): int
+    {
+        $count = 0;
+        foreach ($rows as $row) {
+            if (is_array($row) && $predicate($row)) {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $rows
+     * @return list<array<string, mixed>>
+     */
+    private function aggregateBy(array $rows, string $field, string $labelKey): array
+    {
+        $bucket = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $label = trim((string) ($row[$field] ?? ''));
+            if ($label === '') {
+                $label = __('Não informado', 'glpiintegaglpi');
+            }
+            if (!isset($bucket[$label])) {
+                $bucket[$label] = [
+                    $labelKey => $label,
+                    'count' => 0,
+                    'critical' => 0,
+                    'warning' => 0,
+                ];
+            }
+            $bucket[$label]['count']++;
+            $priority = (string) ($row['priority'] ?? '');
+            if ($priority === 'critical') {
+                $bucket[$label]['critical']++;
+            } elseif ($priority === 'warning') {
+                $bucket[$label]['warning']++;
+            }
+        }
+
+        usort($bucket, static fn (array $a, array $b): int => ($b['count'] <=> $a['count']));
+
+        return array_slice(array_values($bucket), 0, 8);
+    }
+
+    /**
+     * @param list<array<string, mixed>> $rows
+     * @return list<array<string, mixed>>
+     */
+    private function aggregateRiskBy(array $rows, string $field, string $contains = ''): array
+    {
+        $filtered = array_values(array_filter($rows, static function (array $row) use ($contains): bool {
+            if ($contains === '') {
+                return (string) ($row['priority'] ?? '') !== 'normal';
+            }
+
+            return str_contains(strtolower((string) ($row['reason'] ?? '')), $contains);
+        }));
+
+        return $this->aggregateBy($filtered, $field, $field);
+    }
+
+    /**
+     * @param list<array<string, mixed>> $queues
+     * @param list<array<string, mixed>> $actionQueue
+     * @return list<array<string, mixed>>
+     */
+    private function buildAgingByQueue(array $queues, array $actionQueue): array
+    {
+        $aging = [];
+        foreach ($queues as $queue) {
+            if (!is_array($queue)) {
+                continue;
+            }
+            $name = trim((string) ($queue['name'] ?? $queue['queue_name'] ?? ''));
+            if ($name === '') {
+                continue;
+            }
+            $aging[] = [
+                'queue' => $this->truncate($name, 60),
+                'count' => $this->intValue($queue['open_tickets'] ?? $queue['total_open'] ?? 0),
+                'aging_label' => $this->truncate((string) ($queue['max_age'] ?? $queue['oldest_ticket_age'] ?? '-'), 40),
+            ];
+        }
+
+        if ($aging !== []) {
+            return array_slice($aging, 0, 8);
+        }
+
+        return $this->aggregateBy($actionQueue, 'queue', 'queue');
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     */
+    private function buildAgeLabel(array $row): string
+    {
+        foreach (['ticket_age', 'age_label', 'stalled_time', 'waiting_since', 'created_at'] as $field) {
+            $value = trim((string) ($row[$field] ?? ''));
+            if ($value !== '') {
+                return $this->truncate($value, 48);
+            }
+        }
+
+        return '-';
+    }
+
+    private function priorityFromReasons(string $reasons): string
+    {
+        $text = strtolower($reasons);
+        if (str_contains($text, 'erro') || str_contains($text, 'sla') || str_contains($text, 'csat')) {
+            return 'critical';
+        }
+        if (str_contains($text, 'inatividade') || str_contains($text, 'supervisor') || str_contains($text, 'ia')) {
+            return 'warning';
+        }
+
+        return 'normal';
     }
 
     /**

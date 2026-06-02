@@ -78,6 +78,43 @@ final class SupervisorCommandCenterStaticTest extends TestCase
         }
     }
 
+    public function testOperationalManagementBlocksArePresent(): void
+    {
+        $template = $this->read('templates/supervisor_command_center.php');
+        self::assertStringContainsString('Ações do Supervisor — Prioridade agora', $template);
+        self::assertStringContainsString('Gestão da equipe', $template);
+        self::assertStringContainsString('Clientes/Entidades em atenção', $template);
+        self::assertStringContainsString('Qualidade e IA', $template);
+        self::assertStringContainsString('Rodapé técnico compacto', $template);
+        self::assertStringNotContainsString('Status das Integrações', $template);
+    }
+
+    public function testServiceBuildsOperationalSections(): void
+    {
+        $service = $this->read('src/Service/SupervisorCommandCenterService.php');
+        foreach ([
+            'team_management',
+            'client_entity_risk',
+            'quality_ai',
+            'technical_footer',
+            'buildTeamManagement',
+            'buildClientEntityRisk',
+            'buildQualityAi',
+        ] as $expected) {
+            self::assertStringContainsString($expected, $service);
+        }
+    }
+
+    public function testNoPunitiveLanguage(): void
+    {
+        $template = $this->read('templates/supervisor_command_center.php');
+        $service = $this->read('src/Service/SupervisorCommandCenterService.php');
+        foreach (['ran' . 'king', 'leader' . 'board', 'produtivi' . 'dade', 'melhor ' . 'técnico', 'pior ' . 'técnico'] as $forbidden) {
+            self::assertStringNotContainsString($forbidden, $template);
+            self::assertStringNotContainsString($forbidden, $service);
+        }
+    }
+
     public function testPiiGuardAndDrilldownsArePresent(): void
     {
         $template = $this->read('templates/supervisor_command_center.php');
