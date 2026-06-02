@@ -79,7 +79,7 @@ describe('ExternalResearchService.researchDynamic (cloud, human-gated, PII-safe)
     });
     const provider: CloudResearchProvider = { research };
     const { repo, recordRequest, recordResponse } = auditMock();
-    const service = new ExternalResearchService(provider, repo);
+    const service = new ExternalResearchService(provider, repo, true); // cloudEnabled
 
     // Clean technical context with NO PII — the only path that reaches the cloud.
     const result = await service.researchDynamic({
@@ -102,7 +102,7 @@ describe('ExternalResearchService.researchDynamic (cloud, human-gated, PII-safe)
   it('records a failed audit when the cloud provider throws', async () => {
     const provider: CloudResearchProvider = { research: vi.fn(async () => { throw new Error('cloud down'); }) };
     const { repo, recordResponse } = auditMock();
-    const service = new ExternalResearchService(provider, repo);
+    const service = new ExternalResearchService(provider, repo, true); // cloudEnabled
 
     const result = await service.researchDynamic({
       context: 'rede lenta no setor', ticketId: 4, profileId: 9, category: 'Rede', humanConsent: true,
@@ -113,14 +113,49 @@ describe('ExternalResearchService.researchDynamic (cloud, human-gated, PII-safe)
     expect(recordResponse).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
   });
 
-  it('returns failed (no crash) when no cloud provider is configured', async () => {
-    const { repo } = auditMock();
+  it('returns an informative provider_unavailable message (not generic failed) and records a blocked audit', async () => {
+    const { repo, recordRequest } = auditMock();
+    // No provider AND flag default off → provider unavailable.
     const service = new ExternalResearchService(undefined, repo);
 
     const result = await service.researchDynamic({
-      context: 'algo', ticketId: 5, profileId: 9, category: 'X', humanConsent: true,
+      context: 'rede lenta sem dados pessoais', ticketId: 5, profileId: 9, category: 'Rede', humanConsent: true,
     });
-    expect(result.status).toBe('failed');
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe('provider_unavailable');
+    expect(result.message).toContain('não configurada');
+    expect(result.message).toContain('administrador');
+    // The blocked attempt is audited with PII guard passed (payload was clean).
+    expect(recordRequest).toHaveBeenCalledOnce();
+    expect(recordRequest.mock.calls[0]?.[0].status).toBe('blocked');
+    expect(recordRequest.mock.calls[0]?.[0].piiGuardPassed).toBe(true);
+  });
+
+  it('still returns provider_unavailable when a provider exists but the flag is OFF', async () => {
+    const provider: CloudResearchProvider = { research: vi.fn(async () => answer()) };
+    const { repo } = auditMock();
+    const service = new ExternalResearchService(provider, repo, false); // cloudEnabled=false
+
+    const result = await service.researchDynamic({
+      context: 'office lento ao abrir documento grande apos atualizacao', ticketId: 6, profileId: 9, category: 'X', humanConsent: true,
+    });
+
+    expect(result.status).toBe('provider_unavailable');
+    expect(provider.research).not.toHaveBeenCalled();
+  });
+
+  it('calls the cloud only when the flag is ON and a provider exists', async () => {
+    const provider: CloudResearchProvider = { research: vi.fn(async () => answer()) };
+    const { repo } = auditMock();
+    const service = new ExternalResearchService(provider, repo, true); // cloudEnabled=true
+
+    const result = await service.researchDynamic({
+      context: 'office lento ao abrir documento grande apos atualizacao', ticketId: 7, profileId: 9, category: 'Office', humanConsent: true,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(provider.research).toHaveBeenCalledOnce();
   });
 });
 

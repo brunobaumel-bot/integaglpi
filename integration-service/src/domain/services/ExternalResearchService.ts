@@ -40,7 +40,7 @@ export interface DynamicResearchInput {
 
 export interface DynamicResearchResult {
   ok: boolean;
-  status: 'completed' | 'blocked_pii' | 'no_consent' | 'failed';
+  status: 'completed' | 'blocked_pii' | 'no_consent' | 'provider_unavailable' | 'failed';
   message: string;
   answer: DynamicResearchAnswer | null;
   /** Sanitizer detected kinds (for transparency). */
@@ -48,9 +48,17 @@ export interface DynamicResearchResult {
 }
 
 export class ExternalResearchService {
+  /**
+   * @param cloudProvider injected cloud client; called ONLY after consent + sanitization
+   * @param cloudAudit    cloud_compliance_audit writer
+   * @param cloudEnabled  EXTERNAL_RESEARCH_CLOUD_ENABLED feature flag (default false).
+   *                      When false (or no provider) the dynamic search returns an
+   *                      informative 'provider_unavailable' instead of a generic failure.
+   */
   public constructor(
     private readonly cloudProvider?: CloudResearchProvider,
     private readonly cloudAudit?: CloudAuditRepository,
+    private readonly cloudEnabled: boolean = false,
   ) {}
 
   public preview(prompt: string): ReturnType<typeof sanitizeExternalResearchPrompt> {
@@ -121,11 +129,26 @@ export class ExternalResearchService {
       };
     }
 
-    if (!this.cloudProvider) {
+    // Feature flag / provider gate. Sanitization + consent already passed; the
+    // payload is safe, but the cloud step is unavailable. Return an informative
+    // message (not a generic failure) AND record the blocked attempt for audit.
+    if (!this.cloudEnabled || !this.cloudProvider) {
+      await this.safeAudit({
+        glpiTicketId: input.ticketId,
+        glpiProfileId: input.profileId,
+        category: input.category,
+        provider: input.provider ?? null,
+        piiGuardPassed: true,
+        piiDetectedKinds: sanitized.detectedKinds,
+        requestContextChars: sanitized.sanitizedText.length,
+        requestSummarySanitized: sanitized.sanitizedText.slice(0, 1_000),
+        inputHash: sanitized.inputHash,
+        status: 'blocked',
+      });
       return {
         ok: false,
-        status: 'failed',
-        message: 'Provedor de pesquisa externa não configurado.',
+        status: 'provider_unavailable',
+        message: 'Pesquisa externa não configurada. Contate o administrador.',
         answer: null,
         piiDetectedKinds: sanitized.detectedKinds,
       };

@@ -56,6 +56,9 @@ import { PostgresKbFeedbackRepository } from './repositories/postgres/PostgresKb
 import { PostgresCloudAuditRepository } from './repositories/postgres/PostgresCloudAuditRepository.js';
 import { FeedbackService } from './domain/services/FeedbackService.js';
 import { ExternalResearchService } from './domain/services/ExternalResearchService.js';
+import { SmartHelpService } from './domain/services/SmartHelpService.js';
+import type { KbSearchPort } from './domain/services/SmartHelpService.js';
+import { CoachingService } from './domain/services/CoachingService.js';
 import { redisClient } from './cache/redisClient.js';
 import { QualityDashboardService } from './services/QualityDashboardService.js';
 import { ObservabilityService } from './services/ObservabilityService.js';
@@ -277,12 +280,30 @@ export function buildDependencies() {
   const cloudAuditRepository = new PostgresCloudAuditRepository(postgresPool);
   const kbFeedbackRepository = new PostgresKbFeedbackRepository(postgresPool);
   const feedbackService = new FeedbackService(kbFeedbackRepository, auditService);
-  // Cloud provider is intentionally NOT wired yet — researchDynamic enforces
-  // human consent + PII sanitization + audit regardless, and returns a safe
-  // 'failed' for the cloud step until a provider is configured. SmartHelp and
-  // Coaching data ports (native GLPI KB search, onboarding status) are sourced
-  // PHP-side and wired in a later slice.
-  const externalResearchService = new ExternalResearchService(undefined, cloudAuditRepository);
+  // Cloud provider is NOT wired yet; the EXTERNAL_RESEARCH_CLOUD_ENABLED flag
+  // (default false) keeps researchDynamic returning an informative
+  // 'provider_unavailable' message instead of a generic failure — while still
+  // enforcing human consent + PII sanitization + audit on every call.
+  const externalResearchCloudEnabled = envBool('EXTERNAL_RESEARCH_CLOUD_ENABLED', false);
+  const externalResearchService = new ExternalResearchService(
+    undefined,
+    cloudAuditRepository,
+    externalResearchCloudEnabled,
+  );
+
+  // Native GLPI KB search is sourced PHP-side (NativeKnowledgeBaseService over
+  // GLPI's MariaDB). On the Node side the search port returns no local hits, so
+  // SmartHelp still serves the proactive checklist + suggested questions and the
+  // cloud-offer gate; the PHP panel supplies the native KB articles. This keeps
+  // the route mounted and accessible at runtime.
+  const nodeKbSearchPort: KbSearchPort = {
+    async searchNativeKb(): Promise<[]> {
+      return [];
+    },
+  };
+  // feedbackService doubles as the RankingBiasPort (it exposes getRankingBias).
+  const smartHelpService = new SmartHelpService(nodeKbSearchPort, feedbackService);
+  const coachingService = new CoachingService(postgresPool, auditService);
 
   const logmeinReadonlyContextService = new LogmeinReadonlyContextService(
     {
@@ -554,6 +575,8 @@ export function buildDependencies() {
     feedbackService,
     externalResearchService,
     cloudAuditRepository,
+    smartHelpService,
+    coachingService,
     integrationServiceApiKey: env.INTEGRATION_SERVICE_API_KEY,
     glpiClient,
     metaClient,
