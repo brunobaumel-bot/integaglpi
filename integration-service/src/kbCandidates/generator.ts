@@ -372,7 +372,10 @@ export function generateKbCandidatesFromHistory(
   const minConfidence = clamp(options.minConfidence ?? DEFAULT_MIN_CONFIDENCE, 1, 100);
   const maxCandidates = clamp(options.maxCandidates ?? 20, 1, 100);
   // Recurrence threshold: default 5; homologação/baixo volume may relax to 3.
-  const recurrenceThreshold = clamp(options.recurrenceThreshold ?? 5, 1, 100);
+  // Recurrence threshold: default 5; the contract permits relaxing only down to 3
+  // (homologação / low-volume queues). Values below 3 are normalized up to 3 so a
+  // one-off or two-off pattern can never produce a KB candidate.
+  const recurrenceThreshold = clamp(options.recurrenceThreshold ?? 5, 3, 100);
   const duplicateThreshold = clamp(options.duplicateSimilarityThreshold ?? 0.75, 0.5, 0.99);
   const nativeArticles = input.nativeArticles ?? [];
   const candidates: GeneratedKbCandidate[] = [];

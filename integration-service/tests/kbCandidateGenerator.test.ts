@@ -55,22 +55,45 @@ describe('KB candidate generation from P2 history', () => {
     const input = baseInput();
     input.patterns[0] = {
       ...input.patterns[0],
-      frequencyAbs: 1,
+      // At the minimum allowed recurrence (3) so it clears the gate, but otherwise
+      // weak (low severity, no evidence, no insight) → low confidence.
+      frequencyAbs: 3,
       severity: 'low',
       evidenceHashes: [],
     };
     input.insights = [];
 
-    // recurrenceThreshold relaxed to 1 so the single-occurrence pattern is allowed
-    // through the gate; it should still score low and stay out of 'suggested'.
     const candidates = generateKbCandidatesFromHistory(input, {
       minConfidence: 80,
       maxCandidates: 10,
-      recurrenceThreshold: 1,
+      recurrenceThreshold: 3,
     });
 
     expect(candidates[0].status).toBe('low_confidence');
     expect(candidates[0].confidenceScore).toBeLessThan(80);
+  });
+
+  it('normalizes a recurrenceThreshold below 3 up to 3 (no one/two-off candidates)', () => {
+    const input = baseInput();
+    input.patterns[0] = { ...input.patterns[0], frequencyAbs: 2 };
+
+    // Even if a caller passes recurrenceThreshold 1, it is clamped to 3, so a
+    // two-occurrence pattern still produces NO candidate.
+    const sneaky = generateKbCandidatesFromHistory(input, {
+      minConfidence: 65,
+      maxCandidates: 10,
+      recurrenceThreshold: 1,
+    });
+    expect(sneaky).toHaveLength(0);
+
+    // A single occurrence is likewise rejected.
+    input.patterns[0] = { ...input.patterns[0], frequencyAbs: 1 };
+    const single = generateKbCandidatesFromHistory(input, {
+      minConfidence: 65,
+      maxCandidates: 10,
+      recurrenceThreshold: 1,
+    });
+    expect(single).toHaveLength(0);
   });
 
   it('marks possible duplicates against read-only native KB export at the 75% threshold', () => {
