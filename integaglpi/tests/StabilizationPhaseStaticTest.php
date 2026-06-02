@@ -424,8 +424,8 @@ final class StabilizationPhaseStaticTest extends TestCase
     public function testMenuCategoriesExposeExpectedChildren(): void
     {
         $expectations = [
-            'src/WhatsAppGroupMenu.php' => ['WhatsApp', 'Central de Atendimento', 'Monitor Online WhatsApp', 'Hub de Mensagens'],
-            'src/ConfiguracaoGroupMenu.php' => ['Configurações das Mensagens', 'Recepção Inteligente', 'Avisos e Inatividade', 'CSAT', 'Horário Comercial', 'Mídia', 'Ticket e Solução', 'Templates WhatsApp', 'Configurações Gerais do Plugin'],
+            'src/WhatsAppGroupMenu.php' => ['Central de Atendimento', 'Monitor Online WhatsApp'],
+            'src/ConfiguracaoGroupMenu.php' => ['WhatsApp', 'Hub de Mensagens'],
             'src/MonitoramentoGroupMenu.php' => ['Observabilidade WhatsApp', 'Diagnóstico Operacional', 'Auditoria Operacional', 'Filas e Roteamento', 'Roteamento Seguro', 'Health / Status de Serviços', 'Central de Eventos Operacionais'],
             'src/IaGroupMenu.php' => ['IA & Conhecimento', 'Coaching e Onboarding IA', 'Base de Conhecimento GLPI', 'Candidatos de KB por IA', 'Pesquisa Externa Controlada', 'Mineração Histórica', 'Configuração IA'],
             'src/GestaoGroupMenu.php' => ['Contratos e Horas / Banco de Horas', 'Catálogo de Serviços', 'Importar agenda', 'Perfis e Permissões'],
@@ -444,6 +444,27 @@ final class StabilizationPhaseStaticTest extends TestCase
         $iaGroup = (string) file_get_contents($this->pluginPath('src/IaGroupMenu.php'));
         self::assertStringContainsString('Plugin::getAiOperationsUrl()', $iaGroup);
         self::assertStringContainsString('Plugin::getAiConfigUrl()', $iaGroup);
+    }
+
+    public function testMenuNavigationCleanupKeepsOperationalAndConfigGroupsMinimal(): void
+    {
+        $whatsapp = (string) file_get_contents($this->pluginPath('src/WhatsAppGroupMenu.php'));
+        $config = (string) file_get_contents($this->pluginPath('src/ConfiguracaoGroupMenu.php'));
+
+        foreach (['Central de Atendimento', 'Monitor Online WhatsApp'] as $label) {
+            self::assertStringContainsString($label, $whatsapp);
+        }
+        foreach (['WhatsApp', 'Hub de Mensagens'] as $label) {
+            self::assertStringContainsString($label, $config);
+        }
+        foreach (['Recepção Inteligente', 'Configurações das Mensagens', 'Avisos e Inatividade', 'Horário Comercial', 'Mídia', 'Templates do WhatsApp', 'Ticket e Solução', 'Templates WhatsApp'] as $removed) {
+            self::assertStringNotContainsString($removed, $config);
+        }
+
+        self::assertStringContainsString('front/central.php', $whatsapp);
+        self::assertStringContainsString('getOnlineMonitorUrl()', $whatsapp);
+        self::assertStringContainsString('getQueueAdminUrl()', $config);
+        self::assertStringContainsString('?tab=message_settings', $config);
     }
 
     public function testPluginSidebarMenuKeepsExpandableGroupsOpen(): void

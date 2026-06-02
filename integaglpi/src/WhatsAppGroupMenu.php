@@ -42,11 +42,6 @@ final class WhatsAppGroupMenu extends CommonDBTM
         return [
             'title'            => self::getMenuName(),
             'is_multi_entries' => true,
-            'whatsapp'         => [
-                'title' => __('WhatsApp', 'glpiintegaglpi'),
-                'page'  => Plugin::getQueueAdminUrl(),
-                'icon'  => 'ti ti-brand-whatsapp',
-            ],
             'central_whatsapp' => [
                 'title' => __('Central de Atendimento', 'glpiintegaglpi'),
                 'page'  => Plugin::getWebBasePath() . '/front/central.php',
@@ -56,11 +51,6 @@ final class WhatsAppGroupMenu extends CommonDBTM
                 'title' => __('Monitor Online WhatsApp', 'glpiintegaglpi'),
                 'page'  => Plugin::getOnlineMonitorUrl(),
                 'icon'  => 'ti ti-activity',
-            ],
-            'hub_mensagens'    => [
-                'title' => __('Hub de Mensagens', 'glpiintegaglpi'),
-                'page'  => Plugin::getQueueAdminUrl() . '?tab=message_settings',
-                'icon'  => 'ti ti-message-cog',
             ],
         ];
     }
