@@ -176,6 +176,23 @@ Os itens abaixo são verificações de ausência (confirmam que integrações n�
 
 ---
 
+## V7 Final — Enterprise Controlado
+
+| ID | Smoke | Resultado esperado |
+|----|-------|--------------------|
+| S-V7-M5-01 | Revisar `docs/logmein_truth_audit.md` | LogMeIn classificado como PARCIAL/read-only opcional; nenhuma dependência operacional nova |
+| S-V7-M5-02 | Grep de endpoints proibidos LogMeIn | Nenhum endpoint de UI/Node inicia `/hosts/{id}/connection`, `remote-access/start`, script, deploy ou RMM |
+| S-V7-M5-03 | Flags LogMeIn em ambiente | `LOGMEIN_INTEGRATION_ENABLED=false` e `LOGMEIN_RECONCILIATION_ENABLED=false` em produção até gate formal |
+| S-V7-M5-04 | Matriz de feature flags | `docs/feature_flags_matrix.md` lista defaults seguros e gates humanos |
+| S-V7-M5-05 | Runbook de release | `docs/release_runbook.md` exige Cursor review, commit manual, deploy manual, rollback e smoke |
+| S-V7-M5-06 | Readiness final | `docs/v7_final_readiness.md` lista riscos restantes e critérios de homologação/produção |
+| S-V7-M5-07 | Problem management assistivo | Sugestões de recorrência são read-only/agregadas; nenhum problem record é criado automaticamente |
+| S-V7-M5-08 | Coaching não punitivo | Métricas não exibem ranking nominal punitivo de técnico |
+| S-V7-M5-09 | Cloud/IA | Cloud continua OFF sem DPO + direção + admin + incidentAck; IA não envia WhatsApp e não altera ticket |
+| S-V7-M5-10 | Release abort conditions | Qualquer `.env`, produção, migration aplicada, envio real indevido, token exposto ou automação proibida aborta |
+
+---
+
 ## Worker IA Observadora Online (TESTE/HOMOLOGACAO)
 
 ```bash

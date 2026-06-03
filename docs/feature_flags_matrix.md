@@ -1,0 +1,64 @@
+# Feature Flags Matrix - IntegraGLPI V7
+
+Phase: `integaglpi_v7_m5_enterprise_controlado_001`
+Updated: 2026-06-03
+
+## Rule
+
+Feature flags são controles operacionais. Alterar flag em TESTE, HOMOLOGAÇÃO ou PRODUÇÃO exige gate humano, registro da decisão e smoke direcionado. Este documento não autoriza alteração de `.env`.
+
+## Critical Flags
+
+| Flag | Default seguro | Domínio | Risco se ativada sem gate | Gate mínimo |
+| --- | --- | --- | --- | --- |
+| `OUTBOUND_SEND_MODE` | `mock` | WhatsApp outbound | Envio real ao cliente | Dono operacional + smoke Meta em TESTE + Cursor review |
+| `LOGMEIN_INTEGRATION_ENABLED` | `false` | LogMeIn cache read-only | Chamada externa e cache local desatualizado/incompleto | Infra + Segurança + smoke read-only |
+| `LOGMEIN_RECONCILIATION_ENABLED` | `false` | LogMeIn relatório remoto | Chamada externa de relatório e fila local | Infra + Segurança + revisão de HTTP/provider |
+| `AI_SUPERVISOR_ENABLED` | `false` | IA supervisora local | Análises automáticas internas | Supervisor + dry-run validado |
+| `AI_SUPERVISOR_DRY_RUN` | `true` | IA supervisora local | Provider local real executando análise | Supervisor + teste Ollama/local |
+| `AI_SUPERVISOR_PROVIDER` | `disabled` | IA supervisora local | Provider inesperado | Admin + configuração central |
+| `AI_ONLINE_ALERT_WORKER_LOOP` | `false` | Worker IA interno | Loop periódico sem acompanhamento | Supervisor + janela TESTE |
+| `AI_ONLINE_ALERT_WORKER_INTERVAL_SECONDS` | `60` | Worker IA interno | Carga excessiva se muito baixo | Supervisor + infra |
+| `AI_PILOT_CLOUD_ENABLED` | `false` | Cloud pilot | Exposição externa de contexto | DPO + direção + admin + incidentAck |
+| `AI_PILOT_EMBEDDINGS_ENABLED` | `false` | Cloud/embeddings | Envio externo de dados | DPO + direção + admin |
+| `AI_PILOT_PROVIDER` | `disabled` | Cloud pilot | Provider externo ativo | DPO + direção + admin |
+| `AI_PILOT_HARD_BUDGET_BLOCK` | `true` | Cloud pilot | Custo sem bloqueio | Direção + admin |
+| `AI_PILOT_DPO_APPROVED` | `false` | Cloud pilot | Uso sem base LGPD | DPO |
+| `AI_PILOT_DIRECTOR_APPROVED` | `false` | Cloud pilot | Uso sem autorização executiva | Direção |
+| `AI_PILOT_ADMIN_OPT_IN` | `false` | Cloud pilot | Uso sem opt-in técnico | Admin |
+| `AI_PILOT_INCIDENT_ACK` | `false` | Cloud pilot | Falta de ciência de incidente/custo | Admin + Segurança |
+| `AI_PILOT_TEST_ENVIRONMENT_ONLY` | `true` | Cloud pilot | Cloud em produção sem gate | DPO + direção + Cursor |
+| `EXTERNAL_RESEARCH_CLOUD_ENABLED` | `false` | Pesquisa externa | Chamada cloud com PII se guard falhar | DPO + allowlist + PII Guard |
+| `GLPI_KB_SEARCH_URL` | vazio | KB local via PHP | Node tenta buscar KB sem endpoint preparado | Admin + Bearer + smoke local |
+| `GLPI_KB_SEARCH_TIMEOUT_MS` | limitado | KB local via PHP | Timeout ruim no painel | Admin + smoke |
+
+## LogMeIn Flags
+
+| Flag | Default seguro | Observação |
+| --- | --- | --- |
+| `LOGMEIN_API_BASE_URL` | vazio/canônico interno por código | Nunca colocar URL com path de ação. Código força paths allowlisted. |
+| `LOGMEIN_COMPANY_ID` | secret externo | Não logar, não documentar valor. |
+| `LOGMEIN_PSK` | secret externo | Não logar, não documentar valor. |
+| `LOGMEIN_TIMEOUT_MS` / `LOGMEIN_HTTP_TIMEOUT_MS` | limitado por código | Evita bloqueio longo do serviço. |
+| `LOGMEIN_SYNC_LOCK_TTL_MS` | limitado por código | Evita sync concorrente. |
+| `LOGMEIN_RECONCILIATION_LOCK_TTL_MS` | limitado por código | Evita conciliação concorrente. |
+| `LOGMEIN_RECONCILIATION_LOOKBACK_DAYS` / `HOURS` | limitado por código | Janela deve ser pequena em TESTE. |
+| `LOGMEIN_RECONCILIATION_CHUNK_MINUTES` / `OVERLAP_MINUTES` | limitado por código | Controla volume do relatório. |
+| `LOGMEIN_RECONCILIATION_MAX_RETRIES` | limitado por código | Proibido retry loop infinito. |
+| `LOGMEIN_RECONCILIATION_CIRCUIT_COOLDOWN_SECONDS` | limitado por código | Protege provider após HTTP 5xx. |
+
+## Operational Gates
+
+| Ambiente | Regra |
+| --- | --- |
+| TESTE | Pode habilitar flag controlada somente com smoke documentado e sem cliente real quando aplicável. |
+| HOMOLOGAÇÃO | Pode habilitar flag após Cursor review e aprovação humana da área dona. |
+| PRODUÇÃO | Alteração exige release window, rollback, smoke pós-deploy e aprovação explícita. |
+
+## Forbidden Shortcuts
+
+- Nunca habilitar cloud sem DPO + direção + admin + incidentAck.
+- Nunca trocar `OUTBOUND_SEND_MODE` para `real` em TESTE.
+- Nunca habilitar LogMeIn como requisito para criar ou responder ticket.
+- Nunca usar feature flag para contornar CSRF/RBAC/Bearer/entity scope.
+- Nunca registrar segredo ou token no valor auditado.

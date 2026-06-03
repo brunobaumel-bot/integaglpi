@@ -76,3 +76,29 @@ Política LGPD proposta (sem deleção automática nesta fase):
 Observabilidade/cache:
 - Observabilidade permanece read-only via serviços existentes (`ObservabilityService`, `QualityDashboardService`) e docs.
 - Nenhum dashboard pesado, SSE/WebSocket, Redis novo ou cache novo foi criado.
+
+## Macro 5 - Enterprise Controlado
+
+Status: implementado para revisão Cursor.
+
+Escopo fechado:
+- LogMeIn Truth Audit read-only documentado em `docs/logmein_truth_audit.md`.
+- Matriz de feature flags e gates humanos documentada em `docs/feature_flags_matrix.md`.
+- Runbook de release/rollback V7 documentado em `docs/release_runbook.md`.
+- Readiness final V7 documentado em `docs/v7_final_readiness.md`.
+- Smoke final V7 adicionado em `docs/smoke_tests.md`.
+
+Classificação LogMeIn:
+- Status real: PARCIAL.
+- Host/group cache read-only existe no repo com migration 042, serviços, UI e testes.
+- Conciliação de sessão remota existe com migration 043, serviços, UI e testes, mas permanece opcional e behind flag.
+- Nenhuma chamada externa LogMeIn foi feita nesta fase.
+- LogMeIn não pode ser dependência operacional para WhatsApp, ticket, Central ou IA.
+- Controle remoto, sessão remota, scripts, deploy e endpoints de ação continuam bloqueados.
+
+Governança enterprise:
+- Feature flags críticas seguem com defaults seguros.
+- Produção exige gate humano, Cursor review, smoke e deploy manual.
+- Problem management permanece assistivo/read-only, sem criação automática de problem record.
+- Coaching técnico permanece agregado e não punitivo.
+- Nenhuma automação de ticket, WhatsApp, KB ou cloud foi criada.
