@@ -187,13 +187,21 @@ try {
     [$ticketId, $summary] = integaglpiSmartHelpTicketContext($ticketId);
     $smartHelp = new SmartHelpService();
 
-    if ($action === 'smart_help' || $action === 'summarize_ticket') {
-        $wantAiSummary = $action === 'summarize_ticket'
-            || ($_POST['ai_summary'] ?? '') === '1'
+    if ($action === 'summarize_ticket') {
+        $wantAiSummary = ($_POST['ai_summary'] ?? '') === '1'
             || ($_POST['ai_summary'] ?? '') === 'true';
         integaglpiSmartHelpJsonResponse([
             'ok' => true,
-            'result' => $smartHelp->localFirstAssist($ticketId, $summary, $wantAiSummary)
+            'result' => $smartHelp->summarizeTicket($ticketId, $summary, $wantAiSummary)
+                + ['workflow_step' => 'summarized'],
+        ], 200);
+        exit;
+    }
+
+    if ($action === 'smart_help') {
+        integaglpiSmartHelpJsonResponse([
+            'ok' => true,
+            'result' => $smartHelp->localFirstAssist($ticketId, $summary, false, false)
                 + ['workflow_step' => 'summarized'],
         ], 200);
         exit;
@@ -204,7 +212,7 @@ try {
         $searchSummary = $currentSummary !== '' ? mb_substr($currentSummary, 0, 2000, 'UTF-8') : $summary;
         integaglpiSmartHelpJsonResponse([
             'ok' => true,
-            'result' => $smartHelp->localFirstAssist($ticketId, $searchSummary, false)
+            'result' => $smartHelp->localFirstAssist($ticketId, $searchSummary, false, true)
                 + ['workflow_step' => 'local_searched'],
         ], 200);
         exit;

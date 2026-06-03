@@ -33,6 +33,7 @@ final class SmartHelpService
     private const PATH_COACHING_CHECKLIST = '/internal/glpi/ai/coaching/checklist';
     private const PATH_COACHING_SUGGEST_KB = '/internal/glpi/ai/coaching/suggest-kb';
     private const TIMEOUT_SECONDS = 8;
+    private const LOCAL_CONFIDENCE_THRESHOLD = 0.8;
 
     private PluginConfigService $config;
 
@@ -61,6 +62,58 @@ final class SmartHelpService
     }
 
     /**
+     * Step 1 of the guided flow: summary only.
+     *
+     * No KB search, no SmartHelp enrichment, no cloud, no ticket mutation.
+     *
+     * @return array<string, mixed>
+     */
+    public function summarizeTicket(int $ticketId, string $summary, bool $wantAiSummary = true): array
+    {
+        $technicalSummary = $this->buildTechnicalSummary($summary);
+        $summarySource = 'fallback';
+        $summaryErrorType = '';
+
+        if ($wantAiSummary) {
+            $sanitizedContext = $this->sanitizeContext($summary);
+            if ($sanitizedContext === '') {
+                $summaryErrorType = 'missing_context';
+            } else {
+                $ai = $this->technicalSummaryAi($ticketId, $sanitizedContext);
+                $aiSummary = trim((string) ($ai['technical_summary'] ?? $ai['technicalSummary'] ?? ''));
+                $aiOk = (($ai['ok'] ?? false) === true) && $aiSummary !== '';
+                if ($aiOk) {
+                    $technicalSummary = $this->sanitizeContext($aiSummary);
+                    $summarySource = 'local_ai';
+                } else {
+                    $summaryErrorType = (string) ($ai['error_type'] ?? 'provider_unavailable');
+                }
+            }
+        }
+
+        return [
+            'ok' => true,
+            'localResolved' => false,
+            'relatedArticles' => [],
+            'checklist' => [],
+            'suggestedQuestions' => [],
+            'cloudOffer' => ['available' => false, 'reason' => 'Execute a busca local antes de pedir ajuda externa.'],
+            'localSuggestion' => null,
+            'local_suggestion' => null,
+            'technicalSummary' => $technicalSummary,
+            'technical_summary' => $technicalSummary,
+            'summarySource' => $summarySource,
+            'summary_source' => $summarySource,
+            'summaryErrorType' => $summaryErrorType,
+            'summary_error_type' => $summaryErrorType,
+            'schema044Status' => self::migration044SchemaStatus(),
+            'degraded' => $summaryErrorType !== '',
+            'message' => '',
+            'read_only' => true,
+        ];
+    }
+
+    /**
      * Local-first "Ajuda Inteligente": NEVER returns a raw error to the technician.
      *
      * Flow (degrades gracefully at every step):
@@ -73,7 +126,7 @@ final class SmartHelpService
      *
      * @return array<string, mixed>
      */
-    public function localFirstAssist(int $ticketId, string $summary, bool $wantAiSummary = false): array
+    public function localFirstAssist(int $ticketId, string $summary, bool $wantAiSummary = false, bool $wantLocalAiSuggestion = false): array
     {
         // Deterministic, PII-free baseline summary (no GPU). Always available.
         $technicalSummary = $this->buildTechnicalSummary($summary);
@@ -150,7 +203,7 @@ final class SmartHelpService
             $cloudOffer = $node['cloud_offer'];
         }
 
-        $localResolved = $relatedArticles !== [];
+        $localResolved = $this->hasTrustedArticle($relatedArticles) || (($node['localResolved'] ?? false) === true);
         $message = '';
         if (!$nodeOk) {
             $message = 'Assistente em modo local: o serviço de IA não respondeu agora. '
@@ -161,13 +214,8 @@ final class SmartHelpService
         }
 
         $localSuggestion = null;
-        if (!$localResolved) {
-            $localSuggestion = [
-                'source_label' => 'Sugestão IA local',
-                'title' => 'Sugestão IA local — valide antes de aplicar',
-                'content' => 'Use o resumo técnico, o checklist e as perguntas sugeridas para validar o diagnóstico antes de responder ao cliente.',
-                'unverified' => true,
-            ];
+        if (!$localResolved && $wantLocalAiSuggestion) {
+            $localSuggestion = $this->localAiSuggestion($ticketId, $technicalSummary !== '' ? $technicalSummary : $summary);
         }
 
         // ALWAYS ok:true — the panel must show something useful, never a raw error.
@@ -196,6 +244,21 @@ final class SmartHelpService
             'message'           => $message,
             'read_only'         => true,
         ];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $articles
+     */
+    private function hasTrustedArticle(array $articles): bool
+    {
+        foreach ($articles as $article) {
+            $confidence = (float) ($article['confidence'] ?? $article['score'] ?? 0);
+            if ($confidence >= self::LOCAL_CONFIDENCE_THRESHOLD) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -280,6 +343,58 @@ final class SmartHelpService
             'ticket_id' => $ticketId,
             'context'   => mb_substr($sanitizedContext, 0, 4000, 'UTF-8'),
         ]);
+    }
+
+    /**
+     * Local AI suggestion for the guided "Busca local" step only.
+     *
+     * @return array<string, mixed>
+     */
+    private function localAiSuggestion(int $ticketId, string $summary): array
+    {
+        $sanitizedContext = $this->sanitizeContext($summary);
+        if ($sanitizedContext === '') {
+            return $this->fallbackLocalSuggestion('missing_context');
+        }
+
+        $prompt = implode("\n", [
+            'Gere uma sugestão técnica de resolução para o atendimento abaixo.',
+            'Use apenas IA local. Não inclua dados pessoais. Não assuma fatos não descritos.',
+            'Retorne passos curtos para o técnico validar antes de responder ao cliente.',
+            '',
+            $sanitizedContext,
+        ]);
+
+        $ai = $this->technicalSummaryAi($ticketId, $prompt);
+        $content = trim((string) ($ai['technical_summary'] ?? $ai['technicalSummary'] ?? ''));
+        if (($ai['ok'] ?? false) === true && $content !== '') {
+            return [
+                'source' => 'local_ai',
+                'source_label' => 'IA local',
+                'title' => 'Sugestão IA local — valide antes de aplicar',
+                'content' => $this->sanitizeContext($content),
+                'unverified' => true,
+                'error_type' => '',
+            ];
+        }
+
+        return $this->fallbackLocalSuggestion((string) ($ai['error_type'] ?? 'provider_unavailable'));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function fallbackLocalSuggestion(string $errorType): array
+    {
+        return [
+            'source' => 'local_ai',
+            'source_label' => 'IA local',
+            'title' => 'Sugestão IA local — valide antes de aplicar',
+            'content' => 'IA local indisponível. Use o checklist e as perguntas sugeridas para validar o diagnóstico antes de responder ao cliente.',
+            'unverified' => true,
+            'error_type' => $errorType,
+            'fallback' => true,
+        ];
     }
 
     private function buildTechnicalSummary(string $summary): string

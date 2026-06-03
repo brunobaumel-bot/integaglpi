@@ -52,9 +52,19 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(svc).toContain('defaultQuestions');
     expect(svc).toMatch(/'degraded'/);
 
-    // The dedicated endpoint wires guided actions to the local-first method (not the raw Node call).
-    expect(front).toContain("if ($action === 'smart_help' || $action === 'summarize_ticket')");
+    // The dedicated endpoint keeps summary-only separate from the local-first search.
+    expect(front).toContain("if ($action === 'summarize_ticket')");
+    expect(front).toContain('summarizeTicket($ticketId, $summary, $wantAiSummary)');
+    expect(front).toContain("if ($action === 'smart_help')");
     expect(front).toContain("if ($action === 'local_search')");
+    const summarizeStart = front.indexOf("if ($action === 'summarize_ticket')");
+    const smartHelpStart = front.indexOf("if ($action === 'smart_help')");
+    const summarizeBlock = front.slice(summarizeStart, smartHelpStart);
+    expect(summarizeStart).toBeGreaterThanOrEqual(0);
+    expect(smartHelpStart).toBeGreaterThan(summarizeStart);
+    expect(summarizeBlock).not.toContain('localFirstAssist');
+    expect(summarizeBlock).not.toContain('NativeKnowledgeBaseService');
+    expect(summarizeBlock).not.toContain('prepareExternalContext');
   });
 
   it('external research never claims success / candidate without a usable answer', async () => {
@@ -112,7 +122,8 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(front).toContain('Plugin::isCsrfValid($_POST)');
     expect(front).toContain('SmartHelpService::canViewPanel()');
     expect(front).toContain("\$allowedActions = ['smart_help', 'summarize_ticket', 'local_search', 'kb_feedback', 'suggest_kb', 'prepare_external_context', 'smart_external']");
-    expect(front).toContain("if ($action === 'smart_help' || $action === 'summarize_ticket')");
+    expect(front).toContain("if ($action === 'summarize_ticket')");
+    expect(front).toContain("if ($action === 'smart_help')");
     expect(front).toContain("if ($action === 'local_search')");
     expect(front).not.toMatch(/->update\(|->add\(|ITILFollowup|TicketTask|sendOutbound|sendWhatsApp/i);
   });
@@ -199,7 +210,8 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // Human consent still required even after permission check.
     expect(front).toContain("(\$_POST['consent'] ?? '') === '1'");
     // Local-only actions (smart_help/summarize_ticket/local_search, kb_feedback, suggest_kb) do NOT require canUpdate().
-    expect(front).toContain("if ($action === 'smart_help' || $action === 'summarize_ticket')");
+    expect(front).toContain("if ($action === 'summarize_ticket')");
+    expect(front).toContain("if ($action === 'smart_help')");
     expect(front).toContain("$action === 'summarize_ticket'");
     expect(front).toContain("if ($action === 'local_search')");
     expect(front).toContain("if ($action === 'kb_feedback')");
@@ -299,8 +311,11 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(front).toContain("if ($action === 'local_search')");
     expect(front).toContain('$searchSummary = $currentSummary !== \'\'');
     expect(front).toContain('workflow_step');
-    expect(svc).toContain("'source_label' => 'Sugestão IA local'");
+    expect(svc).toContain('function localAiSuggestion');
+    expect(svc).toContain("'source' => 'local_ai'");
+    expect(svc).toContain("'source_label' => 'IA local'");
     expect(svc).toContain("'unverified' => true");
+    expect(svc).toContain('fallbackLocalSuggestion');
   });
 
   it('smart help JS post() uses AbortController timeout so the run button never stays disabled', async () => {
@@ -464,14 +479,21 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).toContain('r.summarySource || r.summary_source');
     expect(js).toContain("'resumo IA local'");
 
-    // ── PHP endpoint: summarize_ticket forces local summary and local_search uses current summary.
+    // ── PHP endpoint: summarize_ticket is summary-only and local_search uses current summary.
     expect(front).toContain("$action === 'summarize_ticket'");
+    expect(front).toContain('summarizeTicket($ticketId, $summary, $wantAiSummary)');
+    expect(front).toContain('localFirstAssist($ticketId, $searchSummary, false, true)');
     expect(front).toContain("if ($action === 'local_search')");
     expect(front).toContain("technical_summary");
 
-    // ── PHP service: AI path only when $wantAiSummary, sanitized, fallback ────
-    expect(svc).toContain('bool $wantAiSummary = false');
+    // ── PHP service: summary-only does not run KB/local search; local search may call local AI.
+    expect(svc).toContain('function summarizeTicket');
+    expect(svc).toContain('No KB search, no SmartHelp enrichment, no cloud, no ticket mutation.');
+    expect(svc).toContain('bool $wantAiSummary = true');
     expect(svc).toContain('if ($wantAiSummary)');
+    expect(svc).toContain('bool $wantLocalAiSuggestion = false');
+    expect(svc).toContain('if (!$localResolved && $wantLocalAiSuggestion)');
+    expect(svc).toContain('LOCAL_CONFIDENCE_THRESHOLD');
     expect(svc).toContain('PATH_TECHNICAL_SUMMARY');
     expect(svc).toContain('/internal/glpi/ai/technical-summary');
     expect(svc).toContain('function technicalSummaryAi');
@@ -632,9 +654,10 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
   it('smart.help.php SmartHelp call is wrapped in try/catch returning JSON', async () => {
     const front = await read('integaglpi/front/smart.help.php');
 
-    // try/catch around localFirstAssist.
+    // try/catch around the SmartHelp guided actions.
     expect(front).toContain('try {');
-    expect(front).toContain('localFirstAssist($ticketId, $summary, $wantAiSummary)');
+    expect(front).toContain('summarizeTicket($ticketId, $summary, $wantAiSummary)');
+    expect(front).toContain('localFirstAssist($ticketId, $searchSummary, false, true)');
     expect(front).toContain('catch (Throwable $exception)');
     expect(front).toContain("return 'internal_error';");
     // Error logged safely.

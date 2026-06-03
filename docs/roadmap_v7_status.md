@@ -20,9 +20,10 @@ Status: implementado para revisão Cursor.
 Cobertura atual:
 - Smart Help local-first com KB nativa GLPI via PHP, sem Node acessar MariaDB.
 - Ajuda Inteligente no ticket em fluxo guiado manual: `Resumo do chamado` -> `Busca local` -> `Pedir ajuda externa (nuvem)`.
-- Resumo técnico sanitizado no painel do chamado.
-- Sugestões com fonte, categoria, trecho, motivo e confiança operacional.
-- Feedback "Ajudou/Não ajudou" persistido para candidato ou artigo GLPI nativo.
+- `Resumo do chamado` é summary-only: não busca KB, não chama cloud e não gera solução.
+- `Busca local` usa o resumo atual/editado, pesquisa KB nativa/interna e, sem artigo confiável, chama IA local/Ollama para sugestão técnica marcada como `source=local_ai` e `unverified=true`.
+- Sugestões KB exibem fonte, categoria, trecho, motivo e confiança operacional.
+- Feedback "Ajudou/Não ajudou" persistido para candidato ou artigo GLPI nativo quando schema 044 está aplicado; com schema pendente retorna `schema_pending` antes de persistir.
 - Migration 044 validada por check seguro de arquivo em homologação, sem DDL runtime.
 - Pesquisa externa somente por clique humano, com PII Guard e audit sanitizado.
 - Mineração histórica apresentada como geração de base por chamados resolvidos.
@@ -32,6 +33,7 @@ Ressalvas:
 - Publicação na KB continua manual.
 - Cloud permanece bloqueada por padrão e exige consentimento humano explícito.
 - A busca externa continua condicionada à busca local e ao preview sanitizado; não há chamada automática no load da aba.
+- Produção segue bloqueada por gate humano/manual; a migration 044 em banco real continua fora do Codex.
 
 ## Macro 3 - Engenharia Limpa e Contratos
 

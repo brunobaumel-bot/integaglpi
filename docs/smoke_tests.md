@@ -170,8 +170,9 @@ Nenhuma etapa executa automaticamente no carregamento da aba.
 | ID | Smoke | Resultado esperado |
 |----|-------|--------------------|
 | S-V8-SH-GUIDED-01 | Abrir aba WhatsApp do chamado | Painel mostra os três passos; `Busca local` e `Pedir ajuda externa (nuvem)` iniciam bloqueados |
-| S-V8-SH-GUIDED-02 | Clicar `Resumo do chamado` | POST `summarize_ticket`; preenche resumo técnico sanitizado; não chama cloud; `Busca local` é liberada |
-| S-V8-SH-GUIDED-03 | Clicar `Busca local` após resumo | POST `local_search` com o resumo técnico atual; exibe KB local/checklist/perguntas ou sugestão IA local marcada como não verificada |
+| S-V8-SH-GUIDED-02 | Clicar `Resumo do chamado` | POST `summarize_ticket`; preenche somente resumo técnico sanitizado; não busca KB, não gera solução, não chama cloud; `Busca local` é liberada |
+| S-V8-SH-GUIDED-03 | Clicar `Busca local` após resumo | POST `local_search` com o resumo técnico atual; busca KB local/interna e exibe fonte/confiança quando houver artigo confiável |
+| S-V8-SH-GUIDED-03B | `Busca local` sem artigo confiável | Chama IA local/Ollama somente nesse clique; exibe `Sugestão IA local — valide antes de aplicar`, `source=local_ai`, `unverified=true`; se IA falhar, mostra fallback marcado |
 | S-V8-SH-GUIDED-04 | Antes da busca local | `Pedir ajuda externa (nuvem)` permanece bloqueado e não executa preview/cloud |
 | S-V8-SH-GUIDED-05 | Após busca local com oferta de cloud | `Pedir ajuda externa (nuvem)` libera apenas o preview sanitizado; envio externo ainda exige confirmação humana |
 | S-V8-SH-GUIDED-06 | Editar manualmente o resumo técnico | Busca local e preview externo usam o texto atual do resumo; sem payload bruto/PII em resposta |
