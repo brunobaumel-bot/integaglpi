@@ -49,19 +49,34 @@ error_log('[integaglpi][action] ' . json_encode([
 
 // ── Read-only AI/KB assist actions (Smart Help panel) ───────────────────────
 // These are handled BEFORE the ticket-mutation action map. They never mutate the
-// ticket, never send WhatsApp, never publish KB. CSRF was validated above and the
-// page already requires plugin UPDATE (technicians/supervisors). Each call proxies
-// to the Node AI services via SmartHelpService.php (local-KB-first; cloud only with
-// explicit consent; PII sanitized server-side by the Node sanitizer).
+// ticket, never send WhatsApp, never publish KB. CSRF was validated above.
+//
+// Permission model:
+//   smart_help, kb_feedback, suggest_kb — READ-only: canViewPanel() (Plugin::canRead())
+//   smart_external                       — cloud/external: requires Plugin::canUpdate()
+//                                          PLUS explicit human consent on every call.
+//   Ticket-mutation actions              — always require Plugin::requireUpdate() below.
 $aiAssistActions = ['smart_help', 'kb_feedback', 'smart_external', 'suggest_kb'];
 if (in_array($action, $aiAssistActions, true)) {
     $smartHelp = new \GlpiPlugin\Integaglpi\Service\SmartHelpService();
 
+    // Base gate: all AI assist actions require at least READ (canViewPanel).
     if (!\GlpiPlugin\Integaglpi\Service\SmartHelpService::canViewPanel()) {
         plugin_integaglpi_ticket_action_json(['ok' => false, 'error' => 'forbidden'], 403);
     }
     if ($ticketId <= 0) {
         plugin_integaglpi_ticket_action_json(['ok' => false, 'error' => 'invalid_ticket'], 400);
+    }
+
+    // Cloud/external gate: smart_external additionally requires UPDATE permission.
+    // This prevents READ-only profiles from triggering any outbound cloud call.
+    if ($action === 'smart_external' && !\GlpiPlugin\Integaglpi\Plugin::canUpdate()) {
+        plugin_integaglpi_ticket_action_json([
+            'ok'         => false,
+            'error'      => 'forbidden',
+            'error_type' => 'permission_denied',
+            'message'    => 'A pesquisa externa requer permissão de atualização do plugin.',
+        ], 403);
     }
 
     if ($action === 'smart_help') {
@@ -77,7 +92,17 @@ if (in_array($action, $aiAssistActions, true)) {
         }
         // Local-first: never returns a raw error — searches the native KB in PHP and
         // degrades to a local checklist/questions if the Node AI service is down.
-        plugin_integaglpi_ticket_action_json(['ok' => true, 'result' => $smartHelp->localFirstAssist($ticketId, $summary)], 200);
+        try {
+            plugin_integaglpi_ticket_action_json(['ok' => true, 'result' => $smartHelp->localFirstAssist($ticketId, $summary)], 200);
+        } catch (\Throwable $e) {
+            error_log('[integaglpi][smart_help][unexpected] ' . mb_substr($e->getMessage(), 0, 200, 'UTF-8'));
+            plugin_integaglpi_ticket_action_json([
+                'ok'         => false,
+                'error'      => 'smart_help_error',
+                'error_type' => 'internal_error',
+                'message'    => 'Erro interno na Ajuda Inteligente. Revise permissões, schema 044 e configuração local.',
+            ], 500);
+        }
     }
     if ($action === 'kb_feedback') {
         $kbCandidateId = (int) ($_POST['kb_candidate_id'] ?? 0);

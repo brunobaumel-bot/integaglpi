@@ -13,10 +13,20 @@
     return d.innerHTML;
   }
 
+  // Smart Help fetch timeout (ms). Without a timeout, a hung Node/PHP call leaves
+  // the run button disabled indefinitely — browser never fires click on a disabled button.
+  var SMART_HELP_TIMEOUT_MS = 25000;
+
   function post(panel, action, extra) {
     if (!panel.dataset.actionUrl) {
       return Promise.reject(new Error('Smart Help endpoint não configurado.'));
     }
+    var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var timeoutId = controller
+      ? setTimeout(function () { controller.abort(); }, SMART_HELP_TIMEOUT_MS)
+      : null;
+    function clearTimer() { if (timeoutId !== null) { clearTimeout(timeoutId); timeoutId = null; } }
+
     var params = new URLSearchParams();
     params.set('whatsapp_action', action);
     params.set('ticket_id', panel.dataset.ticketId || '0');
@@ -32,8 +42,10 @@
         'Accept': 'application/json',
         'X-Requested-With': 'XMLHttpRequest'
       },
-      body: params.toString()
+      body: params.toString(),
+      signal: controller ? controller.signal : undefined
     }).then(function (r) {
+      clearTimer();
       return r.json().catch(function () {
         return {
           ok: false,
@@ -49,6 +61,17 @@
         }
         return body;
       });
+    }).catch(function (err) {
+      clearTimer();
+      var aborted = err && err.name === 'AbortError';
+      // Always resolve so callers' .finally() re-enables the button.
+      return {
+        ok: false,
+        error: aborted ? 'timeout' : 'network_error',
+        message: aborted
+          ? 'A Ajuda Inteligente não respondeu no prazo (' + (SMART_HELP_TIMEOUT_MS / 1000) + 's). Verifique o serviço e tente novamente.'
+          : ('Erro de rede ao consultar a Ajuda Inteligente: ' + (err && err.message ? err.message : 'desconhecido') + '.')
+      };
     });
   }
 
@@ -176,6 +199,12 @@
     setStatus(panel, 'pesquisando externamente', 'info');
     post(panel, 'smart_external', { consent: '1' }).then(function (resp) {
       var msgEl = panel.querySelector('.js-smart-help-message');
+      // Transport-level failure returned by post() (timeout, network error, endpoint missing).
+      if (resp && resp.ok === false && resp.error && !resp.result) {
+        msgEl.textContent = resp.message || 'Pesquisa externa indisponível.';
+        setStatus(panel, resp.error === 'timeout' ? 'tempo esgotado' : 'erro de rede', 'danger');
+        return;
+      }
       var r = resp && resp.result ? resp.result : {};
       if (r.status === 'provider_unavailable') {
         msgEl.textContent = r.message || 'Pesquisa externa não configurada.';

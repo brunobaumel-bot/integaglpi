@@ -142,6 +142,34 @@ Os itens abaixo são verificações de ausência (confirmam que integrações n�
 | S-V7-M2-11 | Pesquisa externa com clique | Exige confirmação humana e PII Guard; contexto enviado é sanitizado |
 | S-V7-M2-12 | PII detectada na pesquisa externa | Bloqueia envio para cloud e registra audit sanitizado |
 | S-V7-M2-13 | Provider cloud indisponível | Mostra mensagem útil; não falha o atendimento |
+
+## V7 M2 Fix2 — Runtime Ajuda Inteligente + Sugerir Resposta
+
+| ID | Smoke | Resultado esperado |
+|----|-------|--------------------|
+| S-V7-M2-FIX2-01 | Clicar em "Ajuda Inteligente" com Node ativo | Botão muda para "Analisando localmente...", badge vira "analisando" (azul), resultado aparece em ≤10s; botão reabilita |
+| S-V7-M2-FIX2-02 | Clicar em "Ajuda Inteligente" com Node lento/inativo | Botão muda para "Analisando..." ao clicar; após 25s badge vira "erro" (vermelho) com mensagem "não respondeu no prazo"; **botão volta habilitado** (não fica travado) |
+| S-V7-M2-FIX2-03 | Clicar em "Ajuda Inteligente" com Node inativo — segundo clique | Após erro do primeiro clique, segundo clique dispara nova tentativa visível |
+| S-V7-M2-FIX2-04 | "Sugerir resposta" com Node inativo — mensagem HTTP 500 | Status mostra "Copiloto indisponível (erro interno — HTTP 500). Verifique se o serviço de IA Node está ativo e configurado." — NOT "Não foi possível usar o Copiloto agora." |
+| S-V7-M2-FIX2-05 | "Sugerir resposta" com timeout (HTTP 504) | Status mostra "O Copiloto não respondeu a tempo. Tente novamente em breve." |
+| S-V7-M2-FIX2-06 | "Sugerir resposta" com permissão negada (HTTP 403) | Status mostra "Sem permissão para usar o Copiloto ou sessão expirada. Recarregue a página." |
+| S-V7-M2-FIX2-07 | "Sugerir resposta" com Node ativo | Job é criado, polling inicia, rascunho aparece na textarea para revisão manual; **não enviado automaticamente** |
+| S-V7-M2-FIX2-08 | Pesquisa externa ("Pedir ajuda nuvem") | Exige confirmação (`window.confirm`); se timeout/rede falhar, mensagem "tempo esgotado" aparece no panel (não silenciosa) |
+| S-V7-M2-FIX2-09 | Verificar console do browser | Zero uncaught promise rejections durante fluxo normal e durante erro de rede |
+| S-V7-M2-FIX2-10 | Verificar php error_log após clicar Ajuda Inteligente com erro | Log contém `[integaglpi][smart_help][unexpected]` se houver Throwable — nunca contém Bearer/senha |
+
+**Nota de verificação:** Para reproduzir FIX2-02/03, parar o serviço Node (`docker stop integration-service`) e clicar o botão. O botão deve voltar a ser clicável após 25 segundos com mensagem de erro visível.
+
+## V7 M4 — Performance, Escala e LGPD
+
+| ID | Smoke | Resultado esperado |
+|----|-------|--------------------|
+| S-V7-M4-01 | Revisar migration 045 | Arquivo é idempotente, só cria índices e não contém comandos destrutivos |
+| S-V7-M4-02 | Homologar migration manualmente | DBA executa manualmente em TESTE; produção permanece intocada |
+| S-V7-M4-03 | Central com volume | Lista/conversa continuam carregando; mensagens por conversa usam índice `conversation_id, created_at DESC` |
+| S-V7-M4-04 | Inatividade | Índice status/updated_at existente é reconhecido; não há duplicidade desnecessária |
+| S-V7-M4-05 | Feedback KB | Votos por ticket consultáveis sem ranking nominal punitivo |
+| S-V7-M4-06 | LGPD retenção | Owner humano valida prazos antes de qualquer expurgo; nenhuma deleção automática ocorre |
 | S-V7-M2-13 | Gerar Base por chamados resolvidos | Tela usa linguagem operacional, sem exigir leitura de etapas P2/P3/P4 |
 | S-V7-M2-14 | Rascunhos KB | Rascunhos permanecem para revisão humana; sem publicação automática |
 | S-V7-M2-15 | Guards preservados | CSRF/RBAC continuam ativos; IA não altera ticket/status/prioridade |

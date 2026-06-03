@@ -104,15 +104,34 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(action).toContain('SmartHelpService::canViewPanel()');
     // CSRF is validated before any action handling.
     expect(action.indexOf('Plugin::isCsrfValid($_POST)')).toBeLessThan(action.indexOf('$aiAssistActions'));
-    // The AI branch runs before the ticket-mutation action map.
-    expect(action.indexOf('$aiAssistActions')).toBeLessThan(action.indexOf('$actionRightMap = ['));
+    // The local AI branch (smart_help/kb_feedback/suggest_kb) runs BEFORE Plugin::requireUpdate().
     expect(action.indexOf('$aiAssistActions')).toBeLessThan(action.indexOf('Plugin::requireUpdate();'));
+    // Plugin::requireUpdate() still guards the ticket-mutation map.
     expect(action.indexOf('Plugin::requireUpdate();')).toBeLessThan(action.indexOf('$actionRightMap = ['));
     // Cloud consent is enforced; context built server-side.
     expect(action).toContain("(\$_POST['consent'] ?? '') === '1'");
     // The AI branch never mutates the ticket / sends WhatsApp.
     const aiBranch = action.slice(action.indexOf('$aiAssistActions'), action.indexOf('$actionRightMap = ['));
     expect(aiBranch).not.toMatch(/->update\(|->add\(|ITILFollowup|TicketTask|sendOutbound|sendWhatsApp/i);
+  });
+
+  it('smart_external cloud action requires Plugin::canUpdate() on top of canViewPanel()', async () => {
+    const action = await read('integaglpi/front/ticket.whatsapp.action.php');
+
+    // smart_external gate: canUpdate() checked before externalResearch is called.
+    expect(action).toContain("if (\$action === 'smart_external' && !\\GlpiPlugin\\Integaglpi\\Plugin::canUpdate())");
+    expect(action).toContain("'error_type' => 'permission_denied'");
+    // The UPDATE gate for smart_external is inside the AI assist block (before requireUpdate()).
+    const aiBlock = action.slice(action.indexOf('$aiAssistActions'), action.indexOf('Plugin::requireUpdate();'));
+    expect(aiBlock).toContain('canUpdate()');
+    // Human consent still required even after permission check.
+    expect(aiBlock).toContain("(\$_POST['consent'] ?? '') === '1'");
+    // Local-only actions (smart_help, kb_feedback, suggest_kb) do NOT require canUpdate().
+    // Verified by: canUpdate() check is conditional only on smart_external, not on the base gate.
+    expect(action).toContain('Base gate: all AI assist actions require at least READ');
+    expect(action).toContain('Cloud/external gate: smart_external additionally requires UPDATE');
+    // Obsolete comment removed: page no longer claims "already requires UPDATE" for ALL AI actions.
+    expect(action).not.toContain('page already requires plugin UPDATE');
   });
 
   it("the smart help JS never auto-invokes cloud (cloud needs the external button + confirm)", async () => {
@@ -135,6 +154,54 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // DOMContentLoaded auto-runs smart_help, not smart_external.
     const onLoad = js.slice(js.indexOf('DOMContentLoaded'));
     expect(onLoad).not.toContain('smart_external');
+  });
+
+  it('smart help JS post() uses AbortController timeout so the run button never stays disabled', async () => {
+    const js = await read('integaglpi/js/ticket_ai_panel.js');
+
+    // Timeout constant defined.
+    expect(js).toContain('SMART_HELP_TIMEOUT_MS');
+    // AbortController used when available.
+    expect(js).toContain('AbortController');
+    expect(js).toContain('controller.abort()');
+    expect(js).toContain('signal: controller');
+    // Catch always resolves (returns object, never re-throws) so .finally() re-enables the button.
+    expect(js).toContain("error: aborted ? 'timeout' : 'network_error'");
+    expect(js).toContain('clearTimer');
+    // handleExternal handles transport-level failure (ok: false, no result).
+    expect(js).toContain('resp.ok === false && resp.error && !resp.result');
+    expect(js).toContain("resp.error === 'timeout'");
+  });
+
+  it('ticket_tab.php copilot error display uses HTTP status to replace generic fallback', async () => {
+    const tab = await read('integaglpi/templates/ticket_tab.php');
+
+    // HTTP 500 gets a specific "serviço indisponível" message.
+    expect(tab).toContain('result.status === 500');
+    expect(tab).toContain('HTTP 500');
+    // HTTP 503/504 gets a timeout message.
+    expect(tab).toContain('result.status === 504');
+    expect(tab).toContain('não respondeu a tempo');
+    // HTTP 403 gets a permission/session message.
+    expect(tab).toContain('result.status === 403');
+    // Generic fallback still present for unknown statuses.
+    expect(tab).toContain('Não foi possível gerar o rascunho');
+    // The detection of the generic PHP message is present.
+    expect(tab).toContain('Não foi possível usar o Copiloto agora.');
+  });
+
+  it('ticket.whatsapp.action.php smart_help call is wrapped in try/catch returning JSON', async () => {
+    const action = await read('integaglpi/front/ticket.whatsapp.action.php');
+
+    // try/catch around localFirstAssist.
+    expect(action).toContain('try {');
+    expect(action).toContain('localFirstAssist($ticketId, $summary)');
+    expect(action).toContain('catch (\\Throwable $e)');
+    expect(action).toContain("'error_type' => 'internal_error'");
+    // Error logged safely.
+    expect(action).toContain('[integaglpi][smart_help][unexpected]');
+    // Returns JSON (not raw exception text) on failure.
+    expect(action).toContain("'smart_help_error'");
   });
 
   it('kb.search.php is bearer-gated, POST-only, read-only and visibility-filtered', async () => {
