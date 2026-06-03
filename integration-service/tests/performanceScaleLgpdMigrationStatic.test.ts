@@ -36,18 +36,30 @@ async function listTypeScriptFiles(root: string): Promise<string[]> {
 }
 
 describe('045 performance/scale/LGPD readiness migration', () => {
-  it('is additive, idempotent and gated by table existence', async () => {
+  it('is additive, idempotent and runner-compatible', async () => {
     const raw = await readMigration();
     const sql = compact(raw);
     const statements = compact(stripComments(raw));
 
-    expect(sql).toContain('to_regclass');
     expect(sql).toContain('CREATE INDEX IF NOT EXISTS idx_messages_conv_created');
     expect(sql).toContain('CREATE INDEX IF NOT EXISTS idx_inactivity_status_updated');
     expect(sql).toContain('CREATE INDEX IF NOT EXISTS idx_kb_article_helpfulness_ticket');
-    expect(sql).toContain('glpi_intega_inactivity_status_updated_idx');
-    expect(sql).toContain('pg_indexes');
+    expect(sql).toContain('glpi_ticket_id');
 
+    const createIndexStatements = raw
+      .split(';')
+      .map((statement) => compact(stripComments(statement)))
+      .filter((statement) => statement.length > 0);
+
+    expect(createIndexStatements).toHaveLength(3);
+    for (const statement of createIndexStatements) {
+      expect(statement).toMatch(/^CREATE INDEX IF NOT EXISTS\b/i);
+      expect(statement).toMatch(/\bON public\.glpi_plugin_integaglpi_/i);
+    }
+
+    expect(statements).not.toMatch(/\bDO\s+\$\$/i);
+    expect(statements).not.toMatch(/\bBEGIN\b/i);
+    expect(statements).not.toMatch(/\bEND\s*\$\$/i);
     expect(statements).not.toMatch(/\bDROP\b/i);
     expect(statements).not.toMatch(/\bTRUNCATE\b/i);
     expect(statements).not.toMatch(/\bDELETE\s+FROM\b/i);
