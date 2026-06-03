@@ -48,3 +48,31 @@ Contrato reforçado:
 Ressalvas:
 - Macro 3 não consolida entidade/inatividade; apenas inventaria como próximos candidatos.
 - Nenhuma mudança comportamental intencional em criação de ticket, WhatsApp, IA, LogMeIn ou Central.
+
+## Macro 4 - Performance, Escala e LGPD
+
+Status: implementado para revisão Cursor.
+
+Inventário de gargalos prováveis:
+- Mensagens por conversa: `PostgresMessageRepository.findByConversationId` e consultas laterais do `QualityDashboardService` usam `conversation_id` + `created_at`.
+- Central/qualidade: `QualityDashboardService` agrega conversas, mensagens e inatividade por janelas de tempo e paginação.
+- Inatividade: `PostgresInactivityTrackingRepository.findDueCandidates` usa status/atividade; índice equivalente já existia na migration 015.
+- Feedback KB: `PostgresKbFeedbackRepository` grava e agrega `kb_article_helpfulness`; faltava índice por ticket de contexto.
+- Cloud/audit: migrations 044 e 005 já tinham índices de data/status/categoria/evento para auditoria sanitizada.
+
+Migration criada:
+- `045_performance_scale_lgpd_indexes.sql` adiciona índices idempotentes e condicionais.
+- Não foi aplicada em produção nem homologação pelo Codex.
+- Comando manual de homologação está documentado no cabeçalho da migration.
+- Rollback é manual por DBA, restrito aos índices nomeados, após análise humana.
+
+Política LGPD proposta (sem deleção automática nesta fase):
+- Mensagens e anexos/metadados: manter enquanto o ticket GLPI exigir histórico operacional e jurídico; prazo final exige owner humano/DPO.
+- `raw_payload`: candidato a retenção curta ou minimização após diagnóstico; exige decisão DPO antes de expurgo.
+- `cloud_compliance_audit`: manter registro sanitizado/agregado por período de auditoria; nunca armazenar prompt bruto/PII.
+- `kb_article_helpfulness`: manter agregado não punitivo; técnico nominal apenas para deduplicação quando necessário.
+- Métricas agregadas: podem ter retenção mais longa se não contiverem PII.
+
+Observabilidade/cache:
+- Observabilidade permanece read-only via serviços existentes (`ObservabilityService`, `QualityDashboardService`) e docs.
+- Nenhum dashboard pesado, SSE/WebSocket, Redis novo ou cache novo foi criado.
