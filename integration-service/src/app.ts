@@ -47,6 +47,7 @@ import {
   createCoachingSuggestKbController,
   createExternalResearchDynamicController,
   createSmartHelpController,
+  createTechnicalSummaryController,
 } from './controllers/ai.controller.js';
 import type { SmartHelpService } from './domain/services/SmartHelpService.js';
 import type { ExternalResearchService } from './domain/services/ExternalResearchService.js';
@@ -95,6 +96,7 @@ export interface AppDependencies {
   logmeinReadonlyContextService?: LogmeinReadonlyContextService;
   logmeinReconciliationService?: import('./domain/services/LogmeinReconciliationService.js').LogmeinReconciliationService;
   smartHelpService?: SmartHelpService;
+  technicalSummarizer?: import('./controllers/ai.controller.js').TechnicalSummarizerPort;
   externalResearchService?: ExternalResearchService;
   coachingService?: CoachingService;
   feedbackService?: FeedbackService;
@@ -273,6 +275,16 @@ export function createApp(dependencies: AppDependencies) {
         aiAuth,
         createJsonParser(),
         createSmartHelpController(dependencies.smartHelpService),
+      );
+    }
+    if (dependencies.technicalSummarizer) {
+      // LOCAL-AI technical summary — invoked only on the manual "Ajuda Inteligente"
+      // click (PHP gates on ai_summary=1). Bearer-gated; local provider only.
+      app.post(
+        '/internal/glpi/ai/technical-summary',
+        aiAuth,
+        createJsonParser(),
+        createTechnicalSummaryController(dependencies.technicalSummarizer),
       );
     }
     if (dependencies.externalResearchService) {

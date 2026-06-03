@@ -189,8 +189,11 @@ if (in_array($action, $aiAssistActions, true)) {
         }
         // Local-first: never returns a raw error — searches the native KB in PHP and
         // degrades to a local checklist/questions if the Node AI service is down.
+        // ai_summary=1 is sent ONLY by the manual button click (not the auto-run), so
+        // the local AI summary path is never triggered automatically on tab load.
+        $wantAiSummary = ($_POST['ai_summary'] ?? '') === '1' || ($_POST['ai_summary'] ?? '') === 'true';
         try {
-            plugin_integaglpi_ticket_action_json(['ok' => true, 'result' => $smartHelp->localFirstAssist($ticketId, $summary)], 200);
+            plugin_integaglpi_ticket_action_json(['ok' => true, 'result' => $smartHelp->localFirstAssist($ticketId, $summary, $wantAiSummary)], 200);
         } catch (\Throwable $e) {
             plugin_integaglpi_ticket_ai_error_json($action, $e);
         }

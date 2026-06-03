@@ -316,6 +316,34 @@ export function buildDependencies() {
       };
   // feedbackService doubles as the RankingBiasPort (it exposes getRankingBias).
   const smartHelpService = new SmartHelpService(nodeKbSearchPort, feedbackService);
+
+  // LOCAL-AI technical summarizer (Ollama free-text). Used ONLY on the manual
+  // "Ajuda Inteligente" click path; never on auto-run (PHP gates on ai_summary=1).
+  // Cloud is never used here. The prompt forbids personal data; the PHP side also
+  // sanitizes PII before sending the context.
+  const technicalSummaryTimeoutMs = envInt('AI_TECHNICAL_SUMMARY_TIMEOUT_MS', 7_000, 1_000, 20_000);
+  const technicalSummarizer = {
+    async generate(input: { ticketId: number; context: string }): Promise<string> {
+      const prompt = [
+        'Você é um assistente técnico de suporte de TI.',
+        'Resuma o chamado abaixo em português, em no máximo 4 linhas, tom técnico e objetivo.',
+        'NÃO inclua dados pessoais: sem nomes próprios, telefones, e-mails, CPF, CNPJ ou endereços.',
+        'Não invente informações que não estejam no texto.',
+        'Estruture exatamente assim:',
+        'Problema relatado: ...',
+        'Contexto técnico: ...',
+        'Próxima ação sugerida: ...',
+        '',
+        'Chamado:',
+        input.context,
+      ].join('\n');
+      return new OllamaClient(
+        env.AI_SUPERVISOR_BASE_URL,
+        env.AI_SUPERVISOR_MODEL,
+        technicalSummaryTimeoutMs,
+      ).generateText(prompt);
+    },
+  };
   const coachingService = new CoachingService(postgresPool, auditService);
 
   const logmeinReadonlyContextService = new LogmeinReadonlyContextService(
@@ -623,6 +651,7 @@ export function buildDependencies() {
     externalResearchService,
     cloudAuditRepository,
     smartHelpService,
+    technicalSummarizer,
     coachingService,
     integrationServiceApiKey: env.INTEGRATION_SERVICE_API_KEY,
     glpiClient,

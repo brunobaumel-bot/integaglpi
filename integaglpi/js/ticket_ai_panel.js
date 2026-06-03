@@ -237,11 +237,20 @@
       msgEl.className = 'mt-2 small js-smart-help-message text-muted';
     }
     setStatus(panel, 'analisando', 'info');
-    post(panel, 'smart_help').then(function (resp) {
+    // ai_summary=1 ONLY on manual click → backend calls local AI for the summary.
+    // Auto-run (userInitiated falsy) omits it → no GPU load on tab load.
+    var extra = userInitiated ? { ai_summary: '1' } : undefined;
+    post(panel, 'smart_help', extra).then(function (resp) {
       var r = resp && resp.result ? resp.result : null;
       if (r) {
         renderResult(panel, r);
-        if (r.degraded) {
+        var summarySource = r.summarySource || r.summary_source || '';
+        var summaryErrorType = r.summaryErrorType || r.summary_error_type || '';
+        if (summarySource === 'local_ai') {
+          setStatus(panel, 'resumo IA local', 'success');
+        } else if (userInitiated && summaryErrorType) {
+          setStatus(panel, 'resumo local (IA: ' + summaryErrorType + ')', 'warning');
+        } else if (r.degraded) {
           setStatus(panel, 'modo local (IA indisponível)', 'warning');
         } else {
           setStatus(panel, r.localResolved ? 'KB local encontrada' : 'sem KB local', r.localResolved ? 'success' : 'info');

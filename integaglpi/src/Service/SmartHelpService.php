@@ -26,6 +26,7 @@ use GlpiPlugin\Integaglpi\Plugin;
 final class SmartHelpService
 {
     private const PATH_SMART_HELP        = '/internal/glpi/ai/smart-help';
+    private const PATH_TECHNICAL_SUMMARY = '/internal/glpi/ai/technical-summary';
     private const PATH_EXTERNAL_RESEARCH = '/internal/glpi/ai/external-research/dynamic';
     private const PATH_KB_FEEDBACK       = '/internal/glpi/ai/kb-feedback';
     private const PATH_COACHING_CHECKLIST = '/internal/glpi/ai/coaching/checklist';
@@ -71,9 +72,33 @@ final class SmartHelpService
      *
      * @return array<string, mixed>
      */
-    public function localFirstAssist(int $ticketId, string $summary): array
+    public function localFirstAssist(int $ticketId, string $summary, bool $wantAiSummary = false): array
     {
+        // Deterministic, PII-free baseline summary (no GPU). Always available.
         $technicalSummary = $this->buildTechnicalSummary($summary);
+        $summarySource = 'fallback';
+        $summaryErrorType = '';
+
+        // LOCAL-AI summary ONLY on explicit manual request (ai_summary=1). The auto-run
+        // never sets $wantAiSummary, so it never hits the model — no GPU load on load.
+        if ($wantAiSummary) {
+            $sanitizedContext = $this->sanitizeContext($summary);
+            if ($sanitizedContext === '') {
+                $summaryErrorType = 'missing_context';
+            } else {
+                $ai = $this->technicalSummaryAi($ticketId, $sanitizedContext);
+                $aiSummary = trim((string) ($ai['technical_summary'] ?? $ai['technicalSummary'] ?? ''));
+                $aiOk = (($ai['ok'] ?? false) === true) && $aiSummary !== '';
+                if ($aiOk) {
+                    // Re-sanitize the model output defensively before it reaches the UI.
+                    $technicalSummary = $this->sanitizeContext($aiSummary);
+                    $summarySource = 'local_ai';
+                } else {
+                    $summaryErrorType = (string) ($ai['error_type'] ?? 'provider_unavailable');
+                }
+            }
+        }
+
         $schema044Status = self::migration044SchemaStatus();
 
         // 1. Local native KB search (PHP-side; never leaves the page; no cloud).
@@ -144,6 +169,10 @@ final class SmartHelpService
             'cloudOffer'        => $cloudOffer,
             'technicalSummary'   => $technicalSummary,
             'technical_summary'  => $technicalSummary,
+            'summarySource'      => $summarySource,
+            'summary_source'     => $summarySource,
+            'summaryErrorType'   => $summaryErrorType,
+            'summary_error_type' => $summaryErrorType,
             'kbSearchSource'     => [
                 'source' => 'php_native_glpi_kb',
                 'label' => 'Base de Conhecimento GLPI local',
@@ -197,20 +226,71 @@ final class SmartHelpService
         ];
     }
 
-    private function buildTechnicalSummary(string $summary): string
+    /**
+     * Sanitizes ticket text (removes PII) and returns it for use as AI context or
+     * as the technician-facing technical summary. Local-first, deterministic, no
+     * external/GPU call: safe to run on every panel auto-load.
+     */
+    private function sanitizeContext(string $text): string
     {
-        $clean = html_entity_decode(strip_tags($summary), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $clean = html_entity_decode(strip_tags($text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
         $patterns = [
-            '/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/iu',
-            '/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/u',
-            '/\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/u',
-            '/(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?9?\d{4}[-\s]?\d{4}/u',
+            '/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/iu',          // e-mail
+            '/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/u',                   // CPF
+            '/\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/u',           // CNPJ
+            '/(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?9?\d{4}[-\s]?\d{4}/u', // telefone
         ];
         $clean = preg_replace($patterns, '[dado pessoal removido]', $clean) ?? $clean;
         $clean = preg_replace('/\s+/u', ' ', $clean) ?? $clean;
-        $clean = trim($clean);
 
-        return mb_substr($clean, 0, 500, 'UTF-8');
+        return trim($clean);
+    }
+
+    /**
+     * Builds a SHORT, structured, PII-free technical summary for the technician.
+     * Deterministic (no cloud, no GPU) so it is safe on every auto-load. The first
+     * sentences become the "Problema"; the remainder feeds "Contexto"; a generic,
+     * non-mutating next-action hint is appended. This is the local-first baseline;
+     * an optional local-AI rewrite can replace it on explicit user action (see
+     * CURSOR_REVIEW_NOTES — deferred, requires runtime validation against Ollama).
+     */
+    /**
+     * Calls the LOCAL-AI technical summary endpoint (Ollama via Node). Context must be
+     * already PII-sanitized by the caller. Short timeout; the endpoint always returns a
+     * parseable JSON envelope, so failures degrade to the deterministic fallback.
+     *
+     * @return array<string, mixed>
+     */
+    private function technicalSummaryAi(int $ticketId, string $sanitizedContext): array
+    {
+        return $this->postJson(self::PATH_TECHNICAL_SUMMARY, [
+            'ticket_id' => $ticketId,
+            'context'   => mb_substr($sanitizedContext, 0, 4000, 'UTF-8'),
+        ]);
+    }
+
+    private function buildTechnicalSummary(string $summary): string
+    {
+        $clean = $this->sanitizeContext($summary);
+        if ($clean === '') {
+            return '';
+        }
+
+        // Split into sentences to separate the reported problem from extra context.
+        $parts = preg_split('/(?<=[.!?])\s+/u', $clean) ?: [$clean];
+        $problema = trim((string) ($parts[0] ?? ''));
+        $contexto = trim(implode(' ', array_slice($parts, 1)));
+
+        $lines = [];
+        if ($problema !== '') {
+            $lines[] = 'Problema relatado: ' . mb_substr($problema, 0, 240, 'UTF-8');
+        }
+        if ($contexto !== '') {
+            $lines[] = 'Contexto técnico: ' . mb_substr($contexto, 0, 240, 'UTF-8');
+        }
+        $lines[] = 'Próxima ação sugerida: confirmar reprodução, registrar mensagem de erro exata e validar contorno antes de escalar.';
+
+        return mb_substr(implode("\n", $lines), 0, 600, 'UTF-8');
     }
 
     /**

@@ -8,6 +8,7 @@ import {
   createCoachingSuggestKbController,
   createExternalResearchDynamicController,
   createSmartHelpController,
+  createTechnicalSummaryController,
 } from '../src/controllers/ai.controller.js';
 
 function app(path: string, method: 'get' | 'post', handler: express.RequestHandler) {
@@ -76,6 +77,47 @@ describe('AI controller endpoints', () => {
     expect(res.status).toBe(200);
     expect(res.body.auto_publish).toBe(false);
     expect(res.body.candidate.title).toBe('T');
+  });
+
+  it('POST technical-summary returns local_ai summary when the local provider answers', async () => {
+    const summarizer = {
+      generate: vi.fn(async () => 'Problema relatado: impressora não imprime.\nContexto técnico: spooler travado.\nPróxima ação sugerida: reiniciar spooler.'),
+    };
+    const res = await request(app('/ts', 'post', createTechnicalSummaryController(summarizer as never)))
+      .post('/ts').send({ ticket_id: 7, context: 'impressora nao imprime, spooler travado' });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.summary_source).toBe('local_ai');
+    expect(res.body.technical_summary).toContain('Problema relatado');
+    expect(summarizer.generate).toHaveBeenCalledOnce();
+    expect(summarizer.generate.mock.calls[0]?.[0].ticketId).toBe(7);
+  });
+
+  it('POST technical-summary rejects missing ticket_id', async () => {
+    const summarizer = { generate: vi.fn() };
+    const res = await request(app('/ts', 'post', createTechnicalSummaryController(summarizer as never)))
+      .post('/ts').send({ context: 'x' });
+    expect(res.status).toBe(400);
+    expect(summarizer.generate).not.toHaveBeenCalled();
+  });
+
+  it('POST technical-summary degrades to fallback with typed error on provider failure', async () => {
+    const summarizer = { generate: vi.fn(async () => { throw new Error('OLLAMA timeout'); }) };
+    const res = await request(app('/ts', 'post', createTechnicalSummaryController(summarizer as never)))
+      .post('/ts').send({ ticket_id: 7, context: 'algum contexto' });
+    // 200 (parseable) so PHP can apply its deterministic fallback.
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.summary_source).toBe('fallback');
+    expect(res.body.error_type).toBe('local_ai_timeout');
+  });
+
+  it('POST technical-summary never calls cloud / sends WhatsApp / mutates ticket', async () => {
+    const summarizer = { generate: vi.fn(async () => 'Problema relatado: x.\nContexto técnico: y.\nPróxima ação sugerida: z.') };
+    const res = await request(app('/ts', 'post', createTechnicalSummaryController(summarizer as never)))
+      .post('/ts').send({ ticket_id: 1, context: 'abc' });
+    expect(res.body.read_only).toBe(true);
+    expect(JSON.stringify(res.body)).not.toMatch(/cloud|whatsapp|sendOutbound|update_ticket/i);
   });
 
   it('GET metrics returns aggregated data with no technician identity', async () => {

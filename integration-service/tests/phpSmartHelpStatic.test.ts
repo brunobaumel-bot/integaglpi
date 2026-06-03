@@ -53,7 +53,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(svc).toMatch(/'degraded'/);
 
     // The ticket action wires smart_help to the local-first method (not the raw Node call).
-    expect(action).toContain('localFirstAssist($ticketId, $summary)');
+    expect(action).toContain('localFirstAssist($ticketId, $summary, $wantAiSummary)');
   });
 
   it('external research never claims success / candidate without a usable answer', async () => {
@@ -200,7 +200,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     const js = await read('integaglpi/js/ticket_ai_panel.js');
     // Proactive auto-load calls smart_help (local), NOT smart_external.
     expect(js).toContain('runSmartHelp(p)');
-    expect(js).toContain("post(panel, 'smart_help')");
+    expect(js).toContain("post(panel, 'smart_help', extra)");
     expect(js).toContain('document.readyState !== \'loading\'');
     expect(js).toContain('event.preventDefault();');
     expect(js).toContain("runSmartHelp(panel, true);  // userInitiated = true");
@@ -328,6 +328,65 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(svc).not.toMatch(/->update\(|sendOutbound|sendWhatsApp|auto_publish/i);
   });
 
+  it('manual click triggers LOCAL-AI summary; auto-run does not (ai_summary gate)', async () => {
+    const js  = await read('integaglpi/js/ticket_ai_panel.js');
+    const act = await read('integaglpi/front/ticket.whatsapp.action.php');
+    const svc = await read('integaglpi/src/Service/SmartHelpService.php');
+
+    // ── JS: manual click sends ai_summary=1; auto-run omits it ────────────────
+    expect(js).toContain("var extra = userInitiated ? { ai_summary: '1' } : undefined;");
+    expect(js).toContain("post(panel, 'smart_help', extra)");
+    // Source is surfaced to the technician.
+    expect(js).toContain('r.summarySource || r.summary_source');
+    expect(js).toContain("'resumo IA local'");
+
+    // ── PHP action: reads ai_summary and forwards it ─────────────────────────
+    expect(act).toContain("(\$_POST['ai_summary'] ?? '') === '1'");
+    expect(act).toContain('localFirstAssist($ticketId, $summary, $wantAiSummary)');
+
+    // ── PHP service: AI path only when $wantAiSummary, sanitized, fallback ────
+    expect(svc).toContain('bool $wantAiSummary = false');
+    expect(svc).toContain('if ($wantAiSummary)');
+    expect(svc).toContain('PATH_TECHNICAL_SUMMARY');
+    expect(svc).toContain('/internal/glpi/ai/technical-summary');
+    expect(svc).toContain('function technicalSummaryAi');
+    // PII sanitized BEFORE sending to the model.
+    expect(svc).toContain('$sanitizedContext = $this->sanitizeContext($summary)');
+    // Source reported; fallback to deterministic on failure.
+    expect(svc).toContain("\$summarySource = 'local_ai'");
+    expect(svc).toContain("\$summarySource = 'fallback'");
+    expect(svc).toContain("'summary_source'");
+  });
+
+  it('local-AI summary path is local-provider only and never cloud/auto-send (Node)', async () => {
+    const ctrl = await read('integration-service/src/controllers/ai.controller.ts');
+    const ollama = await read('integration-service/src/ai/OllamaClient.ts');
+    const deps = await read('integration-service/src/buildDependencies.ts');
+
+    // Controller: typed envelope, 200 on failure so PHP can fall back.
+    expect(ctrl).toContain('createTechnicalSummaryController');
+    expect(ctrl).toContain("summary_source: 'local_ai'");
+    expect(ctrl).toContain("'local_ai_timeout'");
+    expect(ctrl).toContain("'provider_unavailable'");
+    expect(ctrl).toContain('read_only: true');
+    // No cloud / whatsapp / ticket mutation WITHIN the technical-summary controller.
+    const tsStart = ctrl.indexOf('export function createTechnicalSummaryController');
+    const tsEnd = ctrl.indexOf('export function createSmartHelpController');
+    const tsBody = ctrl.slice(tsStart, tsEnd);
+    expect(tsStart).toBeGreaterThanOrEqual(0);
+    expect(tsBody).not.toMatch(/cloud|whatsapp|sendOutbound|->update/i);
+
+    // OllamaClient.generateText is plain text (no forced JSON) and LOCAL.
+    expect(ollama).toContain('generateText');
+
+    // Dependency wiring uses the LOCAL Ollama base URL, short timeout, and a
+    // prompt that forbids personal data. No cloud provider here.
+    expect(deps).toContain('technicalSummarizer');
+    expect(deps).toContain('AI_TECHNICAL_SUMMARY_TIMEOUT_MS');
+    expect(deps).toContain('AI_SUPERVISOR_BASE_URL');
+    expect(deps).toContain('NÃO inclua dados pessoais');
+  });
+
   it('template↔JS↔PHP contract: class, selector, action and attributes match', async () => {
     const tab = await read('integaglpi/templates/ticket_tab.php');
     const js  = await read('integaglpi/js/ticket_ai_panel.js');
@@ -360,7 +419,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).toContain("t.closest('.js-smart-help-run')");
     // Request sends correct action name.
     expect(js).toContain("params.set('whatsapp_action', action)");
-    expect(js).toContain("post(panel, 'smart_help')");
+    expect(js).toContain("post(panel, 'smart_help', extra)");
     // Request sends ticket_id and CSRF.
     expect(js).toContain("params.set('ticket_id'");
     expect(js).toContain("params.set('_glpi_csrf_token'");
@@ -433,7 +492,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
 
     // try/catch around localFirstAssist.
     expect(action).toContain('try {');
-    expect(action).toContain('localFirstAssist($ticketId, $summary)');
+    expect(action).toContain('localFirstAssist($ticketId, $summary, $wantAiSummary)');
     expect(action).toContain('catch (\\Throwable $e)');
     expect(action).toContain("return 'internal_error';");
     // Error logged safely.

@@ -32,6 +32,75 @@ function fail(response: Response, code: number, message: string): Response {
   return response.status(code).json({ ok: false, message });
 }
 
+/**
+ * Local technical summarizer port. Implemented in buildDependencies with an
+ * Ollama-backed generator. LOCAL provider only — never cloud.
+ */
+export interface TechnicalSummarizerPort {
+  generate(input: { ticketId: number; context: string }): Promise<string>;
+}
+
+/**
+ * POST /internal/glpi/ai/technical-summary
+ *
+ * Generates a short, PII-free technical summary using the LOCAL AI provider only.
+ * Always returns HTTP 200 with a typed envelope so the PHP caller can degrade to its
+ * deterministic fallback without treating transport as a hard error. Never calls
+ * cloud, never mutates a ticket, never sends WhatsApp, never persists raw content.
+ */
+export function createTechnicalSummaryController(summarizer: TechnicalSummarizerPort) {
+  return async (request: Request, response: Response): Promise<Response> => {
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const ticketId = intOrNull(body.ticket_id);
+    if (ticketId === null) {
+      return fail(response, 400, 'ticket_id obrigatório.');
+    }
+    const context = String(body.context ?? '').trim();
+    if (context === '') {
+      return response.status(200).json({
+        ok: false,
+        error_type: 'missing_context',
+        summary_source: 'fallback',
+        technical_summary: '',
+        technicalSummary: '',
+        read_only: true,
+      });
+    }
+    try {
+      const summary = (await summarizer.generate({ ticketId, context })).trim();
+      if (summary === '') {
+        return response.status(200).json({
+          ok: false,
+          error_type: 'provider_unavailable',
+          summary_source: 'fallback',
+          technical_summary: '',
+          technicalSummary: '',
+          read_only: true,
+        });
+      }
+      return response.status(200).json({
+        ok: true,
+        technical_summary: summary,
+        technicalSummary: summary,
+        summary_source: 'local_ai',
+        read_only: true,
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      const errorType = /timeout|timed out|aborted/i.test(message) ? 'local_ai_timeout' : 'provider_unavailable';
+      logger.error({ error_message: message }, '[ai][technical-summary]');
+      return response.status(200).json({
+        ok: false,
+        error_type: errorType,
+        summary_source: 'fallback',
+        technical_summary: '',
+        technicalSummary: '',
+        read_only: true,
+      });
+    }
+  };
+}
+
 /** POST /internal/glpi/ai/smart-help */
 export function createSmartHelpController(service: SmartHelpService) {
   return async (request: Request, response: Response): Promise<Response> => {
