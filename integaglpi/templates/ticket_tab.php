@@ -1938,7 +1938,21 @@ if ($isExternalConfigured && $runtime !== null && !$isClosed) {
                             setCopilotStatus(<?= json_encode(__('Token de segurança expirado. Atualize a página e tente novamente.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>, 'error');
                             return;
                         }
-                        setCopilotStatus(copilotMessage(result, <?= json_encode(__('Não foi possível gerar o rascunho.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>), 'error');
+                        // Use HTTP status to replace the generic fallback with a contextual message.
+                        var genericMsg = <?= json_encode(__('Não foi possível usar o Copiloto agora.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+                        var displayMsg = copilotMessage(result, null);
+                        if (!displayMsg || displayMsg === genericMsg) {
+                            if (result.status === 500) {
+                                displayMsg = <?= json_encode(__('Copiloto indisponível (erro interno — HTTP 500). Verifique se o serviço de IA Node está ativo e configurado.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+                            } else if (result.status === 504 || result.status === 503) {
+                                displayMsg = <?= json_encode(__('O Copiloto não respondeu a tempo. Tente novamente em breve.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+                            } else if (result.status === 403) {
+                                displayMsg = <?= json_encode(__('Sem permissão para usar o Copiloto ou sessão expirada. Recarregue a página.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+                            } else {
+                                displayMsg = displayMsg || <?= json_encode(__('Não foi possível gerar o rascunho.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+                            }
+                        }
+                        setCopilotStatus(displayMsg, 'error');
                         return;
                     }
                     saveCopilotDraft('', '', copilotMeta ? copilotMeta.textContent : '', jobId, 'pending');
