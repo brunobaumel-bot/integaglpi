@@ -150,7 +150,7 @@ try {
     }
 
     $action = trim((string) ($_POST['smart_action'] ?? $_POST['whatsapp_action'] ?? 'smart_help'));
-    $allowedActions = ['smart_help', 'kb_feedback', 'suggest_kb', 'prepare_external_context', 'smart_external'];
+    $allowedActions = ['smart_help', 'summarize_ticket', 'local_search', 'kb_feedback', 'suggest_kb', 'prepare_external_context', 'smart_external'];
     if (!in_array($action, $allowedActions, true)) {
         integaglpiSmartHelpJsonResponse([
             'ok' => false,
@@ -187,11 +187,25 @@ try {
     [$ticketId, $summary] = integaglpiSmartHelpTicketContext($ticketId);
     $smartHelp = new SmartHelpService();
 
-    if ($action === 'smart_help') {
-        $wantAiSummary = ($_POST['ai_summary'] ?? '') === '1' || ($_POST['ai_summary'] ?? '') === 'true';
+    if ($action === 'smart_help' || $action === 'summarize_ticket') {
+        $wantAiSummary = $action === 'summarize_ticket'
+            || ($_POST['ai_summary'] ?? '') === '1'
+            || ($_POST['ai_summary'] ?? '') === 'true';
         integaglpiSmartHelpJsonResponse([
             'ok' => true,
-            'result' => $smartHelp->localFirstAssist($ticketId, $summary, $wantAiSummary),
+            'result' => $smartHelp->localFirstAssist($ticketId, $summary, $wantAiSummary)
+                + ['workflow_step' => 'summarized'],
+        ], 200);
+        exit;
+    }
+
+    if ($action === 'local_search') {
+        $currentSummary = trim((string) ($_POST['technical_summary'] ?? $_POST['summary'] ?? ''));
+        $searchSummary = $currentSummary !== '' ? mb_substr($currentSummary, 0, 2000, 'UTF-8') : $summary;
+        integaglpiSmartHelpJsonResponse([
+            'ok' => true,
+            'result' => $smartHelp->localFirstAssist($ticketId, $searchSummary, false)
+                + ['workflow_step' => 'local_searched'],
         ], 200);
         exit;
     }
@@ -233,10 +247,12 @@ try {
 
     if ($action === 'prepare_external_context') {
         // Step 1: sanitized preview only. No cloud send, no consent required here.
-        // Context is built server-side from the ticket (never trusts client text).
+        // Context uses the current technician-edited summary when present.
+        $currentSummary = trim((string) ($_POST['technical_summary'] ?? $_POST['summary'] ?? ''));
+        $externalSummary = $currentSummary !== '' ? mb_substr($currentSummary, 0, 2000, 'UTF-8') : $summary;
         integaglpiSmartHelpJsonResponse([
             'ok' => true,
-            'result' => $smartHelp->prepareExternalContext($ticketId, $summary),
+            'result' => $smartHelp->prepareExternalContext($ticketId, $externalSummary),
         ], 200);
         exit;
     }
@@ -245,9 +261,11 @@ try {
         // Step 2: the actual cloud send. Requires explicit consent; Node re-sanitizes
         // and blocks on PII independently before reaching any provider.
         $consent = ($_POST['consent'] ?? '') === '1' || ($_POST['consent'] ?? '') === 'true';
+        $currentSummary = trim((string) ($_POST['technical_summary'] ?? $_POST['summary'] ?? ''));
+        $externalSummary = $currentSummary !== '' ? mb_substr($currentSummary, 0, 2000, 'UTF-8') : $summary;
         integaglpiSmartHelpJsonResponse([
             'ok' => true,
-            'result' => $smartHelp->externalResearch($ticketId, $summary, $consent),
+            'result' => $smartHelp->externalResearch($ticketId, $externalSummary, $consent),
         ], 200);
         exit;
     }

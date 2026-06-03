@@ -160,6 +160,16 @@ final class SmartHelpService
                 . 'Use o checklist e as perguntas sugeridas para diagnosticar.';
         }
 
+        $localSuggestion = null;
+        if (!$localResolved) {
+            $localSuggestion = [
+                'source_label' => 'Sugestão IA local',
+                'title' => 'Sugestão IA local — valide antes de aplicar',
+                'content' => 'Use o resumo técnico, o checklist e as perguntas sugeridas para validar o diagnóstico antes de responder ao cliente.',
+                'unverified' => true,
+            ];
+        }
+
         // ALWAYS ok:true — the panel must show something useful, never a raw error.
         return [
             'ok'                => true,
@@ -168,6 +178,8 @@ final class SmartHelpService
             'checklist'         => $checklist,
             'suggestedQuestions' => $questions,
             'cloudOffer'        => $cloudOffer,
+            'localSuggestion'   => $localSuggestion,
+            'local_suggestion'  => $localSuggestion,
             'technicalSummary'   => $technicalSummary,
             'technical_summary'  => $technicalSummary,
             'summarySource'      => $summarySource,

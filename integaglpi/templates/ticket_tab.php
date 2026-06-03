@@ -1501,15 +1501,21 @@ if ($isExternalConfigured && $runtime !== null && !$isClosed) {
                      data-csrf="<?= $this->escape($replyCsrfToken); ?>">
                     <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap mb-2">
                         <strong><i class="ti ti-bulb me-1"></i><?= $this->escape(__('Ajuda Inteligente', 'glpiintegaglpi')); ?></strong>
-                        <div class="d-flex gap-2">
-                            <button type="button" class="btn btn-sm btn-primary js-smart-help-run">
-                                <?= $this->escape(__('Ajuda Inteligente', 'glpiintegaglpi')); ?>
+                        <div class="d-flex gap-2 flex-wrap">
+                            <button type="button" class="btn btn-sm btn-primary js-smart-help-summarize">
+                                <i class="ti ti-list-details me-1"></i><?= $this->escape(__('Resumo do chamado', 'glpiintegaglpi')); ?>
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-primary js-smart-help-local-search" disabled>
+                                <i class="ti ti-search me-1"></i><?= $this->escape(__('Busca local', 'glpiintegaglpi')); ?>
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-warning js-smart-help-external" disabled>
+                                <i class="ti ti-cloud-search me-1"></i><?= $this->escape(__('Pedir ajuda externa (nuvem)', 'glpiintegaglpi')); ?>
                             </button>
                             <span class="badge bg-secondary js-smart-help-status"><?= $this->escape(__('pronto', 'glpiintegaglpi')); ?></span>
                         </div>
                     </div>
                     <div class="text-muted small mb-2">
-                        <?= $this->escape(__('Busca primeiro na Base de Conhecimento local. A pesquisa externa (nuvem) só ocorre com seu clique e o contexto é sanitizado antes de sair.', 'glpiintegaglpi')); ?>
+                        <?= $this->escape(__('Processo guiado: gere o resumo, execute a busca local e só depois peça ajuda externa se necessário. Nada é enviado ao cliente nem altera o chamado automaticamente.', 'glpiintegaglpi')); ?>
                     </div>
 
                     <div class="mb-2">
@@ -1542,13 +1548,11 @@ if ($isExternalConfigured && $runtime !== null && !$isClosed) {
                     </div>
 
                     <?php /* cloud offer / states */ ?>
+                    <div class="mt-2 js-smart-help-local-suggestion"></div>
                     <div class="mt-2 js-smart-help-cloud"></div>
                     <div class="mt-2 small js-smart-help-message text-muted"></div>
 
                     <div class="d-flex gap-2 mt-2 flex-wrap">
-                        <button type="button" class="btn btn-sm btn-outline-warning d-none js-smart-help-external">
-                            <i class="ti ti-cloud-search me-1"></i><?= $this->escape(__('Pedir ajuda externa (nuvem)', 'glpiintegaglpi')); ?>
-                        </button>
                         <button type="button" class="btn btn-sm btn-outline-success js-smart-help-suggest-kb">
                             <i class="ti ti-file-plus me-1"></i><?= $this->escape(__('Virar artigo KB', 'glpiintegaglpi')); ?>
                         </button>

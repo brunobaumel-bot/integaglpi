@@ -162,6 +162,23 @@ Fluxo em duas etapas: `prepare_external_context` (preview sanitizado, sem cloud)
 
 ---
 
+## V8 — Ajuda Inteligente guiada no ticket
+
+Fluxo manual sequencial: `Resumo do chamado` → `Busca local` → `Pedir ajuda externa (nuvem)`.
+Nenhuma etapa executa automaticamente no carregamento da aba.
+
+| ID | Smoke | Resultado esperado |
+|----|-------|--------------------|
+| S-V8-SH-GUIDED-01 | Abrir aba WhatsApp do chamado | Painel mostra os três passos; `Busca local` e `Pedir ajuda externa (nuvem)` iniciam bloqueados |
+| S-V8-SH-GUIDED-02 | Clicar `Resumo do chamado` | POST `summarize_ticket`; preenche resumo técnico sanitizado; não chama cloud; `Busca local` é liberada |
+| S-V8-SH-GUIDED-03 | Clicar `Busca local` após resumo | POST `local_search` com o resumo técnico atual; exibe KB local/checklist/perguntas ou sugestão IA local marcada como não verificada |
+| S-V8-SH-GUIDED-04 | Antes da busca local | `Pedir ajuda externa (nuvem)` permanece bloqueado e não executa preview/cloud |
+| S-V8-SH-GUIDED-05 | Após busca local com oferta de cloud | `Pedir ajuda externa (nuvem)` libera apenas o preview sanitizado; envio externo ainda exige confirmação humana |
+| S-V8-SH-GUIDED-06 | Editar manualmente o resumo técnico | Busca local e preview externo usam o texto atual do resumo; sem payload bruto/PII em resposta |
+| S-V8-SH-GUIDED-07 | Reabrir a mesma aba no mesmo ciclo | Estado guiado é retomado via `sessionStorage`; nenhuma etapa é executada automaticamente |
+
+---
+
 ## V7 M2 Fix10 — Transporte CSRF da Ajuda Inteligente (endpoint dedicado)
 
 A Ajuda Inteligente usa o endpoint dedicado `front/smart.help.php` (espelha `copilot.draft.php`).

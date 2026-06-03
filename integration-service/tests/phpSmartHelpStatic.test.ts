@@ -52,8 +52,9 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(svc).toContain('defaultQuestions');
     expect(svc).toMatch(/'degraded'/);
 
-    // The dedicated endpoint wires smart_help to the local-first method (not the raw Node call).
-    expect(front).toContain('localFirstAssist($ticketId, $summary, $wantAiSummary)');
+    // The dedicated endpoint wires guided actions to the local-first method (not the raw Node call).
+    expect(front).toContain("if ($action === 'smart_help' || $action === 'summarize_ticket')");
+    expect(front).toContain("if ($action === 'local_search')");
   });
 
   it('external research never claims success / candidate without a usable answer', async () => {
@@ -82,15 +83,19 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // Panel + RBAC gate.
     expect(tab).toContain('integaglpi-smart-help');
     expect(tab).toContain('SmartHelpService::canViewPanel()');
-    expect(tab).toContain('js-smart-help-run');
+    expect(tab).toContain('js-smart-help-summarize');
+    expect(tab).toContain('js-smart-help-local-search');
     expect(tab).toContain('js-smart-help-external');
     expect(tab).toContain('js-smart-help-suggest-kb');
     expect(tab).toContain('js-smart-help-technical-summary');
+    expect(tab).toContain('Resumo do chamado');
+    expect(tab).toContain('Busca local');
+    expect(tab).toContain('Pedir ajuda externa (nuvem)');
     expect(tab).toContain('Resumo técnico sem dados pessoais');
     // (js-smart-help-feedback buttons are rendered per-article by the JS.)
     // Read-only disclaimer + consent text.
     expect(tab).toContain('nada é enviado ao cliente nem altera o chamado');
-    expect(tab).toContain('contexto é sanitizado antes de sair');
+    expect(tab).toContain('Processo guiado: gere o resumo, execute a busca local');
     // Assets inlined only when the panel is visible.
     expect(tab).toContain('ticket_ai_panel.js');
     expect(tab).toContain('ticket_ai_panel.css');
@@ -106,8 +111,9 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(front).toContain("(string) (\$_GET['csrf_token'] ?? '') === '1'");
     expect(front).toContain('Plugin::isCsrfValid($_POST)');
     expect(front).toContain('SmartHelpService::canViewPanel()');
-    expect(front).toContain("\$allowedActions = ['smart_help', 'kb_feedback', 'suggest_kb', 'prepare_external_context', 'smart_external']");
-    expect(front).toContain('localFirstAssist($ticketId, $summary, $wantAiSummary)');
+    expect(front).toContain("\$allowedActions = ['smart_help', 'summarize_ticket', 'local_search', 'kb_feedback', 'suggest_kb', 'prepare_external_context', 'smart_external']");
+    expect(front).toContain("if ($action === 'smart_help' || $action === 'summarize_ticket')");
+    expect(front).toContain("if ($action === 'local_search')");
     expect(front).not.toMatch(/->update\(|->add\(|ITILFollowup|TicketTask|sendOutbound|sendWhatsApp/i);
   });
 
@@ -123,6 +129,8 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(front).toContain("'missing_context'");
     expect(front).toContain("'permission_denied'");
     expect(front).toContain("'configuration_pending'");
+    expect(front).toContain("$action === 'summarize_ticket'");
+    expect(front).toContain("if ($action === 'local_search')");
     expect(front).toContain("if ($action === 'kb_feedback')");
     expect(front).toContain("if ($action === 'smart_external'");
     expect(front).toContain("if ($action === 'suggest_kb')");
@@ -190,8 +198,10 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(front).toContain('SmartHelpService::canViewPanel()');
     // Human consent still required even after permission check.
     expect(front).toContain("(\$_POST['consent'] ?? '') === '1'");
-    // Local-only actions (smart_help, kb_feedback, suggest_kb) do NOT require canUpdate().
-    expect(front).toContain("if ($action === 'smart_help')");
+    // Local-only actions (smart_help/summarize_ticket/local_search, kb_feedback, suggest_kb) do NOT require canUpdate().
+    expect(front).toContain("if ($action === 'smart_help' || $action === 'summarize_ticket')");
+    expect(front).toContain("$action === 'summarize_ticket'");
+    expect(front).toContain("if ($action === 'local_search')");
     expect(front).toContain("if ($action === 'kb_feedback')");
     expect(front).toContain("if ($action === 'suggest_kb')");
   });
@@ -204,10 +214,10 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
 
     // ── PHP: prepare step exists, builds context server-side, no consent (no send) ──
     expect(front).toContain("if (\$action === 'prepare_external_context')");
-    expect(front).toContain('prepareExternalContext($ticketId, $summary)');
+    expect(front).toContain('prepareExternalContext($ticketId, $externalSummary)');
     // Send step still requires explicit consent.
     expect(front).toContain("\$consent = (\$_POST['consent'] ?? '') === '1'");
-    expect(front).toContain('externalResearch($ticketId, $summary, $consent)');
+    expect(front).toContain('externalResearch($ticketId, $externalSummary, $consent)');
 
     // ── PHP service: preview path is the dedicated preview endpoint ──
     expect(svc).toContain("/internal/glpi/ai/external-research/preview");
@@ -228,7 +238,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // ── JS: step 1 calls prepare; step 2 (confirmed) calls smart_external with consent ──
     expect(js).toContain("post(panel, 'prepare_external_context'");
     expect(js).toContain('function handleExternalSend');
-    expect(js).toContain("post(panel, 'smart_external', { consent: '1' }");
+    expect(js).toContain("post(panel, 'smart_external', { consent: '1', technical_summary: currentSummary(panel) }");
     expect(js).toContain('js-smart-help-external-send');
     // Clear blocked / ready messaging — never a silent failure.
     expect(js).toContain('Contexto sanitizado pronto para envio');
@@ -236,17 +246,18 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).toContain('Tipos detectados/removidos:');
   });
 
-  it("the smart help JS never auto-runs SmartHelp or cloud (manual click only)", async () => {
+  it("the smart help JS never auto-runs guided SmartHelp or cloud (manual click only)", async () => {
     const js = await read('integaglpi/js/ticket_ai_panel.js');
-    // Page load only marks the panel ready. It must not POST smart_help automatically.
-    expect(js).not.toContain('runSmartHelp(p)');
+    // Page load only marks the panel ready. It must not POST guided actions automatically.
     expect(js).toContain("p.dataset.smartHelpJsReady = '1'");
-    expect(js).toContain("post(panel, 'smart_help', extra, { refreshCsrfBeforePost: !!userInitiated })");
+    expect(js).toContain("post(panel, 'summarize_ticket', { ai_summary: '1' }");
+    expect(js).toContain("post(panel, 'local_search', { technical_summary: summary }");
     expect(js).toContain('document.readyState !== \'loading\'');
     expect(js).toContain('event.preventDefault();');
-    expect(js).toContain("runSmartHelp(panel, true);  // userInitiated = true");
-    expect(js).toContain('Analisando localmente...');
-    expect(js).toContain('runBtn.disabled = true');
+    expect(js).toContain('handleSummarize(panel)');
+    expect(js).toContain('handleLocalSearch(panel)');
+    expect(js).toContain('Gerando resumo com IA local...');
+    expect(js).toContain('setButtonLoading(runBtn');
     expect(js).toContain('Falha HTTP ');
     expect(js).toContain('Revise permissões, schema 044 e configuração local.');
     expect(js).toContain('PII Guard');
@@ -259,12 +270,37 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).not.toContain("fb.parentNode.innerHTML = '<span class=\"text-muted small\">obrigado</span>'");
     // External (cloud) only via the explicit button + confirm dialog.
     expect(js).toContain('window.confirm');
-    expect(js).toContain("post(panel, 'smart_external', { consent: '1' }");
-    // DOMContentLoaded auto-runs neither smart_help nor smart_external.
+    expect(js).toContain("post(panel, 'smart_external', { consent: '1', technical_summary: currentSummary(panel) }");
+    // DOMContentLoaded auto-runs neither guided actions nor smart_external.
     const onLoad = js.slice(js.indexOf('DOMContentLoaded'));
     expect(onLoad).not.toContain("post(panel, 'smart_help'");
-    expect(onLoad).not.toContain('runSmartHelp(');
+    expect(onLoad).not.toContain("post(panel, 'summarize_ticket'");
+    expect(onLoad).not.toContain("post(panel, 'local_search'");
+    expect(onLoad).not.toContain('handleSummarize(');
+    expect(onLoad).not.toContain('handleLocalSearch(');
     expect(onLoad).not.toContain('smart_external');
+  });
+
+  it('smart help guided workflow uses session state and gates cloud until local search', async () => {
+    const js = await read('integaglpi/js/ticket_ai_panel.js');
+    const front = await read('integaglpi/front/smart.help.php');
+    const svc = await read('integaglpi/src/Service/SmartHelpService.php');
+
+    expect(js).toContain('function flowKey(panel)');
+    expect(js).toContain('sessionStorage.setItem(flowKey(panel)');
+    expect(js).toContain("state.step === 'local_searched'");
+    expect(js).toContain("externalBtn.dataset.cloudOffer === '1'");
+    expect(js).toContain('externalBtn.disabled = !(localSearched && cloudOffered)');
+    expect(js).toContain("saveFlow(panel, { step: 'summarized' })");
+    expect(js).toContain("saveFlow(panel, { step: 'local_searched' })");
+    expect(js).toContain("post(panel, 'prepare_external_context', { technical_summary: currentSummary(panel) }");
+    expect(js).toContain("post(panel, 'smart_external', { consent: '1', technical_summary: currentSummary(panel) }");
+
+    expect(front).toContain("if ($action === 'local_search')");
+    expect(front).toContain('$searchSummary = $currentSummary !== \'\'');
+    expect(front).toContain('workflow_step');
+    expect(svc).toContain("'source_label' => 'Sugestão IA local'");
+    expect(svc).toContain("'unverified' => true");
   });
 
   it('smart help JS post() uses AbortController timeout so the run button never stays disabled', async () => {
@@ -284,19 +320,18 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).toContain("resp.error === 'timeout'");
   });
 
-  it('smart help JS run button is only disabled on user-initiated click', async () => {
+  it('smart help JS guided buttons are only disabled on user-initiated click', async () => {
     const js = await read('integaglpi/js/ticket_ai_panel.js');
 
-    // runSmartHelp accepts userInitiated parameter.
-    expect(js).toContain('runSmartHelp(panel, userInitiated)');
-    // Button is disabled only when userInitiated is true.
-    expect(js).toContain('if (runBtn && userInitiated)');
-    // Button is restored only when userInitiated is true.
-    expect(js).toMatch(/finally[^}]*userInitiated[^}]*runBtn\.disabled\s*=\s*false/s);
+    expect(js).toContain('function setButtonLoading');
+    expect(js).toContain('function handleSummarize(panel)');
+    expect(js).toContain('function handleLocalSearch(panel)');
+    expect(js).toContain("var runBtn = panel.querySelector('.js-smart-help-summarize')");
+    expect(js).toContain("var searchBtn = panel.querySelector('.js-smart-help-local-search')");
+    expect(js).toContain('setButtonLoading(runBtn');
+    expect(js).toContain('setButtonLoading(searchBtn');
     // There is no page-load auto-run anymore.
     expect(js).not.toContain('runSmartHelp(p)');
-    // User click calls runSmartHelp with userInitiated = true.
-    expect(js).toContain('runSmartHelp(panel, true);  // userInitiated = true');
     // Click handler emits a console.warn for diagnostics.
     expect(js).toContain("console.warn('[SmartHelp]");
     expect(js).toContain('action_url=');
@@ -362,7 +397,8 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).toContain('return refreshCsrfToken(panel).then(function (refreshed) {');
     expect(js).toContain("error: 'csrf_preflight_failed'");
     expect(js).toContain("error_type: 'csrf_failed'");
-    expect(js).toContain("post(panel, 'smart_help', extra, { refreshCsrfBeforePost: !!userInitiated })");
+    expect(js).toContain("post(panel, 'summarize_ticket', { ai_summary: '1' }");
+    expect(js).toContain("post(panel, 'local_search', { technical_summary: summary }");
     // CSRF failure detector remains for non-SmartHelp helpers.
     expect(js).toContain('function isCsrfFailure(body)');
     // Retry exactly once via postOnce where the generic fallback path is still used.
@@ -420,17 +456,18 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     const front = await read('integaglpi/front/smart.help.php');
     const svc = await read('integaglpi/src/Service/SmartHelpService.php');
 
-    // ── JS: manual click sends ai_summary=1; page load does not call SmartHelp.
-    expect(js).toContain("var extra = userInitiated ? { ai_summary: '1' } : undefined;");
-    expect(js).toContain("post(panel, 'smart_help', extra, { refreshCsrfBeforePost: !!userInitiated })");
+    // ── JS: manual summary click sends ai_summary=1; page load does not call SmartHelp.
+    expect(js).toContain("post(panel, 'summarize_ticket', { ai_summary: '1' }");
+    expect(js).toContain('handleSummarize(panel)');
     expect(js).not.toContain('runSmartHelp(p)');
     // Source is surfaced to the technician.
     expect(js).toContain('r.summarySource || r.summary_source');
     expect(js).toContain("'resumo IA local'");
 
-    // ── PHP endpoint: reads ai_summary and forwards it ───────────────────────
-    expect(front).toContain("(\$_POST['ai_summary'] ?? '') === '1'");
-    expect(front).toContain('localFirstAssist($ticketId, $summary, $wantAiSummary)');
+    // ── PHP endpoint: summarize_ticket forces local summary and local_search uses current summary.
+    expect(front).toContain("$action === 'summarize_ticket'");
+    expect(front).toContain("if ($action === 'local_search')");
+    expect(front).toContain("technical_summary");
 
     // ── PHP service: AI path only when $wantAiSummary, sanitized, fallback ────
     expect(svc).toContain('bool $wantAiSummary = false');
@@ -483,8 +520,10 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // ── Template side ────────────────────────────────────────────────────────
     // Panel container class used by JS delegation.
     expect(tab).toContain('integaglpi-smart-help');
-    // Run button class used by JS selector.
-    expect(tab).toContain('js-smart-help-run');
+    // Guided button classes used by JS selectors.
+    expect(tab).toContain('js-smart-help-summarize');
+    expect(tab).toContain('js-smart-help-local-search');
+    expect(tab).toContain('js-smart-help-external');
     // action URL attribute points to the dedicated SmartHelp endpoint.
     expect(tab).toContain('data-action-url=');
     expect(tab).toContain("'/front/smart.help.php'");
@@ -492,10 +531,16 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(tab).toContain('data-csrf=');
     // ticket-id attribute set on the panel.
     expect(tab).toContain('data-ticket-id=');
-    // Button is NOT born disabled (no disabled attr on js-smart-help-run in template).
-    const btnMatch = tab.match(/class="[^"]*js-smart-help-run[^"]*"[^>]*>/);
-    expect(btnMatch).not.toBeNull();
-    expect(btnMatch![0]).not.toContain('disabled');
+    // Summary starts enabled; local/cloud are gated.
+    const summarizeBtn = tab.match(/class="[^"]*js-smart-help-summarize[^"]*"[^>]*>/);
+    const localBtn = tab.match(/class="[^"]*js-smart-help-local-search[^"]*"[^>]*>/);
+    const cloudBtn = tab.match(/class="[^"]*js-smart-help-external[^"]*"[^>]*>/);
+    expect(summarizeBtn).not.toBeNull();
+    expect(summarizeBtn![0]).not.toContain('disabled');
+    expect(localBtn).not.toBeNull();
+    expect(localBtn![0]).toContain('disabled');
+    expect(cloudBtn).not.toBeNull();
+    expect(cloudBtn![0]).toContain('disabled');
     // JS is injected inline (not behind a broken <script src> that may 404).
     expect(tab).toContain('file_get_contents');
     expect(tab).toContain('ticket_ai_panel.js');
@@ -503,11 +548,14 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // ── JS side ──────────────────────────────────────────────────────────────
     // Delegation selector matches panel class.
     expect(js).toContain("t.closest('.integaglpi-smart-help')");
-    // Button selector matches template class.
-    expect(js).toContain("t.closest('.js-smart-help-run')");
+    // Button selectors match template classes.
+    expect(js).toContain("t.closest('.js-smart-help-summarize')");
+    expect(js).toContain("t.closest('.js-smart-help-local-search')");
+    expect(js).toContain("t.closest('.js-smart-help-external')");
     // Request sends correct action name.
     expect(js).toContain("params.set('smart_action', action)");
-    expect(js).toContain("post(panel, 'smart_help', extra, { refreshCsrfBeforePost: !!userInitiated })");
+    expect(js).toContain("post(panel, 'summarize_ticket'");
+    expect(js).toContain("post(panel, 'local_search'");
     // Request sends ticket_id and CSRF.
     expect(js).toContain("params.set('ticket_id'");
     expect(js).toContain("params.set('_glpi_csrf_token'");
@@ -515,6 +563,8 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // ── PHP side ─────────────────────────────────────────────────────────────
     // action name accepted by endpoint.
     expect(front).toContain("'smart_help'");
+    expect(front).toContain("'summarize_ticket'");
+    expect(front).toContain("'local_search'");
     // Reads smart_action from POST.
     expect(front).toContain("'smart_action'");
     // Reads ticket_id from POST.

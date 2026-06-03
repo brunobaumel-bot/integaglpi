@@ -173,6 +173,64 @@
     if (el) { el.textContent = text; el.className = 'badge bg-' + (cls || 'secondary') + ' js-smart-help-status'; }
   }
 
+  function flowKey(panel) {
+    return 'integaglpiSmartHelpWorkflow:' + (panel.dataset.ticketId || '0');
+  }
+
+  function loadFlow(panel) {
+    try {
+      return JSON.parse(sessionStorage.getItem(flowKey(panel)) || '{}') || {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function saveFlow(panel, state) {
+    try {
+      sessionStorage.setItem(flowKey(panel), JSON.stringify(state || {}));
+    } catch (e) {
+      // Session state is only a UX hint; failure must not block SmartHelp.
+    }
+  }
+
+  function currentSummary(panel) {
+    var el = panel.querySelector('.js-smart-help-technical-summary');
+    return el ? String(el.value || '').trim() : '';
+  }
+
+  function setButtonLoading(btn, loadingText, loading) {
+    if (!btn) { return; }
+    if (loading) {
+      btn.dataset.originalText = btn.dataset.originalText || (btn.textContent || '');
+      btn.disabled = true;
+      btn.textContent = loadingText;
+      return;
+    }
+    btn.disabled = false;
+    btn.textContent = btn.dataset.originalText || btn.textContent || '';
+  }
+
+  function updateGuidedState(panel) {
+    var state = loadFlow(panel);
+    var summary = currentSummary(panel);
+    var localBtn = panel.querySelector('.js-smart-help-local-search');
+    var externalBtn = panel.querySelector('.js-smart-help-external');
+    var hasSummary = summary !== '' || state.step === 'summarized' || state.step === 'local_searched' || state.step === 'cloud_ready';
+    var localSearched = state.step === 'local_searched' || state.step === 'cloud_ready';
+    var cloudOffered = externalBtn && externalBtn.dataset.cloudOffer === '1';
+
+    if (localBtn) {
+      localBtn.disabled = !hasSummary;
+    }
+    if (externalBtn) {
+      externalBtn.classList.remove('d-none');
+      externalBtn.disabled = !(localSearched && cloudOffered);
+      externalBtn.title = externalBtn.disabled
+        ? 'Execute a busca local antes de pedir ajuda externa.'
+        : 'Executar preview sanitizado antes de enviar à nuvem.';
+    }
+  }
+
   function renderResult(panel, result) {
     var articlesEl = panel.querySelector('.js-smart-help-articles');
     var checklistEl = panel.querySelector('.js-smart-help-checklist');
@@ -180,6 +238,7 @@
     var cloudEl = panel.querySelector('.js-smart-help-cloud');
     var msgEl = panel.querySelector('.js-smart-help-message');
     var externalBtn = panel.querySelector('.js-smart-help-external');
+    var localSuggestionEl = panel.querySelector('.js-smart-help-local-suggestion');
     var technicalSummaryEl = panel.querySelector('.js-smart-help-technical-summary');
     var schemaStatusEl = panel.querySelector('.js-smart-help-schema-status');
     var schema = result.schema044Status || result.schema_044_status || {};
@@ -234,16 +293,28 @@
       }).join('');
     }
 
+    var localSuggestion = result.localSuggestion || result.local_suggestion || null;
+    if (localSuggestionEl) {
+      if (localSuggestion && localSuggestion.unverified) {
+        localSuggestionEl.innerHTML = '<div class="alert alert-warning py-2 mb-0 small">'
+          + '<strong>' + esc(localSuggestion.title || 'Sugestão IA local — valide antes de aplicar') + '</strong><br>'
+          + esc(localSuggestion.content || 'Valide a sugestão antes de responder ao cliente.')
+          + '</div>';
+      } else {
+        localSuggestionEl.innerHTML = '';
+      }
+    }
+
     var offer = result.cloudOffer || result.cloud_offer || { available: false };
-    if (offer.available && externalBtn) {
+    if (externalBtn) {
+      externalBtn.dataset.cloudOffer = offer.available ? '1' : '0';
       externalBtn.classList.remove('d-none');
+    }
+    if (offer.available) {
       if (cloudEl) {
         cloudEl.innerHTML = '<span class="text-muted">' + esc(offer.reason || '') + '</span>';
       }
     } else {
-      if (externalBtn) {
-        externalBtn.classList.add('d-none');
-      }
       if (cloudEl) {
         cloudEl.innerHTML = '';
       }
@@ -251,28 +322,19 @@
     if (msgEl) {
       msgEl.textContent = result.message || '';
     }
+    updateGuidedState(panel);
   }
 
-  // userInitiated = true -> clique manual: desabilita botão, busca CSRF fresco,
-  // envia POST e restaura no finally.
-  // userInitiated = false -> apenas renderiza/arma o painel; não dispara SmartHelp.
-  function runSmartHelp(panel, userInitiated) {
-    var runBtn = panel.querySelector('.js-smart-help-run');
+  function handleSummarize(panel) {
+    var runBtn = panel.querySelector('.js-smart-help-summarize');
     var msgEl = panel.querySelector('.js-smart-help-message');
-    if (runBtn && userInitiated) {
-      runBtn.disabled = true;
-      runBtn.dataset.originalText = runBtn.dataset.originalText || (runBtn.textContent || '');
-      runBtn.textContent = 'Analisando localmente...';
-    }
+    setButtonLoading(runBtn, 'Gerando resumo...', true);
     if (msgEl) {
-      msgEl.textContent = 'Analisando localmente...';
+      msgEl.textContent = 'Gerando resumo com IA local...';
       msgEl.className = 'mt-2 small js-smart-help-message text-muted';
     }
-    setStatus(panel, 'analisando', 'info');
-    // ai_summary=1 ONLY on manual click → backend calls local AI for the summary.
-    // Auto-run (userInitiated falsy) omits it → no GPU load on tab load.
-    var extra = userInitiated ? { ai_summary: '1' } : undefined;
-    post(panel, 'smart_help', extra, { refreshCsrfBeforePost: !!userInitiated }).then(function (resp) {
+    setStatus(panel, 'resumo em andamento', 'info');
+    post(panel, 'summarize_ticket', { ai_summary: '1' }, { refreshCsrfBeforePost: true }).then(function (resp) {
       var r = resp && resp.result ? resp.result : null;
       if (r) {
         renderResult(panel, r);
@@ -280,15 +342,16 @@
         var summaryErrorType = r.summaryErrorType || r.summary_error_type || '';
         if (summarySource === 'local_ai') {
           setStatus(panel, 'resumo IA local', 'success');
-        } else if (userInitiated && summaryErrorType) {
+        } else if (summaryErrorType) {
           setStatus(panel, 'resumo local (IA: ' + summaryErrorType + ')', 'warning');
         } else if (r.degraded) {
           setStatus(panel, 'modo local (IA indisponível)', 'warning');
         } else {
           setStatus(panel, r.localResolved ? 'KB local encontrada' : 'sem KB local', r.localResolved ? 'success' : 'info');
         }
+        saveFlow(panel, { step: 'summarized' });
+        updateGuidedState(panel);
       } else {
-        // Local-first never returns a raw error; this is a transport-only fallback.
         setStatus(panel, 'erro', 'danger');
         var errorMessage = (resp && resp.message) ? resp.message : 'Não foi possível consultar a Ajuda Inteligente. Revise permissões, schema 044 e configuração local.';
         if (resp && resp.error_type) {
@@ -300,10 +363,39 @@
       setStatus(panel, 'erro', 'danger');
       renderResult(panel, { message: (error && error.message) ? error.message : 'Não foi possível consultar a Ajuda Inteligente. Revise permissões, schema 044 e configuração local.' });
     }).finally(function () {
-      if (runBtn && userInitiated) {
-        runBtn.disabled = false;
-        runBtn.textContent = runBtn.dataset.originalText || 'Ajuda Inteligente';
+      setButtonLoading(runBtn, '', false);
+      updateGuidedState(panel);
+    });
+  }
+
+  function handleLocalSearch(panel) {
+    var searchBtn = panel.querySelector('.js-smart-help-local-search');
+    var summary = currentSummary(panel);
+    if (summary === '') {
+      var msgEl = panel.querySelector('.js-smart-help-message');
+      if (msgEl) { msgEl.textContent = 'Gere ou preencha o resumo antes da busca local.'; }
+      setStatus(panel, 'resumo necessário', 'warning');
+      updateGuidedState(panel);
+      return;
+    }
+    setButtonLoading(searchBtn, 'Buscando localmente...', true);
+    setStatus(panel, 'busca local', 'info');
+    post(panel, 'local_search', { technical_summary: summary }, { refreshCsrfBeforePost: true }).then(function (resp) {
+      var r = resp && resp.result ? resp.result : null;
+      if (r) {
+        renderResult(panel, r);
+        saveFlow(panel, { step: 'local_searched' });
+        setStatus(panel, r.localResolved ? 'KB local encontrada' : 'sugestão local', r.localResolved ? 'success' : 'warning');
+      } else {
+        setStatus(panel, 'erro', 'danger');
+        renderResult(panel, { message: (resp && resp.message) ? resp.message : 'Não foi possível executar a busca local.' });
       }
+    }).catch(function (error) {
+      setStatus(panel, 'erro', 'danger');
+      renderResult(panel, { message: (error && error.message) ? error.message : 'Não foi possível executar a busca local.' });
+    }).finally(function () {
+      setButtonLoading(searchBtn, '', false);
+      updateGuidedState(panel);
     });
   }
 
@@ -315,7 +407,7 @@
     setStatus(panel, 'sanitizando contexto', 'info');
     var cloudEl = panel.querySelector('.js-smart-help-cloud');
     var msgEl = panel.querySelector('.js-smart-help-message');
-    post(panel, 'prepare_external_context', {}, { refreshCsrfBeforePost: true }).then(function (resp) {
+    post(panel, 'prepare_external_context', { technical_summary: currentSummary(panel) }, { refreshCsrfBeforePost: true }).then(function (resp) {
       if (resp && resp.ok === false && resp.error && !resp.result) {
         if (msgEl) { msgEl.textContent = resp.message || 'Pré-visualização indisponível.'; }
         setStatus(panel, resp.error === 'timeout' ? 'tempo esgotado' : 'erro de rede', 'danger');
@@ -363,7 +455,7 @@
     setStatus(panel, 'pesquisando externamente', 'info');
     var cloudEl = panel.querySelector('.js-smart-help-cloud');
     var msgEl = panel.querySelector('.js-smart-help-message');
-    post(panel, 'smart_external', { consent: '1' }, { refreshCsrfBeforePost: true }).then(function (resp) {
+    post(panel, 'smart_external', { consent: '1', technical_summary: currentSummary(panel) }, { refreshCsrfBeforePost: true }).then(function (resp) {
       if (resp && resp.ok === false && resp.error && !resp.result) {
         if (msgEl) { msgEl.textContent = resp.message || 'Pesquisa externa indisponível.'; }
         setStatus(panel, resp.error === 'timeout' ? 'tempo esgotado' : 'erro de rede', 'danger');
@@ -402,10 +494,15 @@
     var panel = t.closest('.integaglpi-smart-help');
     if (!panel) { return; }
 
-    if (t.closest('.js-smart-help-run')) {
+    if (t.closest('.js-smart-help-summarize')) {
       event.preventDefault();
-      console.warn('[SmartHelp] clique manual — ticket_id=' + (panel.dataset.ticketId || '?') + ' action_url=' + (panel.dataset.actionUrl ? 'ok' : 'AUSENTE'));
-      runSmartHelp(panel, true);  // userInitiated = true → desabilita botão
+      console.warn('[SmartHelp] resumo manual — ticket_id=' + (panel.dataset.ticketId || '?') + ' action_url=' + (panel.dataset.actionUrl ? 'ok' : 'AUSENTE'));
+      handleSummarize(panel);
+      return;
+    }
+    if (t.closest('.js-smart-help-local-search')) {
+      event.preventDefault();
+      handleLocalSearch(panel);
       return;
     }
     if (t.closest('.js-smart-help-external-send')) { event.preventDefault(); handleExternalSend(panel); return; }
@@ -470,12 +567,23 @@
 
   // Do not auto-run SmartHelp on render. GLPI can reject POSTs before this PHP
   // endpoint runs when a stale token is reused, so SmartHelp is manual-only:
-  // click -> GET csrf_token=1 -> POST smart_help.
+  // click -> GET csrf_token=1 -> POST summarize_ticket/local_search.
   function initSmartHelpPanels() {
     var panels = document.querySelectorAll('.integaglpi-smart-help');
     Array.prototype.forEach.call(panels, function (p) {
       // Mark panel so smoke tests / browser DevTools can confirm JS is active.
       p.dataset.smartHelpJsReady = '1';
+      updateGuidedState(p);
+      var summaryEl = p.querySelector('.js-smart-help-technical-summary');
+      if (summaryEl) {
+        summaryEl.addEventListener('input', function () {
+          var state = loadFlow(p);
+          if (currentSummary(p) !== '' && !state.step) {
+            saveFlow(p, { step: 'summarized' });
+          }
+          updateGuidedState(p);
+        });
+      }
     });
   }
 
