@@ -30,6 +30,10 @@ export interface ContactProfileTicketPayload {
 
 export type ContactProfileCollectionStep =
   | 'confirming_existing_profile'
+  | 'awaiting_company'
+  | 'awaiting_name'
+  | 'awaiting_equipment_tag'
+  | 'awaiting_problem_summary'
   | 'asking_company'
   | 'asking_name'
   | 'asking_email'
@@ -111,7 +115,7 @@ export class ContactProfileService {
       promptMode: 'hybrid',
       requireCompany: toBool('contact_profile_require_company', true),
       requireName: toBool('contact_profile_require_name', true),
-      requireEmail: toBool('contact_profile_require_email', true),  // absent → ask email (backward compat)
+      requireEmail: false,
       requireEquipment: toBool('contact_profile_require_equipment', false),
       requireSummary: toBool('contact_profile_require_summary', true),
       confirmationEnabled: toBool('contact_profile_confirmation_enabled', true),
@@ -296,7 +300,7 @@ export class ContactProfileService {
 
   public startNewCollectionState(queueLabel?: string | null): ContactProfileCollectionState {
     return {
-      step: 'asking_company',
+      step: 'awaiting_company',
       queue_label: queueLabel ?? null,
       equipment_tag_unknown: false,
     };
@@ -326,7 +330,7 @@ export class ContactProfileService {
     const step = this.asCollectionStep(raw.step);
 
     return {
-      step: step ?? 'asking_company',
+      step: step ?? 'awaiting_company',
       queue_label: this.asNullableString(raw.queue_label),
       company_name_raw: this.asNullableString(raw.company_name_raw),
       requester_name: this.asNullableString(raw.requester_name),
@@ -347,11 +351,11 @@ export class ContactProfileService {
     // Falls back to hardcoded strings for code paths that bypass getInitialPrompt().
     const cfg = this.configCache;
 
-    if (state.step === 'asking_company') {
+    if (state.step === 'awaiting_company' || state.step === 'asking_company') {
       return cfg?.promptCompany ?? 'Informe a empresa ou unidade.';
     }
 
-    if (state.step === 'asking_name') {
+    if (state.step === 'awaiting_name' || state.step === 'asking_name') {
       return cfg?.promptName ?? 'Informe seu nome completo.';
     }
 
@@ -359,11 +363,11 @@ export class ContactProfileService {
       return cfg?.promptEmail ?? 'Informe seu e-mail para localizarmos seu cadastro no GLPI. Se preferir, responda "não informar".';
     }
 
-    if (state.step === 'asking_tag') {
+    if (state.step === 'awaiting_equipment_tag' || state.step === 'asking_tag') {
       return cfg?.promptEquipment ?? 'Informe a etiqueta/patrimônio do equipamento com 4 números. Se não souber, use o botão "Não sei".';
     }
 
-    if (state.step === 'asking_reason') {
+    if (state.step === 'awaiting_problem_summary' || state.step === 'asking_reason') {
       return cfg?.promptSummary ?? 'Qual o motivo do seu contato? Resuma em até 200 caracteres.';
     }
 
@@ -433,23 +437,19 @@ export class ContactProfileService {
       };
     }
 
-    if (state.step === 'asking_company') {
+    if (state.step === 'awaiting_company' || state.step === 'asking_company') {
       const nextState: ContactProfileCollectionState = {
         ...state,
-        step: 'asking_name',
+        step: 'awaiting_name',
         company_name_raw: this.truncate(text, 120),
       };
       return { state: nextState, reply: this.getCollectionPrompt(nextState), completed: false, profile: null };
     }
 
-    if (state.step === 'asking_name') {
-      // Skip email step when disabled in config (requireEmail defaults to true for
-      // backward-compatibility when configCache has not been warmed up).
-      const requireEmail = this.configCache?.requireEmail ?? true;
-      const nextStep: ContactProfileCollectionStep = requireEmail ? 'asking_email' : 'asking_tag';
+    if (state.step === 'awaiting_name' || state.step === 'asking_name') {
       const nextState: ContactProfileCollectionState = {
         ...state,
-        step: nextStep,
+        step: 'awaiting_equipment_tag',
         requester_name: this.truncate(text, 120),
       };
       return { state: nextState, reply: this.getCollectionPrompt(nextState), completed: false, profile: null };
@@ -460,7 +460,7 @@ export class ContactProfileService {
       const skipped = EMAIL_SKIP_RE.test(text);
       const nextState: ContactProfileCollectionState = {
         ...state,
-        step: 'asking_tag',
+        step: 'awaiting_equipment_tag',
         email_address: normalizedEmail,
         email_status: normalizedEmail ? 'valid' : skipped ? 'not_provided' : 'invalid',
       };
@@ -475,11 +475,11 @@ export class ContactProfileService {
       };
     }
 
-    if (state.step === 'asking_tag') {
+    if (state.step === 'awaiting_equipment_tag' || state.step === 'asking_tag') {
       if (EQUIPMENT_UNKNOWN_RE.test(text) || text.toUpperCase() === 'TAG_UNKNOWN') {
         const nextState: ContactProfileCollectionState = {
           ...state,
-          step: 'asking_reason',
+          step: 'awaiting_problem_summary',
           last_equipment_tag: null,
           equipment_tag_unknown: true,
         };
@@ -498,14 +498,14 @@ export class ContactProfileService {
 
       const nextState: ContactProfileCollectionState = {
         ...state,
-        step: 'asking_reason',
+        step: 'awaiting_problem_summary',
         last_equipment_tag: text,
         equipment_tag_unknown: false,
       };
       return { state: nextState, reply: this.getCollectionPrompt(nextState), completed: false, profile: null };
     }
 
-    if (state.step === 'asking_reason') {
+    if (state.step === 'awaiting_problem_summary' || state.step === 'asking_reason') {
       const reason = this.truncate(text, MAX_REASON_LENGTH);
       const completeState: ContactProfileCollectionState = {
         ...state,
@@ -557,21 +557,22 @@ export class ContactProfileService {
     }
 
     const profile = input.profile;
-    const queueLabel = this.cleanText(input.queueLabel || 'WhatsApp');
+    const queueLabel = this.cleanText(input.queueLabel || 'Suporte');
     const company = this.cleanText(profile.company_name_raw);
     const requesterName = this.cleanText(profile.requester_name);
     const summary = this.cleanText(profile.last_problem_summary);
-    const companyOrPhone = company || requesterName || input.phoneE164;
+    const companyOrPhone = company || input.phoneE164;
     const shortReason = this.truncate(summary || 'Atendimento', MAX_TITLE_REASON_LENGTH);
-    const titleParts = [companyOrPhone];
-    if (requesterName && requesterName !== companyOrPhone) {
-      titleParts.push(requesterName);
-    }
-    titleParts.push(shortReason);
-    const title = this.truncate(`[WA][${queueLabel}] ${titleParts.join(' — ')}`, MAX_TITLE_LENGTH);
     const equipmentLabel = profile.equipment_tag_unknown
       ? 'nao informada'
       : (this.cleanText(profile.last_equipment_tag) || '(n/d)');
+    const equipmentTitle = profile.equipment_tag_unknown
+      ? 'sem etiqueta'
+      : (this.cleanText(profile.last_equipment_tag) || 'sem etiqueta');
+    const title = this.truncate(
+      `[WA][${queueLabel}] ${[companyOrPhone, equipmentTitle, requesterName || 'sem nome', shortReason].join(' - ')}`,
+      MAX_TITLE_LENGTH,
+    );
     const contextLines = [
       'Atendimento iniciado via WhatsApp',
       '',
@@ -583,6 +584,7 @@ export class ContactProfileService {
       `Motivo informado: ${summary || '(n/d)'}`,
       `Fila escolhida: ${queueLabel}`,
       `Modo de entidade: ${this.cleanText(input.entityMode || 'defer_until_known')}`,
+      `Origem da entidade: ${input.awaitedManualEntity ? 'selecao_manual' : 'memoria_ativa_ou_fluxo_automatico'}`,
     ];
 
     if (input.awaitedManualEntity) {
@@ -721,7 +723,7 @@ export class ContactProfileService {
     queueLabel?: string | null,
   ): ContactProfileCollectionState {
     return {
-      step: 'asking_reason',
+      step: 'awaiting_problem_summary',
       queue_label: queueLabel ?? null,
       company_name_raw: profile.company_name_raw,
       requester_name: profile.requester_name,
@@ -754,15 +756,22 @@ export class ContactProfileService {
   }
 
   private asCollectionStep(value: unknown): ContactProfileCollectionStep | null {
-    return value === 'confirming_existing_profile'
-      || value === 'asking_company'
-      || value === 'asking_name'
-      || value === 'asking_email'
-      || value === 'asking_tag'
-      || value === 'asking_reason'
+    if (
+      value === 'confirming_existing_profile'
+      || value === 'awaiting_company'
+      || value === 'awaiting_name'
+      || value === 'awaiting_equipment_tag'
+      || value === 'awaiting_problem_summary'
       || value === 'complete'
-      ? value
-      : null;
+    ) {
+      return value;
+    }
+    if (value === 'asking_company') return 'awaiting_company';
+    if (value === 'asking_name') return 'awaiting_name';
+    if (value === 'asking_email') return 'awaiting_equipment_tag';
+    if (value === 'asking_tag') return 'awaiting_equipment_tag';
+    if (value === 'asking_reason') return 'awaiting_problem_summary';
+    return null;
   }
 
   private normalizeProfile(value: Record<string, unknown>): ContactProfileData {

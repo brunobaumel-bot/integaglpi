@@ -110,6 +110,21 @@ Os itens abaixo são verificações de ausência (confirmam que integrações n�
 
 ---
 
+## V7 M1 — Nova Porta de Entrada WhatsApp
+
+| ID | Smoke | Resultado esperado |
+|----|-------|--------------------|
+| S-V7-M1-01 | Novo contato escolhe fila e informa empresa, nome, etiqueta de 4 dígitos e resumo | Perfil salvo; ticket só abre depois de entidade resolvida |
+| S-V7-M1-02 | Novo contato responde `não sei` na etiqueta | Perfil salvo com `equipment_tag_unknown=true`; fluxo segue para resumo |
+| S-V7-M1-03 | Contato com memória de entidade ativa completa o resumo | Ticket abre na entidade memorizada; sem seleção manual |
+| S-V7-M1-04 | Contato sem memória completa o resumo | Conversa fica `awaiting_entity_selection`; nenhum ticket com entidade nula/0 |
+| S-V7-M1-05 | Título do ticket | Usa formato curto `[WA][Fila] Empresa - etiqueta/sem etiqueta - nome - resumo` |
+| S-V7-M1-06 | Corpo do ticket | Contém empresa, nome, etiqueta, resumo, telefone e origem da entidade |
+| S-V7-M1-07 | Mídia/áudio durante coleta | Recusado com fallback textual; webhook não bloqueia; sem download de mídia |
+| S-V7-M1-08 | IA/cloud/LogMeIn | Nenhum serviço de IA/cloud/LogMeIn é chamado nesse fluxo |
+
+---
+
 ## Worker IA Observadora Online (TESTE/HOMOLOGACAO)
 
 ```bash

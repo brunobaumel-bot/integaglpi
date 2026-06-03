@@ -117,7 +117,7 @@ describe('ContactProfileService', () => {
       },
     });
 
-    expect(payload.title).toBe('[WA][Suporte] ACME — Joao Silva — notebook nao liga');
+    expect(payload.title).toBe('[WA][Suporte] ACME - ETQ-123 - Joao Silva - notebook nao liga');
     expect(payload.content).toContain('Nome informado: Joao Silva');
     expect(payload.content).toContain('Etiqueta/Patrimonio: ETQ-123');
     expect(payload.content).toContain('Motivo informado: notebook nao liga');
@@ -214,14 +214,9 @@ describe('ContactProfileService', () => {
       state: company.state,
       text: 'Bruno Baumel',
     });
-    const email = service.processCollectionResponse({
-      phoneE164: '+5511999999999',
-      state: name.state,
-      text: 'BRUNO@EXAMPLE.COM',
-    });
     const tag = service.processCollectionResponse({
       phoneE164: '+5511999999999',
-      state: email.state,
+      state: name.state,
       text: '2022',
     });
     const reason = service.processCollectionResponse({
@@ -230,15 +225,14 @@ describe('ContactProfileService', () => {
       text: 'Estou com problemas no Outlook.',
     });
 
-    expect(company.state.step).toBe('asking_name');
-    expect(name.state.step).toBe('asking_email');
-    expect(email.state).toMatchObject({ step: 'asking_tag', email_address: 'bruno@example.com', email_status: 'valid' });
-    expect(tag.state.step).toBe('asking_reason');
+    expect(company.state.step).toBe('awaiting_name');
+    expect(name.state.step).toBe('awaiting_equipment_tag');
+    expect(tag.state.step).toBe('awaiting_problem_summary');
     expect(reason.completed).toBe(true);
     expect(reason.profile).toMatchObject({
       company_name_raw: 'Etica Informatica',
       requester_name: 'Bruno Baumel',
-      email_address: 'bruno@example.com',
+      email_address: null,
       last_equipment_tag: '2022',
       equipment_tag_unknown: false,
       last_problem_summary: 'Estou com problemas no Outlook.',
@@ -246,11 +240,11 @@ describe('ContactProfileService', () => {
 
     const leadingZeroTag = service.processCollectionResponse({
       phoneE164: '+5511999999999',
-      state: email.state,
+      state: name.state,
       text: '0640',
     });
     expect(leadingZeroTag.state).toMatchObject({
-      step: 'asking_reason',
+      step: 'awaiting_problem_summary',
       last_equipment_tag: '0640',
       equipment_tag_unknown: false,
     });
@@ -259,7 +253,7 @@ describe('ContactProfileService', () => {
   it('repeats the equipment question for invalid tags and accepts unknown equipment', async () => {
     const service = new ContactProfileService(new FakeSettingsRepository(), new FakeProfileRepository());
     const state = {
-      step: 'asking_tag' as const,
+      step: 'awaiting_equipment_tag' as const,
       company_name_raw: 'Etica',
       requester_name: 'Bruno',
     };
@@ -285,15 +279,15 @@ describe('ContactProfileService', () => {
       text: 'abcd',
     });
 
-    expect(invalidShort.state.step).toBe('asking_tag');
+    expect(invalidShort.state.step).toBe('awaiting_equipment_tag');
     expect(invalidShort.reply).toContain('Etiqueta inválida');
     expect(invalidShort.reply).toContain('4 números');
-    expect(invalidLong.state.step).toBe('asking_tag');
+    expect(invalidLong.state.step).toBe('awaiting_equipment_tag');
     expect(invalidLong.reply).toContain('Etiqueta inválida');
-    expect(invalidLetters.state.step).toBe('asking_tag');
+    expect(invalidLetters.state.step).toBe('awaiting_equipment_tag');
     expect(invalidLetters.reply).toContain('Etiqueta inválida');
     expect(unknown.state).toMatchObject({
-      step: 'asking_reason',
+      step: 'awaiting_problem_summary',
       last_equipment_tag: null,
       equipment_tag_unknown: true,
     });
@@ -321,7 +315,7 @@ describe('ContactProfileService', () => {
     });
 
     expect(yes.state).toMatchObject({
-      step: 'asking_reason',
+      step: 'awaiting_problem_summary',
       company_name_raw: 'Etica',
       requester_name: 'Bruno',
       last_equipment_tag: '2022',
@@ -329,7 +323,7 @@ describe('ContactProfileService', () => {
     expect(yes.completed).toBe(false);
     expect(yes.profile).toBeNull();
     expect(yes.reply).toContain('Qual o motivo do seu contato?');
-    expect(no.state.step).toBe('asking_company');
+    expect(no.state.step).toBe('awaiting_company');
   });
 
   it('does not reuse a remembered reason as the current-cycle reason', async () => {
@@ -349,7 +343,7 @@ describe('ContactProfileService', () => {
     expect(state.reason).toBeNull();
     expect(yes.completed).toBe(false);
     expect(yes.state).toMatchObject({
-      step: 'asking_reason',
+      step: 'awaiting_problem_summary',
       reason: null,
     });
     expect(yes.profile).toBeNull();
@@ -376,7 +370,7 @@ describe('ContactProfileService', () => {
     expect(result.completed).toBe(false);
     expect(result.profile).toBeNull();
     expect(result.state).toMatchObject({
-      step: 'asking_reason',
+      step: 'awaiting_problem_summary',
       company_name_raw: 'Etica',
       requester_name: 'Bruno',
       last_equipment_tag: '2022',

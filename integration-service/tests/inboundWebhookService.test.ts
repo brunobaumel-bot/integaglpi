@@ -258,7 +258,7 @@ class FakeConversationRepository implements ConversationRepository {
       contactId: input.contactId,
       glpiTicketId: input.glpiTicketId,
       queueId: null,
-      profileCollectionState: input.status === 'collecting_contact_profile' ? { step: 'asking_company' } : null,
+      profileCollectionState: input.status === 'collecting_contact_profile' ? { step: 'awaiting_company' } : null,
       status: input.status,
       lastMessageAt: input.lastMessageAt,
       createdAt: new Date(),
@@ -574,7 +574,7 @@ class FakeContactProfileService {
   }
 
   public startNewCollectionState(queueLabel?: string | null): Record<string, unknown> {
-    return { step: 'asking_company', queue_label: queueLabel ?? null };
+    return { step: 'awaiting_company', queue_label: queueLabel ?? null };
   }
 
   public startExistingProfileConfirmationState(
@@ -595,7 +595,7 @@ class FakeContactProfileService {
   public normalizeCollectionState(state: unknown): Record<string, unknown> {
     return typeof state === 'object' && state !== null && !Array.isArray(state)
       ? state as Record<string, unknown>
-      : { step: 'asking_company' };
+      : { step: 'awaiting_company' };
   }
 
   public getCollectionPrompt(state: Record<string, unknown>, profile: ContactProfileData | null = null): string {
@@ -603,15 +603,15 @@ class FakeContactProfileService {
       return `Bom dia, ${profile?.requester_name ?? 'Maria'}.\n\nVoce fala da empresa ${profile?.company_name_raw ?? 'Empresa'} e sua etiqueta e ${profile?.last_equipment_tag ?? 'ABC123'}.\n\nAs informacoes estao corretas?`;
     }
 
-    if (state.step === 'asking_name') {
+    if (state.step === 'awaiting_name' || state.step === 'asking_name') {
       return 'Informe seu nome completo.';
     }
 
-    if (state.step === 'asking_tag') {
+    if (state.step === 'awaiting_equipment_tag' || state.step === 'asking_tag') {
       return 'Informe a etiqueta/patrimônio do equipamento com 4 números. Se não souber, use o botão "Não sei".';
     }
 
-    if (state.step === 'asking_reason') {
+    if (state.step === 'awaiting_problem_summary' || state.step === 'asking_reason') {
       return 'Qual o motivo do seu contato? Resuma em até 200 caracteres.';
     }
 
@@ -627,11 +627,11 @@ class FakeContactProfileService {
       return this.processResult;
     }
 
-    const step = String(input.state.step ?? 'asking_company');
+    const step = String(input.state.step ?? 'awaiting_company');
     if (step === 'confirming_existing_profile') {
       if (input.text.trim().toLowerCase() === 'sim') {
         return {
-          state: { ...input.state, step: 'asking_reason', reason: null },
+          state: { ...input.state, step: 'awaiting_problem_summary', reason: null },
           reply: 'Qual o motivo do seu contato? Resuma em até 200 caracteres.',
           completed: false,
           profile: null,
@@ -645,19 +645,19 @@ class FakeContactProfileService {
       };
     }
 
-    if (step === 'asking_company') {
+    if (step === 'awaiting_company' || step === 'asking_company') {
       return {
-        state: { ...input.state, step: 'asking_name', company_name_raw: input.text },
+        state: { ...input.state, step: 'awaiting_name', company_name_raw: input.text },
         reply: 'Informe seu nome completo.',
         completed: false,
         profile: null,
       };
     }
 
-    if (step === 'asking_name') {
+    if (step === 'awaiting_name' || step === 'asking_name') {
       return {
-        state: { ...input.state, step: 'asking_tag', requester_name: input.text },
-        reply: this.getCollectionPrompt({ ...input.state, step: 'asking_tag' }),
+        state: { ...input.state, step: 'awaiting_equipment_tag', requester_name: input.text },
+        reply: this.getCollectionPrompt({ ...input.state, step: 'awaiting_equipment_tag' }),
         completed: false,
         profile: null,
       };
@@ -2625,7 +2625,7 @@ describe('InboundWebhookService', () => {
     );
     expect(glpiClient.createTicket).not.toHaveBeenCalled();
     expect(conversationRepository.profileStates[0]?.state).toMatchObject({
-      step: 'asking_company',
+      step: 'awaiting_company',
       queue_label: 'Suporte',
     });
   });
@@ -2642,7 +2642,7 @@ describe('InboundWebhookService', () => {
       glpiTicketId: null,
       queueId: 5,
       profileCollectionState: {
-        step: 'asking_name',
+        step: 'awaiting_name',
         queue_label: 'Suporte',
         company_name_raw: 'Empresa',
       },
@@ -2683,7 +2683,7 @@ describe('InboundWebhookService', () => {
     );
     expect(meta.sendTextMessage).not.toHaveBeenCalled();
     expect(conversationRepository.profileStates[0]?.state).toMatchObject({
-      step: 'asking_tag',
+      step: 'awaiting_equipment_tag',
       requester_name: 'Bruno Baumel',
     });
   });
@@ -2700,7 +2700,7 @@ describe('InboundWebhookService', () => {
       glpiTicketId: null,
       queueId: 5,
       profileCollectionState: {
-        step: 'asking_reason',
+        step: 'awaiting_problem_summary',
         queue_label: 'Suporte',
         company_name_raw: 'Empresa',
         requester_name: 'Maria',
@@ -2768,7 +2768,7 @@ describe('InboundWebhookService', () => {
       glpiTicketId: null,
       queueId: 5,
       profileCollectionState: {
-        step: 'asking_reason',
+        step: 'awaiting_problem_summary',
         queue_label: 'Suporte',
         company_name_raw: 'Empresa',
         requester_name: 'Maria',
@@ -2829,7 +2829,7 @@ describe('InboundWebhookService', () => {
       glpiTicketId: null,
       queueId: 5,
       profileCollectionState: {
-        step: 'asking_reason',
+        step: 'awaiting_problem_summary',
         queue_label: 'Suporte',
         company_name_raw: 'Empresa',
         requester_name: 'Maria',
@@ -2897,7 +2897,7 @@ describe('InboundWebhookService', () => {
       glpiTicketId: null,
       queueId: 5,
       profileCollectionState: {
-        step: 'asking_reason',
+        step: 'awaiting_problem_summary',
         queue_label: 'Suporte',
         company_name_raw: 'Empresa',
         requester_name: 'Maria',
@@ -2972,7 +2972,7 @@ describe('InboundWebhookService', () => {
       contactId: 'contact-1',
       glpiTicketId: null,
       queueId: 5,
-      profileCollectionState: { step: 'asking_company' },
+      profileCollectionState: { step: 'awaiting_company' },
       status: 'collecting_contact_profile',
       lastMessageAt: new Date(),
       createdAt: new Date(),
@@ -3024,7 +3024,7 @@ describe('InboundWebhookService', () => {
       contactId: 'contact-1',
       glpiTicketId: null,
       queueId: 5,
-      profileCollectionState: { step: 'asking_reason', requester_name: 'Maria' },
+      profileCollectionState: { step: 'awaiting_problem_summary', requester_name: 'Maria' },
       status: 'collecting_contact_profile',
       lastMessageAt: new Date(),
       createdAt: new Date(),
@@ -3090,7 +3090,7 @@ describe('InboundWebhookService', () => {
     });
   });
 
-  it('blocks audio during asking_reason before media download', async () => {
+  it('blocks audio during awaiting_problem_summary before media download', async () => {
     const webhookEventRepository = new FakeWebhookEventRepository();
     const messageRepository = new FakeMessageRepository();
     const conversationRepository = new FakeConversationRepository();
@@ -3101,7 +3101,7 @@ describe('InboundWebhookService', () => {
       contactId: 'contact-1',
       glpiTicketId: null,
       queueId: 5,
-      profileCollectionState: { step: 'asking_reason', requester_name: 'Maria' },
+      profileCollectionState: { step: 'awaiting_problem_summary', requester_name: 'Maria' },
       status: 'collecting_contact_profile',
       lastMessageAt: new Date(),
       createdAt: new Date(),
@@ -3158,7 +3158,7 @@ describe('InboundWebhookService', () => {
   it.each([
     ['document', { id: 'media-doc-123', mime_type: 'application/pdf', filename: 'evidencia.pdf' }],
     ['sticker', { id: 'sticker-123', mime_type: 'image/webp' }],
-  ])('blocks %s during asking_reason and keeps the pre-ticket state', async (messageType, mediaPayload) => {
+  ])('blocks %s during awaiting_problem_summary and keeps the pre-ticket state', async (messageType, mediaPayload) => {
     const webhookEventRepository = new FakeWebhookEventRepository();
     const messageRepository = new FakeMessageRepository();
     const conversationRepository = new FakeConversationRepository();
@@ -3169,7 +3169,7 @@ describe('InboundWebhookService', () => {
       contactId: 'contact-1',
       glpiTicketId: null,
       queueId: 5,
-      profileCollectionState: { step: 'asking_reason', requester_name: 'Maria' },
+      profileCollectionState: { step: 'awaiting_problem_summary', requester_name: 'Maria' },
       status: 'collecting_contact_profile',
       lastMessageAt: new Date(),
       createdAt: new Date(),
@@ -3221,7 +3221,7 @@ describe('InboundWebhookService', () => {
       contactId: 'contact-1',
       glpiTicketId: null,
       queueId: 5,
-      profileCollectionState: { step: 'asking_reason', requester_name: 'Maria' },
+      profileCollectionState: { step: 'awaiting_problem_summary', requester_name: 'Maria' },
       status: 'collecting_contact_profile',
       lastMessageAt: new Date(),
       createdAt: new Date(),

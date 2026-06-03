@@ -8,9 +8,9 @@
  *  2. getInitialPrompt() falls back to DEFAULT_INITIAL_PROMPT when configured value is empty
  *  3. getCollectionPrompt() uses configured prompt texts after cache warm-up
  *  4. getCollectionPrompt() falls back to hardcoded strings when configCache is null
- *  5. processCollectionResponse(): asking_name → asking_tag when requireEmail is false
- *  6. processCollectionResponse(): asking_name → asking_email when requireEmail is true
- *  7. processCollectionResponse(): asking_name → asking_email when configCache not yet warmed (default=true)
+ *  5. processCollectionResponse(): awaiting_name -> awaiting_equipment_tag
+ *  6. processCollectionResponse(): ignores contact_profile_require_email for Macro 1
+ *  7. processCollectionResponse(): cache state does not reinsert e-mail collection
  *  8. Dual-key resolution: canonical key (contact_profile_prompt_*) wins over legacy (profile_ask_*)
  */
 
@@ -106,15 +106,13 @@ describe('ContactProfileService — settings-driven prompts (phase: message_sett
     // Warm up configCache
     await service.getInitialPrompt();
 
-    expect(service.getCollectionPrompt({ step: 'asking_company' }))
+    expect(service.getCollectionPrompt({ step: 'awaiting_company' }))
       .toBe('Informe o nome da sua empresa:');
-    expect(service.getCollectionPrompt({ step: 'asking_name' }))
+    expect(service.getCollectionPrompt({ step: 'awaiting_name' }))
       .toBe('Qual é o seu nome completo?');
-    expect(service.getCollectionPrompt({ step: 'asking_email' }))
-      .toBe('Informe seu e-mail corporativo.');
-    expect(service.getCollectionPrompt({ step: 'asking_tag' }))
+    expect(service.getCollectionPrompt({ step: 'awaiting_equipment_tag' }))
       .toBe('Número do patrimônio (4 dígitos):');
-    expect(service.getCollectionPrompt({ step: 'asking_reason' }))
+    expect(service.getCollectionPrompt({ step: 'awaiting_problem_summary' }))
       .toBe('Descreva o problema brevemente:');
     expect(service.getCollectionPrompt({ step: 'complete' }))
       .toBe('Confirme os dados acima.');
@@ -126,21 +124,19 @@ describe('ContactProfileService — settings-driven prompts (phase: message_sett
     const service = makeService({});
 
     // Note: configCache is null here (getInitialPrompt not called)
-    expect(service.getCollectionPrompt({ step: 'asking_company' }))
+    expect(service.getCollectionPrompt({ step: 'awaiting_company' }))
       .toContain('empresa');
-    expect(service.getCollectionPrompt({ step: 'asking_name' }))
+    expect(service.getCollectionPrompt({ step: 'awaiting_name' }))
       .toContain('nome');
-    expect(service.getCollectionPrompt({ step: 'asking_email' }))
-      .toContain('e-mail');
-    expect(service.getCollectionPrompt({ step: 'asking_tag' }))
+    expect(service.getCollectionPrompt({ step: 'awaiting_equipment_tag' }))
       .toContain('etiqueta');
-    expect(service.getCollectionPrompt({ step: 'asking_reason' }))
+    expect(service.getCollectionPrompt({ step: 'awaiting_problem_summary' }))
       .toContain('motivo');
   });
 
-  // ── 5. requireEmail=false: asking_name → asking_tag ──────────────────────
+  // ── 5. Macro 1: awaiting_name -> awaiting_equipment_tag ─────────────────
 
-  it('processCollectionResponse skips asking_email when requireEmail is false', async () => {
+  it('processCollectionResponse skips email collection in the Macro 1 fixed flow', async () => {
     const service = makeService({
       contact_profile_require_email: '0',
     });
@@ -151,20 +147,20 @@ describe('ContactProfileService — settings-driven prompts (phase: message_sett
     const result = service.processCollectionResponse({
       phoneE164: '+5511999999999',
       state: {
-        step: 'asking_name',
+        step: 'awaiting_name',
         company_name_raw: 'ACME',
       },
       text: 'Joao Silva',
     });
 
-    expect(result.state.step).toBe('asking_tag');
+    expect(result.state.step).toBe('awaiting_equipment_tag');
     expect(result.completed).toBe(false);
     expect(result.state.requester_name).toBe('Joao Silva');
   });
 
-  // ── 6. requireEmail=true: asking_name → asking_email ─────────────────────
+  // ── 6. requireEmail=true no longer changes Macro 1 flow ─────────────────
 
-  it('processCollectionResponse goes to asking_email when requireEmail is true', async () => {
+  it('processCollectionResponse still skips email when requireEmail is true', async () => {
     const service = makeService({
       contact_profile_require_email: '1',
     });
@@ -174,22 +170,19 @@ describe('ContactProfileService — settings-driven prompts (phase: message_sett
     const result = service.processCollectionResponse({
       phoneE164: '+5511999999999',
       state: {
-        step: 'asking_name',
+        step: 'awaiting_name',
         company_name_raw: 'ACME',
       },
       text: 'Joao Silva',
     });
 
-    expect(result.state.step).toBe('asking_email');
+    expect(result.state.step).toBe('awaiting_equipment_tag');
     expect(result.completed).toBe(false);
   });
 
-  // ── 7a. REGRESSION: cache warm but key absent must still ask email ──────────
-  // This is the bug identified by the Cursor review: loadAndCacheConfig() used
-  // `false` as the fallback for contact_profile_require_email, so warming the
-  // cache without an explicit key caused the step to jump past asking_email.
+  // ── 7a. REGRESSION: cache warm must not reinsert email ───────────────────
 
-  it('REGRESSION: cache warmed without contact_profile_require_email still advances to asking_email', async () => {
+  it('REGRESSION: cache warmed without contact_profile_require_email still advances to equipment tag', async () => {
     // No contact_profile_require_email key in settings at all.
     const service = makeService({});
 
@@ -199,34 +192,32 @@ describe('ContactProfileService — settings-driven prompts (phase: message_sett
     const result = service.processCollectionResponse({
       phoneE164: '+5511999999999',
       state: {
-        step: 'asking_name',
+        step: 'awaiting_name',
         company_name_raw: 'ACME',
       },
       text: 'Joao Silva',
     });
 
-    // Must NOT jump to asking_tag — absent key must preserve asking_email.
-    expect(result.state.step).toBe('asking_email');
+    expect(result.state.step).toBe('awaiting_equipment_tag');
     expect(result.completed).toBe(false);
   });
 
-  // ── 7b. Default (cache not warmed) falls back to requiring email ──────────
+  // ── 7b. Default (cache not warmed) still uses the four-step flow ─────────
 
-  it('processCollectionResponse goes to asking_email by default when cache not warmed', () => {
+  it('processCollectionResponse goes to equipment tag by default when cache not warmed', () => {
     const service = makeService({});
 
     // No getInitialPrompt() call — configCache is null
     const result = service.processCollectionResponse({
       phoneE164: '+5511999999999',
       state: {
-        step: 'asking_name',
+        step: 'awaiting_name',
         company_name_raw: 'ACME',
       },
       text: 'Joao Silva',
     });
 
-    // Default is requireEmail=true (safe default for backward-compatibility)
-    expect(result.state.step).toBe('asking_email');
+    expect(result.state.step).toBe('awaiting_equipment_tag');
   });
 
   // ── 8. Dual-key: canonical contact_profile_prompt_* wins over profile_ask_* ──
@@ -239,7 +230,7 @@ describe('ContactProfileService — settings-driven prompts (phase: message_sett
 
     await service.getInitialPrompt();
 
-    expect(service.getCollectionPrompt({ step: 'asking_name' }))
+    expect(service.getCollectionPrompt({ step: 'awaiting_name' }))
       .toBe('Nome (canonical):');
   });
 
@@ -250,7 +241,7 @@ describe('ContactProfileService — settings-driven prompts (phase: message_sett
 
     await service.getInitialPrompt();
 
-    expect(service.getCollectionPrompt({ step: 'asking_name' }))
+    expect(service.getCollectionPrompt({ step: 'awaiting_name' }))
       .toBe('Nome (legacy fallback):');
   });
 
@@ -264,31 +255,31 @@ describe('ContactProfileService — settings-driven prompts (phase: message_sett
 
     const phone = '+5511999999999';
 
-    // asking_company → asking_name
+    // awaiting_company -> awaiting_name
     const r1 = service.processCollectionResponse({
       phoneE164: phone,
       state: service.startNewCollectionState(),
       text: 'Empresa Teste',
     });
-    expect(r1.state.step).toBe('asking_name');
+    expect(r1.state.step).toBe('awaiting_name');
 
-    // asking_name → asking_tag (skips email)
+    // awaiting_name -> awaiting_equipment_tag
     const r2 = service.processCollectionResponse({
       phoneE164: phone,
       state: r1.state,
       text: 'Ana Souza',
     });
-    expect(r2.state.step).toBe('asking_tag');
+    expect(r2.state.step).toBe('awaiting_equipment_tag');
 
-    // asking_tag → asking_reason
+    // awaiting_equipment_tag -> awaiting_problem_summary
     const r3 = service.processCollectionResponse({
       phoneE164: phone,
       state: r2.state,
       text: '1234',
     });
-    expect(r3.state.step).toBe('asking_reason');
+    expect(r3.state.step).toBe('awaiting_problem_summary');
 
-    // asking_reason → complete
+    // awaiting_problem_summary -> complete
     const r4 = service.processCollectionResponse({
       phoneE164: phone,
       state: r3.state,

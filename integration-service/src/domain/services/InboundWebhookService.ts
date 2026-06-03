@@ -1292,6 +1292,7 @@ export class InboundWebhookService {
                   conversationId: lockedConversation.id,
                   queueLabel: assignment?.queueId ? `Fila ${assignment.queueId}` : null,
                   profile,
+                  entityMode,
                 });
                 const requesterUserId = await this.resolveRequesterUserId(
                   contact.phoneE164,
@@ -1934,10 +1935,26 @@ export class InboundWebhookService {
             return;
           }
           inboundGlpiStage = 'glpi_ticket_create';
-          const ticketPayload = this.buildNewTicketPayload(contact, inboundMessage);
+          const profile = this.contactProfileService
+            ? await this.contactProfileService.findProfile(contact.phoneE164)
+            : null;
+          const assignment = activeConversation.queueId
+            ? await this.routingRepository.findAssignmentByQueueId(activeConversation.queueId)
+            : null;
+          const entityMode = this.contactEntityResolutionService
+            ? await this.contactEntityResolutionService.getMode()
+            : 'defer_until_known';
+          const ticketPayload = await this.buildProfileAwareTicketPayload({
+            basePayload: this.buildNewTicketPayload(contact, inboundMessage),
+            contact,
+            conversationId: activeConversation.id,
+            queueLabel: assignment?.queueId ? `Fila ${assignment.queueId}` : null,
+            profile,
+            entityMode,
+          });
           const requesterUserId = await this.resolveRequesterUserId(
             contact.phoneE164,
-            null,
+            profile,
             rememberedEntity.glpiEntityId,
             activeConversation.id,
           );
@@ -3108,7 +3125,7 @@ export class InboundWebhookService {
   }
 
   private shouldAppendPreTicketCancelHint(state?: ContactProfileCollectionState | null): boolean {
-    if (state?.step !== 'asking_company') {
+    if (state?.step !== 'awaiting_company' && state?.step !== 'asking_company') {
       return false;
     }
 
@@ -3124,7 +3141,7 @@ export class InboundWebhookService {
     profileStep: string | null,
     blockedMedia: boolean,
   ): string {
-    if (profileStep === 'asking_reason') {
+    if (profileStep === 'awaiting_problem_summary' || profileStep === 'asking_reason') {
       return PRETICKET_INVALID_REASON_INPUT_TEXT;
     }
 
@@ -3675,7 +3692,10 @@ export class InboundWebhookService {
       }
     }
 
-    if (input.state?.step === 'asking_tag' && typeof sendReplyButtons === 'function') {
+    if (
+      (input.state?.step === 'awaiting_equipment_tag' || input.state?.step === 'asking_tag')
+      && typeof sendReplyButtons === 'function'
+    ) {
       try {
         await sendReplyButtons.call(this.metaClient, input.toMeta, bodyWithHint, [
           { id: 'TAG_UNKNOWN', title: 'Não sei' },
