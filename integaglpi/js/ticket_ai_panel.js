@@ -1,4 +1,4 @@
-/* IntegraGLPI — Ajuda Inteligente (ticket-side panel).
+/* IntegraGLPI — Ajuda Inteligente (ticket-side panel) — v7-m2-fix4
  * Read-only assist: local-KB-first, cloud only on explicit click, sanitized
  * server-side. Never mutates the ticket, never sends WhatsApp, never publishes.
  */
@@ -17,10 +17,44 @@
   // the run button disabled indefinitely — browser never fires click on a disabled button.
   var SMART_HELP_TIMEOUT_MS = 25000;
 
-  function post(panel, action, extra) {
-    if (!panel.dataset.actionUrl) {
-      return Promise.reject(new Error('Smart Help endpoint não configurado.'));
-    }
+  // Detects a recoverable 403. This includes BOTH our typed JSON csrf_failed AND the
+  // opaque GLPI middleware 403 HTML page (which r.json() can't parse → invalid_json).
+  // Any 403 is treated as a possibly-consumed-token case worth a single token-refresh
+  // + retry; the server re-validates, so this is not a bypass.
+  function isCsrfFailure(body) {
+    if (!body) { return false; }
+    if (body.httpStatus !== 403) { return false; }
+    return body.error === 'csrf_invalid'
+      || body.error_type === 'csrf_failed'
+      || body.error === 'invalid_json'   // opaque upstream 403 HTML page
+      || true;                           // any 403 → attempt one refresh+retry
+  }
+
+  // Pull a fresh, unconsumed CSRF token via GET (GLPI does not CSRF-protect GET).
+  // Updates panel.dataset.csrf in place. Resolves regardless of outcome.
+  function refreshCsrfToken(panel) {
+    if (!panel.dataset.actionUrl) { return Promise.resolve(false); }
+    var sep = panel.dataset.actionUrl.indexOf('?') === -1 ? '?' : '&';
+    var url = panel.dataset.actionUrl + sep + 'csrf_token=1&_=' + String(new Date().getTime());
+    return fetch(url, {
+      method: 'GET',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { 'Accept': 'application/json', 'Cache-Control': 'no-store' }
+    }).then(function (r) {
+      return r.json().catch(function () { return null; });
+    }).then(function (body) {
+      if (body && typeof body.csrf_token === 'string' && body.csrf_token !== '') {
+        panel.dataset.csrf = body.csrf_token;
+        return true;
+      }
+      return false;
+    }).catch(function () { return false; });
+  }
+
+  // Single POST attempt. Refreshes panel.dataset.csrf from the response so the NEXT
+  // call always uses a fresh, unconsumed token (GLPI CSRF tokens are one-time use).
+  function postOnce(panel, action, extra) {
     var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     var timeoutId = controller
       ? setTimeout(function () { controller.abort(); }, SMART_HELP_TIMEOUT_MS)
@@ -30,6 +64,7 @@
     var params = new URLSearchParams();
     params.set('whatsapp_action', action);
     params.set('ticket_id', panel.dataset.ticketId || '0');
+    // Plugin expects `_glpi_csrf_token`; keep the canonical name.
     params.set('_glpi_csrf_token', panel.dataset.csrf || '');
     if (extra) {
       Object.keys(extra).forEach(function (k) { params.set(k, String(extra[k])); });
@@ -53,8 +88,13 @@
           message: 'A resposta do servidor não pôde ser interpretada.'
         };
       }).then(function (body) {
+        body = body || {};
+        // Refresh the panel token from EVERY response (success or error) so the next
+        // POST uses a live token instead of the consumed static data-csrf.
+        if (typeof body.csrf_token === 'string' && body.csrf_token !== '') {
+          panel.dataset.csrf = body.csrf_token;
+        }
         if (!r.ok) {
-          body = body || {};
           body.ok = false;
           body.httpStatus = r.status;
           body.message = body.message || ('Falha HTTP ' + r.status + ' ao consultar a Ajuda Inteligente.');
@@ -72,6 +112,30 @@
           ? 'A Ajuda Inteligente não respondeu no prazo (' + (SMART_HELP_TIMEOUT_MS / 1000) + 's). Verifique o serviço e tente novamente.'
           : ('Erro de rede ao consultar a Ajuda Inteligente: ' + (err && err.message ? err.message : 'desconhecido') + '.')
       };
+    });
+  }
+
+  function post(panel, action, extra) {
+    if (!panel.dataset.actionUrl) {
+      // Emit a visible error immediately so the panel is never silently inert.
+      setStatus(panel, 'configuração pendente', 'warning');
+      var missingMsgEl = panel.querySelector('.js-smart-help-message');
+      if (missingMsgEl) {
+        missingMsgEl.textContent = 'Ajuda Inteligente não iniciou: ação do painel não configurada (data-action-url ausente).';
+        missingMsgEl.className = 'mt-2 small js-smart-help-message text-warning';
+      }
+      return Promise.reject(new Error('Ajuda Inteligente não iniciou: ação do painel não configurada.'));
+    }
+    // First attempt. On any 403 (typed csrf_failed OR opaque GLPI middleware HTML),
+    // fetch a fresh token via GET, then retry exactly once. No bypass: the server
+    // re-validates the refreshed token on the retry POST.
+    return postOnce(panel, action, extra).then(function (body) {
+      if (isCsrfFailure(body)) {
+        return refreshCsrfToken(panel).then(function () {
+          return postOnce(panel, action, extra);
+        });
+      }
+      return body;
     });
   }
 
@@ -156,10 +220,14 @@
     }
   }
 
-  function runSmartHelp(panel) {
+  // userInitiated = true  → clique manual: desabilita botão, restaura no finally.
+  // userInitiated = false → auto-run no load: NÃO desabilita (browser não dispara
+  //   click em botão disabled; se o auto-run desabilitar durante o fetch o usuário
+  //   que clicar no meio da janela de resposta não verá nada).
+  function runSmartHelp(panel, userInitiated) {
     var runBtn = panel.querySelector('.js-smart-help-run');
     var msgEl = panel.querySelector('.js-smart-help-message');
-    if (runBtn) {
+    if (runBtn && userInitiated) {
       runBtn.disabled = true;
       runBtn.dataset.originalText = runBtn.dataset.originalText || (runBtn.textContent || '');
       runBtn.textContent = 'Analisando localmente...';
@@ -191,7 +259,7 @@
       setStatus(panel, 'erro', 'danger');
       renderResult(panel, { message: (error && error.message) ? error.message : 'Não foi possível consultar a Ajuda Inteligente. Revise permissões, schema 044 e configuração local.' });
     }).finally(function () {
-      if (runBtn) {
+      if (runBtn && userInitiated) {
         runBtn.disabled = false;
         runBtn.textContent = runBtn.dataset.originalText || 'Ajuda Inteligente';
       }
@@ -241,7 +309,12 @@
     var panel = t.closest('.integaglpi-smart-help');
     if (!panel) { return; }
 
-    if (t.closest('.js-smart-help-run')) { event.preventDefault(); runSmartHelp(panel); return; }
+    if (t.closest('.js-smart-help-run')) {
+      event.preventDefault();
+      console.warn('[SmartHelp] clique manual — ticket_id=' + (panel.dataset.ticketId || '?') + ' action_url=' + (panel.dataset.actionUrl ? 'ok' : 'AUSENTE'));
+      runSmartHelp(panel, true);  // userInitiated = true → desabilita botão
+      return;
+    }
     if (t.closest('.js-smart-help-external')) { event.preventDefault(); handleExternal(panel); return; }
 
     var copyBtn = t.closest('.js-smart-help-copy');
@@ -275,9 +348,15 @@
   }, false);
 
   // Proactive auto-load on render (local KB only; no cloud).
+  // userInitiated = false (omitted) → does NOT disable the run button,
+  // so any user click during the auto-run fetch still fires normally.
   function initSmartHelpPanels() {
     var panels = document.querySelectorAll('.integaglpi-smart-help');
-    Array.prototype.forEach.call(panels, function (p) { runSmartHelp(p); });
+    Array.prototype.forEach.call(panels, function (p) {
+      // Mark panel so smoke tests / browser DevTools can confirm JS is active.
+      p.dataset.smartHelpJsReady = '1';
+      runSmartHelp(p);  // auto-run, not user-initiated
+    });
   }
 
   document.addEventListener('DOMContentLoaded', initSmartHelpPanels);

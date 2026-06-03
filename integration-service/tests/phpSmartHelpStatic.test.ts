@@ -202,7 +202,8 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).toContain('runSmartHelp(p)');
     expect(js).toContain("post(panel, 'smart_help')");
     expect(js).toContain('document.readyState !== \'loading\'');
-    expect(js).toContain('event.preventDefault(); runSmartHelp(panel); return;');
+    expect(js).toContain('event.preventDefault();');
+    expect(js).toContain("runSmartHelp(panel, true);  // userInitiated = true");
     expect(js).toContain('Analisando localmente...');
     expect(js).toContain('runBtn.disabled = true');
     expect(js).toContain('Falha HTTP ');
@@ -233,6 +234,144 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // handleExternal handles transport-level failure (ok: false, no result).
     expect(js).toContain('resp.ok === false && resp.error && !resp.result');
     expect(js).toContain("resp.error === 'timeout'");
+  });
+
+  it('smart help JS run button is only disabled on user-initiated click, not during auto-run', async () => {
+    const js = await read('integaglpi/js/ticket_ai_panel.js');
+
+    // runSmartHelp accepts userInitiated parameter.
+    expect(js).toContain('runSmartHelp(panel, userInitiated)');
+    // Button is disabled only when userInitiated is true.
+    expect(js).toContain('if (runBtn && userInitiated)');
+    // Button is restored only when userInitiated is true.
+    expect(js).toMatch(/finally[^}]*userInitiated[^}]*runBtn\.disabled\s*=\s*false/s);
+    // Auto-run calls runSmartHelp without second arg (userInitiated = undefined → falsy).
+    expect(js).toContain('runSmartHelp(p);  // auto-run, not user-initiated');
+    // User click calls runSmartHelp with userInitiated = true.
+    expect(js).toContain('runSmartHelp(panel, true);  // userInitiated = true');
+    // Click handler emits a console.warn for diagnostics.
+    expect(js).toContain("console.warn('[SmartHelp]");
+    expect(js).toContain('action_url=');
+    // JS marks panel as ready for smoke/DevTools confirmation.
+    expect(js).toContain("p.dataset.smartHelpJsReady = '1'");
+    // Missing action URL gives visible error immediately (not just a promise reject).
+    expect(js).toContain('data-action-url ausente');
+    expect(js).toContain('configuração pendente');
+  });
+
+  it('smart help recovers one-time-use CSRF token: PHP echoes fresh token, JS refreshes + retries', async () => {
+    const js  = await read('integaglpi/js/ticket_ai_panel.js');
+    const act = await read('integaglpi/front/ticket.whatsapp.action.php');
+
+    // ── PHP side: every JSON response carries a fresh csrf_token ───────────────
+    expect(act).toContain("array_key_exists('csrf_token', \$payload)");
+    expect(act).toContain('Plugin::getCsrfToken()');
+    // CSRF failure is typed so the JS can detect + retry.
+    expect(act).toContain("'error' => 'csrf_invalid'");
+    expect(act).toContain("'error_type' => 'csrf_failed'");
+    // CSRF validation still runs (NOT removed/bypassed).
+    expect(act).toContain('Plugin::isCsrfValid($_POST)');
+    // Validation precedes the AI assist branch.
+    expect(act.indexOf('Plugin::isCsrfValid($_POST)')).toBeLessThan(act.indexOf('$aiAssistActions'));
+
+    // ── JS side: refreshes token from response and retries once on CSRF 403 ────
+    // Canonical token field name preserved.
+    expect(js).toContain("params.set('_glpi_csrf_token', panel.dataset.csrf");
+    // Token refreshed from EVERY response body.
+    expect(js).toContain('panel.dataset.csrf = body.csrf_token');
+    // CSRF failure detector keyed on 403.
+    expect(js).toContain('function isCsrfFailure(body)');
+    // Retry exactly once via postOnce.
+    expect(js).toContain('function postOnce(panel, action, extra)');
+    expect(js).toContain('return postOnce(panel, action, extra);');
+    // No bypass: the retry path still posts the token (no skipping of validation).
+    expect(js).not.toContain('skipCsrf');
+  });
+
+  it('smart help recovers the opaque GLPI middleware 403 via a GET token refresh', async () => {
+    const js  = await read('integaglpi/js/ticket_ai_panel.js');
+    const act = await read('integaglpi/front/ticket.whatsapp.action.php');
+
+    // ── PHP side: GET csrf_token=1 returns a fresh token (GLPI does not CSRF-gate GET).
+    expect(act).toContain("(string) (\$_GET['csrf_token'] ?? '') === '1'");
+    expect(act).toContain("=== 'GET'");
+    // The GET refresh runs BEFORE the POST-only guard so it is reachable.
+    expect(act.indexOf("\$_GET['csrf_token']")).toBeLessThan(act.indexOf("!== 'POST'"));
+    // It is read-only: no mutation, just the helper-injected fresh token.
+    expect(act).toContain("plugin_integaglpi_ticket_action_json(['ok' => true], 200); // helper injects fresh csrf_token");
+
+    // ── JS side: GET refresh helper + any-403 recovery.
+    expect(js).toContain('function refreshCsrfToken(panel)');
+    expect(js).toContain("csrf_token=1&_=");
+    expect(js).toContain("method: 'GET'");
+    // Opaque upstream 403 (invalid_json) is also treated as recoverable.
+    expect(js).toContain("body.error === 'invalid_json'");
+    // On 403, JS refreshes the token THEN retries once.
+    expect(js).toContain('return refreshCsrfToken(panel).then(function () {');
+    expect(js).toContain('return postOnce(panel, action, extra);');
+  });
+
+  it('technical summary is structured and PII-sanitized (local-first, deterministic)', async () => {
+    const svc = await read('integaglpi/src/Service/SmartHelpService.php');
+
+    // Dedicated sanitizer removes PII (email/CPF/CNPJ/phone) before use as context.
+    expect(svc).toContain('function sanitizeContext');
+    expect(svc).toContain('[dado pessoal removido]');
+    // Structured summary fields for the technician.
+    expect(svc).toContain('Problema relatado:');
+    expect(svc).toContain('Contexto técnico:');
+    expect(svc).toContain('Próxima ação sugerida:');
+    // Still returns technicalSummary / technical_summary in the result payload.
+    expect(svc).toContain("'technicalSummary'");
+    expect(svc).toContain("'technical_summary'");
+    // The next-action hint is non-mutating (never auto-resolves / auto-sends).
+    expect(svc).not.toMatch(/->update\(|sendOutbound|sendWhatsApp|auto_publish/i);
+  });
+
+  it('template↔JS↔PHP contract: class, selector, action and attributes match', async () => {
+    const tab = await read('integaglpi/templates/ticket_tab.php');
+    const js  = await read('integaglpi/js/ticket_ai_panel.js');
+    const act = await read('integaglpi/front/ticket.whatsapp.action.php');
+
+    // ── Template side ────────────────────────────────────────────────────────
+    // Panel container class used by JS delegation.
+    expect(tab).toContain('integaglpi-smart-help');
+    // Run button class used by JS selector.
+    expect(tab).toContain('js-smart-help-run');
+    // action URL attribute populated from Plugin::getTicketActionUrl().
+    expect(tab).toContain('data-action-url=');
+    expect(tab).toContain('getTicketActionUrl()');
+    // CSRF attribute set on the panel.
+    expect(tab).toContain('data-csrf=');
+    // ticket-id attribute set on the panel.
+    expect(tab).toContain('data-ticket-id=');
+    // Button is NOT born disabled (no disabled attr on js-smart-help-run in template).
+    const btnMatch = tab.match(/class="[^"]*js-smart-help-run[^"]*"[^>]*>/);
+    expect(btnMatch).not.toBeNull();
+    expect(btnMatch![0]).not.toContain('disabled');
+    // JS is injected inline (not behind a broken <script src> that may 404).
+    expect(tab).toContain('file_get_contents');
+    expect(tab).toContain('ticket_ai_panel.js');
+
+    // ── JS side ──────────────────────────────────────────────────────────────
+    // Delegation selector matches panel class.
+    expect(js).toContain("t.closest('.integaglpi-smart-help')");
+    // Button selector matches template class.
+    expect(js).toContain("t.closest('.js-smart-help-run')");
+    // Request sends correct action name.
+    expect(js).toContain("params.set('whatsapp_action', action)");
+    expect(js).toContain("post(panel, 'smart_help')");
+    // Request sends ticket_id and CSRF.
+    expect(js).toContain("params.set('ticket_id'");
+    expect(js).toContain("params.set('_glpi_csrf_token'");
+
+    // ── PHP side ─────────────────────────────────────────────────────────────
+    // action name accepted by endpoint.
+    expect(act).toContain("'smart_help'");
+    // Reads whatsapp_action from POST.
+    expect(act).toContain("'whatsapp_action'");
+    // Reads ticket_id from POST.
+    expect(act).toContain("'ticket_id'");
   });
 
   it('ticket_tab.php copilot error display uses error_type before HTTP status fallback', async () => {

@@ -14,6 +14,18 @@ Session::checkLoginUser();
 
 function plugin_integaglpi_ticket_action_json(array $payload, int $statusCode): never
 {
+    // Always hand the caller a FRESH, unconsumed CSRF token. GLPI CSRF tokens are
+    // one-time use: the auto-run POST consumes the page's token, so the next POST
+    // (e.g. a manual button click reusing the static data-csrf) would 403. Echoing
+    // a fresh token lets the JS refresh panel.dataset.csrf after every call. CSRF is
+    // NOT weakened — validation still runs on every request below.
+    if (!array_key_exists('csrf_token', $payload)) {
+        try {
+            $payload['csrf_token'] = Plugin::getCsrfToken();
+        } catch (\Throwable $e) {
+            // Token generation must never break the JSON response.
+        }
+    }
     http_response_code($statusCode);
     header('Content-Type: application/json; charset=UTF-8');
     echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
@@ -80,6 +92,17 @@ function plugin_integaglpi_ticket_ai_error_json(string $action, Throwable $excep
     ], $errorType === 'permission_denied' || $errorType === 'csrf_failed' ? 403 : 500);
 }
 
+// ── CSRF token refresh (GET) ────────────────────────────────────────────────
+// GLPI 11 CSRF tokens are one-time use. The page's static data-csrf is consumed by
+// the auto-run POST; a later manual click reusing it is rejected by GLPI's upstream
+// CSRF middleware with an opaque 403 HTML page (our handler never runs, so no JSON
+// token is returned). This GET — which GLPI does NOT CSRF-protect — lets the JS pull
+// a fresh, unconsumed token before retrying the POST. Read-only: no mutation here.
+if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET')) === 'GET'
+    && (string) ($_GET['csrf_token'] ?? '') === '1') {
+    plugin_integaglpi_ticket_action_json(['ok' => true], 200); // helper injects fresh csrf_token
+}
+
 if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET')) !== 'POST') {
     plugin_integaglpi_ticket_action_json([
         'ok' => false,
@@ -89,10 +112,14 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET')) !== 'POST') {
 }
 
 if (!Plugin::isCsrfValid($_POST)) {
+    // Typed CSRF failure. The fresh csrf_token injected by the JSON helper lets the
+    // JS refresh its token and retry once (one-time-use token already consumed by a
+    // prior POST such as the auto-run). CSRF stays mandatory — no bypass.
     plugin_integaglpi_ticket_action_json([
         'ok' => false,
         'error' => 'csrf_invalid',
-        'message' => __('Token de segurança inválido.', 'glpiintegaglpi'),
+        'error_type' => 'csrf_failed',
+        'message' => __('Sessão/token de segurança expirado. Tente novamente.', 'glpiintegaglpi'),
     ], 403);
 }
 
