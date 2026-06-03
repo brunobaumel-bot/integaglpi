@@ -129,6 +129,18 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(front).toContain("catch (Throwable $exception)");
   });
 
+  it('smart.help.php blocks KB feedback before persistence when schema 044 is pending', async () => {
+    const front = await read('integaglpi/front/smart.help.php');
+
+    expect(front).toContain('$schema044Status = SmartHelpService::migration044SchemaStatus();');
+    expect(front).toContain("'error' => 'schema_pending'");
+    expect(front).toContain("'error_type' => 'schema_pending'");
+    expect(front).toContain("'feedback_available' => false");
+    expect(front).toContain('Feedback indisponível: schema 044 pendente de homologação.');
+    expect(front.indexOf('$schema044Status = SmartHelpService::migration044SchemaStatus();'))
+      .toBeLessThan(front.indexOf('$smartHelp->recordFeedback('));
+  });
+
   it('analyze conversation uses the JSON ticket action endpoint and catches KB normalization failures', async () => {
     const action = await read('integaglpi/front/ticket.whatsapp.action.php');
     const tab = await read('integaglpi/templates/ticket_tab.php');

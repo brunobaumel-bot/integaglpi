@@ -197,6 +197,19 @@ try {
     }
 
     if ($action === 'kb_feedback') {
+        $schema044Status = SmartHelpService::migration044SchemaStatus();
+        if (($schema044Status['ok'] ?? false) !== true) {
+            integaglpiSmartHelpJsonResponse([
+                'ok' => false,
+                'error' => 'schema_pending',
+                'error_type' => 'schema_pending',
+                'message' => __('Feedback indisponível: schema 044 pendente de homologação.', 'glpiintegaglpi'),
+                'feedback_available' => false,
+                'schema044Status' => $schema044Status,
+            ], 503);
+            exit;
+        }
+
         integaglpiSmartHelpJsonResponse([
             'ok' => true,
             'result' => $smartHelp->recordFeedback(

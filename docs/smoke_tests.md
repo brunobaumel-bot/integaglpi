@@ -178,6 +178,20 @@ O token CSRF é enviado em 3 canais para compatibilidade com o core do GLPI 11.
 
 ---
 
+## V8 — Knowledge + SmartHelp Operacional
+
+| ID | Smoke | Resultado esperado |
+|----|-------|--------------------|
+| S-V8-KB-01 | Clicar em "Ajuda Inteligente" na aba WhatsApp | Endpoint dedicado `smart.help.php` responde JSON; CSRF/RBAC preservados; resumo técnico sem PII aparece somente após clique manual |
+| S-V8-KB-02 | Resultado local-first | Mostra fonte KB nativa GLPI ou candidato interno, confiança operacional, checklist e perguntas sugeridas; sem promessa de resolução automática |
+| S-V8-KB-03 | Feedback com schema 044 aplicado | "Ajudou/Não ajudou" usa AJAX sem recarregar; confirma "feedback registrado" somente com `ok=true` e `status=recorded` |
+| S-V8-KB-04 | Feedback com schema 044 pendente | Server-side retorna `error_type=schema_pending`, `feedback_available=false`; não chama `recordFeedback` nem tenta persistir |
+| S-V8-KB-05 | Gerar Base de Conhecimento por Chamados Resolvidos | Fluxo permite período, lista chamados solucionados, gera candidatos e exige revisão humana; publicação GLPI KB é sempre manual |
+| S-V8-KB-06 | Pesquisa externa/cloud | Sem chamada automática; exige clique explícito, permissão, consentimento e PII Guard antes de qualquer envio externo |
+| S-V8-KB-07 | Segurança operacional | IA não envia WhatsApp, não altera ticket/status/categoria/solução e não publica KB automaticamente |
+
+---
+
 ## V7 M2 Fix2 — Runtime Ajuda Inteligente + Sugerir Resposta
 
 | ID | Smoke | Resultado esperado |
