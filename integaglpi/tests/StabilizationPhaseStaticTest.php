@@ -547,6 +547,45 @@ final class StabilizationPhaseStaticTest extends TestCase
         self::assertLessThan($contextPanel, $messages, 'Chat messages must remain before the context panel markup.');
     }
 
+    public function testCentralEnterpriseThreeOrganizesJourneysAndCriticalSignals(): void
+    {
+        $template = (string) file_get_contents($this->pluginPath('templates/central.php'));
+
+        self::assertStringContainsString('itg-central-journeys', $template);
+        self::assertStringContainsString('data-central-journey="atendimento"', $template);
+        self::assertStringContainsString('data-central-journey="conhecimento"', $template);
+        self::assertStringContainsString('data-central-journey="configuracao"', $template);
+        self::assertStringContainsString('data-central-journey="governanca"', $template);
+        self::assertStringContainsString('$showAdvancedCentralControls', $template);
+        self::assertStringContainsString('$showAdvancedCentralControls && $diagnostics !== null', $template);
+
+        self::assertStringContainsString('itg-central-quick-filters', $template);
+        self::assertStringContainsString('onclick="this.form.status.value=\'open\'"', $template);
+        self::assertStringContainsString('onclick="this.form.operational_state.value=\'awaiting_entity\'"', $template);
+        self::assertStringContainsString('onclick="this.form.delivery.value=\'failed\'"', $template);
+        self::assertStringContainsString('onclick="this.form.inactivity.value=\'attention\'"', $template);
+
+        self::assertStringContainsString('itg-card--requires-action', $template);
+        self::assertStringContainsString('itg-card--risk', $template);
+        self::assertStringContainsString('data-action-signals', $template);
+        self::assertStringContainsString('itg-card-action-strip', $template);
+        self::assertStringContainsString('const uniqueActionSignals', $template);
+        self::assertStringContainsString('element.setAttribute(\'data-action-signals\'', $template);
+
+        foreach ([
+            'js-integaglpi-central-refresh',
+            'js-integaglpi-central-tbody',
+            'js-integaglpi-central-claim',
+            'js-integaglpi-central-reply',
+            'js-integaglpi-central-transfer',
+            'js-integaglpi-central-solve',
+            'js-integaglpi-confirm-entity',
+            'js-integaglpi-update-entity',
+        ] as $selector) {
+            self::assertStringContainsString($selector, $template, $selector . ' must remain available for the existing Central JS flow.');
+        }
+    }
+
     public function testTicketTabClaimUsesPostWithCsrf(): void
     {
         $template = (string) file_get_contents($this->pluginPath('templates/ticket_tab.php'));

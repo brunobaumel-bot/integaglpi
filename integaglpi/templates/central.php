@@ -30,6 +30,13 @@ $ticketUrlBase = $this->getTicketUrlBase();
 $csrfToken = $this->getCsrfToken();
 $currentUserId = $this->getCurrentUserId();
 $canUpdateActions = \Session::haveRight(\GlpiPlugin\Integaglpi\Plugin::RIGHT_NAME, UPDATE);
+$canViewAllQueues = \GlpiPlugin\Integaglpi\Service\SecurityPermissionService::hasRight(
+    \GlpiPlugin\Integaglpi\Service\SecurityPermissionService::RIGHT_VIEW_ALL_QUEUES
+);
+$canViewOperationalAudit = \GlpiPlugin\Integaglpi\Service\SecurityPermissionService::hasRight(
+    \GlpiPlugin\Integaglpi\Service\SecurityPermissionService::RIGHT_VIEW_AUDIT_OPERATIONAL
+);
+$showAdvancedCentralControls = $canViewAllQueues || $canViewOperationalAudit;
 $whatsappCssUrl = \GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/css/whatsapp.css';
 $statusLabelMap = [
     'collecting_contact_profile' => __('Coletando perfil', 'glpiintegaglpi'),
@@ -115,6 +122,36 @@ $operationalFilterMap = [
 
 .itg-central-filter-panel[open] .itg-conversation-filters {
     margin-top: 0.5rem;
+}
+
+.itg-central-journeys,
+.itg-central-quick-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+}
+
+.itg-journey-chip,
+.itg-quick-filter {
+    align-items: center;
+    background: #f8fafc;
+    border: 1px solid rgba(98, 105, 118, 0.16);
+    border-radius: 999px;
+    color: #344054;
+    display: inline-flex;
+    font-size: 0.78rem;
+    gap: 0.35rem;
+    min-height: 1.85rem;
+    padding: 0.25rem 0.65rem;
+}
+
+.itg-journey-chip strong {
+    font-size: 0.76rem;
+}
+
+.itg-journey-chip--muted {
+    opacity: 0.66;
 }
 
 .itg-central-shell {
@@ -214,6 +251,30 @@ $operationalFilterMap = [
     transform: translateY(-1px);
 }
 
+.itg-conversation-table tr.itg-card--requires-action {
+    border-color: rgba(245, 158, 11, 0.52);
+    box-shadow: inset 4px 0 0 rgba(245, 158, 11, 0.72);
+}
+
+.itg-conversation-table tr.itg-card--risk {
+    border-color: rgba(220, 38, 38, 0.45);
+    box-shadow: inset 4px 0 0 rgba(220, 38, 38, 0.7);
+}
+
+.itg-card-action-strip {
+    align-items: center;
+    background: #fff7ed;
+    border: 1px solid rgba(245, 158, 11, 0.28);
+    border-radius: 10px;
+    color: #9a3412;
+    display: flex;
+    flex-wrap: wrap;
+    font-size: 0.76rem;
+    gap: 0.35rem;
+    margin-top: 0.55rem;
+    padding: 0.4rem 0.55rem;
+}
+
 .itg-conversation-table td {
     border: 0;
     padding: 0;
@@ -296,6 +357,14 @@ $operationalFilterMap = [
     gap: 0.75rem;
 }
 
+.itg-context-group-title {
+    color: #475467;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
 .itg-context-item {
     background: #f8fafc;
     border-radius: 12px;
@@ -363,6 +432,31 @@ $operationalFilterMap = [
             </div>
         </div>
 
+        <div class="itg-central-journeys" aria-label="<?= $this->escape(__('Jornadas da Central', 'glpiintegaglpi')); ?>">
+            <span class="itg-journey-chip" data-central-journey="atendimento">
+                <strong><?= $this->escape(__('Atendimento', 'glpiintegaglpi')); ?></strong>
+                <?= $this->escape(__('fila, técnico e resposta', 'glpiintegaglpi')); ?>
+            </span>
+            <span class="itg-journey-chip" data-central-journey="conhecimento">
+                <strong><?= $this->escape(__('Conhecimento', 'glpiintegaglpi')); ?></strong>
+                <?= $this->escape(__('perfil e contexto', 'glpiintegaglpi')); ?>
+            </span>
+            <?php if ($showAdvancedCentralControls) { ?>
+                <span class="itg-journey-chip" data-central-journey="configuracao">
+                    <strong><?= $this->escape(__('Configuração', 'glpiintegaglpi')); ?></strong>
+                    <?= $this->escape(__('entidade e SLA', 'glpiintegaglpi')); ?>
+                </span>
+                <span class="itg-journey-chip" data-central-journey="governanca">
+                    <strong><?= $this->escape(__('Governança', 'glpiintegaglpi')); ?></strong>
+                    <?= $this->escape(__('delivery e diagnóstico', 'glpiintegaglpi')); ?>
+                </span>
+            <?php } else { ?>
+                <span class="itg-journey-chip itg-journey-chip--muted" data-central-journey="tecnico">
+                    <?= $this->escape(__('Visão técnica: somente atendimento e contexto necessário.', 'glpiintegaglpi')); ?>
+                </span>
+            <?php } ?>
+        </div>
+
         <details class="itg-central-filter-panel">
             <summary class="btn btn-sm btn-outline-secondary">
                 <?= $this->escape(__('Filtros', 'glpiintegaglpi')); ?>
@@ -426,6 +520,20 @@ $operationalFilterMap = [
                         <?php } else { ?>
                             <?= $this->escape(__('Mostrar apenas os meus', 'glpiintegaglpi')); ?>
                         <?php } ?>
+                    </button>
+                </div>
+                <div class="itg-central-quick-filters" aria-label="<?= $this->escape(__('Filtros rápidos', 'glpiintegaglpi')); ?>">
+                    <button type="submit" class="itg-quick-filter" name="status" value="open" onclick="this.form.status.value='open'">
+                        <?= $this->escape(__('Abertos', 'glpiintegaglpi')); ?>
+                    </button>
+                    <button type="submit" class="itg-quick-filter" name="operational_state" value="awaiting_entity" onclick="this.form.operational_state.value='awaiting_entity'">
+                        <?= $this->escape(__('Aguardando entidade', 'glpiintegaglpi')); ?>
+                    </button>
+                    <button type="submit" class="itg-quick-filter" name="delivery" value="failed" onclick="this.form.delivery.value='failed'">
+                        <?= $this->escape(__('Falha Meta', 'glpiintegaglpi')); ?>
+                    </button>
+                    <button type="submit" class="itg-quick-filter" name="inactivity" value="attention" onclick="this.form.inactivity.value='attention'">
+                        <?= $this->escape(__('Inatividade', 'glpiintegaglpi')); ?>
                     </button>
                 </div>
                 <div class="row g-2 align-items-end">
@@ -686,8 +794,45 @@ $operationalFilterMap = [
                         $canSoftClose = $canUpdateActions
                             && !empty($row['can_soft_close'])
                             && $conversationId !== '';
+                        $actionSignals = [];
+                        if ($assignedUserId <= 0 && $effectiveStatus === 'open') {
+                            $actionSignals[] = __('sem técnico', 'glpiintegaglpi');
+                        }
+                        if ($canConfirmEntity || $effectiveStatus === 'awaiting_entity_selection') {
+                            $actionSignals[] = __('entidade pendente', 'glpiintegaglpi');
+                        }
+                        if ($profilePending !== '' && $profilePending !== '-') {
+                            $actionSignals[] = __('perfil pendente', 'glpiintegaglpi');
+                        }
+                        if ((string) ($row['last_delivery_status'] ?? '') === 'failed' || $lastDeliveryError !== '') {
+                            $actionSignals[] = __('falha Meta', 'glpiintegaglpi');
+                        }
+                        if (!$windowOpen && $windowAlert !== '') {
+                            $actionSignals[] = __('janela fechada', 'glpiintegaglpi');
+                        }
+                        if ($inactivityStatusLabel !== '') {
+                            $actionSignals[] = __('inatividade', 'glpiintegaglpi');
+                        }
+                        if ($stalledLabel !== '') {
+                            $actionSignals[] = __('tempo parado', 'glpiintegaglpi');
+                        }
+                        if (!empty($riskBadges) || in_array($slaStatus, ['risk', 'breached', 'overdue'], true)) {
+                            $actionSignals[] = __('risco', 'glpiintegaglpi');
+                        }
+                        $actionSignals = array_values(array_unique(array_filter($actionSignals)));
+                        $cardClasses = ['itg-central-row'];
+                        if ($assignedUserId === $currentUserId) {
+                            $cardClasses[] = 'itg-card--mine';
+                        }
+                        if ($actionSignals !== []) {
+                            $cardClasses[] = 'itg-card--requires-action';
+                        }
+                        if (!empty($riskBadges) || (string) ($row['last_delivery_status'] ?? '') === 'failed' || in_array($slaStatus, ['risk', 'breached', 'overdue'], true)) {
+                            $cardClasses[] = 'itg-card--risk';
+                        }
                         ?>
                         <tr
+                            class="<?= $this->escape(implode(' ', $cardClasses)); ?>"
                             data-conversation-id="<?= $this->escape($conversationId); ?>"
                             data-ticket-id="<?= $ticketId; ?>"
                             data-phone="<?= $this->escape(!empty($row['pii_unmasked']) ? $phone : $maskedPhone); ?>"
@@ -730,6 +875,7 @@ $operationalFilterMap = [
                             data-sla-solution-deadline="<?= $this->escape($slaSolutionDeadline !== '' ? $slaSolutionDeadline : '-'); ?>"
                             data-sla-paused="<?= $slaPausedMinutes; ?>"
                             data-sla-reopen="<?= $slaReopenCount; ?>"
+                            data-action-signals="<?= $this->escape(implode(', ', $actionSignals)); ?>"
                             data-can-reply="<?= $canReply ? '1' : '0'; ?>"
                             data-can-edit-entity="<?= $canEditEntity ? '1' : '0'; ?>"
                             data-can-soft-close="<?= $canSoftClose ? '1' : '0'; ?>"
@@ -752,6 +898,12 @@ $operationalFilterMap = [
                                             <?= $this->escape($ticketLabel); ?>
                                         </span>
                                     </div>
+                                    <?php if ($actionSignals !== []) { ?>
+                                        <div class="itg-card-action-strip">
+                                            <strong><?= $this->escape(__('Exige ação', 'glpiintegaglpi')); ?>:</strong>
+                                            <?= $this->escape(implode(' · ', $actionSignals)); ?>
+                                        </div>
+                                    <?php } ?>
                                     <div class="itg-card-badges my-2">
                                         <?php if ($assignedUserId === $currentUserId) { ?>
                                             <span class="badge bg-primary"><?= $this->escape(__('Minha', 'glpiintegaglpi')); ?></span>
@@ -1178,10 +1330,16 @@ $operationalFilterMap = [
                         </div>
                     </div>
                 </div>
+                <div class="itg-context-group-title" data-central-journey="atendimento">
+                    <?= $this->escape(__('Atendimento', 'glpiintegaglpi')); ?>
+                </div>
                 <div class="itg-context-item">
                     <small class="text-muted d-block"><?= $this->escape(__('Contato', 'glpiintegaglpi')); ?></small>
                     <span class="js-integaglpi-central-context-contact">-</span><br>
                     <span class="small text-muted js-integaglpi-central-context-phone">-</span>
+                </div>
+                <div class="itg-context-group-title" data-central-journey="conhecimento">
+                    <?= $this->escape(__('Conhecimento', 'glpiintegaglpi')); ?>
                 </div>
                 <div class="itg-context-item">
                     <small class="text-muted d-block"><?= $this->escape(__('Perfil informado', 'glpiintegaglpi')); ?></small>
@@ -1222,6 +1380,9 @@ $operationalFilterMap = [
                     <small class="text-muted d-block"><?= $this->escape(__('Status', 'glpiintegaglpi')); ?></small>
                     <span class="js-integaglpi-central-context-status">-</span>
                 </div>
+                <div class="itg-context-group-title" data-central-journey="configuracao">
+                    <?= $this->escape($showAdvancedCentralControls ? __('Configuração', 'glpiintegaglpi') : __('Operação', 'glpiintegaglpi')); ?>
+                </div>
                 <div class="itg-context-item">
                     <small class="text-muted d-block"><?= $this->escape(__('Entidade', 'glpiintegaglpi')); ?></small>
                     <span class="js-integaglpi-central-context-entity">-</span>
@@ -1249,19 +1410,24 @@ $operationalFilterMap = [
                     <small class="text-muted d-block"><?= $this->escape(__('Tentativa de entidade', 'glpiintegaglpi')); ?></small>
                     <span class="js-integaglpi-central-context-attempt">-</span>
                 </div>
-                <div class="itg-context-item">
-                    <small class="text-muted d-block"><?= $this->escape(__('IA / CSAT / Contrato', 'glpiintegaglpi')); ?></small>
-                    <span class="js-integaglpi-central-context-ai">-</span><br>
-                    <span class="js-integaglpi-central-context-csat">-</span><br>
-                    <span class="js-integaglpi-central-context-contract">-</span>
-                </div>
+                <?php if ($showAdvancedCentralControls) { ?>
+                    <div class="itg-context-group-title" data-central-journey="governanca">
+                        <?= $this->escape(__('Governança', 'glpiintegaglpi')); ?>
+                    </div>
+                    <div class="itg-context-item">
+                        <small class="text-muted d-block"><?= $this->escape(__('IA / CSAT / Contrato', 'glpiintegaglpi')); ?></small>
+                        <span class="js-integaglpi-central-context-ai">-</span><br>
+                        <span class="js-integaglpi-central-context-csat">-</span><br>
+                        <span class="js-integaglpi-central-context-contract">-</span>
+                    </div>
+                <?php } ?>
                 <div class="itg-context-item">
                     <small class="text-muted d-block"><?= $this->escape(__('Atalhos', 'glpiintegaglpi')); ?></small>
                     <a class="js-integaglpi-central-context-whatsapp" href="#" target="_blank" rel="noopener noreferrer">
                         <?= $this->escape(__('Contexto WhatsApp', 'glpiintegaglpi')); ?>
                     </a>
                 </div>
-                <?php if ($diagnostics !== null) { ?>
+                <?php if ($showAdvancedCentralControls && $diagnostics !== null) { ?>
                     <div class="itg-context-item js-integaglpi-central-diagnostics-readonly">
                         <small class="text-muted d-block"><?= $this->escape(__('Diagnóstico somente leitura', 'glpiintegaglpi')); ?></small>
                         <?php $node = is_array($diagnostics['node'] ?? null) ? $diagnostics['node'] : []; ?>
@@ -1744,7 +1910,54 @@ $operationalFilterMap = [
         const deliveryAlert = deliveryError !== ''
             ? '<div class="alert alert-danger py-2 my-2">Falha Meta: ' + escapeHtml(deliveryError) + '</div>'
             : '';
+        const actionSignals = [];
+        if (assignedUserId <= 0 && status === 'open') {
+            actionSignals.push('sem técnico');
+        }
+        if (status === 'awaiting_entity_selection' || row.can_confirm_entity) {
+            actionSignals.push('entidade pendente');
+        }
+        if (profilePending !== '' && profilePending !== '-') {
+            actionSignals.push('perfil pendente');
+        }
+        if (deliveryStatus === 'failed' || deliveryError !== '') {
+            actionSignals.push('falha Meta');
+        }
+        if (!windowOpen && String(windowInfo.alert || '').trim() !== '') {
+            actionSignals.push('janela fechada');
+        }
+        if (inactivityStatus !== '') {
+            actionSignals.push('inatividade');
+        }
+        if (stalledLabel !== '') {
+            actionSignals.push('tempo parado');
+        }
+        if ((Array.isArray(row.risk_badges) && row.risk_badges.length > 0)
+            || ['risk', 'breached', 'overdue'].indexOf(slaStatus) !== -1) {
+            actionSignals.push('risco');
+        }
+        const uniqueActionSignals = actionSignals.filter(function (value, index, list) {
+            return value && list.indexOf(value) === index;
+        });
+        const actionStrip = uniqueActionSignals.length > 0
+            ? '<div class="itg-card-action-strip"><strong>Exige ação:</strong> '
+                + escapeHtml(uniqueActionSignals.join(' · '))
+                + '</div>'
+            : '';
         const element = document.createElement('tr');
+        const rowClasses = ['itg-central-row'];
+        if (row.can_reply) {
+            rowClasses.push('itg-card--mine');
+        }
+        if (uniqueActionSignals.length > 0) {
+            rowClasses.push('itg-card--requires-action');
+        }
+        if ((Array.isArray(row.risk_badges) && row.risk_badges.length > 0)
+            || deliveryStatus === 'failed'
+            || ['risk', 'breached', 'overdue'].indexOf(slaStatus) !== -1) {
+            rowClasses.push('itg-card--risk');
+        }
+        element.className = rowClasses.join(' ');
         element.setAttribute('data-conversation-id', conversationId);
         element.setAttribute('data-ticket-id', String(ticketId));
         element.setAttribute('data-phone', phone);
@@ -1787,6 +2000,7 @@ $operationalFilterMap = [
         element.setAttribute('data-sla-solution-deadline', slaSolutionDeadline || '-');
         element.setAttribute('data-sla-paused', String(slaPausedMinutes));
         element.setAttribute('data-sla-reopen', String(slaReopenCount));
+        element.setAttribute('data-action-signals', uniqueActionSignals.join(', '));
         element.setAttribute('data-can-reply', canUpdateActions && row.can_reply ? '1' : '0');
         element.setAttribute('data-can-edit-entity', canUpdateActions && row.can_edit_entity ? '1' : '0');
         element.setAttribute('data-can-soft-close', canUpdateActions && row.can_soft_close ? '1' : '0');
@@ -1800,6 +2014,7 @@ $operationalFilterMap = [
             + '<div class="itg-card-meta">' + escapeHtml(maskedPhone)
             + (profileCompany !== '' ? ' · ' + escapeHtml(profileCompany) : '') + '</div>'
             + '</div><span class="badge bg-light text-dark">' + escapeHtml(ticketLabel) + '</span></div>'
+            + actionStrip
             + '<div class="itg-card-badges my-2">'
             + ownershipBadge
             + '<span class="badge bg-secondary">' + escapeHtml(statusLabel) + '</span>'
