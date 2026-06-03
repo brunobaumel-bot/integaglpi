@@ -88,7 +88,10 @@ $urls = [
                     <?= $escape(__('WhatsApp / Meta', 'glpiintegaglpi')); ?>
                 </a>
                 <a class="btn btn-sm btn-outline-primary" href="<?= $escape($urls['auditoria']); ?>">
-                    <?= $escape(__('Auditoria e Eventos', 'glpiintegaglpi')); ?>
+                    <?= $escape(__('Auditoria', 'glpiintegaglpi')); ?>
+                </a>
+                <a class="btn btn-sm btn-outline-primary" href="<?= $escape($urls['events']); ?>">
+                    <?= $escape(__('Eventos', 'glpiintegaglpi')); ?>
                 </a>
                 <a class="btn btn-sm btn-outline-primary" href="<?= $escape($urls['diagnostico_op']); ?>">
                     <?= $escape(__('Diagnóstico / Readiness', 'glpiintegaglpi')); ?>

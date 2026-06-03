@@ -180,7 +180,11 @@ final class TechnicalHealthDashboardStaticTest extends TestCase
         self::assertStringContainsString('Áreas consolidadas:', $template);
         self::assertStringContainsString('Monitoramento Operacional', $template);
         self::assertStringContainsString('WhatsApp / Meta', $template);
-        self::assertStringContainsString('Auditoria e Eventos', $template);
+        self::assertStringContainsString('Auditoria', $template);
+        self::assertStringContainsString('Eventos', $template);
+        self::assertStringContainsString('$urls[\'auditoria\']', $template);
+        self::assertStringContainsString('$urls[\'events\']', $template);
+        self::assertStringContainsString("Plugin::getAuditUrl() . '?view=events'", $template);
         self::assertStringContainsString('Diagnóstico / Readiness', $template);
         self::assertStringContainsString('Health / Runtime', $template);
         self::assertStringContainsString('config.form.php?tab=diagnostics', $template);

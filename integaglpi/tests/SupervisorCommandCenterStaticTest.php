@@ -141,6 +141,16 @@ final class SupervisorCommandCenterStaticTest extends TestCase
         }
     }
 
+    public function testSupervisorDrilldownsExposeSlaAndInactivity(): void
+    {
+        $service = $this->read('src/Service/SupervisorCommandCenterService.php');
+
+        self::assertStringContainsString('SLA / Qualidade', $service);
+        self::assertStringContainsString("Plugin::getQualityDashboardUrl() . '?sla=risk'", $service);
+        self::assertStringContainsString('Inatividade / Autoclose', $service);
+        self::assertStringContainsString("Plugin::getQualityDashboardUrl() . '?inactivity=autoclose_done'", $service);
+    }
+
     public function testNoPunitiveLanguage(): void
     {
         $template = $this->read('templates/supervisor_command_center.php');

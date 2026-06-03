@@ -440,6 +440,8 @@ final class SupervisorCommandCenterService
         return [
             ['label' => __('Backoffice Supervisor', 'glpiintegaglpi'), 'url' => Plugin::getSupervisorBackofficeUrl(), 'hint' => __('Revisões e tickets em acompanhamento', 'glpiintegaglpi')],
             ['label' => __('Dashboard de Qualidade', 'glpiintegaglpi'), 'url' => Plugin::getQualityDashboardUrl(), 'hint' => __('CSAT, SLA, delivery e qualidade', 'glpiintegaglpi')],
+            ['label' => __('SLA / Qualidade', 'glpiintegaglpi'), 'url' => Plugin::getQualityDashboardUrl() . '?sla=risk', 'hint' => __('Drill-down para atendimentos com SLA em risco', 'glpiintegaglpi')],
+            ['label' => __('Inatividade / Autoclose', 'glpiintegaglpi'), 'url' => Plugin::getQualityDashboardUrl() . '?inactivity=autoclose_done', 'hint' => __('Drill-down para encerramentos e timers de inatividade', 'glpiintegaglpi')],
             ['label' => __('Monitor Online', 'glpiintegaglpi'), 'url' => Plugin::getOnlineMonitorUrl() . '?view=all', 'hint' => __('Conversas e filas atuais', 'glpiintegaglpi')],
             ['label' => __('Alertas IA', 'glpiintegaglpi'), 'url' => Plugin::getOnlineMonitorUrl() . '?tab=ai_alerts', 'hint' => __('Alertas pendentes de revisão humana', 'glpiintegaglpi')],
             ['label' => __('Relatórios Operacionais', 'glpiintegaglpi'), 'url' => Plugin::getSupervisorBackofficeUrl() . '?view=reports', 'hint' => __('Relatórios existentes sem nova extração', 'glpiintegaglpi')],
