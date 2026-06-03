@@ -76,3 +76,20 @@ o ambiente. Regras de exibição:
 - URLs são reduzidas a `scheme://host(:porta)`; nenhuma URL completa, token, PSK ou senha é exibida.
 - A tela **não altera** flag, `.env`, Docker ou produção. Alteração de flag permanece manual e com gate.
 - Migrations 044/045: status por verificação de arquivo (sem acesso ao banco), apenas informativo.
+
+## V8 Final — Produto Operacional Controlado
+
+| Flag | Ambiente | Default seguro | Owner da decisão | Risco se ativada | Gate necessário |
+| --- | --- | --- | --- | --- | --- |
+| `OUTBOUND_SEND_MODE` | Todos | `mock` fora de produção controlada | Dono operacional WhatsApp | Envio real indevido | Smoke Meta + janela + aprovação humana |
+| `AI_SUPERVISOR_ENABLED` | Todos | `false` | Supervisão | Análise automática inesperada | Dry-run local + Cursor review |
+| `AI_SUPERVISOR_DRY_RUN` | Todos | `true` | Supervisão | Sugestão interpretada como ação | Evidência de read-only |
+| `AI_PILOT_CLOUD_ENABLED` | Todos | `false` | DPO + direção + admin | Contexto externo sem base legal | DPO, direção, admin, incidentAck |
+| `AI_PILOT_EMBEDDINGS_ENABLED` | Todos | `false` | DPO + direção | Envio externo de dados | PII Guard + smoke sintético |
+| `EXTERNAL_RESEARCH_CLOUD_ENABLED` | Todos | `false` | DPO/LGPD | Cloud com PII se guard falhar | Consentimento humano + PII Guard + audit |
+| `GLPI_KB_SEARCH_URL` | TESTE/HOMOLOGAÇÃO | vazio até endpoint validado | Admin plugin | Busca local quebrada ou lenta | Bearer interno + smoke local |
+| `LOGMEIN_INTEGRATION_ENABLED` | Todos | `false` | Infra + segurança | Dependência externa indevida | Smoke read-only sem cliente real |
+| `LOGMEIN_RECONCILIATION_ENABLED` | Todos | `false` | Infra + segurança | Chamada de relatório/provider instável | Circuit breaker + smoke manual |
+| `META_WEBHOOK_CONFIGURED` | Diagnóstico | informativo | Meta owner | Diagnóstico incompleto | Read-only; não altera configuração |
+
+Defaults seguros significam: cloud OFF, LogMeIn OFF, IA assistiva sem mutação, KB sem autopublicação, produção com gate humano.

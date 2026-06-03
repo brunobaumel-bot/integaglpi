@@ -117,3 +117,9 @@ Pacote 1 — Central Enterprise 3.0 + Observabilidade Segura:
   reorganizar sem validação de rotas/RBAC em ambiente real violaria as STOP conditions
   ("não quebrar rotas atuais" / "técnico comum ganhar acesso indevido").
 - Nenhuma alteração no runtime da Ajuda Inteligente, Copiloto, Ollama, migrations ou produção.
+
+Pacote final — Governance, LGPD e Product Readiness:
+- **Documentado**: política LGPD/retencao proposta em `docs/lgpd_retention_policy.md`, com owners `OWNER_A_DEFINIR` como gate obrigatório antes de qualquer expurgo futuro.
+- **Documentado**: checklist de readiness em `docs/product_readiness_checklist.md`, cobrindo separação TESTE/HOMOLOGAÇÃO/PRODUÇÃO, dependências, pre-deploy, post-deploy, go/no-go e suporte.
+- **Atualizado**: `docs/feature_flags_matrix.md`, `docs/release_runbook.md`, `docs/v7_final_readiness.md` e `docs/smoke_tests.md` com gates V8 finais.
+- **Sem runtime**: nenhum PHP operacional, Node, migration, Docker, `.env`, WhatsApp, SmartHelp, LogMeIn ou banco foi alterado nesta fase documental.

@@ -1,6 +1,6 @@
-# V7 Final Readiness
+# V7/V8 Final Readiness
 
-Phase: `integaglpi_v7_m5_enterprise_controlado_001`
+Phase: `integaglpi_v8_governance_lgpd_product_readiness_001`
 Updated: 2026-06-03
 
 ## Executive Status
@@ -8,6 +8,8 @@ Updated: 2026-06-03
 V7 está preparado para revisão final como pacote enterprise controlado, não como SaaS completo. A entrega preserva operação GLPI + WhatsApp, IA assistiva, governança de flags, LogMeIn read-only opcional e documentação de release.
 
 Produção continua bloqueada até gate humano, Cursor review, smoke manual e deploy manual.
+
+V8 adiciona readiness documental de produto: governança de ambientes, LGPD/retencao proposta, matriz final de flags, smoke final e gates humanos. Nenhum runtime, banco, `.env`, Docker ou produção é alterado por esta fase.
 
 ## Macro Status
 
@@ -30,6 +32,8 @@ Produção continua bloqueada até gate humano, Cursor review, smoke manual e de
 | Problem management assistivo | OK | Read-only/agregado; sem problem record automático |
 | Coaching técnico | OK | Não punitivo e agregado |
 | Produção | BLOCKED_MANUAL_GATE | Exige deploy manual, smoke e aprovação |
+| Product readiness V8 | OK_DOCS | `docs/product_readiness_checklist.md` |
+| LGPD retention policy V8 | PENDENTE_OWNER | `docs/lgpd_retention_policy.md` usa `OWNER_A_DEFINIR` como gate |
 
 ## Remaining Risks
 
@@ -61,6 +65,16 @@ Produção continua bloqueada até gate humano, Cursor review, smoke manual e de
 5. Operador humano executa deploy.
 6. Smoke pós-deploy documentado.
 7. Owner assina aceite.
+
+## V8 Additional Production Gates
+
+1. `docs/lgpd_retention_policy.md` revisado por DPO/owner.
+2. `docs/product_readiness_checklist.md` assinado pelo responsável operacional.
+3. Feature flags críticas revisadas com defaults seguros.
+4. Cloud continua off salvo todos os gates explícitos.
+5. LogMeIn continua opcional/read-only.
+6. Nenhum smoke final pendente em HOMOLOGAÇÃO.
+7. Nenhum dado é apagado; expurgo futuro exige fase própria.
 
 ## Manual Handoff
 

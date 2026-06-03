@@ -1,11 +1,11 @@
-# Release Runbook - IntegraGLPI V7
+# Release Runbook - IntegraGLPI V7/V8
 
-Phase: `integaglpi_v7_m5_enterprise_controlado_001`
+Phase: `integaglpi_v8_governance_lgpd_product_readiness_001`
 Updated: 2026-06-03
 
 ## Purpose
 
-Este runbook fecha o V7 como operação controlada. Ele não autoriza deploy automático, rsync, aplicação de migration em produção, alteração de `.env` ou envio WhatsApp real.
+Este runbook fecha V7/V8 como operação controlada. Ele não autoriza deploy automático, rsync, aplicação de migration em produção, alteração de `.env` ou envio WhatsApp real.
 
 ## Release Gates
 
@@ -93,3 +93,31 @@ Executar os smokes em `docs/smoke_tests.md`, seção `V7 Final - Enterprise Cont
 - Problem management é assistivo/read-only.
 - Coaching é não punitivo e agregado.
 - Retenção LGPD precisa de owner humano antes de qualquer expurgo automático.
+
+## V8 Final Governance Addendum
+
+### Environment Gate
+
+| Ambiente | Gate |
+| --- | --- |
+| TESTE | Dados sintéticos ou autorizados, sem envio real indevido, sem produção. |
+| HOMOLOGAÇÃO | Smoke final V8 executado, feature flags revisadas, rollback pronto. |
+| PRODUÇÃO | Go/no-go humano, backup validado, janela aprovada, operador nomeado. |
+
+### V8 Pre-Deploy Checklist
+
+1. Conferir `docs/product_readiness_checklist.md`.
+2. Conferir `docs/lgpd_retention_policy.md`.
+3. Confirmar owner/DPO ou bloquear produção se estiver `OWNER_A_DEFINIR`.
+4. Conferir feature flags críticas em `docs/feature_flags_matrix.md`.
+5. Confirmar que SmartHelp, Copiloto e IA não enviam WhatsApp nem mutam ticket automaticamente.
+6. Confirmar que KB não autopublica artigo.
+7. Confirmar que LogMeIn permanece read-only/opcional.
+
+### V8 Post-Deploy Smoke
+
+Executar a seção `V8 Final — Product Readiness Smoke` em `docs/smoke_tests.md`.
+
+### V8 Rollback Rule
+
+Rollback deve ser manual, preferencialmente por pacote/código anterior. Dados operacionais devem ser preservados; qualquer expurgo ou restauração de banco exige DPO/DBA e fase própria.

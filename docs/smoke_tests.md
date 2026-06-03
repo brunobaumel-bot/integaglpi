@@ -257,6 +257,25 @@ na Saúde Técnica (read-only). A reorganização da Central por jornadas fica p
 | S-V8-OBS-06 | Nenhuma flag é alterada | A tela é 100% read-only; não há botão que grave flag, `.env` ou produção |
 | S-V8-OBS-07 | Ambiente PRODUÇÃO | Flag ENVIRONMENT marca badge de atenção quando detectado `producao` pela URL base |
 
+---
+
+## V8 Final — Product Readiness Smoke
+
+| ID | Smoke | Resultado esperado |
+|----|-------|--------------------|
+| S-V8-FINAL-01 | WhatsApp inbound autorizado em HOMOLOGAÇÃO | Webhook processa mensagem idempotente; cria/continua ticket conforme FSM; sem IA/cloud/LogMeIn obrigatório |
+| S-V8-FINAL-02 | Resposta técnico para WhatsApp | Envio permitido somente por técnico responsável e modo aprovado; CSRF/RBAC ativos |
+| S-V8-FINAL-03 | Criação e fechamento de chamado | Ticket abre com entidade válida; solução/fechamento sincroniza conversation/runtime sem duplicidade |
+| S-V8-FINAL-04 | Central Enterprise | Central abre, lista conversas/pre-ticket com permissões corretas e não expõe dados indevidos |
+| S-V8-FINAL-05 | Ajuda Inteligente | Clique manual gera resumo sem PII, fonte KB, checklist e perguntas; botão reabilita após erro/timeout |
+| S-V8-FINAL-06 | KB local/nativa e feedback | KB exibe fonte/confiança; feedback persiste com schema 044 aplicado ou retorna `schema_pending` sem persistir |
+| S-V8-FINAL-07 | Cloud bloqueada | Sem clique/consentimento/PII Guard/permissão, nenhuma chamada externa é feita |
+| S-V8-FINAL-08 | Cloud preview sanitizado | Preview mostra apenas contexto sanitizado e tipos detectados; payload bruto não aparece |
+| S-V8-FINAL-09 | Healthcheck | Node health/readiness e Saúde Técnica respondem com dados sanitizados; sem segredo ou URL com credencial |
+| S-V8-FINAL-10 | Migrations 044/045 | Status verificado por evidência/health/readiness; aplicação em banco é manual e fora do Codex |
+| S-V8-FINAL-11 | Feature flags seguras | Cloud OFF, LogMeIn OFF/opcional, IA sem mutação, KB sem autopublicação, produção com gate humano |
+| S-V8-FINAL-12 | Rollback | Plano de rollback manual está aprovado, backup validado e janela aberta antes de produção |
+
 Observação: a Ajuda Inteligente (runtime V7-M2) NÃO foi tocada neste pacote.
 
 ---
