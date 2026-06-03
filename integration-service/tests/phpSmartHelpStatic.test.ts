@@ -196,11 +196,12 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(action).not.toContain('page already requires plugin UPDATE');
   });
 
-  it("the smart help JS never auto-invokes cloud (cloud needs the external button + confirm)", async () => {
+  it("the smart help JS never auto-runs SmartHelp or cloud (manual click only)", async () => {
     const js = await read('integaglpi/js/ticket_ai_panel.js');
-    // Proactive auto-load calls smart_help (local), NOT smart_external.
-    expect(js).toContain('runSmartHelp(p)');
-    expect(js).toContain("post(panel, 'smart_help', extra)");
+    // Page load only marks the panel ready. It must not POST smart_help automatically.
+    expect(js).not.toContain('runSmartHelp(p)');
+    expect(js).toContain("p.dataset.smartHelpJsReady = '1'");
+    expect(js).toContain("post(panel, 'smart_help', extra, { refreshCsrfBeforePost: !!userInitiated })");
     expect(js).toContain('document.readyState !== \'loading\'');
     expect(js).toContain('event.preventDefault();');
     expect(js).toContain("runSmartHelp(panel, true);  // userInitiated = true");
@@ -214,8 +215,10 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // External (cloud) only via the explicit button + confirm dialog.
     expect(js).toContain('window.confirm');
     expect(js).toContain("post(panel, 'smart_external', { consent: '1' }");
-    // DOMContentLoaded auto-runs smart_help, not smart_external.
+    // DOMContentLoaded auto-runs neither smart_help nor smart_external.
     const onLoad = js.slice(js.indexOf('DOMContentLoaded'));
+    expect(onLoad).not.toContain("post(panel, 'smart_help'");
+    expect(onLoad).not.toContain('runSmartHelp(');
     expect(onLoad).not.toContain('smart_external');
   });
 
@@ -236,7 +239,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).toContain("resp.error === 'timeout'");
   });
 
-  it('smart help JS run button is only disabled on user-initiated click, not during auto-run', async () => {
+  it('smart help JS run button is only disabled on user-initiated click', async () => {
     const js = await read('integaglpi/js/ticket_ai_panel.js');
 
     // runSmartHelp accepts userInitiated parameter.
@@ -245,8 +248,8 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).toContain('if (runBtn && userInitiated)');
     // Button is restored only when userInitiated is true.
     expect(js).toMatch(/finally[^}]*userInitiated[^}]*runBtn\.disabled\s*=\s*false/s);
-    // Auto-run calls runSmartHelp without second arg (userInitiated = undefined → falsy).
-    expect(js).toContain('runSmartHelp(p);  // auto-run, not user-initiated');
+    // There is no page-load auto-run anymore.
+    expect(js).not.toContain('runSmartHelp(p)');
     // User click calls runSmartHelp with userInitiated = true.
     expect(js).toContain('runSmartHelp(panel, true);  // userInitiated = true');
     // Click handler emits a console.warn for diagnostics.
@@ -259,7 +262,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).toContain('configuração pendente');
   });
 
-  it('smart help recovers one-time-use CSRF token: PHP echoes fresh token, JS refreshes + retries', async () => {
+  it('smart help uses manual preflight CSRF before POST and keeps typed fallback', async () => {
     const js  = await read('integaglpi/js/ticket_ai_panel.js');
     const act = await read('integaglpi/front/ticket.whatsapp.action.php');
 
@@ -274,14 +277,19 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // Validation precedes the AI assist branch.
     expect(act.indexOf('Plugin::isCsrfValid($_POST)')).toBeLessThan(act.indexOf('$aiAssistActions'));
 
-    // ── JS side: refreshes token from response and retries once on CSRF 403 ────
+    // ── JS side: manual SmartHelp refreshes token BEFORE POST ────────────────
     // Canonical token field name preserved.
     expect(js).toContain("params.set('_glpi_csrf_token', panel.dataset.csrf");
     // Token refreshed from EVERY response body.
     expect(js).toContain('panel.dataset.csrf = body.csrf_token');
-    // CSRF failure detector keyed on 403.
+    expect(js).toContain('refreshCsrfBeforePost');
+    expect(js).toContain('return refreshCsrfToken(panel).then(function (refreshed) {');
+    expect(js).toContain("error: 'csrf_preflight_failed'");
+    expect(js).toContain("error_type: 'csrf_failed'");
+    expect(js).toContain("post(panel, 'smart_help', extra, { refreshCsrfBeforePost: !!userInitiated })");
+    // CSRF failure detector remains for non-SmartHelp helpers.
     expect(js).toContain('function isCsrfFailure(body)');
-    // Retry exactly once via postOnce.
+    // Retry exactly once via postOnce where the generic fallback path is still used.
     expect(js).toContain('function postOnce(panel, action, extra)');
     expect(js).toContain('return postOnce(panel, action, extra);');
     // No bypass: the retry path still posts the token (no skipping of validation).
@@ -300,13 +308,16 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // It is read-only: no mutation, just the helper-injected fresh token.
     expect(act).toContain("plugin_integaglpi_ticket_action_json(['ok' => true], 200); // helper injects fresh csrf_token");
 
-    // ── JS side: GET refresh helper + any-403 recovery.
+    // ── JS side: GET refresh helper + any-403 recovery for generic fallback.
     expect(js).toContain('function refreshCsrfToken(panel)');
     expect(js).toContain("csrf_token=1&_=");
     expect(js).toContain("method: 'GET'");
     // Opaque upstream 403 (invalid_json) is also treated as recoverable.
     expect(js).toContain("body.error === 'invalid_json'");
-    // On 403, JS refreshes the token THEN retries once.
+    // Manual SmartHelp uses GET refresh BEFORE the POST, not only after a 403.
+    expect(js).toContain('refreshCsrfBeforePost');
+    expect(js.indexOf('refreshCsrfToken(panel).then(function (refreshed)')).toBeLessThan(js.indexOf('postOnce(panel, action, extra).then(function (body)'));
+    // Generic fallback still refreshes on 403 and retries once.
     expect(js).toContain('return refreshCsrfToken(panel).then(function () {');
     expect(js).toContain('return postOnce(panel, action, extra);');
   });
@@ -328,14 +339,15 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(svc).not.toMatch(/->update\(|sendOutbound|sendWhatsApp|auto_publish/i);
   });
 
-  it('manual click triggers LOCAL-AI summary; auto-run does not (ai_summary gate)', async () => {
+  it('manual click triggers LOCAL-AI summary; page load does not POST SmartHelp', async () => {
     const js  = await read('integaglpi/js/ticket_ai_panel.js');
     const act = await read('integaglpi/front/ticket.whatsapp.action.php');
     const svc = await read('integaglpi/src/Service/SmartHelpService.php');
 
-    // ── JS: manual click sends ai_summary=1; auto-run omits it ────────────────
+    // ── JS: manual click sends ai_summary=1; page load does not call SmartHelp.
     expect(js).toContain("var extra = userInitiated ? { ai_summary: '1' } : undefined;");
-    expect(js).toContain("post(panel, 'smart_help', extra)");
+    expect(js).toContain("post(panel, 'smart_help', extra, { refreshCsrfBeforePost: !!userInitiated })");
+    expect(js).not.toContain('runSmartHelp(p)');
     // Source is surfaced to the technician.
     expect(js).toContain('r.summarySource || r.summary_source');
     expect(js).toContain("'resumo IA local'");
@@ -419,7 +431,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).toContain("t.closest('.js-smart-help-run')");
     // Request sends correct action name.
     expect(js).toContain("params.set('whatsapp_action', action)");
-    expect(js).toContain("post(panel, 'smart_help', extra)");
+    expect(js).toContain("post(panel, 'smart_help', extra, { refreshCsrfBeforePost: !!userInitiated })");
     // Request sends ticket_id and CSRF.
     expect(js).toContain("params.set('ticket_id'");
     expect(js).toContain("params.set('_glpi_csrf_token'");

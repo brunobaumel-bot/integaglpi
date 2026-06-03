@@ -18,7 +18,7 @@
   var SMART_HELP_TIMEOUT_MS = 25000;
 
   // Detects a recoverable 403. This includes BOTH our typed JSON csrf_failed AND the
-  // opaque GLPI middleware 403 HTML page (which r.json() can't parse → invalid_json).
+  // opaque GLPI middleware 403 HTML page (which r.json() can't parse -> invalid_json).
   // Any 403 is treated as a possibly-consumed-token case worth a single token-refresh
   // + retry; the server re-validates, so this is not a bypass.
   function isCsrfFailure(body) {
@@ -26,8 +26,8 @@
     if (body.httpStatus !== 403) { return false; }
     return body.error === 'csrf_invalid'
       || body.error_type === 'csrf_failed'
-      || body.error === 'invalid_json'   // opaque upstream 403 HTML page
-      || true;                           // any 403 → attempt one refresh+retry
+      || body.error === 'invalid_json'
+      || body.httpStatus === 403; // any 403 -> attempt one refresh+retry for non-SmartHelp helpers.
   }
 
   // Pull a fresh, unconsumed CSRF token via GET (GLPI does not CSRF-protect GET).
@@ -115,7 +115,8 @@
     });
   }
 
-  function post(panel, action, extra) {
+  function post(panel, action, extra, options) {
+    options = options || {};
     if (!panel.dataset.actionUrl) {
       // Emit a visible error immediately so the panel is never silently inert.
       setStatus(panel, 'configuração pendente', 'warning');
@@ -125,6 +126,25 @@
         missingMsgEl.className = 'mt-2 small js-smart-help-message text-warning';
       }
       return Promise.reject(new Error('Ajuda Inteligente não iniciou: ação do painel não configurada.'));
+    }
+    if (options.refreshCsrfBeforePost) {
+      return refreshCsrfToken(panel).then(function (refreshed) {
+        if (!refreshed) {
+          return {
+            ok: false,
+            error: 'csrf_preflight_failed',
+            error_type: 'csrf_failed',
+            message: 'Não foi possível obter um token de segurança fresco antes da Ajuda Inteligente. Recarregue a aba e tente novamente.'
+          };
+        }
+        return postOnce(panel, action, extra).then(function (body) {
+          if (body && body.httpStatus === 403 && !body.error_type) {
+            body.error_type = 'csrf_failed';
+            body.message = body.message || 'Acesso negado pelo GLPI após renovar o token de segurança.';
+          }
+          return body;
+        });
+      });
     }
     // First attempt. On any 403 (typed csrf_failed OR opaque GLPI middleware HTML),
     // fetch a fresh token via GET, then retry exactly once. No bypass: the server
@@ -220,10 +240,9 @@
     }
   }
 
-  // userInitiated = true  → clique manual: desabilita botão, restaura no finally.
-  // userInitiated = false → auto-run no load: NÃO desabilita (browser não dispara
-  //   click em botão disabled; se o auto-run desabilitar durante o fetch o usuário
-  //   que clicar no meio da janela de resposta não verá nada).
+  // userInitiated = true -> clique manual: desabilita botão, busca CSRF fresco,
+  // envia POST e restaura no finally.
+  // userInitiated = false -> apenas renderiza/arma o painel; não dispara SmartHelp.
   function runSmartHelp(panel, userInitiated) {
     var runBtn = panel.querySelector('.js-smart-help-run');
     var msgEl = panel.querySelector('.js-smart-help-message');
@@ -240,7 +259,7 @@
     // ai_summary=1 ONLY on manual click → backend calls local AI for the summary.
     // Auto-run (userInitiated falsy) omits it → no GPU load on tab load.
     var extra = userInitiated ? { ai_summary: '1' } : undefined;
-    post(panel, 'smart_help', extra).then(function (resp) {
+    post(panel, 'smart_help', extra, { refreshCsrfBeforePost: !!userInitiated }).then(function (resp) {
       var r = resp && resp.result ? resp.result : null;
       if (r) {
         renderResult(panel, r);
@@ -356,15 +375,14 @@
     }
   }, false);
 
-  // Proactive auto-load on render (local KB only; no cloud).
-  // userInitiated = false (omitted) → does NOT disable the run button,
-  // so any user click during the auto-run fetch still fires normally.
+  // Do not auto-run SmartHelp on render. GLPI can reject POSTs before this PHP
+  // endpoint runs when a stale token is reused, so SmartHelp is manual-only:
+  // click -> GET csrf_token=1 -> POST smart_help.
   function initSmartHelpPanels() {
     var panels = document.querySelectorAll('.integaglpi-smart-help');
     Array.prototype.forEach.call(panels, function (p) {
       // Mark panel so smoke tests / browser DevTools can confirm JS is active.
       p.dataset.smartHelpJsReady = '1';
-      runSmartHelp(p);  // auto-run, not user-initiated
     });
   }
 
