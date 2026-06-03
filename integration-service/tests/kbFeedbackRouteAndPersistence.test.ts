@@ -55,6 +55,27 @@ describe('POST /internal/glpi/ai/kb-feedback', () => {
     expect(res.status).toBe(400);
   });
 
+  it('returns a typed 500 when feedback persistence is unavailable', async () => {
+    const recordFeedback = vi.fn(async () => ({
+      ok: false,
+      status: 'failed',
+      message: 'Não foi possível registrar o feedback agora.',
+      helpfulness: null,
+    }));
+    const app = appWithFeedback(recordFeedback);
+
+    const res = await request(app)
+      .post('/internal/glpi/ai/kb-feedback')
+      .set('Authorization', AUTH)
+      .send({ ticket_id: 1, kb_candidate_id: 5, helpful: true });
+
+    expect(res.status).toBe(500);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.status).toBe('failed');
+    expect(res.body.message).toBe('Não foi possível registrar o feedback agora.');
+    expect(JSON.stringify(res.body)).not.toMatch(/relation|schema|token|authorization|bearer/i);
+  });
+
   it('accepts feedback for native GLPI KB articles using glpi_knowbaseitem_id', async () => {
     const recordFeedback = vi.fn(async () => ({
       ok: true, status: 'recorded', message: 'Feedback registrado.',

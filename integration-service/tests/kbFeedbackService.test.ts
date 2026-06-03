@@ -64,6 +64,38 @@ describe('FeedbackService (KB helpfulness loop)', () => {
     expect(recordVote).not.toHaveBeenCalled();
   });
 
+  it('returns a safe failed status when migration 044 feedback persistence is unavailable', async () => {
+    const { repo, recordVote } = makeRepoMock();
+    recordVote.mockRejectedValueOnce(new Error('relation "glpi_plugin_integaglpi_kb_article_helpfulness" does not exist'));
+    const service = new FeedbackService(repo);
+
+    const result = await service.recordFeedback({
+      kbCandidateId: 5,
+      glpiTicketId: 900,
+      technicianId: 12,
+      helpful: true,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe('failed');
+    expect(result.message).toBe('Não foi possível registrar o feedback agora.');
+    expect(result.helpfulness).toBeNull();
+    expect(recordVote).toHaveBeenCalledOnce();
+  });
+
+  it('does not emit a successful feedback audit event when persistence fails', async () => {
+    const audit = {
+      recordAuditEventSafe: vi.fn(async () => undefined),
+    };
+    const { repo, recordVote } = makeRepoMock();
+    recordVote.mockRejectedValueOnce(new Error('schema 044 unavailable'));
+    const service = new FeedbackService(repo, audit);
+
+    await service.recordFeedback({ kbCandidateId: 5, technicianId: 77, helpful: false });
+
+    expect(audit.recordAuditEventSafe).not.toHaveBeenCalled();
+  });
+
   it('emits a non-punitive audit event without technician identity or free text', async () => {
     const events: { type: string; payload: Record<string, unknown> }[] = [];
     const audit = {
