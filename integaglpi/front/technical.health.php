@@ -21,7 +21,7 @@ $service  = new TechnicalHealthDashboardService();
 $snapshot = $service->getSnapshot();
 
 Html::header(
-    __('Saúde Técnica IntegraGLPI', 'glpiintegaglpi'),
+    __('Monitoramento Operacional', 'glpiintegaglpi'),
     $_SERVER['PHP_SELF'],
     'plugins',
     MonitoramentoGroupMenu::class,

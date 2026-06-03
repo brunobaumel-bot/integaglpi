@@ -56,9 +56,18 @@ final class TechnicalHealthDashboardStaticTest extends TestCase
     public function testMenuChildInMonitoramentoGroupMenu(): void
     {
         $menu = $this->read('src/MonitoramentoGroupMenu.php');
-        self::assertStringContainsString("'saude_tecnica'", $menu);
-        self::assertStringContainsString('Saúde Técnica IntegraGLPI', $menu);
+        self::assertStringContainsString("'monitoramento_operacional'", $menu);
+        self::assertStringContainsString('Monitoramento Operacional', $menu);
         self::assertStringContainsString('getTechnicalHealthUrl()', $menu);
+        foreach ([
+            'Observabilidade WhatsApp',
+            'Diagnóstico Operacional',
+            'Auditoria Operacional',
+            'Health / Status de Serviços',
+            'Central de Eventos Operacionais',
+        ] as $oldSidebarLabel) {
+            self::assertStringNotContainsString($oldSidebarLabel, $menu, $oldSidebarLabel . ' must remain a drill-down, not a sidebar child.');
+        }
     }
 
     public function testTechnicalHealthUrlInPlugin(): void
@@ -168,6 +177,12 @@ final class TechnicalHealthDashboardStaticTest extends TestCase
         self::assertStringContainsString('getObservabilityUrl()', $template);
         self::assertStringContainsString('getOperationalDiagnosticsUrl()', $template);
         self::assertStringContainsString('getAuditUrl()', $template);
+        self::assertStringContainsString('Áreas consolidadas:', $template);
+        self::assertStringContainsString('Monitoramento Operacional', $template);
+        self::assertStringContainsString('WhatsApp / Meta', $template);
+        self::assertStringContainsString('Auditoria e Eventos', $template);
+        self::assertStringContainsString('Diagnóstico / Readiness', $template);
+        self::assertStringContainsString('Health / Runtime', $template);
         self::assertStringContainsString('config.form.php?tab=diagnostics', $template);
         self::assertStringContainsString('ai.config.php', $template);
         // All links via $escape() to prevent XSS.

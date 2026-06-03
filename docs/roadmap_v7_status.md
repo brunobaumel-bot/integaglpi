@@ -113,6 +113,10 @@ Pacote 1 — Central Enterprise 3.0 + Observabilidade Segura:
   Migrations Críticas 044/045 (verificação por arquivo, sem acesso ao banco). Segredos, tokens
   e URLs completas nunca são exibidos (URLs reduzidas a host). Nada é gravado pela tela e
   nenhuma flag/`.env` é alterada.
+- **Entregue**: consolidação de navegação operacional — Monitoramento passou a expor um único
+  filho `Monitoramento Operacional` com links internos para Saúde Técnica, WhatsApp/Meta,
+  Auditoria/Eventos, Diagnóstico/Readiness e Health/Runtime. Supervisão passou a expor um único
+  filho `Central do Supervisor`, preservando drill-downs e URLs antigas.
 - **Diferido para o Pacote 2** (requer validação de runtime no GLPI): reorganização da Central por
   jornadas (Atendimento / Conhecimento / Configuração / Governança), redução de ruído visual e
   badges críticos. Motivo: `templates/central.php` (3477 linhas) é UI de atendimento ao vivo;

@@ -179,6 +179,20 @@ Nenhuma etapa executa automaticamente no carregamento da aba.
 
 ---
 
+## V8 — Consolidação de Menus Operacionais
+
+| ID | Smoke | Resultado esperado |
+|----|-------|--------------------|
+| S-V8-MENU-01 | Abrir sidebar como admin | Monitoramento mostra um único filho `Monitoramento Operacional`; rotas antigas seguem acessíveis por links internos |
+| S-V8-MENU-02 | Abrir `Monitoramento Operacional` | Página read-only exibe Saúde Técnica, WhatsApp/Meta, Auditoria e Eventos, Diagnóstico/Readiness e Health/Runtime |
+| S-V8-MENU-03 | Acessar URLs antigas de observabilidade/diagnóstico/auditoria/health | Páginas continuam abrindo sem redirect destrutivo e sem ação mutável |
+| S-V8-MENU-04 | Abrir sidebar como supervisor | Supervisão mostra um único filho `Central do Supervisor`; drill-downs internos preservam Backoffice, Qualidade, SLA, Alertas IA e Inatividade |
+| S-V8-MENU-05 | Abrir Configuração | Rotas, Filas e Parâmetros ficam em Configuração, não em Monitoramento |
+| S-V8-MENU-06 | Login técnico comum | Técnico não vê diagnóstico avançado indevido; RBAC continua server-side |
+| S-V8-MENU-07 | Segurança visual | Nenhum segredo, token, telefone bruto, bearer, PSK ou payload bruto aparece nas telas consolidadas |
+
+---
+
 ## V7 M2 Fix10 — Transporte CSRF da Ajuda Inteligente (endpoint dedicado)
 
 A Ajuda Inteligente usa o endpoint dedicado `front/smart.help.php` (espelha `copilot.draft.php`).

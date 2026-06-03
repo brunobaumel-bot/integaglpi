@@ -49,9 +49,11 @@ $urls = [
         <div>
             <h2 class="mb-0">
                 <i class="ti ti-dashboard me-2"></i>
-                <?= $escape(__('Saúde Técnica IntegraGLPI', 'glpiintegaglpi')); ?>
+                <?= $escape(__('Monitoramento Operacional', 'glpiintegaglpi')); ?>
             </h2>
             <div class="text-muted small mt-1">
+                <?= $escape(__('Hub read-only para saúde técnica, WhatsApp/Meta, auditoria, eventos e runtime.', 'glpiintegaglpi')); ?>
+                &middot;
                 <?= $escape(__('Versão:', 'glpiintegaglpi')); ?>
                 <strong><?= $escape($snapshot['plugin_version'] ?? '—'); ?></strong>
                 &middot;
@@ -70,6 +72,34 @@ $urls = [
             <a class="btn btn-sm btn-outline-secondary" href="<?= $escape($_SERVER['PHP_SELF'] ?? ''); ?>">
                 <i class="ti ti-refresh me-1"></i><?= $escape(__('Atualizar', 'glpiintegaglpi')); ?>
             </a>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-body py-2">
+            <div class="d-flex flex-wrap align-items-center gap-2">
+                <span class="fw-bold small text-muted me-1">
+                    <?= $escape(__('Áreas consolidadas:', 'glpiintegaglpi')); ?>
+                </span>
+                <a class="btn btn-sm btn-outline-primary" href="#itg-monitoring-health">
+                    <?= $escape(__('Saúde Técnica', 'glpiintegaglpi')); ?>
+                </a>
+                <a class="btn btn-sm btn-outline-primary" href="<?= $escape($urls['observabilidade']); ?>">
+                    <?= $escape(__('WhatsApp / Meta', 'glpiintegaglpi')); ?>
+                </a>
+                <a class="btn btn-sm btn-outline-primary" href="<?= $escape($urls['auditoria']); ?>">
+                    <?= $escape(__('Auditoria e Eventos', 'glpiintegaglpi')); ?>
+                </a>
+                <a class="btn btn-sm btn-outline-primary" href="<?= $escape($urls['diagnostico_op']); ?>">
+                    <?= $escape(__('Diagnóstico / Readiness', 'glpiintegaglpi')); ?>
+                </a>
+                <a class="btn btn-sm btn-outline-primary" href="<?= $escape($urls['health']); ?>">
+                    <?= $escape(__('Health / Runtime', 'glpiintegaglpi')); ?>
+                </a>
+            </div>
+            <div class="form-text">
+                <?= $escape(__('As rotas antigas continuam acessíveis pelos links internos; a sidebar usa esta entrada única para reduzir duplicidade.', 'glpiintegaglpi')); ?>
+            </div>
         </div>
     </div>
 
@@ -259,7 +289,7 @@ $urls = [
         </summary>
         <div class="card border-top-0 rounded-top-0">
             <div class="card-body">
-                <div class="row g-3">
+        <div class="row g-3" id="itg-monitoring-health">
                     <?php
                     $rdItems = [
                         [__('Versão plugin', 'glpiintegaglpi'),    $pluginInfo['version'] ?? '—'],

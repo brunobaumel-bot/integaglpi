@@ -8,6 +8,9 @@ use CommonDBTM;
 
 /**
  * Parent menu group: Monitoramento.
+ *
+ * The sidebar exposes one consolidated operational entry. The detailed legacy
+ * routes remain reachable from the hub page as drill-down links.
  */
 final class MonitoramentoGroupMenu extends CommonDBTM
 {
@@ -40,46 +43,11 @@ final class MonitoramentoGroupMenu extends CommonDBTM
         return [
             'title'            => self::getMenuName(),
             'is_multi_entries' => true,
-                'saude_tecnica' => [
-                    'title' => __('Saúde Técnica IntegraGLPI', 'glpiintegaglpi'),
-                    'page'  => Plugin::getTechnicalHealthUrl(),
-                    'icon'  => 'ti ti-dashboard',
-                ],
-                'observabilidade_whatsapp' => [
-                    'title' => __('Observabilidade WhatsApp', 'glpiintegaglpi'),
-                    'page'  => Plugin::getObservabilityUrl(),
-                    'icon'  => 'ti ti-heartbeat',
-                ],
-                'diagnostico_operacional' => [
-                    'title' => __('Diagnóstico Operacional', 'glpiintegaglpi'),
-                    'page'  => Plugin::getOperationalDiagnosticsUrl() . '?view=diagnostics',
-                    'icon'  => 'ti ti-stethoscope',
-                ],
-                'auditoria_operacional' => [
-                    'title' => __('Auditoria Operacional', 'glpiintegaglpi'),
-                    'page'  => Plugin::getOperationLogUrl(),
-                    'icon'  => 'ti ti-shield-search',
-                ],
-                'filas_roteamento' => [
-                    'title' => __('Filas e Roteamento', 'glpiintegaglpi'),
-                    'page'  => Plugin::getRoutingOptionsAdminUrl(),
-                    'icon'  => 'ti ti-route',
-                ],
-                'roteamento_seguro' => [
-                    'title' => __('Roteamento Seguro', 'glpiintegaglpi'),
-                    'page'  => Plugin::getRoutingSafetyUrl(),
-                    'icon'  => 'ti ti-route',
-                ],
-                'health_status'   => [
-                    'title' => __('Health / Status de Serviços', 'glpiintegaglpi'),
-                    'page'  => Plugin::getOperationalDiagnosticsUrl() . '?view=health',
-                    'icon'  => 'ti ti-activity',
-                ],
-                'central_eventos' => [
-                    'title' => __('Central de Eventos Operacionais', 'glpiintegaglpi'),
-                    'page'  => Plugin::getAuditUrl() . '?view=events',
-                    'icon'  => 'ti ti-shield-search',
-                ],
+            'monitoramento_operacional' => [
+                'title' => __('Monitoramento Operacional', 'glpiintegaglpi'),
+                'page'  => Plugin::getTechnicalHealthUrl(),
+                'icon'  => 'ti ti-dashboard',
+            ],
         ];
     }
 

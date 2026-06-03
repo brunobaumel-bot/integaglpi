@@ -53,6 +53,16 @@ final class ConfiguracaoGroupMenu extends CommonDBTM
                 'page'  => Plugin::getQueueAdminUrl() . '?tab=message_settings',
                 'icon'  => 'ti ti-message-cog',
             ],
+            'filas_roteamento' => [
+                'title' => __('Rotas, Filas e Parâmetros', 'glpiintegaglpi'),
+                'page'  => Plugin::getRoutingOptionsAdminUrl(),
+                'icon'  => 'ti ti-route',
+            ],
+            'roteamento_seguro' => [
+                'title' => __('Roteamento Seguro', 'glpiintegaglpi'),
+                'page'  => Plugin::getRoutingSafetyUrl(),
+                'icon'  => 'ti ti-route',
+            ],
         ];
     }
 

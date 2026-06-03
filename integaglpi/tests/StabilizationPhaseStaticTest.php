@@ -425,11 +425,11 @@ final class StabilizationPhaseStaticTest extends TestCase
     {
         $expectations = [
             'src/WhatsAppGroupMenu.php' => ['Central de Atendimento', 'Monitor Online WhatsApp'],
-            'src/ConfiguracaoGroupMenu.php' => ['WhatsApp', 'Hub de Mensagens'],
-            'src/MonitoramentoGroupMenu.php' => ['Observabilidade WhatsApp', 'Diagnóstico Operacional', 'Auditoria Operacional', 'Filas e Roteamento', 'Roteamento Seguro', 'Health / Status de Serviços', 'Central de Eventos Operacionais'],
+            'src/ConfiguracaoGroupMenu.php' => ['WhatsApp', 'Hub de Mensagens', 'Rotas, Filas e Parâmetros', 'Roteamento Seguro'],
+            'src/MonitoramentoGroupMenu.php' => ['Monitoramento Operacional'],
             'src/IaGroupMenu.php' => ['IA & Conhecimento', 'Coaching e Onboarding IA', 'Base de Conhecimento GLPI', 'Candidatos de KB por IA', 'Pesquisa Externa Controlada', 'Mineração Histórica', 'Configuração IA'],
             'src/GestaoGroupMenu.php' => ['Contratos e Horas / Banco de Horas', 'Catálogo de Serviços', 'Importar agenda', 'Perfis e Permissões'],
-            'src/SupervisaoGroupMenu.php' => ['Backoffice Supervisor', 'Dashboard de Qualidade', 'SLA e Qualidade / métricas, aging, filas', 'Relatórios Operacionais', 'Alertas IA', 'Inatividade e Autoclose / parâmetros'],
+            'src/SupervisaoGroupMenu.php' => ['Central do Supervisor'],
         ];
 
         foreach ($expectations as $relativePath => $labels) {
@@ -444,6 +444,16 @@ final class StabilizationPhaseStaticTest extends TestCase
         $iaGroup = (string) file_get_contents($this->pluginPath('src/IaGroupMenu.php'));
         self::assertStringContainsString('Plugin::getAiOperationsUrl()', $iaGroup);
         self::assertStringContainsString('Plugin::getAiConfigUrl()', $iaGroup);
+
+        $monitoringGroup = (string) file_get_contents($this->pluginPath('src/MonitoramentoGroupMenu.php'));
+        foreach (['Observabilidade WhatsApp', 'Diagnóstico Operacional', 'Auditoria Operacional', 'Health / Status de Serviços', 'Central de Eventos Operacionais'] as $removedDuplicate) {
+            self::assertStringNotContainsString($removedDuplicate, $monitoringGroup, $removedDuplicate . ' must not appear as a separate monitoring sidebar child.');
+        }
+
+        $supervisionGroup = (string) file_get_contents($this->pluginPath('src/SupervisaoGroupMenu.php'));
+        foreach (['Backoffice Supervisor', 'Dashboard de Qualidade', 'SLA e Qualidade / métricas, aging, filas', 'Relatórios Operacionais', 'Alertas IA', 'Inatividade e Autoclose'] as $removedDuplicate) {
+            self::assertStringNotContainsString($removedDuplicate, $supervisionGroup, $removedDuplicate . ' must not appear as a separate supervision sidebar child.');
+        }
     }
 
     public function testMenuNavigationCleanupKeepsOperationalAndConfigGroupsMinimal(): void
@@ -454,7 +464,7 @@ final class StabilizationPhaseStaticTest extends TestCase
         foreach (['Central de Atendimento', 'Monitor Online WhatsApp'] as $label) {
             self::assertStringContainsString($label, $whatsapp);
         }
-        foreach (['WhatsApp', 'Hub de Mensagens'] as $label) {
+        foreach (['WhatsApp', 'Hub de Mensagens', 'Rotas, Filas e Parâmetros', 'Roteamento Seguro'] as $label) {
             self::assertStringContainsString($label, $config);
         }
         foreach (['Recepção Inteligente', 'Configurações das Mensagens', 'Avisos e Inatividade', 'Horário Comercial', 'Mídia', 'Templates do WhatsApp', 'Ticket e Solução', 'Templates WhatsApp'] as $removed) {

@@ -28,9 +28,19 @@ final class SupervisorCommandCenterStaticTest extends TestCase
     public function testMenuChildRegisteredUnderSupervisao(): void
     {
         $menu = $this->read('src/SupervisaoGroupMenu.php');
-        self::assertStringContainsString('command_center', $menu);
-        self::assertStringContainsString('Dashboard Geral do Supervisor', $menu);
+        self::assertStringContainsString('central_supervisor', $menu);
+        self::assertStringContainsString('Central do Supervisor', $menu);
         self::assertStringContainsString('supervisor.command.php', $menu);
+        foreach ([
+            'Backoffice Supervisor',
+            'Dashboard de Qualidade',
+            'SLA e Qualidade / métricas, aging, filas',
+            'Relatórios Operacionais',
+            'Alertas IA / configuração',
+            'Inatividade e Autoclose / parâmetros',
+        ] as $oldSidebarLabel) {
+            self::assertStringNotContainsString($oldSidebarLabel, $menu, $oldSidebarLabel . ' must remain a drill-down, not a sidebar child.');
+        }
     }
 
     public function testFrontControllerRequiresSupervisorRead(): void

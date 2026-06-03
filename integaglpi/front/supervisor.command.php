@@ -14,7 +14,7 @@ Session::checkRight(Plugin::RIGHT_NAME, READ);
 Plugin::requireSupervisorRead();
 
 Html::header(
-    __('Dashboard Geral do Supervisor', 'glpiintegaglpi'),
+    __('Central do Supervisor', 'glpiintegaglpi'),
     $_SERVER['PHP_SELF'],
     'plugins',
     SupervisaoGroupMenu::class
