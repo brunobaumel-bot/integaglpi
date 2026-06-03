@@ -236,6 +236,35 @@ final class ExternalResearchService
             $context['cloud_result'] = $cloudResult;
         }
         $candidate = $this->buildCandidate($context, $requestId);
+
+        // No useful technical guidance (no accepted source, no cloud answer, zero
+        // confidence). Do NOT treat this as success and do NOT persist a request —
+        // an honest "nothing useful" beats a bureaucratic success that later lets the
+        // technician generate an empty candidate.
+        if (!$this->isResearchActionable($context, $candidate)) {
+            $this->audit('EXTERNAL_RESEARCH_NO_ACTIONABLE_RESULT', null, $userId, [
+                'provider' => (string) ($providerSelection['provider'] ?? 'disabled'),
+                'model_hash' => hash('sha256', (string) ($providerSelection['model'] ?? '')),
+                'anonymized_payload_hash' => $context['sanitized']['anonymized_payload_hash'],
+            ]);
+
+            return [
+                'type' => 'warning',
+                'message' => __('A pesquisa não retornou orientação técnica utilizável.', 'glpiintegaglpi'),
+                'preview' => $context,
+                'research_result' => [
+                    'status' => 'no_actionable_result',
+                    'confidence_score' => 0,
+                    'provider' => (string) ($providerSelection['provider'] ?? 'disabled'),
+                    'model' => (string) ($providerSelection['model'] ?? ''),
+                    'source' => !empty($providerSelection['cloud']) ? 'external_research_cloud' : 'external_research_manual_catalog',
+                    'no_actionable_result' => true,
+                    'no_auto_send' => true,
+                    'no_auto_publish' => true,
+                ],
+            ];
+        }
+
         $pdo = $this->getPdo();
         $pdo->beginTransaction();
         try {
@@ -342,9 +371,25 @@ final class ExternalResearchService
         }
 
         // Sources are optional/advanced; when empty the candidate is built with low confidence using
-        // the default official allowlist as guidance. Do NOT block — proceed to build KB candidate.
+        // the default official allowlist as guidance.
 
         $candidate = $this->buildCandidate($context, $requestId);
+
+        // Defense in depth: never let the technician generate a reviewable candidate
+        // when the research produced no usable diagnosis/procedure (no source, no
+        // cloud answer, zero confidence). An empty candidate is worse than none.
+        if (!$this->isResearchActionable($context, $candidate)) {
+            $this->audit('EXTERNAL_RESEARCH_CANDIDATE_BLOCKED_NO_ACTIONABLE', $requestId, $userId, [
+                'anonymized_payload_hash' => $context['sanitized']['anonymized_payload_hash'],
+            ]);
+
+            return [
+                'type' => 'warning',
+                'message' => __('Candidato não gerado: a pesquisa não retornou orientação técnica utilizável.', 'glpiintegaglpi'),
+                'preview' => $context,
+            ];
+        }
+
         $pdo = $this->getPdo();
         $pdo->beginTransaction();
         try {
@@ -497,6 +542,28 @@ final class ExternalResearchService
             (string) ($context['provider_selection']['model'] ?? ''),
             implode("\n", $sourceUrls),
         ]));
+    }
+
+    /**
+     * Whether a confirmed research carries usable technical guidance.
+     *
+     * Useful when there is at least one validated/accepted source, OR a real cloud
+     * answer (non-empty response text), OR a non-zero aggregated confidence. When
+     * none of these hold (sources = 0, confidence = 0, no cloud answer) the result is
+     * a bureaucratic non-answer and must NOT be treated as success nor become a
+     * reviewable candidate.
+     *
+     * @param array<string, mixed> $context
+     * @param array<string, mixed> $candidate
+     */
+    private function isResearchActionable(array $context, array $candidate): bool
+    {
+        $validatedSources = is_array($context['validated_sources'] ?? null) ? $context['validated_sources'] : [];
+        $cloudResult = is_array($context['cloud_result'] ?? null) ? $context['cloud_result'] : null;
+        $cloudText = $cloudResult !== null ? trim((string) ($cloudResult['response_text'] ?? '')) : '';
+        $confidence = (int) ($candidate['confidence_score'] ?? 0);
+
+        return $validatedSources !== [] || $cloudText !== '' || $confidence > 0;
     }
 
     /**

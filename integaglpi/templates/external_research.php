@@ -52,10 +52,19 @@ $hasTicketPrefill = trim((string) ($_GET['q'] ?? '')) !== '';
         <div class="alert alert-info"><?php echo $this->escape($error); ?></div>
     <?php } ?>
 
+    <?php $noActionable = is_array($researchResult) && (string) ($researchResult['status'] ?? '') === 'no_actionable_result'; ?>
+
     <?php if ($flash !== null) { ?>
         <div class="alert alert-<?php echo $this->escape((string) ($flash['type'] ?? 'info')); ?>">
             <?php echo $this->escape((string) ($flash['message'] ?? '')); ?>
         </div>
+
+        <?php if ($noActionable) { ?>
+            <div class="alert alert-warning" role="alert">
+                <strong><?php echo $this->escape(__('Sem orientação técnica utilizável.', 'glpiintegaglpi')); ?></strong>
+                <?php echo $this->escape(__('A pesquisa não retornou diagnóstico ou procedimento aplicável, por isso não é possível gerar um candidato revisável. Refine o resumo técnico, consulte a base de conhecimento local ou registre um incidente para acompanhamento.', 'glpiintegaglpi')); ?>
+            </div>
+        <?php } ?>
 
         <?php
         $previewSources = is_array($preview['validated_sources'] ?? null) ? $preview['validated_sources'] : [];
@@ -225,7 +234,7 @@ $hasTicketPrefill = trim((string) ($_GET['q'] ?? '')) !== '';
                         <button class="btn btn-primary" type="submit" name="action" value="confirm_research">
                             <?php echo $this->escape(__('Confirmar pesquisa', 'glpiintegaglpi')); ?>
                         </button>
-                        <button class="btn btn-outline-success" type="submit" name="action" value="create_candidate">
+                        <button class="btn btn-outline-success" type="submit" name="action" value="create_candidate" <?php echo $noActionable ? 'disabled title="' . $this->escape(__('Indisponível: a pesquisa não retornou orientação técnica utilizável.', 'glpiintegaglpi')) . '"' : ''; ?>>
                             <?php echo $this->escape(__('Gerar candidato revisável', 'glpiintegaglpi')); ?>
                         </button>
                         <button class="btn btn-outline-danger" type="submit" name="action" value="report_incident">
@@ -335,9 +344,14 @@ $hasTicketPrefill = trim((string) ($_GET['q'] ?? '')) !== '';
         </div>
 
         <div class="col-lg-5">
-            <div class="card mb-3">
-                <div class="card-header"><?php echo $this->escape(__('Catálogo de fontes permitidas', 'glpiintegaglpi')); ?></div>
+            <details class="card mb-3">
+                <summary class="card-header" style="cursor: pointer;">
+                    <?php echo $this->escape(__('Catálogo de fontes permitidas (avançado / legado)', 'glpiintegaglpi')); ?>
+                </summary>
                 <div class="card-body">
+                    <p class="text-muted small">
+                        <?php echo $this->escape(__('Recurso avançado: a allowlist de fontes só é usada quando você informa URLs manualmente. O fluxo recomendado prioriza o resumo técnico local, a KB nativa e uma resposta estruturada — sem depender deste catálogo.', 'glpiintegaglpi')); ?>
+                    </p>
                     <?php if ($catalog === []) { ?>
                         <p class="text-muted mb-0"><?php echo $this->escape(__('Catálogo indisponível ou migration pendente.', 'glpiintegaglpi')); ?></p>
                     <?php } else { ?>
@@ -355,7 +369,7 @@ $hasTicketPrefill = trim((string) ($_GET['q'] ?? '')) !== '';
                         </ul>
                     <?php } ?>
                 </div>
-            </div>
+            </details>
 
             <div class="card mb-3">
                 <div class="card-header"><?php echo $this->escape(__('Conhecimento interno relacionado', 'glpiintegaglpi')); ?></div>

@@ -56,6 +56,12 @@ class FakeExecutor implements SqlExecutor {
       return { rows: [{ queue_id: 10, open_unassigned: 12 }], rowCount: 1 };
     }
 
+    if (text.includes('single_conversation_candidate')) {
+      const conversationId = String(params[0] ?? '');
+      const match = this.candidates.find((row) => row.conversation_id === conversationId) ?? null;
+      return { rows: match ? [match] : [], rowCount: match ? 1 : 0 };
+    }
+
     if (text.includes('stalled_minutes') && text.includes('glpi_plugin_integaglpi_conversations')) {
       const limit = Number(params[0] ?? this.candidates.length);
       return { rows: this.candidates.slice(0, limit), rowCount: Math.min(this.candidates.length, limit) };
@@ -209,6 +215,61 @@ describe('AiOnlineSupervisorAlertService', () => {
     expect(serialized).toContain('supervisor_requested');
     expect(serialized).toContain('possible_frustration');
     expect(serialized).toContain('Sugestão para revisão humana');
+  });
+
+  it('evaluateConversationById creates an instant supervisor alert for an inbound escalation', async () => {
+    const executor = new FakeExecutor([candidate({
+      conversation_id: 'conv-inbound-now',
+      last_message_text: 'Quero falar com o supervisor agora, isso é um absurdo.',
+      stalled_minutes: 1,
+    })]);
+    const audits: unknown[] = [];
+    const service = new AiOnlineSupervisorAlertService(
+      executor,
+      new FakeRedis(),
+      lock,
+      lowRiskScoring,
+      undefined,
+      auditSink(audits),
+    );
+
+    const result = await service.evaluateConversationById('conv-inbound-now', { deterministicOnly: true }, new Date('2026-05-27T16:00:00Z'));
+
+    expect(result.processed).toBe(1);
+    expect(result.created).toBeGreaterThan(0);
+    const serialized = JSON.stringify(executor.inserted);
+    expect(serialized).toContain('supervisor_requested');
+    expect(serialized).toContain('possible_frustration');
+    // Strictly supervisory: no customer-facing action, no ticket mutation.
+    expect(serialized).not.toMatch(/sendOutbound|MetaClient|Ticket::update|KnowbaseItem::add/i);
+    expect(JSON.stringify(audits)).toContain('AI_ONLINE_ALERT_CREATED');
+  });
+
+  it('evaluateConversationById is a no-op for an unknown/closed conversation', async () => {
+    const executor = new FakeExecutor([]);
+    const service = new AiOnlineSupervisorAlertService(executor, new FakeRedis(), lock, lowRiskScoring);
+
+    const result = await service.evaluateConversationById('does-not-exist');
+
+    expect(result).toEqual({ processed: 0, created: 0, suppressed: 0, errors: 0 });
+    expect(executor.inserted).toHaveLength(0);
+  });
+
+  it('evaluateConversationById shares the worker cooldown (no duplicate per inbound burst)', async () => {
+    const executor = new FakeExecutor([candidate({
+      conversation_id: 'conv-burst',
+      last_message_text: 'estou muito insatisfeito, vou reclamar no procon',
+      stalled_minutes: 1,
+    })]);
+    const redis = new FakeRedis();
+    const service = new AiOnlineSupervisorAlertService(executor, redis, lock, lowRiskScoring);
+
+    const first = await service.evaluateConversationById('conv-burst', {}, new Date('2026-05-27T16:00:00Z'));
+    const second = await service.evaluateConversationById('conv-burst', {}, new Date('2026-05-27T16:00:30Z'));
+
+    expect(first.created).toBeGreaterThan(0);
+    expect(second.created).toBe(0);
+    expect(second.suppressed).toBeGreaterThan(0);
   });
 
   it('respects global rate limit and max conversations per run', async () => {

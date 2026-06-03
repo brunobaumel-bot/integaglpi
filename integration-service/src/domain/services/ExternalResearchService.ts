@@ -40,11 +40,23 @@ export interface DynamicResearchInput {
 
 export interface DynamicResearchResult {
   ok: boolean;
-  status: 'completed' | 'blocked_pii' | 'no_consent' | 'provider_unavailable' | 'failed';
+  status: 'completed' | 'blocked_pii' | 'no_consent' | 'provider_unavailable' | 'no_actionable_result' | 'failed';
   message: string;
   answer: DynamicResearchAnswer | null;
   /** Sanitizer detected kinds (for transparency). */
   piiDetectedKinds: string[];
+  /** True only when the answer carries usable technical guidance (diagnosis + steps). */
+  actionable: boolean;
+}
+
+/** An answer is actionable only if it gives a diagnosis AND at least one concrete step. */
+export function isActionableAnswer(answer: DynamicResearchAnswer | null): boolean {
+  if (answer === null) {
+    return false;
+  }
+  const hasDiagnosis = typeof answer.diagnosis === 'string' && answer.diagnosis.trim().length >= 10;
+  const hasSteps = Array.isArray(answer.steps) && answer.steps.filter((s) => String(s).trim() !== '').length > 0;
+  return hasDiagnosis && hasSteps;
 }
 
 export class ExternalResearchService {
@@ -101,6 +113,7 @@ export class ExternalResearchService {
         message: 'Pesquisa externa exige confirmação explícita do técnico.',
         answer: null,
         piiDetectedKinds: [],
+        actionable: false,
       };
     }
 
@@ -126,6 +139,7 @@ export class ExternalResearchService {
         message: 'Contexto contém dados sensíveis e não foi enviado à nuvem.',
         answer: null,
         piiDetectedKinds: sanitized.detectedKinds,
+        actionable: false,
       };
     }
 
@@ -151,6 +165,7 @@ export class ExternalResearchService {
         message: 'Pesquisa externa não configurada. Contate o administrador.',
         answer: null,
         piiDetectedKinds: sanitized.detectedKinds,
+        actionable: false,
       };
     }
 
@@ -169,19 +184,37 @@ export class ExternalResearchService {
 
     try {
       const answer = await this.cloudProvider.research(sanitized.sanitizedText);
+      const actionable = isActionableAnswer(answer);
       if (auditId > 0) {
         await this.cloudAudit?.recordResponse({
           auditId,
-          responseSummary: answer.diagnosis.slice(0, 2_000),
+          responseSummary: (answer?.diagnosis ?? '').slice(0, 2_000),
           status: 'responded',
         }).catch(() => undefined);
       }
+
+      // The provider answered, but with no usable technical guidance (no
+      // diagnosis + no concrete steps). Do NOT report this as a success and do
+      // NOT expose it as a candidate to publish — return a clear, honest status
+      // so the panel shows "nothing useful" instead of a process report.
+      if (!actionable) {
+        return {
+          ok: false,
+          status: 'no_actionable_result',
+          message: 'A pesquisa não retornou orientação técnica utilizável.',
+          answer: null,
+          piiDetectedKinds: sanitized.detectedKinds,
+          actionable: false,
+        };
+      }
+
       return {
         ok: true,
         status: 'completed',
         message: '',
         answer,
         piiDetectedKinds: sanitized.detectedKinds,
+        actionable: true,
       };
     } catch {
       if (auditId > 0) {
@@ -193,6 +226,7 @@ export class ExternalResearchService {
         message: 'Pesquisa externa indisponível no momento.',
         answer: null,
         piiDetectedKinds: sanitized.detectedKinds,
+        actionable: false,
       };
     }
   }

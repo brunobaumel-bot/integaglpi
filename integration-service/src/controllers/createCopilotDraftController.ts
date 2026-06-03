@@ -134,7 +134,9 @@ function normalizeRuntimeConfig(value: unknown): CopilotDraftRuntimeConfig | und
   const enabled = boolOrUndefined(record.enabled);
   const dryRun = boolOrUndefined(record.dry_run ?? record.dryRun);
   const maxChars = boundedNumberOrUndefined(record.max_chars ?? record.maxChars, 1_000, 12_000);
-  const timeoutMs = boundedNumberOrUndefined(record.timeout_ms ?? record.timeoutMs, 5_000, 8_000);
+  // Upper bound aligned with COPILOT_MAX_TIMEOUT_MS so the plugin's DB/env timeout
+  // (AI_SUPERVISOR_TIMEOUT_SECONDS) is honored instead of being clamped to 8s.
+  const timeoutMs = boundedNumberOrUndefined(record.timeout_ms ?? record.timeoutMs, 5_000, 120_000);
 
   if (enabled !== undefined) {
     runtimeConfig.enabled = enabled;

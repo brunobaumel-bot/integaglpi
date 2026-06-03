@@ -239,7 +239,93 @@ export class AiOnlineSupervisorAlertService {
       [this.config.maxConversationsPerRun],
     );
 
-    return query.rows.map((row) => ({
+    return query.rows.map((row) => this.mapCandidateRow(row));
+  }
+
+  /**
+   * Loads a SINGLE conversation candidate by id, reusing the exact projection of
+   * loadEligibleConversations. Used by the non-blocking inbound trigger so a fresh
+   * message is evaluated immediately instead of waiting for the next worker tick.
+   */
+  private async loadConversationById(conversationId: string): Promise<ConversationCandidate | null> {
+    const query = await this.executor.query<{
+      conversation_id: string;
+      glpi_ticket_id: string | number | null;
+      status: string | null;
+      queue_id: string | number | null;
+      entity_id: string | number | null;
+      technician_id: string | number | null;
+      last_message_at: Date | null;
+      last_message_direction: string | null;
+      last_message_text: string | null;
+      updated_at: Date | null;
+      inactivity_status: string | null;
+      inactivity_skip_reason: string | null;
+      stalled_minutes: string | number | null;
+      message_count: string | number | null;
+    }>(
+      `
+        -- single_conversation_candidate
+        SELECT
+          c.id AS conversation_id,
+          c.glpi_ticket_id,
+          c.status,
+          COALESCE(rt.queue_id, c.queue_id) AS queue_id,
+          c.glpi_entity_id AS entity_id,
+          rt.assigned_user_id AS technician_id,
+          COALESCE(lm.created_at, c.last_message_at) AS last_message_at,
+          lm.direction AS last_message_direction,
+          lm.message_text AS last_message_text,
+          c.updated_at,
+          it.status AS inactivity_status,
+          it.skip_reason AS inactivity_skip_reason,
+          EXTRACT(EPOCH FROM (NOW() - COALESCE(lm.created_at, c.last_message_at, c.updated_at, c.created_at))) / 60 AS stalled_minutes,
+          COALESCE(mc.message_count, 0) AS message_count
+        FROM public.glpi_plugin_integaglpi_conversations c
+        LEFT JOIN public.glpi_plugin_integaglpi_conversation_runtime rt
+          ON rt.conversation_id = c.id
+        LEFT JOIN public.glpi_plugin_integaglpi_inactivity_tracking it
+          ON it.conversation_id = c.id
+        LEFT JOIN LATERAL (
+          SELECT direction, message_text, created_at
+          FROM public.glpi_plugin_integaglpi_messages m
+          WHERE m.conversation_id = c.id
+          ORDER BY m.created_at DESC, m.id DESC
+          LIMIT 1
+        ) lm ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT COUNT(*)::int AS message_count
+          FROM public.glpi_plugin_integaglpi_messages m
+          WHERE m.conversation_id = c.id
+        ) mc ON TRUE
+        WHERE c.id = $1
+          AND c.status NOT IN ('closed', 'cancelled')
+        LIMIT 1
+      `,
+      [conversationId],
+    );
+
+    const row = query.rows[0];
+    return row ? this.mapCandidateRow(row) : null;
+  }
+
+  private mapCandidateRow(row: {
+    conversation_id: string;
+    glpi_ticket_id: string | number | null;
+    status: string | null;
+    queue_id: string | number | null;
+    entity_id: string | number | null;
+    technician_id: string | number | null;
+    last_message_at: Date | null;
+    last_message_direction: string | null;
+    last_message_text: string | null;
+    updated_at: Date | null;
+    inactivity_status: string | null;
+    inactivity_skip_reason: string | null;
+    stalled_minutes: string | number | null;
+    message_count: string | number | null;
+  }): ConversationCandidate {
+    return {
       conversationId: row.conversation_id,
       glpiTicketId: row.glpi_ticket_id === null ? null : Number(row.glpi_ticket_id),
       status: row.status,
@@ -254,7 +340,7 @@ export class AiOnlineSupervisorAlertService {
       inactivitySkipReason: sanitizeText(row.inactivity_skip_reason ?? '', 180),
       stalledMinutes: Number(row.stalled_minutes ?? 0),
       messageCount: Number(row.message_count ?? 0),
-    }));
+    };
   }
 
   private async loadQueuePressure(): Promise<Map<number, number>> {
@@ -282,6 +368,7 @@ export class AiOnlineSupervisorAlertService {
     conversation: ConversationCandidate,
     queuePressure: Map<number, number>,
     now: Date,
+    deterministicOnly = false,
   ): Promise<AlertDraft[]> {
     const drafts = this.buildDeterministicDrafts(conversation, queuePressure);
     const riskDraft = this.buildRiskDraft(conversation);
@@ -289,15 +376,67 @@ export class AiOnlineSupervisorAlertService {
       drafts.push(riskDraft);
     }
 
-    const aiCandidates = drafts.filter((draft) => draft.requiresAi);
-    if (aiCandidates.length > 0 && this.aiSupervisorService && (conversation.glpiTicketId ?? 0) > 0) {
-      const aiDraft = await this.buildAiDraft(conversation, now);
-      if (aiDraft !== null) {
-        drafts.push(aiDraft);
+    // deterministicOnly skips the AI (Ollama) enrichment so the inbound trigger
+    // stays fast and never blocks the webhook; the worker still does AI enrichment.
+    if (!deterministicOnly) {
+      const aiCandidates = drafts.filter((draft) => draft.requiresAi);
+      if (aiCandidates.length > 0 && this.aiSupervisorService && (conversation.glpiTicketId ?? 0) > 0) {
+        const aiDraft = await this.buildAiDraft(conversation, now);
+        if (aiDraft !== null) {
+          drafts.push(aiDraft);
+        }
       }
     }
 
     return this.uniqueDrafts(drafts).slice(0, this.config.maxAlertsPerConversation);
+  }
+
+  /**
+   * Evaluates a SINGLE conversation on demand (e.g. right after an inbound message),
+   * reusing the same dedup/cooldown/rate-limit/PII-sanitization and persistence as the
+   * worker. Read-only side effects: it only writes supervisory alert rows — never
+   * mutates tickets, never sends WhatsApp. Defaults to deterministicOnly=true so it is
+   * cheap and non-blocking; the periodic worker handles AI enrichment.
+   */
+  public async evaluateConversationById(
+    conversationId: string,
+    options: { deterministicOnly?: boolean } = {},
+    now = new Date(),
+  ): Promise<AiOnlineSupervisorAlertRunResult> {
+    const result: AiOnlineSupervisorAlertRunResult = { processed: 0, created: 0, suppressed: 0, errors: 0 };
+    const trimmed = String(conversationId ?? '').trim();
+    if (trimmed === '') {
+      return result;
+    }
+
+    const conversation = await this.loadConversationById(trimmed);
+    if (conversation === null) {
+      return result;
+    }
+
+    const queuePressure = await this.loadQueuePressure();
+    try {
+      await this.lock.withLock(`ai_online_alert:${conversation.conversationId}`, async () => {
+        const evaluation = await this.evaluateConversation(conversation, queuePressure, now, options.deterministicOnly ?? true);
+        result.processed += 1;
+        for (const draft of evaluation) {
+          const created = await this.persistOrSuppress(conversation, draft, now);
+          if (created) {
+            result.created += 1;
+          } else {
+            result.suppressed += 1;
+          }
+        }
+      });
+    } catch (error: unknown) {
+      result.errors += 1;
+      await this.audit('AI_ONLINE_ALERT_SUPPRESSED', 'failed', conversation, {
+        reason: 'inbound_trigger_error',
+        error_type: this.safeErrorType(error),
+      });
+    }
+
+    return result;
   }
 
   private buildDeterministicDrafts(

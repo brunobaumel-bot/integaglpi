@@ -239,7 +239,8 @@ describe('internal copilot draft', () => {
 
     expect(response.status).toBe(201);
     expect(provider.generate).toHaveBeenCalledOnce();
-    expect(runtimeOptions).toEqual({ model: 'gemma3:12b', timeoutMs: 8000 });
+    // The DB/env timeout (90s) is now HONORED, not clamped down to 8s.
+    expect(runtimeOptions).toEqual({ model: 'gemma3:12b', timeoutMs: 90000 });
     expect(response.body.suggestion).toContain('[IA Local - gemma3:12b]');
     expect(response.body.source_type).toBe('kb');
     expect(response.body.source_name).toBe('Ativacao Office');
@@ -288,7 +289,8 @@ describe('internal copilot draft', () => {
     const result = await service.requestDraft({ context, tone: 'technical', requestedBy: 7 });
 
     expect(provider.generate).toHaveBeenCalledOnce();
-    expect(runtimeOptions).toEqual({ model: 'command-r7b:latest', timeoutMs: 8_000 });
+    // The DB-sourced timeout (45s) is honored end-to-end, no longer clamped to 8s.
+    expect(runtimeOptions).toEqual({ model: 'command-r7b:latest', timeoutMs: 45_000 });
     expect(result.draftResponse).toContain('[IA Local - command-r7b:latest]');
     expect(result.noAutoSend).toBe(true);
   });
@@ -334,6 +336,50 @@ describe('internal copilot draft', () => {
         no_prompt_logged: true,
       }),
     }));
+  });
+
+  it('returns a friendly local draft (not a raw error) when the provider TIMES OUT', async () => {
+    const provider = {
+      generate: vi.fn(async () => { throw new Error('This operation was aborted.'); }),
+    };
+    const audit = createAudit();
+    const service = new CopilotDraftService(provider, {
+      enabled: true,
+      provider: 'ollama',
+      model: 'llama3.1',
+      dryRun: false,
+      maxChars: 8_000,
+    }, audit as never);
+
+    // Does NOT throw — degrades to a useful local draft.
+    const result = await service.requestDraft({ context, tone: 'technical', requestedBy: 7 });
+
+    expect(provider.generate).toHaveBeenCalledOnce();
+    expect(result.draftResponse).toContain('provedor de IA demorou para responder');
+    expect(result.noAutoSend).toBe(true);
+    // It carries useful local next steps (checklist) and KB references, never empty.
+    expect(result.technicianChecklist.length).toBeGreaterThan(0);
+    // The fallback is audited with a sanitized reason (no raw prompt/payload).
+    expect(audit.recordAuditEventSafe).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'COPILOT_DRAFT_FALLBACK',
+      payload: expect.objectContaining({ reason: 'provider_timeout' }),
+    }));
+  });
+
+  it('still THROWS for circuit-open / busy (operational contract preserved, only timeout degrades)', async () => {
+    // A non-timeout provider failure must keep bubbling so the route maps it to 503.
+    const provider = {
+      generate: vi.fn(async () => { throw new Error('fetch failed'); }),
+    };
+    const service = new CopilotDraftService(provider, {
+      enabled: true,
+      provider: 'ollama',
+      model: 'llama3.1',
+      dryRun: false,
+      maxChars: 8_000,
+    }, createAudit() as never);
+
+    await expect(service.requestDraft({ context, tone: 'technical', requestedBy: 7 })).rejects.toThrow('fetch failed');
   });
 
   it('limits concurrent Ollama calls without queueing indefinitely', async () => {

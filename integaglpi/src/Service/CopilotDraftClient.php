@@ -12,8 +12,15 @@ use Throwable;
 final class CopilotDraftClient
 {
     private const PATH_COPILOT_DRAFT = '/internal/glpi/copilot/draft';
+    // Transport timeout for the SYNCHRONOUS HTTP calls (job creation + status poll).
+    // These return immediately (202 / status), so 8s is plenty — the actual model
+    // generation runs in the async job and is bounded by the generation budget below.
     private const COPILOT_DRAFT_TIMEOUT_MS = 8000;
     private const COPILOT_DRAFT_CONNECT_TIMEOUT_MS = 3000;
+    // Generation budget (ms) sent to Node as runtime_config.timeout_ms. This is the
+    // model's thinking time for the background async job — it must honor the DB/env
+    // configuration (AI_SUPERVISOR_TIMEOUT_SECONDS), NOT the transport timeout above.
+    private const COPILOT_GENERATION_TIMEOUT_MS = 120000;
     private const AI_SETTINGS_CONTEXT = 'ai_settings';
     private const AI_SETTINGS_TABLE = 'glpi_plugin_integaglpi_configs';
 
@@ -195,8 +202,8 @@ final class CopilotDraftClient
             ), 1000, 12000, 6000),
             'timeout_ms' => $this->boundedInteger($this->aiSettingValue(
                 'copilot_timeout_ms',
-                (string) min(self::COPILOT_DRAFT_TIMEOUT_MS, max(5000, $supervisorTimeout * 1000))
-            ), 5000, self::COPILOT_DRAFT_TIMEOUT_MS, self::COPILOT_DRAFT_TIMEOUT_MS),
+                (string) min(self::COPILOT_GENERATION_TIMEOUT_MS, max(5000, $supervisorTimeout * 1000))
+            ), 5000, self::COPILOT_GENERATION_TIMEOUT_MS, self::COPILOT_GENERATION_TIMEOUT_MS),
             'source' => 'ai_settings_or_env',
             'no_auto_send' => true,
         ];

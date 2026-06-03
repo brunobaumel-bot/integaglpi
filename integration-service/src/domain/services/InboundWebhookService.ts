@@ -116,6 +116,15 @@ interface ExistingEntitySelectionWaitInput {
   conversation: Conversation;
 }
 
+/**
+ * Narrow, fire-and-forget trigger for near-real-time supervisory alert analysis.
+ * The implementation MUST be non-blocking and self-contained (swallow its own errors):
+ * it is invoked without await so it can never block or break inbound ingestion.
+ */
+export interface AiOnlineAlertInboundTrigger {
+  onInboundConversationActivity(conversationId: string): void;
+}
+
 export class InboundWebhookService {
   public constructor(
     private readonly webhookEventRepository: WebhookEventRepository,
@@ -137,7 +146,31 @@ export class InboundWebhookService {
     private readonly customerExperienceService: Pick<CustomerExperienceService, 'resolveGlpiRequester'> | null = null,
     private readonly messageConfigurationService: MessageConfigurationService | null = null,
     private readonly businessHoursService: BusinessHoursService | null = null,
+    private readonly aiOnlineAlertTrigger: AiOnlineAlertInboundTrigger | null = null,
   ) {}
+
+  /**
+   * Fire-and-forget near-real-time supervisory analysis for a conversation that just
+   * received an inbound text/interactive message. Never awaited, never throws into the
+   * inbound flow — read-only beyond writing supervisory alert rows (no ticket mutation,
+   * no WhatsApp). Media/status messages are skipped (no textual risk signal).
+   */
+  private triggerInboundAlertAnalysis(
+    conversationId: string | null,
+    messageType: string,
+  ): void {
+    if (this.aiOnlineAlertTrigger === null || conversationId === null) {
+      return;
+    }
+    if (messageType !== 'text' && messageType !== 'interactive') {
+      return;
+    }
+    try {
+      this.aiOnlineAlertTrigger.onInboundConversationActivity(conversationId);
+    } catch {
+      // The trigger is best-effort: a failure here must never affect ingestion.
+    }
+  }
 
   public async process(
     payload: MetaWebhookPayload,
@@ -2077,6 +2110,10 @@ export class InboundWebhookService {
         messageId: inboundMessage.messageId,
         outcome: 'failed',
       };
+    } finally {
+      // Near-real-time supervisory analysis for the conversation that just received an
+      // inbound message. Fire-and-forget: never awaited, never throws into ingestion.
+      this.triggerInboundAlertAnalysis(conversationId, inboundMessage.messageType);
     }
   }
 

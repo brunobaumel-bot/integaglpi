@@ -84,13 +84,23 @@
   function runSmartHelp(panel) {
     setStatus(panel, 'analisando', 'info');
     post(panel, 'smart_help').then(function (resp) {
-      if (resp && resp.ok && resp.result) {
-        renderResult(panel, resp.result);
-        setStatus(panel, resp.result.localResolved ? 'KB local encontrada' : 'sem KB local', resp.result.localResolved ? 'success' : 'warning');
+      var r = resp && resp.result ? resp.result : null;
+      if (r) {
+        renderResult(panel, r);
+        if (r.degraded) {
+          setStatus(panel, 'modo local (IA indisponível)', 'warning');
+        } else {
+          setStatus(panel, r.localResolved ? 'KB local encontrada' : 'sem KB local', r.localResolved ? 'success' : 'info');
+        }
       } else {
-        setStatus(panel, 'erro', 'danger');
+        // Local-first never returns a raw error; this is a transport-only fallback.
+        setStatus(panel, 'modo local', 'warning');
+        renderResult(panel, { message: 'Não foi possível contatar o serviço. Consulte a base de conhecimento manualmente.' });
       }
-    }).catch(function () { setStatus(panel, 'erro', 'danger'); });
+    }).catch(function () {
+      setStatus(panel, 'modo local', 'warning');
+      renderResult(panel, { message: 'Não foi possível contatar o serviço. Consulte a base de conhecimento manualmente.' });
+    });
   }
 
   function handleExternal(panel) {
@@ -102,6 +112,11 @@
       if (r.status === 'provider_unavailable') {
         msgEl.textContent = r.message || 'Pesquisa externa não configurada.';
         setStatus(panel, 'nuvem indisponível', 'secondary');
+      } else if (r.status === 'no_actionable_result') {
+        // The provider answered but with nothing usable — be honest, no fake candidate.
+        panel.querySelector('.js-smart-help-cloud').innerHTML = '';
+        msgEl.textContent = r.message || 'A pesquisa não retornou orientação técnica utilizável.';
+        setStatus(panel, 'sem resposta útil', 'warning');
       } else if (r.status === 'blocked_pii') {
         msgEl.textContent = 'Bloqueado: o contexto contém dados sensíveis e não foi enviado.';
         setStatus(panel, 'PII bloqueado', 'danger');

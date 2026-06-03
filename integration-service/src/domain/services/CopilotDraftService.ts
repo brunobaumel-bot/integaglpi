@@ -56,7 +56,11 @@ const COPILOT_FAILURE_THRESHOLD = 3;
 const COPILOT_COOLDOWN_MS = 60_000;
 const COPILOT_MAX_CONCURRENT_CALLS = 3;
 const COPILOT_MIN_TIMEOUT_MS = 5_000;
-const COPILOT_MAX_TIMEOUT_MS = 8_000;
+// Local models (e.g. Ollama on a remote host) routinely need more than 8s to
+// produce a draft. The previous 8s ceiling silently clamped the DB/env config
+// (AI_SUPERVISOR_TIMEOUT_SECONDS=90) down to 8s, causing a premature AbortError.
+// Allow the runtime/DB/env timeout to take effect, bounded to a safe maximum.
+const COPILOT_MAX_TIMEOUT_MS = 120_000;
 
 type CopilotCircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 
@@ -84,16 +88,44 @@ export class CopilotDraftService {
     const context = this.normalizeContext(input.context);
     await this.audit('COPILOT_DRAFT_REQUESTED', 'pending', 'info', context, input.requestedBy, effectiveConfig);
 
-    const result = effectiveConfig.dryRun
-      ? this.createDryRunDraft(context, input.tone)
-      : await this.generateWithCircuitBreaker(buildCopilotDraftPrompt(
-        context,
-        input.tone,
-        Math.min(effectiveConfig.maxChars, COPILOT_MAX_CONTEXT_CHARS),
-      ), {
-        model: effectiveConfig.model,
-        timeoutMs: effectiveConfig.timeoutMs,
-      });
+    // Provider call with a GRACEFUL local fallback specifically for PROVIDER TIMEOUT:
+    // the smoke test showed the technician getting a raw `COPILOT_PROVIDER_TIMEOUT`.
+    // On timeout we never bubble the raw error — we return a useful local draft
+    // (context summary + next steps + suggested questions) with a friendly notice.
+    // Other operational errors (circuit open, provider busy, unavailable) keep their
+    // existing contract (the controller maps them to clear 503/504 responses).
+    let result: CopilotDraftResult;
+    let providerFallback = false;
+    if (effectiveConfig.dryRun) {
+      result = this.createDryRunDraft(context, input.tone);
+    } else {
+      try {
+        result = await this.generateWithCircuitBreaker(buildCopilotDraftPrompt(
+          context,
+          input.tone,
+          Math.min(effectiveConfig.maxChars, COPILOT_MAX_CONTEXT_CHARS),
+        ), {
+          model: effectiveConfig.model,
+          timeoutMs: effectiveConfig.timeoutMs,
+        });
+      } catch (error: unknown) {
+        const reason = this.providerFallbackReason(error);
+        if (reason !== 'provider_timeout') {
+          // Preserve the existing operational contract for circuit/busy/unavailable.
+          throw error;
+        }
+        providerFallback = true;
+        await this.audit('COPILOT_DRAFT_FALLBACK', 'failed', 'warning', context, input.requestedBy, effectiveConfig, {
+          reason,
+        });
+        const fb = this.createDryRunDraft(context, input.tone);
+        result = {
+          ...fb,
+          draftResponse: 'O provedor de IA demorou para responder. Use este rascunho local como ponto de partida e revise antes de enviar.\n\n'
+            + fb.draftResponse,
+        };
+      }
+    }
     const qualityResult = this.applyDraftSourceLabel(effectiveConfig, this.applyLocalKnowledgeFirst(
       context,
       this.applySupportResponseQuality(context, result, input.tone),
@@ -107,9 +139,19 @@ export class CopilotDraftService {
       window_notice: qualityResult.windowNotice,
       kb_reference_count: qualityResult.kbReferences.length,
       draft_source: this.draftSourceLabel(effectiveConfig),
+      provider_fallback: providerFallback,
     });
 
     return { ...qualityResult, draftHash };
+  }
+
+  /** Sanitized, bounded reason for the copilot provider fallback (no raw payload). */
+  private providerFallbackReason(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/timeout|abort/i.test(message)) return 'provider_timeout';
+    if (/CIRCUIT_OPEN/i.test(message)) return 'circuit_open';
+    if (/BUSY/i.test(message)) return 'provider_busy';
+    return 'provider_unavailable';
   }
 
   private async loadRuntimeConfig(): Promise<CopilotDraftRuntimeConfig | undefined> {

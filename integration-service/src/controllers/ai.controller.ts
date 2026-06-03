@@ -69,7 +69,17 @@ export function createExternalResearchDynamicController(service: ExternalResearc
         provider: body.provider !== undefined ? String(body.provider) : null,
         humanConsent,
       });
-      const code = result.ok ? 200 : result.status === 'no_consent' ? 403 : result.status === 'blocked_pii' ? 422 : 503;
+      const code = result.ok
+        ? 200
+        : result.status === 'no_consent'
+          ? 403
+          : result.status === 'blocked_pii'
+            ? 422
+            // no_actionable_result is a valid, honest answer ("nothing useful") —
+            // not a transport failure, so surface it as 200 for the panel to show.
+            : result.status === 'no_actionable_result'
+              ? 200
+              : 503;
       return response.status(code).json({ ...result, read_only: true, remote_execution: false });
     } catch (error: unknown) {
       logger.error({ error_message: error instanceof Error ? error.message : String(error) }, '[ai][external-research]');

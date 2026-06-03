@@ -27,6 +27,11 @@ import { LogmeinReadonlyContextService } from './domain/services/LogmeinReadonly
 import { EntitySelectionService } from './domain/services/EntitySelectionService.js';
 import { ConversationSoftCloseService } from './domain/services/ConversationSoftCloseService.js';
 import { AiSupervisorService, type AiSupervisorConfig } from './domain/services/AiSupervisorService.js';
+import {
+  AiOnlineSupervisorAlertService,
+  createDefaultAiOnlineSupervisorAlertConfig,
+} from './domain/services/AiOnlineSupervisorAlertService.js';
+import { RiskScoringService } from './domain/services/RiskScoringService.js';
 import { CopilotDraftService, type CopilotDraftRuntimeConfig } from './domain/services/CopilotDraftService.js';
 import { AiPilotService } from './domain/services/AiPilotService.js';
 import { AiOperationsService } from './domain/services/AiOperationsService.js';
@@ -541,6 +546,39 @@ export function buildDependencies() {
     aiPilotRepository,
     auditService,
   );
+  // Near-real-time supervisory alert pipeline: the periodic worker scans all
+  // conversations every 60-120s; this same service is also nudged on each inbound
+  // message so explicit risk signals (frustration / supervisor request) surface
+  // immediately. Shares all dedup/cooldown/rate-limit/PII-sanitization with the worker.
+  const aiOnlineAlertRedisFacade = {
+    get: (key: string) => redisClient.get(key),
+    set: (key: string, value: string, mode?: string, ttlSeconds?: number) => {
+      if (mode === 'EX' && typeof ttlSeconds === 'number') {
+        return redisClient.set(key, value, 'EX', ttlSeconds);
+      }
+      return redisClient.set(key, value);
+    },
+    incr: (key: string) => redisClient.incr(key),
+    expire: (key: string, seconds: number) => redisClient.expire(key, seconds),
+  };
+  const aiOnlineSupervisorAlertService = new AiOnlineSupervisorAlertService(
+    postgresPool,
+    aiOnlineAlertRedisFacade,
+    new RedisKeyLock(120_000, 0, 0),
+    new RiskScoringService(),
+    aiOnlineAlertSupervisorService,
+    auditService,
+    createDefaultAiOnlineSupervisorAlertConfig(),
+  );
+  const aiOnlineAlertInboundTrigger = {
+    onInboundConversationActivity: (conversationId: string): void => {
+      // Fire-and-forget, deterministic-only (no Ollama) so the webhook is never blocked.
+      void aiOnlineSupervisorAlertService
+        .evaluateConversationById(conversationId, { deterministicOnly: true })
+        .catch(() => undefined);
+    },
+  };
+
   const inboundWebhookService = new InboundWebhookService(
     webhookEventRepository,
     messageRepository,
@@ -561,6 +599,7 @@ export function buildDependencies() {
     customerExperienceService,
     messageConfigurationService,
     businessHoursService,
+    aiOnlineAlertInboundTrigger,
   );
   return {
     inboundWebhookService,

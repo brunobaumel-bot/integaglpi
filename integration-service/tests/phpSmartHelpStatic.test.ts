@@ -34,6 +34,44 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(svc).not.toMatch(/->update\(|ITILFollowup|TicketTask|sendOutbound|sendWhatsApp/i);
   });
 
+  it('Smart Help is local-first: searches the native KB in PHP and never returns a raw error', async () => {
+    const svc = await read('integaglpi/src/Service/SmartHelpService.php');
+    const action = await read('integaglpi/front/ticket.whatsapp.action.php');
+
+    // A local-first method exists and uses the native KB search directly in PHP.
+    expect(svc).toContain('function localFirstAssist');
+    expect(svc).toContain('NativeKnowledgeBaseService');
+    expect(svc).toContain('searchVisibleArticles');
+    // Always returns ok:true (degrades to a local checklist/questions instead of erroring).
+    expect(svc).toMatch(/'ok'\s*=>\s*true/);
+    expect(svc).toContain('defaultChecklist');
+    expect(svc).toContain('defaultQuestions');
+    expect(svc).toMatch(/'degraded'/);
+
+    // The ticket action wires smart_help to the local-first method (not the raw Node call).
+    expect(action).toContain('localFirstAssist($ticketId, $summary)');
+  });
+
+  it('external research never claims success / candidate without a usable answer', async () => {
+    const svc = await read('integaglpi/src/Service/ExternalResearchService.php');
+    const tpl = await read('integaglpi/templates/external_research.php');
+
+    // Backend gate: no_actionable_result + candidate generation blocked.
+    expect(svc).toContain('isResearchActionable');
+    expect(svc).toContain("'status' => 'no_actionable_result'");
+    expect(svc).toContain('A pesquisa não retornou orientação técnica utilizável.');
+    expect(svc).toContain('EXTERNAL_RESEARCH_CANDIDATE_BLOCKED_NO_ACTIONABLE');
+    // Never auto-publishes / sends regardless of outcome.
+    expect(svc).not.toMatch(/sendOutbound|sendWhatsApp/i);
+    expect(svc).not.toMatch(/'auto_publish'\s*=>\s*true/i);
+
+    // Template demotes the source catalog to advanced/legacy and disables candidate
+    // generation when the last result was non-actionable.
+    expect(tpl).toContain('avançado / legado');
+    expect(tpl).toContain("'no_actionable_result'");
+    expect(tpl).toContain('$noActionable');
+  });
+
   it('ticket_tab.php renders an RBAC-gated, read-only Smart Help panel', async () => {
     const tab = await read('integaglpi/templates/ticket_tab.php');
 

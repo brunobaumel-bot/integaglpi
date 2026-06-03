@@ -145,6 +145,45 @@ describe('ExternalResearchService.researchDynamic (cloud, human-gated, PII-safe)
     expect(provider.research).not.toHaveBeenCalled();
   });
 
+  it('returns no_actionable_result (not completed) when the provider answers with no usable guidance', async () => {
+    // Provider responds, but with neither a real diagnosis nor concrete steps.
+    const emptyAnswer: DynamicResearchAnswer = {
+      diagnosis: '', steps: [], risks: [], commands: [], confirmationQuestions: [], references: [],
+    };
+    const research = vi.fn(async () => emptyAnswer);
+    const provider: CloudResearchProvider = { research };
+    const { repo, recordResponse } = auditMock();
+    const service = new ExternalResearchService(provider, repo, true); // cloudEnabled
+
+    const result = await service.researchDynamic({
+      context: 'office lento ao abrir documento grande apos atualizacao', ticketId: 8, profileId: 9, category: 'Office', humanConsent: true,
+    });
+
+    expect(research).toHaveBeenCalledOnce();
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe('no_actionable_result');
+    expect(result.actionable).toBe(false);
+    // No reviewable candidate can be built from a null answer.
+    expect(result.answer).toBeNull();
+    expect(result.message).toBe('A pesquisa não retornou orientação técnica utilizável.');
+    // The provider DID respond — audit reflects a response, not a transport failure.
+    expect(recordResponse).toHaveBeenCalledWith(expect.objectContaining({ status: 'responded' }));
+  });
+
+  it('marks an actionable completed answer with actionable=true', async () => {
+    const provider: CloudResearchProvider = { research: vi.fn(async () => answer()) };
+    const { repo } = auditMock();
+    const service = new ExternalResearchService(provider, repo, true);
+
+    const result = await service.researchDynamic({
+      context: 'office lento ao abrir documento grande apos atualizacao', ticketId: 9, profileId: 9, category: 'Office', humanConsent: true,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(result.actionable).toBe(true);
+    expect(result.answer?.steps.length).toBeGreaterThan(0);
+  });
+
   it('calls the cloud only when the flag is ON and a provider exists', async () => {
     const provider: CloudResearchProvider = { research: vi.fn(async () => answer()) };
     const { repo } = auditMock();

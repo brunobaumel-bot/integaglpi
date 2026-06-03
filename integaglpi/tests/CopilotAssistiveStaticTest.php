@@ -30,10 +30,14 @@ final class CopilotAssistiveStaticTest extends TestCase
     {
         $client = (string) file_get_contents($this->pluginPath('src/Service/CopilotDraftClient.php'));
 
+        // Transport timeout (synchronous job-create / status-poll calls) stays short.
         self::assertStringContainsString('private const COPILOT_DRAFT_TIMEOUT_MS = 8000', $client);
         self::assertStringContainsString('private const COPILOT_DRAFT_CONNECT_TIMEOUT_MS = 3000', $client);
+        // Generation budget (model thinking time for the async job) honors DB/env config
+        // (AI_SUPERVISOR_TIMEOUT_SECONDS) instead of being clamped to the transport timeout.
+        self::assertStringContainsString('private const COPILOT_GENERATION_TIMEOUT_MS = 120000', $client);
         self::assertStringContainsString("'timeout_ms'", $client);
-        self::assertStringContainsString('), 5000, self::COPILOT_DRAFT_TIMEOUT_MS, self::COPILOT_DRAFT_TIMEOUT_MS)', $client);
+        self::assertStringContainsString('), 5000, self::COPILOT_GENERATION_TIMEOUT_MS, self::COPILOT_GENERATION_TIMEOUT_MS)', $client);
         self::assertStringContainsString("'no_auto_send' => true", $client);
         self::assertStringContainsString('$this->sanitizeLog($exception->getMessage())', $client);
         self::assertStringNotContainsString('COPILOT_PROMPT', $client);

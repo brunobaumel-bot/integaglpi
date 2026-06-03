@@ -85,6 +85,41 @@ describe('AI online supervisor observer static safety', () => {
     expect(`${service}\n${worker}\n${compose}`).not.toMatch(/whatsapp\.send|sendTemplate|publishKb/i);
   });
 
+  it('wires a non-blocking inbound trigger that reuses the worker dedup/cooldown', async () => {
+    const service = await readProjectFile('integration-service/src/domain/services/AiOnlineSupervisorAlertService.ts');
+    const inbound = await readProjectFile('integration-service/src/domain/services/InboundWebhookService.ts');
+    const dependencies = await readProjectFile('integration-service/src/buildDependencies.ts');
+
+    // Reusable single-conversation evaluation that defaults to deterministic-only (no Ollama).
+    expect(service).toContain('public async evaluateConversationById');
+    expect(service).toContain('options.deterministicOnly ?? true');
+    expect(service).toContain('single_conversation_candidate');
+    // It still goes through the SAME persistence (cooldown/rate-limit/PII) as the worker.
+    expect(service).toContain('persistOrSuppress');
+
+    // Inbound service exposes a narrow, fire-and-forget trigger and never awaits it.
+    expect(inbound).toContain('AiOnlineAlertInboundTrigger');
+    expect(inbound).toContain('triggerInboundAlertAnalysis');
+    expect(inbound).toContain('this.triggerInboundAlertAnalysis(conversationId, inboundMessage.messageType)');
+    // The trigger only fires for textual messages and swallows its own errors.
+    expect(inbound).toContain("messageType !== 'text' && messageType !== 'interactive'");
+
+    // buildDependencies builds the trigger as fire-and-forget (void + catch), deterministic-only.
+    expect(dependencies).toContain('aiOnlineSupervisorAlertService');
+    expect(dependencies).toContain('evaluateConversationById');
+    expect(dependencies).toContain('deterministicOnly: true');
+    expect(dependencies).toMatch(/void aiOnlineSupervisorAlertService[\s\S]{0,160}\.catch\(/);
+
+    // The alert service itself performs NO customer-facing action / ticket mutation.
+    expect(service).not.toMatch(/sendOutbound\(|sendTemplate|whatsapp\.send|Ticket::update|KnowbaseItem::add/i);
+    // The inbound trigger helper is read-only: it only nudges analysis, never sends.
+    const triggerHelper = inbound.slice(
+      inbound.indexOf('private triggerInboundAlertAnalysis'),
+      inbound.indexOf('private triggerInboundAlertAnalysis') + 700,
+    );
+    expect(triggerHelper).not.toMatch(/sendOutbound|sendTemplate|metaClient|Ticket|update/i);
+  });
+
   it('adds supervisor-only read-only UI with human feedback and no ticket mutation', async () => {
     const front = await readProjectFile('integaglpi/front/online.monitor.php');
     const renderer = await readProjectFile('integaglpi/src/Renderer/OnlineMonitorRenderer.php');

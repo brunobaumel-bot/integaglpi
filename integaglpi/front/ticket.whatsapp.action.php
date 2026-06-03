@@ -76,7 +76,9 @@ if (in_array($action, $aiAssistActions, true)) {
         } else {
             plugin_integaglpi_ticket_action_json(['ok' => false, 'error' => 'forbidden_ticket'], 403);
         }
-        plugin_integaglpi_ticket_action_json(['ok' => true, 'result' => $smartHelp->assist($ticketId, $summary)], 200);
+        // Local-first: never returns a raw error — searches the native KB in PHP and
+        // degrades to a local checklist/questions if the Node AI service is down.
+        plugin_integaglpi_ticket_action_json(['ok' => true, 'result' => $smartHelp->localFirstAssist($ticketId, $summary)], 200);
     }
     if ($action === 'kb_feedback') {
         $kbCandidateId = (int) ($_POST['kb_candidate_id'] ?? 0);
