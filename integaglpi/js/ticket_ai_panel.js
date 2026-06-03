@@ -61,11 +61,19 @@
       : null;
     function clearTimer() { if (timeoutId !== null) { clearTimeout(timeoutId); timeoutId = null; } }
 
+    var token = panel.dataset.csrf || '';
     var params = new URLSearchParams();
     params.set('smart_action', action);
     params.set('ticket_id', panel.dataset.ticketId || '0');
-    // Plugin expects `_glpi_csrf_token`; keep the canonical name.
-    params.set('_glpi_csrf_token', panel.dataset.csrf || '');
+    // Send the SAME fresh token through every channel GLPI core may read:
+    //  - `_glpi_csrf_token` (canonical form field, read in classic form-POST mode)
+    //  - `csrf_token` (alias normalized server-side before Plugin::isCsrfValid)
+    //  - `X-Glpi-Csrf-Token` header (read by GLPI core in AJAX mode, which is
+    //    triggered by X-Requested-With). Without this header an AJAX POST is
+    //    rejected upstream with the opaque "Acesso negado" 403 before our script.
+    // This does NOT weaken CSRF: the server still validates a non-empty token.
+    params.set('_glpi_csrf_token', token);
+    params.set('csrf_token', token);
     if (extra) {
       Object.keys(extra).forEach(function (k) { params.set(k, String(extra[k])); });
     }
@@ -75,7 +83,8 @@
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
         'Accept': 'application/json',
-        'X-Requested-With': 'XMLHttpRequest'
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-Glpi-Csrf-Token': token
       },
       body: params.toString(),
       signal: controller ? controller.signal : undefined

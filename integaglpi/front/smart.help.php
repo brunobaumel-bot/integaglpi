@@ -124,6 +124,20 @@ try {
         exit;
     }
 
+    // Normalize CSRF token aliases into the canonical `_glpi_csrf_token` BEFORE
+    // validation. The JS sends the same fresh token via three channels for GLPI
+    // core compatibility (canonical field, `csrf_token` alias, `X-Glpi-Csrf-Token`
+    // header). We never accept an empty token and never bypass Plugin::isCsrfValid.
+    if (trim((string) ($_POST['_glpi_csrf_token'] ?? '')) === '') {
+        $aliasToken = trim((string) ($_POST['csrf_token'] ?? ''));
+        if ($aliasToken === '') {
+            $aliasToken = trim((string) ($_SERVER['HTTP_X_GLPI_CSRF_TOKEN'] ?? ''));
+        }
+        if ($aliasToken !== '') {
+            $_POST['_glpi_csrf_token'] = $aliasToken;
+        }
+    }
+
     if (!Plugin::isCsrfValid($_POST)) {
         error_log('[integaglpi][smart_help][csrf] csrf_denied');
         integaglpiSmartHelpJsonResponse([

@@ -143,6 +143,22 @@ Os itens abaixo são verificações de ausência (confirmam que integrações n�
 | S-V7-M2-12 | PII detectada na pesquisa externa | Bloqueia envio para cloud e registra audit sanitizado |
 | S-V7-M2-13 | Provider cloud indisponível | Mostra mensagem útil; não falha o atendimento |
 
+## V7 M2 Fix10 — Transporte CSRF da Ajuda Inteligente (endpoint dedicado)
+
+A Ajuda Inteligente usa o endpoint dedicado `front/smart.help.php` (espelha `copilot.draft.php`).
+O token CSRF é enviado em 3 canais para compatibilidade com o core do GLPI 11.
+
+| ID | Smoke | Resultado esperado |
+|----|-------|--------------------|
+| S-V7-M2-FIX10-01 | Clicar "Ajuda Inteligente" e inspecionar Network | POST vai para `smart.help.php` (não `ticket.whatsapp.action.php`); precede um GET `?csrf_token=1` |
+| S-V7-M2-FIX10-02 | Inspecionar o POST | Envia `_glpi_csrf_token` e `csrf_token` no corpo e header `X-Glpi-Csrf-Token`, todos com o mesmo token fresco |
+| S-V7-M2-FIX10-03 | Resposta do POST | HTTP 200 com JSON do plugin (`ok`/`result`/`csrf_token`); NÃO retorna o 403 opaco `{"error":true,"title":"Acesso negado"}` do core |
+| S-V7-M2-FIX10-04 | Token inválido forçado (DevTools) | Plugin responde 403 com `error_type:csrf_failed` (JSON do plugin), e o `Plugin::isCsrfValid` continua obrigatório |
+| S-V7-M2-FIX10-05 | "Pesquisar fora" (smart_external) | Continua exigindo UPDATE + consentimento; READ puro não dispara cloud |
+| S-V7-M2-FIX10-06 | Abrir a aba (sem clicar) | Nenhum POST automático de smart_help no load (apenas marcação de painel pronto) |
+
+---
+
 ## V7 M2 Fix2 — Runtime Ajuda Inteligente + Sugerir Resposta
 
 | ID | Smoke | Resultado esperado |

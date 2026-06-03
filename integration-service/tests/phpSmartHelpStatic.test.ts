@@ -250,6 +250,37 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).toContain('configuração pendente');
   });
 
+  it('smart help sends the CSRF token through every GLPI-core channel and normalizes aliases server-side', async () => {
+    const js  = await read('integaglpi/js/ticket_ai_panel.js');
+    const front = await read('integaglpi/front/smart.help.php');
+
+    // ── JS: same fresh token via 3 channels (canonical field, alias field, header) ──
+    expect(js).toContain('var token = panel.dataset.csrf');
+    expect(js).toContain("params.set('_glpi_csrf_token', token)");
+    expect(js).toContain("params.set('csrf_token', token)");
+    expect(js).toContain("'X-Glpi-Csrf-Token': token");
+    // Mirrors copilot transport contract.
+    expect(js).toContain("credentials: 'same-origin'");
+    expect(js).toContain("'Accept': 'application/json'");
+
+    // ── PHP: normalize aliases into the canonical field BEFORE isCsrfValid, never empty/bypass ──
+    expect(front).toContain("trim((string) (\$_POST['_glpi_csrf_token'] ?? '')) === ''");
+    expect(front).toContain("\$_POST['csrf_token']");
+    expect(front).toContain("\$_SERVER['HTTP_X_GLPI_CSRF_TOKEN']");
+    expect(front).toContain("\$_POST['_glpi_csrf_token'] = \$aliasToken");
+    // Normalization happens before the mandatory validation.
+    expect(front.indexOf("\$_POST['_glpi_csrf_token'] = \$aliasToken"))
+      .toBeLessThan(front.indexOf('Plugin::isCsrfValid($_POST)'));
+    // Empty token is never accepted (alias only copied when non-empty).
+    expect(front).toContain("if (\$aliasToken !== '') {");
+    // CSRF validation stays mandatory; smart_external still requires UPDATE.
+    expect(front).toContain('Plugin::isCsrfValid($_POST)');
+    expect(front).toContain("\$action === 'smart_external' && !Plugin::canUpdate()");
+
+    // SmartHelp JS no longer targets the legacy ticket action endpoint.
+    expect(js).not.toContain('ticket.whatsapp.action.php');
+  });
+
   it('smart help uses manual preflight CSRF before POST and keeps typed fallback', async () => {
     const js  = await read('integaglpi/js/ticket_ai_panel.js');
     const front = await read('integaglpi/front/smart.help.php');
@@ -266,8 +297,8 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(front.indexOf('Plugin::isCsrfValid($_POST)')).toBeLessThan(front.indexOf('$action = trim'));
 
     // ── JS side: manual SmartHelp refreshes token BEFORE POST ────────────────
-    // Canonical token field name preserved.
-    expect(js).toContain("params.set('_glpi_csrf_token', panel.dataset.csrf");
+    // Canonical token field name preserved (now carried in `token`).
+    expect(js).toContain("params.set('_glpi_csrf_token', token)");
     // Token refreshed from EVERY response body.
     expect(js).toContain('panel.dataset.csrf = body.csrf_token');
     expect(js).toContain('refreshCsrfBeforePost');
