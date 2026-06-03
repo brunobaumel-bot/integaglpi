@@ -1,16 +1,9 @@
 import type { SettingsRepository } from '../../domain/repositories/SettingsRepository.js';
 import type { SqlExecutor } from '../../infra/db/postgres.js';
+import { NODE_MESSAGE_CATALOG_KEYS } from '../../domain/contracts/MessageCatalogContract.js';
 import { DATABASE_TABLES } from '../../infra/db/databaseConstants.js';
 
-const MESSAGE_SETTING_KEYS = [
-  'menu_message',
-  'invalid_option_message',
-  'invalid_media_message',
-  'error_fallback_message',
-  'ticket_created_message',
-  'conversation_closed_message',
-  'after_hours_message',
-] as const;
+const MESSAGE_SETTING_KEYS = NODE_MESSAGE_CATALOG_KEYS;
 
 const BUSINESS_HOURS_SETTING_KEYS = [
   'hours_enabled',

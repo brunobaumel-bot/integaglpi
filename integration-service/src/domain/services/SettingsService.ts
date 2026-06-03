@@ -1,5 +1,6 @@
 import type { SettingsRepository } from '../repositories/SettingsRepository.js';
 
+import type { NodeMessageCatalogKey } from '../contracts/MessageCatalogContract.js';
 import { logger } from '../../infra/logger/logger.js';
 
 const SETTINGS_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -14,9 +15,9 @@ const FALLBACKS = {
   conversation_closed_message: 'Esta conversa está encerrada. Inicie um novo atendimento.',
   // Loaded now for the future after-hours flow; 7.8B only consumes existing inbound messages.
   after_hours_message: 'Estamos fora do horário. Retornamos amanhã.',
-} as const;
+} as const satisfies Record<NodeMessageCatalogKey, string>;
 
-export type MessageSettingKey = keyof typeof FALLBACKS;
+export type MessageSettingKey = NodeMessageCatalogKey;
 
 export interface ContactProfileConfig {
   collectionEnabled: boolean;
