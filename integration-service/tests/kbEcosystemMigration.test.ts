@@ -71,4 +71,21 @@ describe('044 AI/KB ecosystem additive migration', () => {
     expect((sql.match(/created_at\s+TIMESTAMPTZ/gi) ?? []).length).toBeGreaterThanOrEqual(2);
     expect((sql.match(/updated_at\s+TIMESTAMPTZ/gi) ?? []).length).toBeGreaterThanOrEqual(2);
   });
+
+  it('contains the full homologation gate required by Smart Help M2', async () => {
+    const sql = await readMigration();
+    const required = [
+      'confidence_reason',
+      'difficulty_level',
+      'target_audience',
+      'duplicate_of',
+      'cluster_id',
+      'glpi_plugin_integaglpi_kb_article_helpfulness',
+      'glpi_plugin_integaglpi_cloud_compliance_audit',
+    ];
+
+    for (const token of required) {
+      expect(sql).toContain(token);
+    }
+  });
 });

@@ -25,6 +25,7 @@ export interface KbSearchHit {
   title: string;
   category: string;
   excerpt: string;
+  sourceLabel?: string;
   /** Raw relevance in [0,1] from the local search (token/category overlap). */
   score: number;
 }
@@ -52,6 +53,8 @@ export interface KbArticleSuggestion {
   title: string;
   category: string;
   excerpt: string;
+  sourceLabel: string;
+  confidenceReason: string;
   /** Final confidence after applying feedback bias, in [0,1]. */
   confidence: number;
 }
@@ -151,10 +154,24 @@ export class SmartHelpService {
         title: hit.title,
         category: hit.category,
         excerpt: hit.excerpt,
+        sourceLabel: hit.sourceLabel ?? 'Base de Conhecimento local',
+        confidenceReason: this.confidenceReason(hit.score, confidence),
         confidence: Number(confidence.toFixed(4)),
       });
     }
     return out;
+  }
+
+  private confidenceReason(rawScore: number, finalConfidence: number): string {
+    const raw = clamp01(rawScore);
+    const final = clamp01(finalConfidence);
+    if (final > raw + 0.05) {
+      return 'Confiança operacional ajustada por feedback positivo agregado.';
+    }
+    if (final < raw - 0.05) {
+      return 'Confiança operacional reduzida por feedback agregado.';
+    }
+    return 'Confiança operacional baseada na correspondência local da KB.';
   }
 
   private buildChecklist(category: string): string[] {

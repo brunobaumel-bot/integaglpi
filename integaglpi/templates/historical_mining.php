@@ -85,9 +85,9 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
 <div class="container-fluid plugin-integaglpi-historical-mining">
     <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
         <div>
-            <h1 class="h3 mb-1"><?= $this->escape(__('Mineração Histórica', 'glpiintegaglpi')); ?></h1>
+            <h1 class="h3 mb-1"><?= $this->escape(__('Gerar Base de Conhecimento por Chamados Resolvidos', 'glpiintegaglpi')); ?></h1>
             <p class="text-muted mb-0">
-                <?= $this->escape(__('P1 exporta JSONL sanitizado, P2 minera sem IA, P3 gera candidatos determinísticos e P4 revisa candidatos com IA somente quando habilitado.', 'glpiintegaglpi')); ?>
+                <?= $this->escape(__('Selecione chamados resolvidos, valide o conteúdo sanitizado, gere rascunhos de artigos e revise tudo manualmente antes de publicar na KB.', 'glpiintegaglpi')); ?>
             </p>
         </div>
         <span class="badge bg-secondary"><?= $this->escape(__('offline / read-only GLPI', 'glpiintegaglpi')); ?></span>
@@ -113,7 +113,7 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
     <div class="row g-3">
         <div class="col-lg-5">
             <form method="post" action="<?= $this->escape($this->getHistoricalMiningUrl()); ?>" class="card mb-3">
-                <div class="card-header"><?= $this->escape(__('Gerar JSONL a partir do GLPI', 'glpiintegaglpi')); ?></div>
+                <div class="card-header"><?= $this->escape(__('1. Selecionar chamados resolvidos', 'glpiintegaglpi')); ?></div>
                 <div class="card-body">
                     <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
                     <div class="row g-2">
@@ -225,7 +225,7 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                         </p>
                         <dl class="row small mb-3">
                             <dt class="col-sm-4"><?= $this->escape(__('Status', 'glpiintegaglpi')); ?></dt>
-                            <dd class="col-sm-8"><?= $this->escape(__('Pronto para download manual e dry-run P2', 'glpiintegaglpi')); ?></dd>
+                            <dd class="col-sm-8"><?= $this->escape(__('Pronto para download manual e validação segura', 'glpiintegaglpi')); ?></dd>
                             <dt class="col-sm-4"><?= $this->escape(__('file_id', 'glpiintegaglpi')); ?></dt>
                             <dd class="col-sm-8"><code><?= $this->escape($fileId); ?></code></dd>
                             <dt class="col-sm-4"><?= $this->escape(__('Nome lógico', 'glpiintegaglpi')); ?></dt>
@@ -252,7 +252,7 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                                 <input type="hidden" name="upload_id" value="<?= $this->escape((string) ($exportUpload['upload_id'] ?? '')); ?>">
                                 <input type="hidden" name="max_rows" value="1000">
                                 <button class="btn btn-outline-primary" type="submit">
-                                    <?= $this->escape(__('Executar dry-run P2 com este arquivo', 'glpiintegaglpi')); ?>
+                                    <?= $this->escape(__('Validar este arquivo sanitizado', 'glpiintegaglpi')); ?>
                                 </button>
                             </form>
                         </div>
@@ -285,13 +285,13 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                         </div>
                     </div>
                     <button class="btn btn-outline-primary mt-3" type="submit">
-                        <?= $this->escape(__('Dry-run mineração', 'glpiintegaglpi')); ?>
+                        <?= $this->escape(__('Validar dados sanitizados', 'glpiintegaglpi')); ?>
                     </button>
                 </div>
             </form>
 
             <form method="post" action="<?= $this->escape($this->getHistoricalMiningUrl()); ?>" class="card mb-3">
-                <div class="card-header"><?= $this->escape(__('2. Execução real P2', 'glpiintegaglpi')); ?></div>
+                <div class="card-header"><?= $this->escape(__('2. Salvar padrões operacionais', 'glpiintegaglpi')); ?></div>
                 <div class="card-body">
                     <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
                     <input type="hidden" name="action" value="execute_mining">
@@ -301,29 +301,29 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                     <input type="hidden" name="window_end" value="<?= $this->escape((string) ($upload['window_end'] ?? '')); ?>">
                     <input type="hidden" name="max_rows" value="<?= (int) ($upload['max_rows'] ?? 1000); ?>">
                     <p class="text-muted">
-                        <?= $this->escape(__('Disponível somente após dry-run OK do mesmo upload. O Node reprocessa o conteúdo e valida o token antes de persistir.', 'glpiintegaglpi')); ?>
+                        <?= $this->escape(__('Disponível somente após validação OK do mesmo arquivo. O Node reprocessa conteúdo sanitizado e valida o token antes de persistir.', 'glpiintegaglpi')); ?>
                     </p>
                     <?php if ($upload !== null && !$dryRunReady) { ?>
                         <div class="alert alert-warning">
-                            <?= $this->escape(__('Execução real bloqueada: o dry-run não encontrou linhas processáveis ou o token do arquivo não está válido.', 'glpiintegaglpi')); ?>
+                            <?= $this->escape(__('Salvamento bloqueado: a validação não encontrou linhas processáveis ou o token do arquivo não está válido.', 'glpiintegaglpi')); ?>
                         </div>
                     <?php } ?>
                     <button class="btn btn-primary" type="submit" <?= !$dryRunReady ? 'disabled' : ''; ?>>
-                        <?= $this->escape(__('Executar mineração', 'glpiintegaglpi')); ?>
+                        <?= $this->escape(__('Salvar padrões', 'glpiintegaglpi')); ?>
                     </button>
                 </div>
             </form>
 
             <form method="post" action="<?= $this->escape($this->getHistoricalMiningUrl()); ?>" class="card mb-3">
-                <div class="card-header"><?= $this->escape(__('3. Gerar candidatos P3', 'glpiintegaglpi')); ?></div>
+                <div class="card-header"><?= $this->escape(__('3. Gerar rascunhos de artigos', 'glpiintegaglpi')); ?></div>
                 <div class="card-body">
                     <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
                     <input type="hidden" name="action" value="generate_candidates">
-                    <label class="form-label" for="run_id"><?= $this->escape(__('run_id', 'glpiintegaglpi')); ?></label>
+                    <label class="form-label" for="run_id"><?= $this->escape(__('Identificador da análise', 'glpiintegaglpi')); ?></label>
                     <input class="form-control" type="text" id="run_id" name="run_id" value="<?= $this->escape($runId); ?>" required>
                     <div class="row g-2 mt-1">
                         <div class="col-md-6">
-                            <label class="form-label" for="max_candidates"><?= $this->escape(__('Máx. candidatos', 'glpiintegaglpi')); ?></label>
+                            <label class="form-label" for="max_candidates"><?= $this->escape(__('Máx. rascunhos', 'glpiintegaglpi')); ?></label>
                             <input class="form-control" type="number" id="max_candidates" name="max_candidates" min="1" max="50" value="20">
                         </div>
                         <div class="col-md-6">
@@ -333,25 +333,25 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                     </div>
                     <div class="d-flex flex-wrap gap-2 mt-3">
                         <button class="btn btn-outline-success" type="submit">
-                            <?= $this->escape(__('Gerar candidatos de KB', 'glpiintegaglpi')); ?>
+                            <?= $this->escape(__('Gerar rascunhos de KB', 'glpiintegaglpi')); ?>
                         </button>
                         <a class="btn btn-outline-secondary" href="<?= $this->escape($this->getKbCandidatesUrl()); ?>">
-                            <?= $this->escape(__('Abrir candidatos de KB', 'glpiintegaglpi')); ?>
+                            <?= $this->escape(__('Abrir rascunhos de KB', 'glpiintegaglpi')); ?>
                         </a>
                     </div>
                     <small class="text-muted d-block mt-2">
-                        <?= $this->escape(__('Candidatos ficam para revisão humana. Nenhuma publicação automática ocorre.', 'glpiintegaglpi')); ?>
+                        <?= $this->escape(__('Rascunhos ficam para revisão humana. Nenhuma publicação automática ocorre.', 'glpiintegaglpi')); ?>
                     </small>
                 </div>
             </form>
 
             <form method="post" action="<?= $this->escape($this->getHistoricalMiningUrl()); ?>" class="card">
-                <div class="card-header"><?= $this->escape(__('4. Revisão IA opcional P4', 'glpiintegaglpi')); ?></div>
+                <div class="card-header"><?= $this->escape(__('4. Revisão assistida opcional', 'glpiintegaglpi')); ?></div>
                 <div class="card-body">
                     <input type="hidden" name="_glpi_csrf_token" value="<?= $this->escape($csrf); ?>">
                     <input type="hidden" name="p4_preview_payload_hash" value="<?= $this->escape((string) ($aiReviewPreview['payload_hash'] ?? '')); ?>">
-                    <label class="form-label" for="ai_review_run_id"><?= $this->escape(__('run_id com candidatos P3', 'glpiintegaglpi')); ?></label>
-                    <input class="form-control" type="text" id="ai_review_run_id" name="run_id" value="<?= $this->escape($runId); ?>" list="ai_review_run_id_options" placeholder="<?= $this->escape(__('Cole o run_id ou escolha um candidato recente abaixo', 'glpiintegaglpi')); ?>">
+                    <label class="form-label" for="ai_review_run_id"><?= $this->escape(__('Identificador com rascunhos gerados', 'glpiintegaglpi')); ?></label>
+                    <input class="form-control" type="text" id="ai_review_run_id" name="run_id" value="<?= $this->escape($runId); ?>" list="ai_review_run_id_options" placeholder="<?= $this->escape(__('Cole o identificador ou escolha uma análise recente abaixo', 'glpiintegaglpi')); ?>">
                     <datalist id="ai_review_run_id_options">
                         <?php foreach ($recentP4CandidateRuns as $recentRun) {
                             if (!is_array($recentRun)) { continue; }
@@ -370,14 +370,14 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                     </datalist>
                     <div class="row g-2 mt-1">
                         <div class="col-md-6">
-                            <label class="form-label" for="ai_review_max_candidates"><?= $this->escape(__('Máx. candidatos para preview', 'glpiintegaglpi')); ?></label>
+                            <label class="form-label" for="ai_review_max_candidates"><?= $this->escape(__('Máx. rascunhos para prévia', 'glpiintegaglpi')); ?></label>
                             <input class="form-control" type="number" id="ai_review_max_candidates" name="max_candidates" min="1" max="10" value="5">
                         </div>
                     </div>
                     <?php if ($recentP4CandidateRuns !== []) { ?>
                         <div class="border rounded p-2 mt-3">
                             <div class="small text-muted mb-2">
-                                <?= $this->escape(__('Últimos run_id/input_hash com candidatos P3 persistidos', 'glpiintegaglpi')); ?>
+                                <?= $this->escape(__('Últimas análises com rascunhos persistidos', 'glpiintegaglpi')); ?>
                             </div>
                             <?php foreach ($recentP4CandidateRuns as $recentRun) {
                                 if (!is_array($recentRun)) { continue; }
@@ -403,32 +403,32 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                                             <?= $this->escape(__('Usar este run_id', 'glpiintegaglpi')); ?>
                                         </a>
                                     <?php } else { ?>
-                                        <span class="badge bg-warning text-dark"><?= $this->escape(__('sem candidato elegível para P4', 'glpiintegaglpi')); ?></span>
+                                        <span class="badge bg-warning text-dark"><?= $this->escape(__('sem rascunho elegível para revisão assistida', 'glpiintegaglpi')); ?></span>
                                     <?php } ?>
                                 </div>
                             <?php } ?>
                         </div>
                     <?php } else { ?>
                         <div class="alert alert-warning mt-3 mb-0">
-                            <?= $this->escape(__('Nenhum candidato P3 encontrado ainda. Gere candidatos P3 antes de executar P4.', 'glpiintegaglpi')); ?>
+                            <?= $this->escape(__('Nenhum rascunho encontrado ainda. Gere rascunhos antes de executar a revisão assistida.', 'glpiintegaglpi')); ?>
                         </div>
                     <?php } ?>
                     <div class="alert alert-info mt-3 mb-3">
-                        <?= $this->escape(__('P4 usa apenas candidatos P3 sanitizados e persistidos. Nunca envia histórico bruto, anexos, PII ou publica KB automaticamente.', 'glpiintegaglpi')); ?>
+                        <?= $this->escape(__('A revisão assistida usa apenas rascunhos sanitizados e persistidos. Nunca envia histórico bruto, anexos, PII ou publica KB automaticamente.', 'glpiintegaglpi')); ?>
                         <?php if ($eligibleP4Statuses !== []) { ?>
                             <br>
-                            <?= $this->escape(__('Status elegíveis para P4:', 'glpiintegaglpi')); ?>
+                            <?= $this->escape(__('Status elegíveis para revisão:', 'glpiintegaglpi')); ?>
                             <code><?= $this->escape(implode(', ', array_map('strval', $eligibleP4Statuses))); ?></code>
                         <?php } ?>
                     </div>
                     <?php if ($p4KnownSelectedWithoutEligibleCandidates) { ?>
                         <div class="alert alert-warning">
-                            <?= $this->escape(__('Este run_id possui candidatos P3, mas nenhum está em status elegível para P4.', 'glpiintegaglpi')); ?>
+                            <?= $this->escape(__('Esta análise possui rascunhos, mas nenhum está em status elegível para revisão assistida.', 'glpiintegaglpi')); ?>
                         </div>
                     <?php } ?>
                     <div class="row g-2 mt-3 mb-3">
                         <div class="col-md-6">
-                            <label class="form-label" for="ai_review_provider"><?= $this->escape(__('Provider IA P4', 'glpiintegaglpi')); ?></label>
+                            <label class="form-label" for="ai_review_provider"><?= $this->escape(__('Provider de revisão assistida', 'glpiintegaglpi')); ?></label>
                             <select class="form-select" id="ai_review_provider" name="ai_provider">
                                 <?php $localReady = !empty($localProvider['ready']); ?>
                                 <option value="ollama" data-source="local" <?= $selectedP4Provider === 'ollama' ? 'selected' : ''; ?> <?= $localReady ? '' : 'disabled'; ?>>
@@ -457,7 +457,7 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                             <input type="hidden" id="ai_review_provider_alias" name="ai_review_provider" value="<?= $this->escape($selectedP4Provider); ?>">
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label" for="ai_review_model"><?= $this->escape(__('Modelo IA P4', 'glpiintegaglpi')); ?></label>
+                            <label class="form-label" for="ai_review_model"><?= $this->escape(__('Modelo de revisão assistida', 'glpiintegaglpi')); ?></label>
                             <select class="form-select" id="ai_review_model" name="ai_model">
                                 <?php $localModels = is_array($localProvider['models'] ?? null) ? array_map('strval', $localProvider['models']) : []; ?>
                                 <?php if ($localModels !== []) { ?>
@@ -487,14 +487,14 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                             </select>
                             <input type="hidden" id="ai_review_model_alias" name="ai_review_model" value="<?= $this->escape($selectedP4Model); ?>">
                             <div class="form-text">
-                                <?= $this->escape(__('Default local-first. Cloud só executa se provider estiver pronto, payload P4 sanitizado e last_test_status=success.', 'glpiintegaglpi')); ?>
+                                <?= $this->escape(__('Default local-first. Cloud só executa se provider estiver pronto, payload sanitizado e last_test_status=success.', 'glpiintegaglpi')); ?>
                             </div>
                         </div>
                     </div>
                     <?php if ($selectedP4Provider !== '' && $selectedP4Provider !== 'ollama') { ?>
                         <div class="small text-info mt-2">
                             <?= $this->escape(sprintf(
-                                __('Provider selecionado para P4: %s / %s / cloud', 'glpiintegaglpi'),
+                                __('Provider selecionado para revisão assistida: %s / %s / cloud', 'glpiintegaglpi'),
                                 $selectedP4Provider,
                                 $selectedP4Model !== '' ? $selectedP4Model : __('sem modelo', 'glpiintegaglpi')
                             )); ?>
@@ -502,15 +502,15 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                     <?php } ?>
                     <div class="d-flex flex-wrap gap-2 mt-2">
                         <button class="btn btn-outline-primary" type="submit" name="action" value="preview_ai_candidate_review" <?= $p4KnownSelectedWithoutEligibleCandidates ? 'disabled' : ''; ?>>
-                            <?= $this->escape(__('Pré-visualizar payload P4', 'glpiintegaglpi')); ?>
+                            <?= $this->escape(__('Pré-visualizar payload sanitizado', 'glpiintegaglpi')); ?>
                         </button>
                         <button class="btn btn-outline-secondary" type="submit" name="action" value="execute_ai_candidate_review" <?= (!$aiReviewEnabled || $p4KnownSelectedWithoutEligibleCandidates) ? 'disabled' : ''; ?>>
-                            <?= $this->escape(__('Executar revisão IA', 'glpiintegaglpi')); ?>
+                            <?= $this->escape(__('Executar revisão assistida', 'glpiintegaglpi')); ?>
                         </button>
                     </div>
                     <?php if (!$aiReviewEnabled) { ?>
                         <small class="text-muted d-block mt-2">
-                            <?= $this->escape(__('Revisão IA de candidatos está desabilitada. Você ainda pode revisar manualmente.', 'glpiintegaglpi')); ?>
+                            <?= $this->escape(__('Revisão assistida está desabilitada. Você ainda pode revisar manualmente.', 'glpiintegaglpi')); ?>
                         </small>
                     <?php } ?>
                 </div>
@@ -581,7 +581,7 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                             </div>
                         <?php } elseif ($rowsProcessed <= 0) { ?>
                             <div class="alert alert-warning mt-3 mb-0">
-                                <?= $this->escape(__('Nenhuma linha processável foi encontrada. Revise o JSONL, os filtros e os motivos de rejeição antes de executar P2.', 'glpiintegaglpi')); ?>
+                                <?= $this->escape(__('Nenhuma linha processável foi encontrada. Revise o arquivo sanitizado, os filtros e os motivos de rejeição antes de salvar padrões.', 'glpiintegaglpi')); ?>
                             </div>
                         <?php } ?>
                     <?php } ?>
@@ -723,7 +723,7 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
 
             <?php if ($candidateResult !== null) { ?>
                 <div class="card mt-3">
-                    <div class="card-header"><?= $this->escape(__('Resultado P3', 'glpiintegaglpi')); ?></div>
+                    <div class="card-header"><?= $this->escape(__('Resultado dos rascunhos de KB', 'glpiintegaglpi')); ?></div>
                     <div class="card-body">
                         <div class="row g-2 mb-3">
                             <?php foreach ($candidateResult as $key => $value) {
@@ -760,7 +760,7 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
 
             <?php if ($aiReviewPreview !== null) { ?>
                 <div class="card mt-3">
-                    <div class="card-header"><?= $this->escape(__('Preview P4 - payload sanitizado para revisão IA', 'glpiintegaglpi')); ?></div>
+                    <div class="card-header"><?= $this->escape(__('Prévia do payload sanitizado para revisão assistida', 'glpiintegaglpi')); ?></div>
                     <div class="card-body">
                         <div class="alert alert-<?= !empty($aiReviewPreview['enabled']) ? 'info' : 'warning'; ?>">
                             <?= $this->escape((string) ($aiReviewPreview['next_action'] ?? __('Revisão humana permanece obrigatória.', 'glpiintegaglpi'))); ?>
@@ -837,7 +837,7 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
                                         ? ' ' . $previewProviderId . ($previewModel !== '' ? ' / ' . $previewModel : '')
                                         : '';
                                     ?>
-                                    <?= $this->escape(__('Executar revisão IA com este provider/modelo', 'glpiintegaglpi') . $btnProviderLabel); ?>
+                                    <?= $this->escape(__('Executar revisão assistida com este provider/modelo', 'glpiintegaglpi') . $btnProviderLabel); ?>
                                 </button>
                             </div>
                             <?php if (!$previewProviderReady) { ?>
@@ -853,7 +853,7 @@ $p4KnownSelectedWithoutEligibleCandidates = $selectedP4CandidateCount !== null &
 
             <?php if ($aiReviewResult !== null) { ?>
                 <div class="card mt-3">
-                    <div class="card-header"><?= $this->escape(__('Resultado P4', 'glpiintegaglpi')); ?></div>
+                    <div class="card-header"><?= $this->escape(__('Resultado da revisão assistida', 'glpiintegaglpi')); ?></div>
                     <div class="card-body">
                         <div class="alert alert-warning">
                             <?= $this->escape(__('Nenhuma publicação automática foi executada. Revise candidatos manualmente.', 'glpiintegaglpi')); ?>

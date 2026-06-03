@@ -87,6 +87,7 @@ export class HttpKbSearchPort implements KbSearchPort {
       title: title.slice(0, 200),
       category: String(row.category ?? '').slice(0, 120),
       excerpt: String(row.snippet ?? row.excerpt ?? '').slice(0, 500),
+      sourceLabel: 'Base de Conhecimento GLPI via endpoint PHP',
       score: clamp01(row.score),
     };
   }

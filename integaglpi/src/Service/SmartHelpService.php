@@ -73,6 +73,9 @@ final class SmartHelpService
      */
     public function localFirstAssist(int $ticketId, string $summary): array
     {
+        $technicalSummary = $this->buildTechnicalSummary($summary);
+        $schema044Status = self::migration044SchemaStatus();
+
         // 1. Local native KB search (PHP-side; never leaves the page; no cloud).
         $localArticles = [];
         try {
@@ -86,6 +89,7 @@ final class SmartHelpService
                     'excerpt'            => (string) ($a['excerpt'] ?? ''),
                     'internal_url'       => (string) ($a['internal_url'] ?? ''),
                     'source_label'       => (string) ($a['source_label'] ?? 'Base de Conhecimento GLPI'),
+                    'confidence_reason'  => (string) ($a['relevance_reason'] ?? 'Correspondência local na Base de Conhecimento GLPI'),
                 ];
             }
         } catch (\Throwable $e) {
@@ -138,10 +142,75 @@ final class SmartHelpService
             'checklist'         => $checklist,
             'suggestedQuestions' => $questions,
             'cloudOffer'        => $cloudOffer,
+            'technicalSummary'   => $technicalSummary,
+            'technical_summary'  => $technicalSummary,
+            'kbSearchSource'     => [
+                'source' => 'php_native_glpi_kb',
+                'label' => 'Base de Conhecimento GLPI local',
+                'node_endpoint' => 'GLPI_KB_SEARCH_URL',
+            ],
+            'schema044Status'    => $schema044Status,
             'degraded'          => !$nodeOk,
             'message'           => $message,
             'read_only'         => true,
         ];
+    }
+
+    /**
+     * Safe homologation gate: checks the committed additive migration file only.
+     * It never queries or mutates any database.
+     *
+     * @return array{ok:bool, migration:string, mode:string, missing:list<string>}
+     */
+    public static function migration044SchemaStatus(): array
+    {
+        $path = dirname(__DIR__, 3) . DIRECTORY_SEPARATOR
+            . 'integration-service' . DIRECTORY_SEPARATOR
+            . 'schema-migrations' . DIRECTORY_SEPARATOR
+            . '044_ai_kb_ecosystem_reengineered.sql';
+        $required = [
+            'confidence_reason',
+            'difficulty_level',
+            'target_audience',
+            'duplicate_of',
+            'cluster_id',
+            'glpi_plugin_integaglpi_kb_article_helpfulness',
+            'glpi_plugin_integaglpi_cloud_compliance_audit',
+        ];
+
+        $missing = $required;
+        if (is_readable($path)) {
+            $sql = (string) file_get_contents($path);
+            $missing = [];
+            foreach ($required as $token) {
+                if (stripos($sql, $token) === false) {
+                    $missing[] = $token;
+                }
+            }
+        }
+
+        return [
+            'ok' => $missing === [],
+            'migration' => '044_ai_kb_ecosystem_reengineered',
+            'mode' => 'file_check_only_no_db_mutation',
+            'missing' => $missing,
+        ];
+    }
+
+    private function buildTechnicalSummary(string $summary): string
+    {
+        $clean = html_entity_decode(strip_tags($summary), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $patterns = [
+            '/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/iu',
+            '/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/u',
+            '/\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/u',
+            '/(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?9?\d{4}[-\s]?\d{4}/u',
+        ];
+        $clean = preg_replace($patterns, '[dado pessoal removido]', $clean) ?? $clean;
+        $clean = preg_replace('/\s+/u', ' ', $clean) ?? $clean;
+        $clean = trim($clean);
+
+        return mb_substr($clean, 0, 500, 'UTF-8');
     }
 
     /**
@@ -193,11 +262,18 @@ final class SmartHelpService
     /**
      * @return array<string, mixed>
      */
-    public function recordFeedback(int $ticketId, int $kbCandidateId, bool $helpful, string $feedbackText = ''): array
+    public function recordFeedback(
+        int $ticketId,
+        int $kbCandidateId,
+        int $glpiKnowbaseitemId,
+        bool $helpful,
+        string $feedbackText = ''
+    ): array
     {
         return $this->postJson(self::PATH_KB_FEEDBACK, [
             'ticket_id'       => $ticketId,
             'kb_candidate_id' => $kbCandidateId > 0 ? $kbCandidateId : null,
+            'glpi_knowbaseitem_id' => $glpiKnowbaseitemId > 0 ? $glpiKnowbaseitemId : null,
             'technician_id'   => Plugin::getCurrentUserId(),
             'helpful'         => $helpful,
             'feedback_text'   => $feedbackText !== '' ? mb_substr($feedbackText, 0, 500, 'UTF-8') : null,

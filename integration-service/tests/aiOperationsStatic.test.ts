@@ -246,18 +246,18 @@ describe('AI operations console static safety', () => {
     expect(phpService).toContain('glpi_itilfollowups');
     expect(phpService).toContain('glpi_itilsolutions');
     expect(phpService).not.toMatch(/glpi_documents|glpi_documents_items|Document_Item/i);
-    expect(template).toContain('Gerar JSONL a partir do GLPI');
+    expect(template).toContain('1. Selecionar chamados resolvidos');
     expect(template).toContain('Pré-visualizar exportação');
     expect(template).toContain('Gerar arquivo JSONL sanitizado');
     expect(template).toContain('Arquivo JSONL gerado');
     expect(template).toContain('Baixar JSONL sanitizado');
-    expect(template).toContain('Executar dry-run P2 com este arquivo');
-    expect(template).toContain('Pré-visualizar payload P4');
-    expect(template).toContain('Provider IA P4');
-    expect(template).toContain('Modelo IA P4');
+    expect(template).toContain('Validar este arquivo sanitizado');
+    expect(template).toContain('Pré-visualizar payload sanitizado');
+    expect(template).toContain('Provider de revisão assistida');
+    expect(template).toContain('Modelo de revisão assistida');
     expect(template).toContain('last_test_status=success');
     expect(template).toContain('provider/modelo');
-    expect(template).toContain('Revisão IA de candidatos está desabilitada');
+    expect(template).toContain('Revisão assistida está desabilitada');
     expect(template).toContain('file_id');
     expect(template).toContain('sha256');
     expect(template).toContain('expires_at');
@@ -349,12 +349,12 @@ describe('AI operations console static safety', () => {
     expect(phpService).toContain('cloud_provider_model_not_allowed');
     expect(phpService).toContain("'response_hash' => $responseHash");
     expect(phpService).toContain("'http_status' => $httpStatus");
-    expect(template).toContain('4. Revisão IA opcional P4');
-    expect(template).toContain('P4 usa apenas candidatos P3 sanitizados');
-    expect(template).toContain('Últimos run_id/input_hash com candidatos P3 persistidos');
+    expect(template).toContain('4. Revisão assistida opcional');
+    expect(template).toContain('A revisão assistida usa apenas rascunhos sanitizados');
+    expect(template).toContain('Últimas análises com rascunhos persistidos');
     expect(template).toContain('Usar este run_id');
-    expect(template).toContain('Status elegíveis para P4');
-    expect(template).toContain('Gere candidatos P3 antes de executar P4');
+    expect(template).toContain('Status elegíveis para revisão');
+    expect(template).toContain('Gere rascunhos antes de executar a revisão assistida');
     expect(template).toContain('revisão humana obrigatória');
     expect(template).toContain('Confiança abaixo do limite');
     expect(template).toContain("strtolower($postedP4Provider) === 'grok'");
@@ -450,9 +450,9 @@ describe('AI operations console static safety', () => {
     expect(externalService).toContain("'company'");
     expect(externalService).toContain("'media'");
     expect(externalTemplate).toContain('PII residual detectada no preview');
-    expect(historicalTemplate).toContain('Provider IA P4');
-    expect(historicalTemplate).toContain('Modelo IA P4');
-    expect(historicalTemplate).toContain('Executar revisão IA com este provider/modelo');
+    expect(historicalTemplate).toContain('Provider de revisão assistida');
+    expect(historicalTemplate).toContain('Modelo de revisão assistida');
+    expect(historicalTemplate).toContain('Executar revisão assistida com este provider/modelo');
     expect(historicalTemplate).toContain('name="ai_provider"');
     expect(historicalTemplate).toContain('name="ai_model"');
     expect(historicalTemplate).toContain('name="ai_review_provider"');
@@ -513,7 +513,7 @@ describe('AI operations console static safety', () => {
     expect(service).toContain("'explicit_provider' => \$explicitProvider,");
 
     // Test 1 — UI label shows selected cloud provider (prevents silent Ollama fallback in UI)
-    expect(template).toContain('Provider selecionado para P4');
+    expect(template).toContain('Provider selecionado para revisão assistida');
 
     // explicit_provider in result payload (cloud-blocked, execute-blocked, completed, exception paths)
     const explicitProviderCount = (service.match(/'explicit_provider'/g) ?? []).length;

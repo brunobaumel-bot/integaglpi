@@ -30,6 +30,7 @@ describe('HttpKbSearchPort (Node → PHP native KB search)', () => {
 
     expect(hits).toHaveLength(1);
     expect(hits[0]).toMatchObject({ glpiKnowbaseitemId: 42, title: 'Ativar Office', category: 'Office', score: 0.9 });
+    expect(hits[0].sourceLabel).toBe('Base de Conhecimento GLPI via endpoint PHP');
     expect(hits[0].kbCandidateId).toBeNull();
     expect(sentAuth).toBe('Bearer k');
     expect(JSON.parse(sentBody)).toMatchObject({ query: 'office nao ativa', limit: 5 });

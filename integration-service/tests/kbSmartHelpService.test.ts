@@ -32,6 +32,8 @@ describe('SmartHelpService (local-first, cloud offered not invoked)', () => {
 
     expect(result.localResolved).toBe(true);
     expect(result.bestArticle?.confidence).toBeGreaterThanOrEqual(SMART_HELP_HIGH_CONFIDENCE);
+    expect(result.bestArticle?.sourceLabel).toBe('Base de Conhecimento local');
+    expect(result.bestArticle?.confidenceReason).toContain('Confiança operacional');
     expect(result.cloudOffer.available).toBe(false);
     expect(result.cloudInvoked).toBe(false);
     // Proactive content always present.

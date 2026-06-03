@@ -55,6 +55,27 @@ describe('POST /internal/glpi/ai/kb-feedback', () => {
     expect(res.status).toBe(400);
   });
 
+  it('accepts feedback for native GLPI KB articles using glpi_knowbaseitem_id', async () => {
+    const recordFeedback = vi.fn(async () => ({
+      ok: true, status: 'recorded', message: 'Feedback registrado.',
+      helpfulness: { kbCandidateId: null, glpiKnowbaseitemId: 42, helpfulCount: 1, notHelpfulCount: 0, totalVotes: 1, helpfulRatio: 1, score: 0.6667 },
+    }));
+    const app = appWithFeedback(recordFeedback);
+
+    const res = await request(app)
+      .post('/internal/glpi/ai/kb-feedback')
+      .set('Authorization', AUTH)
+      .send({ ticket_id: 900, glpi_knowbaseitem_id: 42, helpful: true });
+
+    expect(res.status).toBe(200);
+    expect(recordFeedback.mock.calls[0]?.[0]).toMatchObject({
+      kbCandidateId: null,
+      glpiKnowbaseitemId: 42,
+      glpiTicketId: 900,
+      helpful: true,
+    });
+  });
+
   it('treats a repeat vote as an upsert (same target, updated helpful flag)', async () => {
     const recordFeedback = vi.fn(async () => ({
       ok: true, status: 'recorded', message: '',

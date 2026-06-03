@@ -42,6 +42,10 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(svc).toContain('function localFirstAssist');
     expect(svc).toContain('NativeKnowledgeBaseService');
     expect(svc).toContain('searchVisibleArticles');
+    expect(svc).toContain('buildTechnicalSummary');
+    expect(svc).toContain('technicalSummary');
+    expect(svc).toContain('migration044SchemaStatus');
+    expect(svc).toContain('file_check_only_no_db_mutation');
     // Always returns ok:true (degrades to a local checklist/questions instead of erroring).
     expect(svc).toMatch(/'ok'\s*=>\s*true/);
     expect(svc).toContain('defaultChecklist');
@@ -81,6 +85,8 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(tab).toContain('js-smart-help-run');
     expect(tab).toContain('js-smart-help-external');
     expect(tab).toContain('js-smart-help-suggest-kb');
+    expect(tab).toContain('js-smart-help-technical-summary');
+    expect(tab).toContain('Resumo técnico sem dados pessoais');
     // (js-smart-help-feedback buttons are rendered per-article by the JS.)
     // Read-only disclaimer + consent text.
     expect(tab).toContain('nada é enviado ao cliente nem altera o chamado');
@@ -112,6 +118,9 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // Proactive auto-load calls smart_help (local), NOT smart_external.
     expect(js).toContain('runSmartHelp(p)');
     expect(js).toContain("post(panel, 'smart_help')");
+    expect(js).toContain('PII Guard');
+    expect(js).toContain('glpi_knowbaseitem_id');
+    expect(js).toContain('Confiança operacional');
     // External (cloud) only via the explicit button + confirm dialog.
     expect(js).toContain('window.confirm');
     expect(js).toContain("post(panel, 'smart_external', { consent: '1' }");

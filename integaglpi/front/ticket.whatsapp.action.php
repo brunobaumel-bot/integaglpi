@@ -82,9 +82,13 @@ if (in_array($action, $aiAssistActions, true)) {
     }
     if ($action === 'kb_feedback') {
         $kbCandidateId = (int) ($_POST['kb_candidate_id'] ?? 0);
+        $glpiKnowbaseitemId = (int) ($_POST['glpi_knowbaseitem_id'] ?? 0);
         $helpful = ($_POST['helpful'] ?? '') === '1' || ($_POST['helpful'] ?? '') === 'true';
         $note = trim((string) ($_POST['feedback_text'] ?? ''));
-        plugin_integaglpi_ticket_action_json(['ok' => true, 'result' => $smartHelp->recordFeedback($ticketId, $kbCandidateId, $helpful, $note)], 200);
+        plugin_integaglpi_ticket_action_json([
+            'ok' => true,
+            'result' => $smartHelp->recordFeedback($ticketId, $kbCandidateId, $glpiKnowbaseitemId, $helpful, $note),
+        ], 200);
     }
     if ($action === 'smart_external') {
         // Cloud requires explicit human consent (the panel sends consent=1 on click).

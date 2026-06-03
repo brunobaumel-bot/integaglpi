@@ -45,6 +45,18 @@
     var cloudEl = panel.querySelector('.js-smart-help-cloud');
     var msgEl = panel.querySelector('.js-smart-help-message');
     var externalBtn = panel.querySelector('.js-smart-help-external');
+    var technicalSummaryEl = panel.querySelector('.js-smart-help-technical-summary');
+    var schemaStatusEl = panel.querySelector('.js-smart-help-schema-status');
+
+    if (technicalSummaryEl) {
+      technicalSummaryEl.value = result.technicalSummary || result.technical_summary || '';
+    }
+    if (schemaStatusEl) {
+      var schema = result.schema044Status || result.schema_044_status || {};
+      var search = result.kbSearchSource || result.kb_search_source || {};
+      schemaStatusEl.textContent = (search.label || 'Base de Conhecimento local')
+        + ' · schema 044: ' + (schema.ok ? 'compatível' : 'pendente de homologação');
+    }
 
     // Articles + feedback buttons.
     var articles = (result.relatedArticles || result.related_articles || []);
@@ -52,14 +64,21 @@
       articlesEl.innerHTML = '<div class="text-muted">' + esc('Nenhum artigo local com alta confiança.') + '</div>';
     } else {
       articlesEl.innerHTML = articles.map(function (a) {
-        var id = a.glpiKnowbaseitemId || a.kbCandidateId || 0;
+        var kbCandidateId = a.kbCandidateId || a.kb_candidate_id || 0;
+        var glpiKnowbaseitemId = a.glpiKnowbaseitemId || a.glpi_knowbaseitem_id || 0;
         var conf = Math.round((a.confidence || 0) * 100);
-        return '<div class="d-flex justify-content-between align-items-center gap-2 border-bottom py-1">'
-          + '<span>' + esc(a.title) + ' <span class="text-muted">(' + conf + '%)</span></span>'
+        var source = a.sourceLabel || a.source_label || (glpiKnowbaseitemId ? 'Base de Conhecimento GLPI' : 'Candidato KB');
+        var reason = a.confidenceReason || a.confidence_reason || 'Confiança operacional baseada em correspondência local.';
+        return '<div class="border-bottom py-2">'
+          + '<div class="d-flex justify-content-between align-items-start gap-2">'
+          + '<div><strong>' + esc(a.title) + '</strong>'
+          + '<div class="text-muted">' + esc(source) + (a.category ? ' · ' + esc(a.category) : '') + '</div>'
+          + '<div>' + esc(a.excerpt || '') + '</div>'
+          + '<div class="text-muted">' + esc(reason) + ' · ' + esc('Confiança operacional') + ': ' + conf + '%</div></div>'
           + '<span class="btn-group btn-group-sm" role="group">'
-          + '<button type="button" class="btn btn-outline-success js-smart-help-feedback" data-id="' + esc(id) + '" data-helpful="1">' + esc('Ajudou') + '</button>'
-          + '<button type="button" class="btn btn-outline-danger js-smart-help-feedback" data-id="' + esc(id) + '" data-helpful="0">' + esc('Não ajudou') + '</button>'
-          + '</span></div>';
+          + '<button type="button" class="btn btn-outline-success js-smart-help-feedback" data-kb-candidate-id="' + esc(kbCandidateId) + '" data-glpi-knowbaseitem-id="' + esc(glpiKnowbaseitemId) + '" data-helpful="1">' + esc('Ajudou') + '</button>'
+          + '<button type="button" class="btn btn-outline-danger js-smart-help-feedback" data-kb-candidate-id="' + esc(kbCandidateId) + '" data-glpi-knowbaseitem-id="' + esc(glpiKnowbaseitemId) + '" data-helpful="0">' + esc('Não ajudou') + '</button>'
+          + '</span></div></div>';
       }).join('');
     }
 
@@ -104,7 +123,7 @@
   }
 
   function handleExternal(panel) {
-    if (!window.confirm('A pesquisa externa enviará o contexto SANITIZADO (sem dados pessoais) para a nuvem. Confirmar?')) { return; }
+    if (!window.confirm('A pesquisa externa só deve ser usada quando a KB local não resolver. O contexto passa pelo PII Guard e será enviado SANITIZADO para a nuvem. Confirmar?')) { return; }
     setStatus(panel, 'pesquisando externamente', 'info');
     post(panel, 'smart_external', { consent: '1' }).then(function (resp) {
       var msgEl = panel.querySelector('.js-smart-help-message');
@@ -154,7 +173,11 @@
 
     var fb = t.closest('.js-smart-help-feedback');
     if (fb) {
-      post(panel, 'kb_feedback', { kb_candidate_id: fb.getAttribute('data-id') || '0', helpful: fb.getAttribute('data-helpful') || '0' })
+      post(panel, 'kb_feedback', {
+        kb_candidate_id: fb.getAttribute('data-kb-candidate-id') || '0',
+        glpi_knowbaseitem_id: fb.getAttribute('data-glpi-knowbaseitem-id') || '0',
+        helpful: fb.getAttribute('data-helpful') || '0'
+      })
         .then(function () { fb.parentNode.innerHTML = '<span class="text-muted small">obrigado</span>'; });
       return;
     }

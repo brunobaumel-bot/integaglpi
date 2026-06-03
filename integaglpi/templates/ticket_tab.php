@@ -1511,6 +1511,20 @@ if ($isExternalConfigured && $runtime !== null && !$isClosed) {
                         <?= $this->escape(__('Busca primeiro na Base de Conhecimento local. A pesquisa externa (nuvem) só ocorre com seu clique e o contexto é sanitizado antes de sair.', 'glpiintegaglpi')); ?>
                     </div>
 
+                    <div class="mb-2">
+                        <label class="form-label small mb-1" for="smart-help-summary-<?= (int) $replyTicketId; ?>">
+                            <?= $this->escape(__('Resumo técnico sem dados pessoais', 'glpiintegaglpi')); ?>
+                        </label>
+                        <textarea
+                            class="form-control form-control-sm js-smart-help-technical-summary"
+                            id="smart-help-summary-<?= (int) $replyTicketId; ?>"
+                            rows="2"
+                        ></textarea>
+                        <div class="form-text js-smart-help-schema-status">
+                            <?= $this->escape(__('Aguardando validação local da KB e schema 044.', 'glpiintegaglpi')); ?>
+                        </div>
+                    </div>
+
                     <?php /* KB articles */ ?>
                     <div class="js-smart-help-articles small"></div>
 
