@@ -100,7 +100,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     const action = await read('integaglpi/front/ticket.whatsapp.action.php');
 
     // AI actions handled as an early branch.
-    expect(action).toContain("\$aiAssistActions = ['smart_help', 'kb_feedback', 'smart_external', 'suggest_kb']");
+    expect(action).toContain("\$aiAssistActions = ['smart_help', 'kb_feedback', 'smart_external', 'suggest_kb', 'analyze_conversation']");
     expect(action).toContain('SmartHelpService::canViewPanel()');
     // CSRF is validated before any action handling.
     expect(action.indexOf('Plugin::isCsrfValid($_POST)')).toBeLessThan(action.indexOf('$aiAssistActions'));
@@ -113,6 +113,68 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // The AI branch never mutates the ticket / sends WhatsApp.
     const aiBranch = action.slice(action.indexOf('$aiAssistActions'), action.indexOf('$actionRightMap = ['));
     expect(aiBranch).not.toMatch(/->update\(|->add\(|ITILFollowup|TicketTask|sendOutbound|sendWhatsApp/i);
+  });
+
+  it('ticket action returns typed JSON errors for every read-only AI action', async () => {
+    const action = await read('integaglpi/front/ticket.whatsapp.action.php');
+
+    expect(action).toContain('function plugin_integaglpi_ai_error_type(Throwable $exception): string');
+    expect(action).toContain('function plugin_integaglpi_ticket_ai_error_json(string $action, Throwable $exception): never');
+    expect(action).toContain("'error_type' => $errorType");
+    expect(action).toContain("'type_error'");
+    expect(action).toContain("'provider_unavailable'");
+    expect(action).toContain("'node_timeout'");
+    expect(action).toContain("'diagnostics_timeout'");
+    expect(action).toContain("'missing_context'");
+    expect(action).toContain("'permission_denied'");
+    expect(action).toContain("'configuration_pending'");
+
+    const aiBlock = action.slice(action.indexOf('$aiAssistActions'), action.indexOf('Plugin::requireUpdate();'));
+    expect(aiBlock).toContain("if ($action === 'kb_feedback')");
+    expect(aiBlock).toContain("if ($action === 'smart_external')");
+    expect(aiBlock).toContain("if ($action === 'suggest_kb')");
+    expect(aiBlock).toContain("if ($action === 'analyze_conversation')");
+    expect(aiBlock.match(/plugin_integaglpi_ticket_ai_error_json\(\$action, \$e\);/g)?.length ?? 0).toBeGreaterThanOrEqual(5);
+  });
+
+  it('analyze conversation uses the JSON ticket action endpoint and catches KB normalization failures', async () => {
+    const action = await read('integaglpi/front/ticket.whatsapp.action.php');
+    const tab = await read('integaglpi/templates/ticket_tab.php');
+
+    expect(action).toContain("if ($action === 'analyze_conversation')");
+    expect(action).toContain('Plugin::isAiSupervisorEnabled()');
+    expect(action).toContain('requestAiQualityAnalysis');
+    expect(action).toContain('NativeKnowledgeBaseService');
+    expect(action).toContain('[integaglpi][ai_action][analyze_conversation][kb_context_error]');
+    expect(action).toContain("'error_type' => $status >= 500 ? 'provider_unavailable' : 'internal_error'");
+    expect(action).toContain('Análise IA registrada para revisão humana.');
+
+    expect(tab).toContain('js-integaglpi-ai-quality-analyze-form');
+    expect(tab).toContain('Plugin::getTicketActionUrl()');
+    expect(tab).toContain('name="whatsapp_action" value="analyze_conversation"');
+    expect(tab).toContain('JSON.parse(text)');
+    expect(tab).toContain('result.body.error_type');
+    expect(tab).not.toContain('name="action" value="analyze"');
+  });
+
+  it('native KB string matching is audited for mixed search terms before str_contains', async () => {
+    const nativeKb = await read('integaglpi/src/Service/NativeKnowledgeBaseService.php');
+    const action = await read('integaglpi/front/ticket.whatsapp.action.php');
+
+    expect(nativeKb).toContain('private function extractSearchTokens(string $value): array');
+    expect(nativeKb).toContain('$token = trim($token);');
+    expect(nativeKb).toContain('private function normalizeSearchNeedle(mixed $value): ?string');
+    expect(nativeKb).toContain('if (!is_scalar($value))');
+    expect(nativeKb).toContain('$needle = $this->normalizeSearchNeedle($token);');
+    expect(nativeKb).toContain('if ($needle === null)');
+    expect(nativeKb).toContain('str_contains($normalizedHaystack, $needle)');
+    expect(nativeKb).toContain('foreach (array_keys($tokens) as $token)');
+    expect(nativeKb).toContain('private function normalizeSearchTerm(mixed $value): ?string');
+    expect(nativeKb).toContain('if (!is_string($value))');
+    expect(nativeKb).not.toContain('str_contains($normalizedHaystack, $token)');
+    expect(nativeKb).not.toContain('str_contains($normalizedHaystack, (int)');
+    expect(action).toContain('catch (\\Throwable $kbException)');
+    expect(action).toContain('kb_context_error');
   });
 
   it('smart_external cloud action requires Plugin::canUpdate() on top of canViewPanel()', async () => {
@@ -173,12 +235,18 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).toContain("resp.error === 'timeout'");
   });
 
-  it('ticket_tab.php copilot error display uses HTTP status to replace generic fallback', async () => {
+  it('ticket_tab.php copilot error display uses error_type before HTTP status fallback', async () => {
     const tab = await read('integaglpi/templates/ticket_tab.php');
 
-    // HTTP 500 gets a specific "serviço indisponível" message.
+    // Typed backend failures get specific messages before the generic HTTP fallback.
+    expect(tab).toContain('function copilotTypedFallback');
+    expect(tab).toContain("errorType === 'node_timeout'");
+    expect(tab).toContain("errorType === 'diagnostics_timeout'");
+    expect(tab).toContain("errorType === 'configuration_pending'");
+    expect(tab).toContain("errorType === 'provider_unavailable'");
+    expect(tab).toContain("errorType === 'type_error'");
     expect(tab).toContain('result.status === 500');
-    expect(tab).toContain('HTTP 500');
+    expect(tab).toContain('Consulte o error_type retornado');
     // HTTP 503/504 gets a timeout message.
     expect(tab).toContain('result.status === 504');
     expect(tab).toContain('não respondeu a tempo');
@@ -188,6 +256,37 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(tab).toContain('Não foi possível gerar o rascunho');
     // The detection of the generic PHP message is present.
     expect(tab).toContain('Não foi possível usar o Copiloto agora.');
+    expect(tab).not.toContain('Copiloto indisponível (erro interno — HTTP 500)');
+  });
+
+  it('copilot.draft.php returns parseable typed JSON for PHP and provider failures', async () => {
+    const front = await read('integaglpi/front/copilot.draft.php');
+
+    expect(front).toContain('function integaglpiCopilotErrorType');
+    expect(front).toContain("'ok'");
+    expect(front).toContain("'display_message'");
+    expect(front).toContain("'error_type'");
+    expect(front).toContain("'type_error'");
+    expect(front).toContain("'provider_unavailable'");
+    expect(front).toContain("'node_timeout'");
+    expect(front).toContain("'diagnostics_timeout'");
+    expect(front).toContain("'missing_context'");
+    expect(front).toContain("'permission_denied'");
+    expect(front).toContain("'csrf_failed'");
+    expect(front).toContain("'configuration_pending'");
+    expect(front).toContain('integaglpiCopilotErrorType($exception->getMessage(), $exception)');
+  });
+
+  it('copilot synchronous PHP-to-Node timeout is long enough and typed on failure', async () => {
+    const client = await read('integaglpi/src/Service/CopilotDraftClient.php');
+    const front = await read('integaglpi/front/copilot.draft.php');
+
+    expect(client).toContain('private const COPILOT_DRAFT_TIMEOUT_MS = 25000;');
+    expect(client).toContain('private const COPILOT_DRAFT_CONNECT_TIMEOUT_MS = 5000;');
+    expect(client).toContain("throw new RuntimeException('COPILOT_TIMEOUT')");
+    expect(front).toContain("return 'node_timeout';");
+    expect(front).toContain("return 'diagnostics_timeout';");
+    expect(front).not.toContain('Copiloto indisponível (erro interno — HTTP 500)');
   });
 
   it('ticket.whatsapp.action.php smart_help call is wrapped in try/catch returning JSON', async () => {
@@ -197,11 +296,11 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(action).toContain('try {');
     expect(action).toContain('localFirstAssist($ticketId, $summary)');
     expect(action).toContain('catch (\\Throwable $e)');
-    expect(action).toContain("'error_type' => 'internal_error'");
+    expect(action).toContain("return 'internal_error';");
     // Error logged safely.
-    expect(action).toContain('[integaglpi][smart_help][unexpected]');
+    expect(action).toContain('[integaglpi][ai_action][');
     // Returns JSON (not raw exception text) on failure.
-    expect(action).toContain("'smart_help_error'");
+    expect(action).toContain("$action . '_error'");
   });
 
   it('kb.search.php is bearer-gated, POST-only, read-only and visibility-filtered', async () => {

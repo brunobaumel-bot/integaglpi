@@ -181,7 +181,11 @@
       } else {
         // Local-first never returns a raw error; this is a transport-only fallback.
         setStatus(panel, 'erro', 'danger');
-        renderResult(panel, { message: (resp && resp.message) ? resp.message : 'Não foi possível consultar a Ajuda Inteligente. Revise permissões, schema 044 e configuração local.' });
+        var errorMessage = (resp && resp.message) ? resp.message : 'Não foi possível consultar a Ajuda Inteligente. Revise permissões, schema 044 e configuração local.';
+        if (resp && resp.error_type) {
+          errorMessage += ' [' + resp.error_type + ']';
+        }
+        renderResult(panel, { message: errorMessage });
       }
     }).catch(function (error) {
       setStatus(panel, 'erro', 'danger');

@@ -13,10 +13,11 @@ final class CopilotDraftClient
 {
     private const PATH_COPILOT_DRAFT = '/internal/glpi/copilot/draft';
     // Transport timeout for the SYNCHRONOUS HTTP calls (job creation + status poll).
-    // These return immediately (202 / status), so 8s is plenty — the actual model
-    // generation runs in the async job and is bounded by the generation budget below.
-    private const COPILOT_DRAFT_TIMEOUT_MS = 8000;
-    private const COPILOT_DRAFT_CONNECT_TIMEOUT_MS = 3000;
+    // Runtime smoke showed the former COPILOT_DRAFT_TIMEOUT_MS = 8000 was too short
+    // when PHP -> Node -> GLPI competed with a slow initSession; keep this below
+    // webhook/WhatsApp critical paths and leave model work to the async job budget.
+    private const COPILOT_DRAFT_TIMEOUT_MS = 25000;
+    private const COPILOT_DRAFT_CONNECT_TIMEOUT_MS = 5000;
     // Generation budget (ms) sent to Node as runtime_config.timeout_ms. This is the
     // model's thinking time for the background async job — it must honor the DB/env
     // configuration (AI_SUPERVISOR_TIMEOUT_SECONDS), NOT the transport timeout above.

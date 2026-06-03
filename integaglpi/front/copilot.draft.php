@@ -19,12 +19,53 @@ header('Pragma: no-cache');
  */
 function integaglpiCopilotJsonResponse(array $payload, int $statusCode = 200): void
 {
+    if (!array_key_exists('ok', $payload)) {
+        $payload['ok'] = (bool) ($payload['success'] ?? ($statusCode >= 200 && $statusCode < 300));
+    }
+
     if (!isset($payload['csrf_token'])) {
         $payload['csrf_token'] = Plugin::getCsrfToken();
     }
 
     http_response_code($statusCode);
     echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}
+
+function integaglpiCopilotErrorType(string $message, ?Throwable $exception = null): string
+{
+    if ($exception instanceof TypeError || preg_match('/TypeError|must be of type/i', $message) === 1) {
+        return 'type_error';
+    }
+
+    if (preg_match('/csrf|token de segurança|sessão\/token/i', $message) === 1) {
+        return 'csrf_failed';
+    }
+
+    if (preg_match('/sem permissão|forbidden|permission/i', $message) === 1) {
+        return 'permission_denied';
+    }
+
+    if (preg_match('/contexto.*inválido|contexto.*insuficiente|COPILOT_INVALID_CONTEXT/i', $message) === 1) {
+        return 'missing_context';
+    }
+
+    if (preg_match('/diagnostics?.*(timeout|timed out|aborted)|request aborted/i', $message) === 1) {
+        return 'diagnostics_timeout';
+    }
+
+    if (preg_match('/COPILOT_TIMEOUT|timeout|timed out|aborted/i', $message) === 1) {
+        return 'node_timeout';
+    }
+
+    if (preg_match('/not configured|auth key|COPILOT_DISABLED|desabilitado|configuration/i', $message) === 1) {
+        return 'configuration_pending';
+    }
+
+    if (preg_match('/provider|fetch failed|connection refused|indispon/i', $message) === 1) {
+        return 'provider_unavailable';
+    }
+
+    return 'internal_error';
 }
 
 function integaglpiCopilotUserMessage(string $message): string
@@ -70,11 +111,13 @@ function integaglpiCopilotReleaseSession(): void
 try {
     if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string) ($_GET['csrf_token'] ?? '') === '1') {
         if (!Plugin::canUpdate()) {
-            integaglpiCopilotJsonResponse([
-                'success' => false,
-                'message' => __('Sem permissão para usar o Copiloto.', 'glpiintegaglpi'),
-            ], 403);
-            exit;
+        integaglpiCopilotJsonResponse([
+            'success' => false,
+            'message' => __('Sem permissão para usar o Copiloto.', 'glpiintegaglpi'),
+            'display_message' => __('Sem permissão para usar o Copiloto.', 'glpiintegaglpi'),
+            'error_type' => 'permission_denied',
+        ], 403);
+        exit;
         }
 
         integaglpiCopilotJsonResponse(['success' => true]);
@@ -82,12 +125,22 @@ try {
     }
 
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-        integaglpiCopilotJsonResponse(['success' => false, 'message' => __('Método não permitido.', 'glpiintegaglpi')], 405);
+        integaglpiCopilotJsonResponse([
+            'success' => false,
+            'message' => __('Método não permitido.', 'glpiintegaglpi'),
+            'display_message' => __('Método não permitido.', 'glpiintegaglpi'),
+            'error_type' => 'internal_error',
+        ], 405);
         exit;
     }
 
     if (!Plugin::canUpdate()) {
-        integaglpiCopilotJsonResponse(['success' => false, 'message' => __('Sem permissão para usar o Copiloto.', 'glpiintegaglpi')], 403);
+        integaglpiCopilotJsonResponse([
+            'success' => false,
+            'message' => __('Sem permissão para usar o Copiloto.', 'glpiintegaglpi'),
+            'display_message' => __('Sem permissão para usar o Copiloto.', 'glpiintegaglpi'),
+            'error_type' => 'permission_denied',
+        ], 403);
         exit;
     }
 
@@ -95,9 +148,9 @@ try {
         error_log('[integaglpi][copilot][csrf] csrf_denied');
         integaglpiCopilotJsonResponse([
             'success' => false,
-            'message' => 'csrf_denied',
+            'message' => 'csrf_failed',
             'display_message' => __('Sessão/token expirado. Recarregue a página e tente novamente.', 'glpiintegaglpi'),
-            'error_type' => 'csrf_denied',
+            'error_type' => 'csrf_failed',
         ], 403);
         exit;
     }
@@ -112,7 +165,12 @@ try {
 
     $ticket = new Ticket();
     if ($ticketId <= 0 || !$ticket->getFromDB($ticketId) || !$ticket->can($ticketId, READ)) {
-        integaglpiCopilotJsonResponse(['success' => false, 'message' => __('Chamado não encontrado ou sem permissão.', 'glpiintegaglpi')], 404);
+        integaglpiCopilotJsonResponse([
+            'success' => false,
+            'message' => __('Chamado não encontrado ou sem permissão.', 'glpiintegaglpi'),
+            'display_message' => __('Chamado não encontrado ou sem permissão.', 'glpiintegaglpi'),
+            'error_type' => 'missing_context',
+        ], 404);
         exit;
     }
 
@@ -137,6 +195,7 @@ try {
             integaglpiCopilotJsonResponse([
                 'success' => false,
                 'message' => __('Job do Copiloto inválido.', 'glpiintegaglpi'),
+                'display_message' => __('Job do Copiloto inválido.', 'glpiintegaglpi'),
                 'error_type' => 'job_not_found',
             ], 400);
             exit;
@@ -153,23 +212,33 @@ try {
             'notes' => mb_substr(trim((string) ($_POST['notes'] ?? '')), 0, 500, 'UTF-8'),
         ]);
     } else {
-        integaglpiCopilotJsonResponse(['success' => false, 'message' => __('Ação inválida.', 'glpiintegaglpi')], 400);
+        integaglpiCopilotJsonResponse([
+            'success' => false,
+            'message' => __('Ação inválida.', 'glpiintegaglpi'),
+            'display_message' => __('Ação inválida.', 'glpiintegaglpi'),
+            'error_type' => 'internal_error',
+        ], 400);
         exit;
     }
 
+    $rawMessage = (string) ($response['body']['message'] ?? '');
+    $displayMessage = $response['success'] ? $rawMessage : integaglpiCopilotUserMessage($rawMessage);
     integaglpiCopilotJsonResponse([
         'success' => $response['success'],
         'body' => $response['body'],
-        'message' => $response['success']
-            ? (string) ($response['body']['message'] ?? '')
-            : integaglpiCopilotUserMessage((string) ($response['body']['message'] ?? '')),
+        'message' => $displayMessage,
+        'display_message' => $displayMessage,
+        'error_type' => $response['success'] ? null : integaglpiCopilotErrorType($rawMessage),
     ], $response['success'] ? max(200, (int) $response['status']) : max(400, (int) $response['status']));
 } catch (Throwable $exception) {
     error_log('[integaglpi][copilot][error] ' . preg_replace('/(password|token|secret|bearer)\s*[:=]\s*\S+/i', '$1=[redacted]', $exception->getMessage()));
     $isTimeout = $exception->getMessage() === 'COPILOT_TIMEOUT'
         || preg_match('/timeout|timed out|aborted/i', $exception->getMessage()) === 1;
+    $message = integaglpiCopilotUserMessage($exception->getMessage());
     integaglpiCopilotJsonResponse([
         'success' => false,
-        'message' => integaglpiCopilotUserMessage($exception->getMessage()),
+        'message' => $message,
+        'display_message' => $message,
+        'error_type' => integaglpiCopilotErrorType($exception->getMessage(), $exception),
     ], $isTimeout ? 504 : 500);
 }

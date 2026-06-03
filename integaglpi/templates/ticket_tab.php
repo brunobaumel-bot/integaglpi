@@ -686,14 +686,15 @@ $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
                     <?php } ?>
 
                     <?php if ($aiSupervisorEnabled && $contextConversation !== null) { ?>
-                        <form method="post" action="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getAiQualityUrl()); ?>" class="mt-3">
+                        <form method="post" action="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getTicketActionUrl()); ?>" class="mt-3 js-integaglpi-ai-quality-analyze-form">
                             <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken(); ?>
-                            <input type="hidden" name="action" value="analyze">
+                            <input type="hidden" name="whatsapp_action" value="analyze_conversation">
                             <input type="hidden" name="ticket_id" value="<?= (int) $ticket->getID(); ?>">
                             <input type="hidden" name="conversation_id" value="<?= $this->escape((string) ($contextConversation['conversation_id'] ?? '')); ?>">
                             <button type="submit" class="btn btn-sm btn-outline-primary">
                                 <?= $this->escape($contextAiQuality === null ? __('Analisar conversa', 'glpiintegaglpi') : __('Analisar novamente', 'glpiintegaglpi')); ?>
                             </button>
+                            <span class="small text-muted ms-2 js-integaglpi-ai-quality-analyze-status"></span>
                         </form>
                     <?php } ?>
                 </div>
@@ -1728,6 +1729,30 @@ if ($isExternalConfigured && $runtime !== null && !$isClosed) {
             return result.body.display_message || result.body.message || fallback;
         }
 
+        function copilotTypedFallback(result, fallback) {
+            var errorType = result && result.body && result.body.error_type ? String(result.body.error_type) : '';
+            if (errorType === 'node_timeout') {
+                return <?= json_encode(__('Integration-service demorou mais que o esperado. Tente novamente em breve.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+            }
+            if (errorType === 'diagnostics_timeout') {
+                return <?= json_encode(__('Diagnóstico do integration-service excedeu o tempo limite. A IA não será tratada como offline sem nova evidência.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+            }
+            if (errorType === 'configuration_pending') {
+                return <?= json_encode(__('Copiloto com configuração pendente. Revise a Central IA antes de tentar novamente.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+            }
+            if (errorType === 'provider_unavailable') {
+                return <?= json_encode(__('Provider do Copiloto indisponível no momento. Verifique o serviço IA local.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+            }
+            if (errorType === 'type_error') {
+                return <?= json_encode(__('Erro interno ao normalizar dados do Copiloto. O retorno foi bloqueado com segurança.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+            }
+            if (errorType === 'missing_context') {
+                return <?= json_encode(__('Contexto insuficiente para gerar rascunho.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+            }
+
+            return fallback;
+        }
+
         function isCsrfFailure(result) {
             if (!result || result.status !== 403) { return false; }
             if (!result.body) { return true; }
@@ -1940,14 +1965,14 @@ if ($isExternalConfigured && $runtime !== null && !$isClosed) {
                         }
                         // Use HTTP status to replace the generic fallback with a contextual message.
                         var genericMsg = <?= json_encode(__('Não foi possível usar o Copiloto agora.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
-                        var displayMsg = copilotMessage(result, null);
+                        var displayMsg = copilotTypedFallback(result, copilotMessage(result, null));
                         if (!displayMsg || displayMsg === genericMsg) {
-                            if (result.status === 500) {
-                                displayMsg = <?= json_encode(__('Copiloto indisponível (erro interno — HTTP 500). Verifique se o serviço de IA Node está ativo e configurado.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
-                            } else if (result.status === 504 || result.status === 503) {
+                            if (result.status === 504 || result.status === 503) {
                                 displayMsg = <?= json_encode(__('O Copiloto não respondeu a tempo. Tente novamente em breve.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
                             } else if (result.status === 403) {
                                 displayMsg = <?= json_encode(__('Sem permissão para usar o Copiloto ou sessão expirada. Recarregue a página.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+                            } else if (result.status === 500) {
+                                displayMsg = <?= json_encode(__('Erro interno no Copiloto. Consulte o error_type retornado e os logs sanitizados.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
                             } else {
                                 displayMsg = displayMsg || <?= json_encode(__('Não foi possível gerar o rascunho.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
                             }
@@ -2110,6 +2135,84 @@ document.addEventListener('submit', function (event) {
         button.disabled = true;
         button.textContent = button.dataset.loadingText || 'Processando...';
     }
+}, true);
+</script>
+<script>
+document.addEventListener('submit', function (event) {
+    var form = event.target && event.target.closest
+        ? event.target.closest('.js-integaglpi-ai-quality-analyze-form')
+        : null;
+    if (!form) {
+        return;
+    }
+    event.preventDefault();
+    if (form.dataset.submitted === '1') {
+        return;
+    }
+    form.dataset.submitted = '1';
+    var button = form.querySelector('button[type="submit"]');
+    var status = form.querySelector('.js-integaglpi-ai-quality-analyze-status');
+    var originalText = button ? button.textContent : '';
+    if (button) {
+        button.disabled = true;
+        button.textContent = <?= json_encode(__('Analisando...', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+    }
+    if (status) {
+        status.textContent = <?= json_encode(__('Enviando análise para revisão humana...', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+        status.className = 'small text-muted ms-2 js-integaglpi-ai-quality-analyze-status';
+    }
+
+    fetch(form.action, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Accept': 'application/json' },
+        body: new FormData(form)
+    })
+        .then(function (response) {
+            return response.text().then(function (text) {
+                var body = null;
+                if (text) {
+                    try { body = JSON.parse(text); } catch (e) { body = null; }
+                }
+                return { status: response.status, body: body };
+            });
+        })
+        .then(function (result) {
+            if (result.body && result.body.ok === true) {
+                if (status) {
+                    status.textContent = result.body.message || <?= json_encode(__('Análise IA registrada. Atualizando...', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+                    status.className = 'small text-success ms-2 js-integaglpi-ai-quality-analyze-status';
+                }
+                window.setTimeout(function () { window.location.reload(); }, 700);
+                return;
+            }
+            var message = result.body && result.body.message
+                ? result.body.message
+                : <?= json_encode(__('Não foi possível concluir a análise IA agora.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+            if (result.body && result.body.error_type) {
+                message += ' [' + result.body.error_type + ']';
+            }
+            if (status) {
+                status.textContent = message;
+                status.className = 'small text-danger ms-2 js-integaglpi-ai-quality-analyze-status';
+            }
+            form.dataset.submitted = '0';
+            if (button) {
+                button.disabled = false;
+                button.textContent = originalText;
+            }
+        })
+        .catch(function () {
+            if (status) {
+                status.textContent = <?= json_encode(__('Erro de rede ao solicitar análise IA.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+                status.className = 'small text-danger ms-2 js-integaglpi-ai-quality-analyze-status';
+            }
+            form.dataset.submitted = '0';
+            if (button) {
+                button.disabled = false;
+                button.textContent = originalText;
+            }
+        });
 }, true);
 </script>
 <?php } ?>

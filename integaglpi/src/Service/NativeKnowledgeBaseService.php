@@ -288,7 +288,11 @@ final class NativeKnowledgeBaseService
         $normalizedHaystack = $this->normalizeForMatching(implode(' ', $haystacks));
         $matched = 0;
         foreach ($queryTokens as $token) {
-            if (str_contains($normalizedHaystack, $token)) {
+            $needle = $this->normalizeSearchNeedle($token);
+            if ($needle === null) {
+                continue;
+            }
+            if (str_contains($normalizedHaystack, $needle)) {
                 $matched++;
             }
         }
@@ -364,7 +368,29 @@ final class NativeKnowledgeBaseService
             }
         }
 
-        return array_keys($tokens);
+        $normalizedTokens = [];
+        foreach (array_keys($tokens) as $token) {
+            $needle = $this->normalizeSearchNeedle($token);
+            if ($needle !== null) {
+                $normalizedTokens[] = $needle;
+            }
+        }
+
+        return array_values(array_unique($normalizedTokens));
+    }
+
+    private function normalizeSearchNeedle(mixed $value): ?string
+    {
+        if (!is_scalar($value)) {
+            return null;
+        }
+
+        $needle = $this->normalizeForMatching((string) $value);
+        if ($needle === '') {
+            return null;
+        }
+
+        return $needle;
     }
 
     private function normalizeForMatching(string $value): string
