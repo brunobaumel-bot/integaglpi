@@ -73,6 +73,22 @@ final class SupervisorCommandCenterService
             ], Plugin::getCurrentUserId(), true);
         }, $sourceErrors);
 
+        $aiAlerts = $this->loadSource('ai_online_alerts', function () use ($filters): array {
+            if ($filters['risk'] !== '' && $filters['risk'] !== 'ai') {
+                return ['visible' => true, 'rows' => [], 'high_open_count' => 0, 'open_count' => 0, 'error' => ''];
+            }
+
+            return (new AiOnlineAlertService($this->pluginConfigService))->getSupervisorSummary([
+                'date_from' => $filters['date_from'],
+                'date_to' => $filters['date_to'],
+                'entity_id' => $filters['entity_id'],
+                'queue_id' => $filters['queue_id'],
+                'technician_id' => $filters['technician_id'],
+                'ai_alert_status' => 'open',
+                'ai_alert_limit' => self::ACTION_QUEUE_LIMIT,
+            ], true);
+        }, $sourceErrors);
+
         $technical = $this->loadSource('technical_health', function (): array {
             if (!class_exists(TechnicalHealthDashboardService::class)) {
                 return ['available' => false, 'error' => __('Saúde Técnica ainda não está disponível.', 'glpiintegaglpi')];
@@ -81,11 +97,11 @@ final class SupervisorCommandCenterService
             return (new TechnicalHealthDashboardService())->getSnapshot();
         }, $sourceErrors);
 
-        $kpis = $this->buildKpis($supervisor, $quality, $online, $technical);
-        $actionQueue = $this->buildActionQueue($supervisor);
+        $kpis = $this->buildKpis($supervisor, $quality, $online, $technical, $aiAlerts);
+        $actionQueue = $this->buildActionQueue($supervisor, $aiAlerts);
         $teamManagement = $this->buildTeamManagement($supervisor, $actionQueue);
         $clientEntityRisk = $this->buildClientEntityRisk($actionQueue);
-        $qualityAi = $this->buildQualityAi($supervisor, $online, $quality, $actionQueue);
+        $qualityAi = $this->buildQualityAi($supervisor, $online, $quality, $actionQueue, $aiAlerts);
 
         return [
             'generated_at' => gmdate('c'),
@@ -171,17 +187,18 @@ final class SupervisorCommandCenterService
      * @param array<string, mixed> $quality
      * @param array<string, mixed> $online
      * @param array<string, mixed> $technical
+     * @param array<string, mixed> $aiAlerts
      * @return list<array<string, mixed>>
      */
-    private function buildKpis(array $supervisor, array $quality, array $online, array $technical): array
+    private function buildKpis(array $supervisor, array $quality, array $online, array $technical, array $aiAlerts): array
     {
         $supervisorKpis = is_array($supervisor['kpis'] ?? null) ? $supervisor['kpis'] : [];
         $qualityKpis = is_array($quality['kpis'] ?? null) ? $quality['kpis'] : [];
-        $onlineKpis = is_array($online['kpis'] ?? null) ? $online['kpis'] : [];
         $actionRows = is_array($supervisor['review_rows'] ?? null) ? $supervisor['review_rows'] : [];
 
         $slaRisk = $this->firstInt($qualityKpis, ['sla_risk', 'sla_at_risk', 'risk_sla', 'violated_sla']);
-        $aiAlerts = $this->firstInt($onlineKpis, ['ai_alerts', 'unreviewed_ai_alerts', 'supervisor_alerts']);
+        $highAiAlerts = $this->intValue($aiAlerts['high_open_count'] ?? 0);
+        $openAiAlerts = $this->intValue($aiAlerts['open_count'] ?? 0);
         $unassigned = $this->countRowsMatching($actionRows, static function (array $row): bool {
             return (int) ($row['assigned_user_id'] ?? 0) <= 0;
         });
@@ -199,7 +216,7 @@ final class SupervisorCommandCenterService
             $this->kpi('critical_inactivity', __('Inatividade crítica', 'glpiintegaglpi'), $this->intValue($supervisorKpis['inactivity_attention_tickets'] ?? 0), 'warning', Plugin::getSupervisorBackofficeUrl() . '?quality=inactivity_failed', __('Atendimentos parados que exigem ação humana.', 'glpiintegaglpi')),
             $this->kpi('reopened', __('Reabertos', 'glpiintegaglpi'), $reopened, $reopened > 0 ? 'warning' : 'success', Plugin::getQualityDashboardUrl(), __('Reincidência operacional quando disponível na fonte.', 'glpiintegaglpi')),
             $this->kpi('csat', __('CSAT insatisfeito', 'glpiintegaglpi'), $this->intValue($supervisorKpis['dissatisfied_tickets'] ?? 0), 'danger', Plugin::getQualityDashboardUrl() . '?csat=dissatisfied', __('Tickets com experiência negativa sinalizada.', 'glpiintegaglpi')),
-            $this->kpi('ai_alerts', __('Alertas IA críticos', 'glpiintegaglpi'), $aiAlerts, $aiAlerts > 0 ? 'danger' : 'success', Plugin::getOnlineMonitorUrl() . '?tab=ai_alerts', __('Alertas que precisam de revisão humana.', 'glpiintegaglpi')),
+            $this->kpi('ai_alerts', __('Alertas IA críticos', 'glpiintegaglpi'), $highAiAlerts, $highAiAlerts > 0 ? 'danger' : 'success', Plugin::getOnlineMonitorUrl() . '?tab=ai_alerts', sprintf(__('Alertas abertos: %d. Priorize possíveis frustrações e pedidos de supervisor.', 'glpiintegaglpi'), $openAiAlerts)),
         ];
     }
 
@@ -220,12 +237,13 @@ final class SupervisorCommandCenterService
 
     /**
      * @param array<string, mixed> $supervisor
+     * @param array<string, mixed> $aiAlerts
      * @return list<array<string, mixed>>
      */
-    private function buildActionQueue(array $supervisor): array
+    private function buildActionQueue(array $supervisor, array $aiAlerts): array
     {
         $rows = is_array($supervisor['review_rows'] ?? null) ? $supervisor['review_rows'] : [];
-        $queue = [];
+        $supervisorQueue = [];
 
         foreach (array_slice($rows, 0, self::ACTION_QUEUE_LIMIT) as $row) {
             if (!is_array($row)) {
@@ -235,7 +253,7 @@ final class SupervisorCommandCenterService
             $ticketId = $this->intValue($row['glpi_ticket_id'] ?? 0);
             $reasons = is_array($row['review_reasons'] ?? null) ? $row['review_reasons'] : [];
             $reasonText = implode('; ', array_map('strval', $reasons));
-            $queue[] = [
+            $supervisorQueue[] = [
                 'ticket_id' => $ticketId,
                 'ticket_url' => $ticketId > 0 ? Plugin::getTicketUrl($ticketId) : '',
                 'context_url' => $ticketId > 0 ? Plugin::getTicketUrl($ticketId) . '&forcetab=PluginIntegaglpiTicketRuntime$2' : '',
@@ -253,7 +271,58 @@ final class SupervisorCommandCenterService
             ];
         }
 
-        return $queue;
+        $highAiQueue = [];
+        $mediumAiQueue = [];
+        $alertRows = is_array($aiAlerts['rows'] ?? null) ? $aiAlerts['rows'] : [];
+        foreach ($alertRows as $alert) {
+            if (!is_array($alert)) {
+                continue;
+            }
+            $item = $this->buildAiAlertAction($alert);
+            if ((string) ($alert['severity'] ?? '') === 'high') {
+                $highAiQueue[] = $item;
+            } else {
+                $mediumAiQueue[] = $item;
+            }
+        }
+
+        return array_slice(array_merge($highAiQueue, $supervisorQueue, $mediumAiQueue), 0, self::ACTION_QUEUE_LIMIT);
+    }
+
+    /**
+     * @param array<string, mixed> $alert
+     * @return array<string, mixed>
+     */
+    private function buildAiAlertAction(array $alert): array
+    {
+        $ticketId = $this->intValue($alert['glpi_ticket_id'] ?? 0);
+        $severity = (string) ($alert['severity'] ?? 'medium');
+        $alertType = (string) ($alert['alert_type'] ?? '');
+        $monitorUrl = Plugin::getOnlineMonitorUrl() . '?tab=ai_alerts&ai_alert_status=open';
+        if ($alertType !== '') {
+            $monitorUrl .= '&ai_alert_type=' . rawurlencode($alertType);
+        }
+
+        return [
+            'source' => 'ai_online_alert',
+            'ticket_id' => $ticketId,
+            'ticket_url' => $ticketId > 0 ? Plugin::getTicketUrl($ticketId) : '',
+            'context_url' => $ticketId > 0 ? Plugin::getTicketUrl($ticketId) . '&forcetab=PluginIntegaglpiTicketRuntime$2' : '',
+            'monitor_url' => $monitorUrl,
+            'monitor_label' => __('Monitor Online / Detalhes', 'glpiintegaglpi'),
+            'entity' => ((int) ($alert['entity_id'] ?? 0) > 0) ? sprintf(__('Entidade #%d', 'glpiintegaglpi'), (int) $alert['entity_id']) : '-',
+            'queue' => ((int) ($alert['queue_id'] ?? 0) > 0) ? sprintf(__('Fila #%d', 'glpiintegaglpi'), (int) $alert['queue_id']) : '-',
+            'technician' => ((int) ($alert['technician_id'] ?? 0) > 0) ? sprintf(__('Técnico #%d', 'glpiintegaglpi'), (int) $alert['technician_id']) : __('Sem técnico', 'glpiintegaglpi'),
+            'status' => $this->truncate((string) ($alert['status'] ?? 'open'), 40),
+            'sla_remaining' => $this->truncate($severity, 40),
+            'age_label' => __('Alerta IA aberto', 'glpiintegaglpi'),
+            'last_interaction' => $this->truncate((string) ($alert['created_at'] ?? $alert['updated_at'] ?? '-'), 60),
+            'priority' => $severity === 'high' ? 'critical' : 'warning',
+            'reason' => $this->truncate('IA: ' . $this->aiAlertLabel($alertType), 140),
+            'evidence' => $this->truncate((string) ($alert['evidence_summary_sanitized'] ?? ''), 180),
+            'suggested_action' => $this->truncate((string) ($alert['recommended_human_action'] ?? __('Revisar alerta IA e orientar ação humana.', 'glpiintegaglpi')), 180),
+            'phone_masked' => '',
+        ];
     }
 
     /**
@@ -325,16 +394,17 @@ final class SupervisorCommandCenterService
      * @param array<string, mixed> $online
      * @param array<string, mixed> $quality
      * @param list<array<string, mixed>> $actionQueue
+     * @param array<string, mixed> $aiAlerts
      * @return array<string, mixed>
      */
-    private function buildQualityAi(array $supervisor, array $online, array $quality, array $actionQueue): array
+    private function buildQualityAi(array $supervisor, array $online, array $quality, array $actionQueue, array $aiAlerts): array
     {
         $supervisorKpis = is_array($supervisor['kpis'] ?? null) ? $supervisor['kpis'] : [];
-        $onlineKpis = is_array($online['kpis'] ?? null) ? $online['kpis'] : [];
         $qualityKpis = is_array($quality['kpis'] ?? null) ? $quality['kpis'] : [];
 
         return [
-            'critical_ai_alerts' => $this->firstInt($onlineKpis, ['ai_alerts', 'unreviewed_ai_alerts', 'supervisor_alerts']),
+            'critical_ai_alerts' => $this->intValue($aiAlerts['high_open_count'] ?? 0),
+            'open_ai_alerts' => $this->intValue($aiAlerts['open_count'] ?? 0),
             'bad_csat' => $this->intValue($supervisorKpis['dissatisfied_tickets'] ?? 0),
             'reopened' => $this->firstInt($supervisorKpis, ['reopened_tickets', 'reopen_tickets', 'reopened']),
             'frustration_risk' => $this->countRowsMatching($actionQueue, static function (array $row): bool {
@@ -402,6 +472,19 @@ final class SupervisorCommandCenterService
         }
 
         return __('Avaliar contexto e priorizar ação humana.', 'glpiintegaglpi');
+    }
+
+    private function aiAlertLabel(string $alertType): string
+    {
+        return [
+            'possible_frustration' => __('possível frustração', 'glpiintegaglpi'),
+            'supervisor_requested' => __('supervisor solicitado', 'glpiintegaglpi'),
+            'long_inactivity_risk' => __('risco de inatividade', 'glpiintegaglpi'),
+            'high_risk_reopen' => __('risco de reabertura', 'glpiintegaglpi'),
+            'no_responsible_technician' => __('sem técnico responsável', 'glpiintegaglpi'),
+            'queue_accumulation' => __('acúmulo de fila', 'glpiintegaglpi'),
+            'long_waiting_client' => __('cliente aguardando há muito tempo', 'glpiintegaglpi'),
+        ][$alertType] ?? ($alertType !== '' ? $alertType : __('alerta operacional', 'glpiintegaglpi'));
     }
 
     /**

@@ -70,6 +70,75 @@ final class AiOnlineAlertService
     }
 
     /**
+     * Compact read-only summary for the Supervisor Command Center.
+     *
+     * @param array<string, mixed> $query
+     * @return array<string, mixed>
+     */
+    public function getSupervisorSummary(array $query, bool $supervisor): array
+    {
+        if (!$supervisor) {
+            return [
+                'visible' => false,
+                'rows' => [],
+                'high_open_count' => 0,
+                'open_count' => 0,
+                'error' => '',
+            ];
+        }
+
+        $filters = $this->normalizeFilters($query);
+        $filters['status'] = 'open';
+        $filters['severity'] = '';
+        $filters['limit'] = min(12, (int) $filters['limit']);
+        if (!$this->pluginConfigService->isConfigured()) {
+            return [
+                'visible' => true,
+                'rows' => [],
+                'high_open_count' => 0,
+                'open_count' => 0,
+                'error' => __('PostgreSQL externo ainda não está configurado.', 'glpiintegaglpi'),
+            ];
+        }
+
+        try {
+            $pdo = ExternalDatabase::getConnection($this->pluginConfigService->getConnectionConfig());
+            if (!$this->tableExists($pdo, 'glpi_plugin_integaglpi_ai_online_alerts')) {
+                return [
+                    'visible' => true,
+                    'rows' => [],
+                    'high_open_count' => 0,
+                    'open_count' => 0,
+                    'error' => __('Tabela de alertas de IA ainda não foi criada.', 'glpiintegaglpi'),
+                ];
+            }
+
+            $openFilters = $filters;
+            $openFilters['severity'] = '';
+            $highFilters = $filters;
+            $highFilters['severity'] = 'high';
+
+            return [
+                'visible' => true,
+                'rows' => $this->loadAlerts($pdo, $filters),
+                'high_open_count' => $this->countAlerts($pdo, $highFilters),
+                'open_count' => $this->countAlerts($pdo, $openFilters),
+                'error' => '',
+            ];
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][ai_online_alerts][supervisor_summary] ' . $this->sanitizeLog($exception->getMessage()));
+
+            return [
+                'visible' => true,
+                'rows' => [],
+                'high_open_count' => 0,
+                'open_count' => 0,
+                'error' => __('Não foi possível carregar alertas de IA agora.', 'glpiintegaglpi'),
+            ];
+        }
+    }
+
+    /**
      * @param array<string, mixed> $post
      * @return array<string, mixed>
      */
@@ -202,22 +271,7 @@ final class AiOnlineAlertService
      */
     private function loadAlerts(PDO $pdo, array $filters): array
     {
-        $where = ["status = :status"];
-        $params = [
-            ':status' => ['value' => (string) $filters['status'], 'type' => PDO::PARAM_STR],
-        ];
-        foreach (['severity', 'alert_type'] as $field) {
-            $value = (string) ($filters[$field] ?? '');
-            if ($value !== '') {
-                $where[] = $field . ' = :' . $field;
-                $params[':' . $field] = ['value' => $value, 'type' => PDO::PARAM_STR];
-            }
-        }
-        $queueId = (int) ($filters['queue_id'] ?? 0);
-        if ($queueId > 0) {
-            $where[] = 'queue_id = :queue_id';
-            $params[':queue_id'] = ['value' => $queueId, 'type' => PDO::PARAM_INT];
-        }
+        [$where, $params] = $this->buildAlertWhere($filters);
 
         $statement = $pdo->prepare(
             'SELECT
@@ -284,6 +338,64 @@ final class AiOnlineAlertService
     }
 
     /**
+     * @param array<string, mixed> $filters
+     */
+    private function countAlerts(PDO $pdo, array $filters): int
+    {
+        [$where, $params] = $this->buildAlertWhere($filters);
+        $statement = $pdo->prepare(
+            'SELECT COUNT(*)::int
+               FROM public.glpi_plugin_integaglpi_ai_online_alerts
+              WHERE ' . implode(' AND ', $where) . '
+                AND (dismissed_until IS NULL OR dismissed_until <= NOW())'
+        );
+        foreach ($params as $key => $definition) {
+            $statement->bindValue($key, $definition['value'], $definition['type']);
+        }
+        $statement->execute();
+
+        return max(0, (int) $statement->fetchColumn());
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     * @return array{0: list<string>, 1: array<string, array{value: mixed, type: int}>}
+     */
+    private function buildAlertWhere(array $filters): array
+    {
+        $where = ["status = :status"];
+        $params = [
+            ':status' => ['value' => (string) ($filters['status'] ?? 'open'), 'type' => PDO::PARAM_STR],
+        ];
+        foreach (['severity', 'alert_type'] as $field) {
+            $value = (string) ($filters[$field] ?? '');
+            if ($value !== '') {
+                $where[] = $field . ' = :' . $field;
+                $params[':' . $field] = ['value' => $value, 'type' => PDO::PARAM_STR];
+            }
+        }
+        foreach (['queue_id', 'entity_id', 'technician_id'] as $field) {
+            $value = (int) ($filters[$field] ?? 0);
+            if ($value > 0) {
+                $where[] = $field . ' = :' . $field;
+                $params[':' . $field] = ['value' => $value, 'type' => PDO::PARAM_INT];
+            }
+        }
+        $dateFrom = trim((string) ($filters['date_from'] ?? ''));
+        if ($dateFrom !== '') {
+            $where[] = 'created_at >= :date_from';
+            $params[':date_from'] = ['value' => $dateFrom . ' 00:00:00', 'type' => PDO::PARAM_STR];
+        }
+        $dateTo = trim((string) ($filters['date_to'] ?? ''));
+        if ($dateTo !== '') {
+            $where[] = 'created_at <= :date_to';
+            $params[':date_to'] = ['value' => $dateTo . ' 23:59:59', 'type' => PDO::PARAM_STR];
+        }
+
+        return [$where, $params];
+    }
+
+    /**
      * @param array<string, mixed> $query
      * @return array<string, mixed>
      */
@@ -307,7 +419,11 @@ final class AiOnlineAlertService
             'status' => $status,
             'severity' => $severity,
             'alert_type' => $type,
-            'queue_id' => max(0, (int) ($query['ai_alert_queue_id'] ?? 0)),
+            'queue_id' => max(0, (int) ($query['ai_alert_queue_id'] ?? $query['queue_id'] ?? 0)),
+            'entity_id' => max(0, (int) ($query['ai_alert_entity_id'] ?? $query['entity_id'] ?? 0)),
+            'technician_id' => max(0, (int) ($query['ai_alert_technician_id'] ?? $query['technician_id'] ?? 0)),
+            'date_from' => $this->safeDate((string) ($query['ai_alert_date_from'] ?? $query['date_from'] ?? '')),
+            'date_to' => $this->safeDate((string) ($query['ai_alert_date_to'] ?? $query['date_to'] ?? '')),
             'limit' => max(1, min(self::MAX_LIMIT, $limit > 0 ? $limit : self::DEFAULT_LIMIT)),
         ];
     }
@@ -483,6 +599,13 @@ final class AiOnlineAlertService
         $value = strtolower(trim($value));
 
         return preg_match('/^[a-z0-9_-]{1,80}$/', $value) === 1 ? $value : '';
+    }
+
+    private function safeDate(string $value): string
+    {
+        $value = trim($value);
+
+        return preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) === 1 ? $value : '';
     }
 
     private function safeId(string $value): string

@@ -49,6 +49,7 @@ final class SupervisorCommandCenterStaticTest extends TestCase
             'SupervisorBackofficeService',
             'QualityDashboardService',
             'OnlineMonitorService',
+            'AiOnlineAlertService',
             'TechnicalHealthDashboardService',
         ] as $expected) {
             self::assertStringContainsString($expected, $service);
@@ -87,6 +88,31 @@ final class SupervisorCommandCenterStaticTest extends TestCase
         self::assertStringContainsString('Qualidade e IA', $template);
         self::assertStringContainsString('Rodapé técnico compacto', $template);
         self::assertStringNotContainsString('Status das Integrações', $template);
+    }
+
+    public function testDashboardConsumesOpenAiAlertsAsSupervisorPriorities(): void
+    {
+        $service = $this->read('src/Service/SupervisorCommandCenterService.php');
+        $alertService = $this->read('src/Service/AiOnlineAlertService.php');
+        $template = $this->read('templates/supervisor_command_center.php');
+
+        self::assertStringContainsString('getSupervisorSummary', $service);
+        self::assertStringContainsString('high_open_count', $service);
+        self::assertStringContainsString('open_count', $service);
+        self::assertStringContainsString('buildAiAlertAction', $service);
+        self::assertStringContainsString('possible_frustration', $service);
+        self::assertStringContainsString('supervisor_requested', $service);
+        self::assertStringContainsString('long_inactivity_risk', $service);
+        self::assertStringContainsString('Monitor Online / Detalhes', $service);
+        self::assertStringContainsString('evidence_summary_sanitized', $service);
+        self::assertStringContainsString('getSupervisorSummary', $alertService);
+        self::assertStringContainsString('glpi_plugin_integaglpi_ai_online_alerts', $alertService);
+        self::assertStringContainsString('COUNT(*)::int', $alertService);
+        self::assertStringContainsString('LIMIT :limit', $alertService);
+        self::assertStringContainsString('dismissed_until IS NULL', $alertService);
+        self::assertStringContainsString('$row[\'evidence\']', $template);
+        self::assertStringContainsString('$row[\'monitor_url\']', $template);
+        self::assertStringContainsString('Alertas IA abertos', $template);
     }
 
     public function testServiceBuildsOperationalSections(): void

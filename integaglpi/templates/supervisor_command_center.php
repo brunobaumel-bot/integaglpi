@@ -195,13 +195,23 @@ $renderDistribution = static function (array $rows, string $labelKey) use ($esca
                             <td><?= $escape((string) ($row['entity'] ?? '-')); ?></td>
                             <td><?= $escape((string) ($row['queue'] ?? '-')); ?></td>
                             <td><?= $escape((string) ($row['technician'] ?? '-')); ?></td>
-                            <td><span class="badge text-bg-warning"><?= $escape((string) ($row['reason'] ?? '-')); ?></span></td>
+                            <td>
+                                <span class="badge text-bg-warning"><?= $escape((string) ($row['reason'] ?? '-')); ?></span>
+                                <?php if (trim((string) ($row['evidence'] ?? '')) !== '') : ?>
+                                    <div class="small text-muted mt-1"><?= $escape((string) $row['evidence']); ?></div>
+                                <?php endif; ?>
+                            </td>
                             <td>
                                 <div><?= $escape((string) ($row['age_label'] ?? '-')); ?></div>
                                 <div class="small text-muted"><?= $escape((string) ($row['sla_remaining'] ?? '-')); ?></div>
                             </td>
                             <td><?= $escape((string) ($row['last_interaction'] ?? '-')); ?></td>
-                            <td><?= $escape((string) ($row['suggested_action'] ?? '-')); ?></td>
+                            <td>
+                                <?= $escape((string) ($row['suggested_action'] ?? '-')); ?>
+                                <?php if (trim((string) ($row['monitor_url'] ?? '')) !== '') : ?>
+                                    <div><a class="small" href="<?= $escape((string) $row['monitor_url']); ?>"><?= $escape((string) ($row['monitor_label'] ?? __('Monitor Online / Detalhes', 'glpiintegaglpi'))); ?></a></div>
+                                <?php endif; ?>
+                            </td>
                         </tr>
                     <?php endforeach; ?>
                 </tbody>
@@ -247,6 +257,7 @@ $renderDistribution = static function (array $rows, string $labelKey) use ($esca
                     <div class="row g-2">
                         <?php foreach ([
                             __('Alertas IA críticos', 'glpiintegaglpi') => (int) ($qualityAi['critical_ai_alerts'] ?? 0),
+                            __('Alertas IA abertos', 'glpiintegaglpi') => (int) ($qualityAi['open_ai_alerts'] ?? 0),
                             __('CSAT ruim', 'glpiintegaglpi') => (int) ($qualityAi['bad_csat'] ?? 0),
                             __('Reaberturas', 'glpiintegaglpi') => (int) ($qualityAi['reopened'] ?? 0),
                             __('Risco de frustração', 'glpiintegaglpi') => (int) ($qualityAi['frustration_risk'] ?? 0),
