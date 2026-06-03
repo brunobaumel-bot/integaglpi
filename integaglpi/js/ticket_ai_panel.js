@@ -62,7 +62,7 @@
     function clearTimer() { if (timeoutId !== null) { clearTimeout(timeoutId); timeoutId = null; } }
 
     var params = new URLSearchParams();
-    params.set('whatsapp_action', action);
+    params.set('smart_action', action);
     params.set('ticket_id', panel.dataset.ticketId || '0');
     // Plugin expects `_glpi_csrf_token`; keep the canonical name.
     params.set('_glpi_csrf_token', panel.dataset.csrf || '');

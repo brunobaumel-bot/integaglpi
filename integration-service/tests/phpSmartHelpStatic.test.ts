@@ -36,7 +36,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
 
   it('Smart Help is local-first: searches the native KB in PHP and never returns a raw error', async () => {
     const svc = await read('integaglpi/src/Service/SmartHelpService.php');
-    const action = await read('integaglpi/front/ticket.whatsapp.action.php');
+    const front = await read('integaglpi/front/smart.help.php');
 
     // A local-first method exists and uses the native KB search directly in PHP.
     expect(svc).toContain('function localFirstAssist');
@@ -52,8 +52,8 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(svc).toContain('defaultQuestions');
     expect(svc).toMatch(/'degraded'/);
 
-    // The ticket action wires smart_help to the local-first method (not the raw Node call).
-    expect(action).toContain('localFirstAssist($ticketId, $summary, $wantAiSummary)');
+    // The dedicated endpoint wires smart_help to the local-first method (not the raw Node call).
+    expect(front).toContain('localFirstAssist($ticketId, $summary, $wantAiSummary)');
   });
 
   it('external research never claims success / candidate without a usable answer', async () => {
@@ -96,45 +96,37 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(tab).toContain('ticket_ai_panel.css');
   });
 
-  it('the ticket-action AI branch is read-only and runs before the mutation map', async () => {
-    const action = await read('integaglpi/front/ticket.whatsapp.action.php');
+  it('smart.help.php dedicated endpoint is JSON-only, CSRF-gated and read-only', async () => {
+    const front = await read('integaglpi/front/smart.help.php');
 
-    // AI actions handled as an early branch.
-    expect(action).toContain("\$aiAssistActions = ['smart_help', 'kb_feedback', 'smart_external', 'suggest_kb', 'analyze_conversation']");
-    expect(action).toContain('SmartHelpService::canViewPanel()');
-    // CSRF is validated before any action handling.
-    expect(action.indexOf('Plugin::isCsrfValid($_POST)')).toBeLessThan(action.indexOf('$aiAssistActions'));
-    // The local AI branch (smart_help/kb_feedback/suggest_kb) runs BEFORE Plugin::requireUpdate().
-    expect(action.indexOf('$aiAssistActions')).toBeLessThan(action.indexOf('Plugin::requireUpdate();'));
-    // Plugin::requireUpdate() still guards the ticket-mutation map.
-    expect(action.indexOf('Plugin::requireUpdate();')).toBeLessThan(action.indexOf('$actionRightMap = ['));
-    // Cloud consent is enforced; context built server-side.
-    expect(action).toContain("(\$_POST['consent'] ?? '') === '1'");
-    // The AI branch never mutates the ticket / sends WhatsApp.
-    const aiBranch = action.slice(action.indexOf('$aiAssistActions'), action.indexOf('$actionRightMap = ['));
-    expect(aiBranch).not.toMatch(/->update\(|->add\(|ITILFollowup|TicketTask|sendOutbound|sendWhatsApp/i);
+    expect(front).toContain('Session::checkLoginUser()');
+    expect(front).toContain("header('Content-Type: application/json; charset=UTF-8')");
+    expect(front).toContain('function integaglpiSmartHelpJsonResponse');
+    expect(front).toContain('Plugin::getCsrfToken()');
+    expect(front).toContain("(string) (\$_GET['csrf_token'] ?? '') === '1'");
+    expect(front).toContain('Plugin::isCsrfValid($_POST)');
+    expect(front).toContain('SmartHelpService::canViewPanel()');
+    expect(front).toContain("\$allowedActions = ['smart_help', 'kb_feedback', 'suggest_kb', 'smart_external']");
+    expect(front).toContain('localFirstAssist($ticketId, $summary, $wantAiSummary)');
+    expect(front).not.toMatch(/->update\(|->add\(|ITILFollowup|TicketTask|sendOutbound|sendWhatsApp/i);
   });
 
-  it('ticket action returns typed JSON errors for every read-only AI action', async () => {
-    const action = await read('integaglpi/front/ticket.whatsapp.action.php');
+  it('smart.help.php returns typed JSON errors for every SmartHelp action', async () => {
+    const front = await read('integaglpi/front/smart.help.php');
 
-    expect(action).toContain('function plugin_integaglpi_ai_error_type(Throwable $exception): string');
-    expect(action).toContain('function plugin_integaglpi_ticket_ai_error_json(string $action, Throwable $exception): never');
-    expect(action).toContain("'error_type' => $errorType");
-    expect(action).toContain("'type_error'");
-    expect(action).toContain("'provider_unavailable'");
-    expect(action).toContain("'node_timeout'");
-    expect(action).toContain("'diagnostics_timeout'");
-    expect(action).toContain("'missing_context'");
-    expect(action).toContain("'permission_denied'");
-    expect(action).toContain("'configuration_pending'");
-
-    const aiBlock = action.slice(action.indexOf('$aiAssistActions'), action.indexOf('Plugin::requireUpdate();'));
-    expect(aiBlock).toContain("if ($action === 'kb_feedback')");
-    expect(aiBlock).toContain("if ($action === 'smart_external')");
-    expect(aiBlock).toContain("if ($action === 'suggest_kb')");
-    expect(aiBlock).toContain("if ($action === 'analyze_conversation')");
-    expect(aiBlock.match(/plugin_integaglpi_ticket_ai_error_json\(\$action, \$e\);/g)?.length ?? 0).toBeGreaterThanOrEqual(5);
+    expect(front).toContain('function integaglpiSmartHelpErrorType');
+    expect(front).toContain('function integaglpiSmartHelpUserMessage');
+    expect(front).toContain("'error_type' => $errorType");
+    expect(front).toContain("'type_error'");
+    expect(front).toContain("'provider_unavailable'");
+    expect(front).toContain("'node_timeout'");
+    expect(front).toContain("'missing_context'");
+    expect(front).toContain("'permission_denied'");
+    expect(front).toContain("'configuration_pending'");
+    expect(front).toContain("if ($action === 'kb_feedback')");
+    expect(front).toContain("if ($action === 'smart_external'");
+    expect(front).toContain("if ($action === 'suggest_kb')");
+    expect(front).toContain("catch (Throwable $exception)");
   });
 
   it('analyze conversation uses the JSON ticket action endpoint and catches KB normalization failures', async () => {
@@ -178,22 +170,18 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
   });
 
   it('smart_external cloud action requires Plugin::canUpdate() on top of canViewPanel()', async () => {
-    const action = await read('integaglpi/front/ticket.whatsapp.action.php');
+    const front = await read('integaglpi/front/smart.help.php');
 
     // smart_external gate: canUpdate() checked before externalResearch is called.
-    expect(action).toContain("if (\$action === 'smart_external' && !\\GlpiPlugin\\Integaglpi\\Plugin::canUpdate())");
-    expect(action).toContain("'error_type' => 'permission_denied'");
-    // The UPDATE gate for smart_external is inside the AI assist block (before requireUpdate()).
-    const aiBlock = action.slice(action.indexOf('$aiAssistActions'), action.indexOf('Plugin::requireUpdate();'));
-    expect(aiBlock).toContain('canUpdate()');
+    expect(front).toContain("if ($action === 'smart_external' && !Plugin::canUpdate())");
+    expect(front).toContain("'error_type' => 'permission_denied'");
+    expect(front).toContain('SmartHelpService::canViewPanel()');
     // Human consent still required even after permission check.
-    expect(aiBlock).toContain("(\$_POST['consent'] ?? '') === '1'");
+    expect(front).toContain("(\$_POST['consent'] ?? '') === '1'");
     // Local-only actions (smart_help, kb_feedback, suggest_kb) do NOT require canUpdate().
-    // Verified by: canUpdate() check is conditional only on smart_external, not on the base gate.
-    expect(action).toContain('Base gate: all AI assist actions require at least READ');
-    expect(action).toContain('Cloud/external gate: smart_external additionally requires UPDATE');
-    // Obsolete comment removed: page no longer claims "already requires UPDATE" for ALL AI actions.
-    expect(action).not.toContain('page already requires plugin UPDATE');
+    expect(front).toContain("if ($action === 'smart_help')");
+    expect(front).toContain("if ($action === 'kb_feedback')");
+    expect(front).toContain("if ($action === 'suggest_kb')");
   });
 
   it("the smart help JS never auto-runs SmartHelp or cloud (manual click only)", async () => {
@@ -264,18 +252,18 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
 
   it('smart help uses manual preflight CSRF before POST and keeps typed fallback', async () => {
     const js  = await read('integaglpi/js/ticket_ai_panel.js');
-    const act = await read('integaglpi/front/ticket.whatsapp.action.php');
+    const front = await read('integaglpi/front/smart.help.php');
 
     // ── PHP side: every JSON response carries a fresh csrf_token ───────────────
-    expect(act).toContain("array_key_exists('csrf_token', \$payload)");
-    expect(act).toContain('Plugin::getCsrfToken()');
+    expect(front).toContain("array_key_exists('csrf_token', \$payload)");
+    expect(front).toContain('Plugin::getCsrfToken()');
     // CSRF failure is typed so the JS can detect + retry.
-    expect(act).toContain("'error' => 'csrf_invalid'");
-    expect(act).toContain("'error_type' => 'csrf_failed'");
+    expect(front).toContain("'error' => 'csrf_invalid'");
+    expect(front).toContain("'error_type' => 'csrf_failed'");
     // CSRF validation still runs (NOT removed/bypassed).
-    expect(act).toContain('Plugin::isCsrfValid($_POST)');
-    // Validation precedes the AI assist branch.
-    expect(act.indexOf('Plugin::isCsrfValid($_POST)')).toBeLessThan(act.indexOf('$aiAssistActions'));
+    expect(front).toContain('Plugin::isCsrfValid($_POST)');
+    // Validation precedes SmartHelp action dispatch.
+    expect(front.indexOf('Plugin::isCsrfValid($_POST)')).toBeLessThan(front.indexOf('$action = trim'));
 
     // ── JS side: manual SmartHelp refreshes token BEFORE POST ────────────────
     // Canonical token field name preserved.
@@ -298,15 +286,15 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
 
   it('smart help recovers the opaque GLPI middleware 403 via a GET token refresh', async () => {
     const js  = await read('integaglpi/js/ticket_ai_panel.js');
-    const act = await read('integaglpi/front/ticket.whatsapp.action.php');
+    const front = await read('integaglpi/front/smart.help.php');
 
     // ── PHP side: GET csrf_token=1 returns a fresh token (GLPI does not CSRF-gate GET).
-    expect(act).toContain("(string) (\$_GET['csrf_token'] ?? '') === '1'");
-    expect(act).toContain("=== 'GET'");
+    expect(front).toContain("(string) (\$_GET['csrf_token'] ?? '') === '1'");
+    expect(front).toContain("=== 'GET'");
     // The GET refresh runs BEFORE the POST-only guard so it is reachable.
-    expect(act.indexOf("\$_GET['csrf_token']")).toBeLessThan(act.indexOf("!== 'POST'"));
+    expect(front.indexOf("\$_GET['csrf_token']")).toBeLessThan(front.indexOf("!== 'POST'"));
     // It is read-only: no mutation, just the helper-injected fresh token.
-    expect(act).toContain("plugin_integaglpi_ticket_action_json(['ok' => true], 200); // helper injects fresh csrf_token");
+    expect(front).toContain("integaglpiSmartHelpJsonResponse(['ok' => true], 200)");
 
     // ── JS side: GET refresh helper + any-403 recovery for generic fallback.
     expect(js).toContain('function refreshCsrfToken(panel)');
@@ -341,7 +329,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
 
   it('manual click triggers LOCAL-AI summary; page load does not POST SmartHelp', async () => {
     const js  = await read('integaglpi/js/ticket_ai_panel.js');
-    const act = await read('integaglpi/front/ticket.whatsapp.action.php');
+    const front = await read('integaglpi/front/smart.help.php');
     const svc = await read('integaglpi/src/Service/SmartHelpService.php');
 
     // ── JS: manual click sends ai_summary=1; page load does not call SmartHelp.
@@ -352,9 +340,9 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).toContain('r.summarySource || r.summary_source');
     expect(js).toContain("'resumo IA local'");
 
-    // ── PHP action: reads ai_summary and forwards it ─────────────────────────
-    expect(act).toContain("(\$_POST['ai_summary'] ?? '') === '1'");
-    expect(act).toContain('localFirstAssist($ticketId, $summary, $wantAiSummary)');
+    // ── PHP endpoint: reads ai_summary and forwards it ───────────────────────
+    expect(front).toContain("(\$_POST['ai_summary'] ?? '') === '1'");
+    expect(front).toContain('localFirstAssist($ticketId, $summary, $wantAiSummary)');
 
     // ── PHP service: AI path only when $wantAiSummary, sanitized, fallback ────
     expect(svc).toContain('bool $wantAiSummary = false');
@@ -402,16 +390,16 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
   it('template↔JS↔PHP contract: class, selector, action and attributes match', async () => {
     const tab = await read('integaglpi/templates/ticket_tab.php');
     const js  = await read('integaglpi/js/ticket_ai_panel.js');
-    const act = await read('integaglpi/front/ticket.whatsapp.action.php');
+    const front = await read('integaglpi/front/smart.help.php');
 
     // ── Template side ────────────────────────────────────────────────────────
     // Panel container class used by JS delegation.
     expect(tab).toContain('integaglpi-smart-help');
     // Run button class used by JS selector.
     expect(tab).toContain('js-smart-help-run');
-    // action URL attribute populated from Plugin::getTicketActionUrl().
+    // action URL attribute points to the dedicated SmartHelp endpoint.
     expect(tab).toContain('data-action-url=');
-    expect(tab).toContain('getTicketActionUrl()');
+    expect(tab).toContain("'/front/smart.help.php'");
     // CSRF attribute set on the panel.
     expect(tab).toContain('data-csrf=');
     // ticket-id attribute set on the panel.
@@ -430,7 +418,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // Button selector matches template class.
     expect(js).toContain("t.closest('.js-smart-help-run')");
     // Request sends correct action name.
-    expect(js).toContain("params.set('whatsapp_action', action)");
+    expect(js).toContain("params.set('smart_action', action)");
     expect(js).toContain("post(panel, 'smart_help', extra, { refreshCsrfBeforePost: !!userInitiated })");
     // Request sends ticket_id and CSRF.
     expect(js).toContain("params.set('ticket_id'");
@@ -438,11 +426,15 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
 
     // ── PHP side ─────────────────────────────────────────────────────────────
     // action name accepted by endpoint.
-    expect(act).toContain("'smart_help'");
-    // Reads whatsapp_action from POST.
-    expect(act).toContain("'whatsapp_action'");
+    expect(front).toContain("'smart_help'");
+    // Reads smart_action from POST.
+    expect(front).toContain("'smart_action'");
     // Reads ticket_id from POST.
-    expect(act).toContain("'ticket_id'");
+    expect(front).toContain("'ticket_id'");
+    // SmartHelp must not point back at the shared ticket action endpoint.
+    const smartPanelStart = tab.indexOf('integaglpi-smart-help');
+    const smartPanelEnd = tab.indexOf('js-smart-help-technical-summary', smartPanelStart);
+    expect(tab.slice(smartPanelStart, smartPanelEnd)).not.toContain('getTicketActionUrl()');
   });
 
   it('ticket_tab.php copilot error display uses error_type before HTTP status fallback', async () => {
@@ -499,18 +491,18 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(front).not.toContain('Copiloto indisponível (erro interno — HTTP 500)');
   });
 
-  it('ticket.whatsapp.action.php smart_help call is wrapped in try/catch returning JSON', async () => {
-    const action = await read('integaglpi/front/ticket.whatsapp.action.php');
+  it('smart.help.php SmartHelp call is wrapped in try/catch returning JSON', async () => {
+    const front = await read('integaglpi/front/smart.help.php');
 
     // try/catch around localFirstAssist.
-    expect(action).toContain('try {');
-    expect(action).toContain('localFirstAssist($ticketId, $summary, $wantAiSummary)');
-    expect(action).toContain('catch (\\Throwable $e)');
-    expect(action).toContain("return 'internal_error';");
+    expect(front).toContain('try {');
+    expect(front).toContain('localFirstAssist($ticketId, $summary, $wantAiSummary)');
+    expect(front).toContain('catch (Throwable $exception)');
+    expect(front).toContain("return 'internal_error';");
     // Error logged safely.
-    expect(action).toContain('[integaglpi][ai_action][');
+    expect(front).toContain('[integaglpi][smart_help][error]');
     // Returns JSON (not raw exception text) on failure.
-    expect(action).toContain("$action . '_error'");
+    expect(front).toContain("'error' => 'smart_help_error'");
   });
 
   it('kb.search.php is bearer-gated, POST-only, read-only and visibility-filtered', async () => {

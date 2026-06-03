@@ -1497,7 +1497,7 @@ if ($isExternalConfigured && $runtime !== null && !$isClosed) {
             <?php if (\GlpiPlugin\Integaglpi\Service\SmartHelpService::canViewPanel()) { ?>
                 <div class="border rounded p-3 mt-3 mb-3 integaglpi-smart-help"
                      data-ticket-id="<?= (int) $replyTicketId; ?>"
-                     data-action-url="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getTicketActionUrl()); ?>"
+                     data-action-url="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/front/smart.help.php'); ?>"
                      data-csrf="<?= $this->escape($replyCsrfToken); ?>">
                     <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap mb-2">
                         <strong><i class="ti ti-bulb me-1"></i><?= $this->escape(__('Ajuda Inteligente', 'glpiintegaglpi')); ?></strong>
