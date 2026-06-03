@@ -72,6 +72,12 @@ final class TechnicalHealthDashboardService
         // ── 7. Manual recommendations ─────────────────────────────────────
         $recommendations = $this->buildRecommendations($auditData, $observability, $operationalDiagnostics);
 
+        // ── 8. Critical feature flags (V8 observability) ──────────────────
+        $featureFlags = $this->safeFeatureFlags($nodeDiagnostics);
+
+        // ── 9. Critical migrations status (044/045) ───────────────────────
+        $migrations = $this->safeMigrations();
+
         return [
             'generated_at'           => $generatedAt,
             'plugin_version'         => defined('PLUGIN_INTEGAGLPI_VERSION') ? (string) PLUGIN_INTEGAGLPI_VERSION : 'unknown',
@@ -83,11 +89,193 @@ final class TechnicalHealthDashboardService
             'audit'                  => $auditData,
             'ai'                     => $aiSummary,
             'recommendations'        => $recommendations,
+            'feature_flags'          => $featureFlags,
+            'migrations'             => $migrations,
             'events_window_hours'    => self::EVENTS_WINDOW_HOURS,
             'events_limit'           => self::EVENTS_LIMIT,
             'is_configured'          => $this->pluginConfigService->isConfigured(),
             'read_only'              => true,
         ];
+    }
+
+    /**
+     * Critical feature flags for the read-only dashboard. NEVER returns secrets,
+     * tokens or full sensitive URLs. Each flag carries an explicit source so the
+     * operator knows whether the value is authoritative or "not exposed" (the Node
+     * env flags are not surfaced by the diagnostics endpoint and must NOT be
+     * fabricated). This method does not call LogMeIn, cloud or mutate anything.
+     *
+     * @param array<string, mixed> $nodeDiagnostics
+     * @return list<array{key:string,label:string,value:string,status:string,source:string}>
+     */
+    private function safeFeatureFlags(array $nodeDiagnostics): array
+    {
+        $flags = [];
+
+        // Environment (TESTE/HOMOLOGACAO/PRODUCAO) — derived from the GLPI base URL.
+        $env = $this->detectEnvironment();
+        $flags[] = [
+            'key'    => 'ENVIRONMENT',
+            'label'  => __('Ambiente', 'glpiintegaglpi'),
+            'value'  => $env,
+            'status' => $env === 'producao' ? 'warning' : 'ok',
+            'source' => 'glpi_base_url',
+        ];
+
+        // AI_SUPERVISOR_ENABLED — authoritative from the plugin config (no secret).
+        $aiOn = $this->pluginConfigService->isAiSupervisorEnabled();
+        $flags[] = [
+            'key'    => 'AI_SUPERVISOR_ENABLED',
+            'label'  => __('Supervisor de IA habilitado', 'glpiintegaglpi'),
+            'value'  => $aiOn ? 'true' : 'false',
+            'status' => 'ok',
+            'source' => 'plugin_config',
+        ];
+
+        // integration-service endpoint — host only, never the full URL/credentials.
+        $flags[] = [
+            'key'    => 'INTEGRATION_SERVICE_HOST',
+            'label'  => __('Host do integration-service', 'glpiintegaglpi'),
+            'value'  => $this->redactUrlToHost($this->pluginConfigService->getIntegrationServiceUrl()),
+            'status' => ($nodeDiagnostics['available'] ?? false) ? 'ok' : 'critical',
+            'source' => 'plugin_config',
+        ];
+
+        // Meta/Webhook configured — boolean only, from the Node readiness payload.
+        $metaConfigured = (bool) ($nodeDiagnostics['meta']['configured']
+            ?? $nodeDiagnostics['readiness']['meta_configured']
+            ?? false);
+        $flags[] = [
+            'key'    => 'META_WEBHOOK_CONFIGURED',
+            'label'  => __('Meta/Webhook configurado', 'glpiintegaglpi'),
+            'value'  => $metaConfigured ? 'true' : 'false',
+            'status' => $metaConfigured ? 'ok' : 'warning',
+            'source' => 'node_diagnostics',
+        ];
+
+        // Node env flags that the diagnostics endpoint does NOT expose. We surface
+        // them as "not exposed" instead of guessing a value — honesty over fiction.
+        foreach ([
+            ['OUTBOUND_SEND_MODE', __('Modo de envio outbound', 'glpiintegaglpi')],
+            ['EXTERNAL_RESEARCH_CLOUD_ENABLED', __('Pesquisa externa (nuvem) habilitada', 'glpiintegaglpi')],
+            ['LOGMEIN_INTEGRATION_ENABLED', __('Integração LogMeIn habilitada', 'glpiintegaglpi')],
+            ['GLPI_KB_SEARCH_URL', __('URL de busca KB (host)', 'glpiintegaglpi')],
+        ] as [$key, $label]) {
+            $nodeValue = $nodeDiagnostics[$key] ?? ($nodeDiagnostics['feature_flags'][$key] ?? null);
+            $hasValue = is_scalar($nodeValue) && (string) $nodeValue !== '';
+            $value = $hasValue
+                ? ($key === 'GLPI_KB_SEARCH_URL' ? $this->redactUrlToHost((string) $nodeValue) : (string) $nodeValue)
+                : __('não exposto pelo diagnóstico', 'glpiintegaglpi');
+            $flags[] = [
+                'key'    => $key,
+                'label'  => $label,
+                'value'  => $value,
+                'status' => $hasValue ? 'ok' : 'unknown',
+                'source' => $hasValue ? 'node_diagnostics' : 'unavailable',
+            ];
+        }
+
+        return $flags;
+    }
+
+    /**
+     * Read-only status of the critical schema migrations (044/045). File-check only,
+     * mirroring SmartHelpService::migration044SchemaStatus — never queries or mutates
+     * any database.
+     *
+     * @return list<array{key:string,label:string,ok:bool,mode:string,missing:list<string>}>
+     */
+    private function safeMigrations(): array
+    {
+        $migrations = [];
+
+        // 044 — reuse the existing, committed file-check gate.
+        try {
+            $status044 = SmartHelpService::migration044SchemaStatus();
+            $migrations[] = [
+                'key'     => '044_ai_kb_ecosystem_reengineered',
+                'label'   => __('Migration 044 — Ecossistema IA/KB', 'glpiintegaglpi'),
+                'ok'      => (bool) ($status044['ok'] ?? false),
+                'mode'    => (string) ($status044['mode'] ?? 'file_check_only_no_db_mutation'),
+                'missing' => array_values(array_filter(
+                    (array) ($status044['missing'] ?? []),
+                    static fn ($v): bool => is_string($v)
+                )),
+            ];
+        } catch (Throwable $e) {
+            $migrations[] = [
+                'key' => '044_ai_kb_ecosystem_reengineered',
+                'label' => __('Migration 044 — Ecossistema IA/KB', 'glpiintegaglpi'),
+                'ok' => false,
+                'mode' => 'file_check_error',
+                'missing' => [],
+            ];
+        }
+
+        // 045 — performance/LGPD indexes. Same file-token check, no DB access.
+        $migrations[] = $this->fileTokenMigrationStatus(
+            '045_performance_scale_lgpd_indexes.sql',
+            '045_performance_scale_lgpd_indexes',
+            __('Migration 045 — Índices de performance/LGPD', 'glpiintegaglpi'),
+            ['CREATE INDEX', 'idx_']
+        );
+
+        return $migrations;
+    }
+
+    /**
+     * Generic committed-file token check for a migration (no DB access, read-only).
+     *
+     * @param list<string> $requiredTokens
+     * @return array{key:string,label:string,ok:bool,mode:string,missing:list<string>}
+     */
+    private function fileTokenMigrationStatus(string $fileName, string $key, string $label, array $requiredTokens): array
+    {
+        $path = dirname(__DIR__, 3) . DIRECTORY_SEPARATOR
+            . 'integration-service' . DIRECTORY_SEPARATOR
+            . 'schema-migrations' . DIRECTORY_SEPARATOR
+            . $fileName;
+
+        $missing = $requiredTokens;
+        if (is_readable($path)) {
+            $sql = (string) file_get_contents($path);
+            $missing = [];
+            foreach ($requiredTokens as $token) {
+                if (stripos($sql, $token) === false) {
+                    $missing[] = $token;
+                }
+            }
+        }
+
+        return [
+            'key'     => $key,
+            'label'   => $label,
+            'ok'      => $missing === [],
+            'mode'    => 'file_check_only_no_db_mutation',
+            'missing' => $missing,
+        ];
+    }
+
+    /**
+     * Reduce a URL to scheme+host(+port) only — drops path, query, credentials so no
+     * token or sensitive path is ever shown. Returns '—' when empty/unparseable.
+     */
+    private function redactUrlToHost(string $url): string
+    {
+        $url = trim($url);
+        if ($url === '') {
+            return '—';
+        }
+        $parts = parse_url($url);
+        if ($parts === false || empty($parts['host'])) {
+            // Not a parseable URL: never echo it raw (could embed a token).
+            return '[redacted]';
+        }
+        $scheme = isset($parts['scheme']) ? $parts['scheme'] . '://' : '';
+        $host = (string) $parts['host'];
+        $port = isset($parts['port']) ? ':' . (int) $parts['port'] : '';
+
+        return $scheme . $host . $port;
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────

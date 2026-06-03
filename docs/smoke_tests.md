@@ -193,6 +193,25 @@ Os itens abaixo são verificações de ausência (confirmam que integrações n�
 
 ---
 
+## V8 — Central Enterprise 3.0 + Observabilidade Segura (Pacote 1)
+
+Escopo entregue neste pacote: **Observabilidade Segura** — flags críticas + migrations 044/045
+na Saúde Técnica (read-only). A reorganização da Central por jornadas fica para o pacote seguinte.
+
+| ID | Smoke | Resultado esperado |
+|----|-------|--------------------|
+| S-V8-OBS-01 | Abrir Saúde Técnica (`front/technical.health.php`) com perfil de diagnóstico | Página carrega; novo bloco "Flags Críticas e Ambiente" e "Migrations Críticas" aparecem |
+| S-V8-OBS-02 | Inspecionar bloco de flags | Mostra ENVIRONMENT, AI_SUPERVISOR_ENABLED, INTEGRATION_SERVICE_HOST (host apenas), META_WEBHOOK_CONFIGURED; flags Node não expostas aparecem como "não exposto pelo diagnóstico" |
+| S-V8-OBS-03 | Conferir ausência de segredos | Nenhum token, PSK, senha, auth key ou URL completa com credenciais é exibido; URLs aparecem só como scheme+host(+porta) |
+| S-V8-OBS-04 | Bloco Migrations | 044 e 045 mostram "compatível" ou "pendente" via verificação de arquivo; nenhuma query/escrita no banco |
+| S-V8-OBS-05 | Perfil sem permissão de diagnóstico | `front/technical.health.php` retorna erro de direito (RBAC preservado) |
+| S-V8-OBS-06 | Nenhuma flag é alterada | A tela é 100% read-only; não há botão que grave flag, `.env` ou produção |
+| S-V8-OBS-07 | Ambiente PRODUÇÃO | Flag ENVIRONMENT marca badge de atenção quando detectado `producao` pela URL base |
+
+Observação: a Ajuda Inteligente (runtime V7-M2) NÃO foi tocada neste pacote.
+
+---
+
 ## Worker IA Observadora Online (TESTE/HOMOLOGACAO)
 
 ```bash

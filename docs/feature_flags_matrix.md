@@ -62,3 +62,17 @@ Feature flags são controles operacionais. Alterar flag em TESTE, HOMOLOGAÇÃO 
 - Nunca habilitar LogMeIn como requisito para criar ou responder ticket.
 - Nunca usar feature flag para contornar CSRF/RBAC/Bearer/entity scope.
 - Nunca registrar segredo ou token no valor auditado.
+
+## V8 — Exibição read-only na Saúde Técnica
+
+A tela **Saúde Técnica** (`front/technical.health.php`) exibe, somente leitura, as flags críticas e
+o ambiente. Regras de exibição:
+
+- Valores autoritativos: `ENVIRONMENT` (URL base do GLPI), `AI_SUPERVISOR_ENABLED` (config do plugin),
+  `INTEGRATION_SERVICE_HOST` (host apenas), `META_WEBHOOK_CONFIGURED` (booleano do diagnóstico Node).
+- Flags Node ainda não expostas pelo endpoint de diagnóstico — `OUTBOUND_SEND_MODE`,
+  `EXTERNAL_RESEARCH_CLOUD_ENABLED`, `LOGMEIN_INTEGRATION_ENABLED`, `GLPI_KB_SEARCH_URL` — aparecem
+  como **"não exposto pelo diagnóstico"**; nunca são adivinhadas/fabricadas.
+- URLs são reduzidas a `scheme://host(:porta)`; nenhuma URL completa, token, PSK ou senha é exibida.
+- A tela **não altera** flag, `.env`, Docker ou produção. Alteração de flag permanece manual e com gate.
+- Migrations 044/045: status por verificação de arquivo (sem acesso ao banco), apenas informativo.

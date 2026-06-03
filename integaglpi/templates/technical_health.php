@@ -442,6 +442,92 @@ $urls = [
         </div>
     </details>
 
+    <?php /* ── Feature flags & migrations (V8 observabilidade segura) ─────── */ ?>
+    <?php
+    $featureFlags = is_array($snapshot['feature_flags'] ?? null) ? $snapshot['feature_flags'] : [];
+    $migrations   = is_array($snapshot['migrations'] ?? null) ? $snapshot['migrations'] : [];
+    $flagBadge = static function (string $status): string {
+        return match ($status) {
+            'ok'       => 'success',
+            'warning'  => 'warning',
+            'critical' => 'danger',
+            default    => 'secondary',
+        };
+    };
+    ?>
+    <div class="row g-3 mb-3">
+        <div class="col-lg-7">
+            <div class="card h-100">
+                <div class="card-header fw-bold">
+                    <i class="ti ti-flag me-1"></i><?= $escape(__('Flags Críticas e Ambiente', 'glpiintegaglpi')); ?>
+                    <span class="badge bg-light text-dark ms-2"><?= $escape(__('somente leitura', 'glpiintegaglpi')); ?></span>
+                </div>
+                <div class="card-body">
+                    <div class="form-text mb-2">
+                        <?= $escape(__('Valores não sensíveis. Segredos, tokens e URLs completas nunca são exibidos. Flags não alteram nada aqui.', 'glpiintegaglpi')); ?>
+                    </div>
+                    <table class="table table-sm mb-0">
+                        <thead>
+                            <tr>
+                                <th><?= $escape(__('Flag', 'glpiintegaglpi')); ?></th>
+                                <th><?= $escape(__('Valor', 'glpiintegaglpi')); ?></th>
+                                <th><?= $escape(__('Fonte', 'glpiintegaglpi')); ?></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($featureFlags as $flag) { ?>
+                                <tr>
+                                    <td>
+                                        <code><?= $escape($flag['key'] ?? ''); ?></code><br>
+                                        <span class="text-muted small"><?= $escape($flag['label'] ?? ''); ?></span>
+                                    </td>
+                                    <td>
+                                        <span class="badge bg-<?= $escape($flagBadge((string) ($flag['status'] ?? 'secondary'))); ?>">
+                                            <?= $escape($flag['value'] ?? '—'); ?>
+                                        </span>
+                                    </td>
+                                    <td class="text-muted small"><?= $escape($flag['source'] ?? ''); ?></td>
+                                </tr>
+                            <?php } ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-5">
+            <div class="card h-100">
+                <div class="card-header fw-bold">
+                    <i class="ti ti-database-cog me-1"></i><?= $escape(__('Migrations Críticas', 'glpiintegaglpi')); ?>
+                </div>
+                <div class="card-body">
+                    <div class="form-text mb-2">
+                        <?= $escape(__('Verificação por arquivo (sem acesso ao banco). Aplicação permanece manual.', 'glpiintegaglpi')); ?>
+                    </div>
+                    <ul class="list-group list-group-flush">
+                        <?php foreach ($migrations as $mig) { ?>
+                            <?php $migOk = (bool) ($mig['ok'] ?? false); ?>
+                            <li class="list-group-item d-flex justify-content-between align-items-start px-0">
+                                <div>
+                                    <div class="fw-bold small"><?= $escape($mig['label'] ?? ''); ?></div>
+                                    <code class="small"><?= $escape($mig['key'] ?? ''); ?></code>
+                                    <?php if (!$migOk && !empty($mig['missing'])) { ?>
+                                        <div class="text-muted small">
+                                            <?= $escape(__('Tokens ausentes:', 'glpiintegaglpi')); ?>
+                                            <?= $escape(implode(', ', array_slice((array) $mig['missing'], 0, 5))); ?>
+                                        </div>
+                                    <?php } ?>
+                                </div>
+                                <span class="badge bg-<?= $migOk ? 'success' : 'warning'; ?>">
+                                    <?= $migOk ? $escape(__('compatível', 'glpiintegaglpi')) : $escape(__('pendente', 'glpiintegaglpi')); ?>
+                                </span>
+                            </li>
+                        <?php } ?>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <?php /* ── Drill-down links ─────────────────────────────────────────── */ ?>
     <div class="card mb-3">
         <div class="card-header"><i class="ti ti-external-link me-1"></i><?= $escape(__('Drill-down — Telas Detalhadas', 'glpiintegaglpi')); ?></div>

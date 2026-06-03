@@ -102,3 +102,18 @@ Governança enterprise:
 - Problem management permanece assistivo/read-only, sem criação automática de problem record.
 - Coaching técnico permanece agregado e não punitivo.
 - Nenhuma automação de ticket, WhatsApp, KB ou cloud foi criada.
+
+## V8 — Operacionalização do Produto (em andamento)
+
+Pacote 1 — Central Enterprise 3.0 + Observabilidade Segura:
+- **Entregue**: Observabilidade Segura na Saúde Técnica — bloco read-only de Flags Críticas
+  (ENVIRONMENT, AI_SUPERVISOR_ENABLED, INTEGRATION_SERVICE_HOST, META_WEBHOOK_CONFIGURED) e
+  Migrations Críticas 044/045 (verificação por arquivo, sem acesso ao banco). Segredos, tokens
+  e URLs completas nunca são exibidos (URLs reduzidas a host). Nada é gravado pela tela e
+  nenhuma flag/`.env` é alterada.
+- **Diferido para o Pacote 2** (requer validação de runtime no GLPI): reorganização da Central por
+  jornadas (Atendimento / Conhecimento / Configuração / Governança), redução de ruído visual e
+  badges críticos. Motivo: `templates/central.php` (3477 linhas) é UI de atendimento ao vivo;
+  reorganizar sem validação de rotas/RBAC em ambiente real violaria as STOP conditions
+  ("não quebrar rotas atuais" / "técnico comum ganhar acesso indevido").
+- Nenhuma alteração no runtime da Ajuda Inteligente, Copiloto, Ollama, migrations ou produção.
