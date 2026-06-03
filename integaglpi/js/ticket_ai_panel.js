@@ -182,12 +182,13 @@
     var externalBtn = panel.querySelector('.js-smart-help-external');
     var technicalSummaryEl = panel.querySelector('.js-smart-help-technical-summary');
     var schemaStatusEl = panel.querySelector('.js-smart-help-schema-status');
+    var schema = result.schema044Status || result.schema_044_status || {};
+    var feedbackEnabled = !!schema.ok;
 
     if (technicalSummaryEl) {
       technicalSummaryEl.value = result.technicalSummary || result.technical_summary || '';
     }
     if (schemaStatusEl) {
-      var schema = result.schema044Status || result.schema_044_status || {};
       var search = result.kbSearchSource || result.kb_search_source || {};
       schemaStatusEl.textContent = (search.label || 'Base de Conhecimento local')
         + ' · schema 044: ' + (schema.ok ? 'compatível' : 'pendente de homologação');
@@ -206,16 +207,19 @@
         var conf = Math.round((a.confidence || 0) * 100);
         var source = a.sourceLabel || a.source_label || (glpiKnowbaseitemId ? 'Base de Conhecimento GLPI' : 'Candidato KB');
         var reason = a.confidenceReason || a.confidence_reason || 'Confiança operacional baseada em correspondência local.';
+        var feedbackButtons = feedbackEnabled
+          ? '<span class="btn-group btn-group-sm" role="group">'
+              + '<button type="button" class="btn btn-outline-success js-smart-help-feedback" data-kb-candidate-id="' + esc(kbCandidateId) + '" data-glpi-knowbaseitem-id="' + esc(glpiKnowbaseitemId) + '" data-helpful="1">' + esc('Ajudou') + '</button>'
+              + '<button type="button" class="btn btn-outline-danger js-smart-help-feedback" data-kb-candidate-id="' + esc(kbCandidateId) + '" data-glpi-knowbaseitem-id="' + esc(glpiKnowbaseitemId) + '" data-helpful="0">' + esc('Não ajudou') + '</button>'
+              + '</span>'
+          : '<span class="text-muted small js-smart-help-feedback-unavailable">' + esc('Feedback indisponível: schema 044 pendente de homologação.') + '</span>';
         return '<div class="border-bottom py-2">'
           + '<div class="d-flex justify-content-between align-items-start gap-2">'
           + '<div><strong>' + esc(a.title) + '</strong>'
           + '<div class="text-muted">' + esc(source) + (a.category ? ' · ' + esc(a.category) : '') + '</div>'
           + '<div>' + esc(a.excerpt || '') + '</div>'
           + '<div class="text-muted">' + esc(reason) + ' · ' + esc('Confiança operacional') + ': ' + conf + '%</div></div>'
-          + '<span class="btn-group btn-group-sm" role="group">'
-          + '<button type="button" class="btn btn-outline-success js-smart-help-feedback" data-kb-candidate-id="' + esc(kbCandidateId) + '" data-glpi-knowbaseitem-id="' + esc(glpiKnowbaseitemId) + '" data-helpful="1">' + esc('Ajudou') + '</button>'
-          + '<button type="button" class="btn btn-outline-danger js-smart-help-feedback" data-kb-candidate-id="' + esc(kbCandidateId) + '" data-glpi-knowbaseitem-id="' + esc(glpiKnowbaseitemId) + '" data-helpful="0">' + esc('Não ajudou') + '</button>'
-          + '</span></div></div>';
+          + feedbackButtons + '</div></div>';
       }).join('');
     }
 
@@ -303,38 +307,90 @@
     });
   }
 
+  // Step 1 of the two-step cloud flow: ask the server for a SANITIZED PREVIEW.
+  // No cloud call happens here. The server-side PII Guard sanitizes the context; the
+  // operator sees the sanitized text, the detected PII kinds and whether it is safe to
+  // send — then confirms the send explicitly. Raw context never leaves the server.
   function handleExternal(panel) {
-    if (!window.confirm('A pesquisa externa só deve ser usada quando a KB local não resolver. O contexto passa pelo PII Guard e será enviado SANITIZADO para a nuvem. Confirmar?')) { return; }
-    setStatus(panel, 'pesquisando externamente', 'info');
-    post(panel, 'smart_external', { consent: '1' }).then(function (resp) {
-      var msgEl = panel.querySelector('.js-smart-help-message');
-      // Transport-level failure returned by post() (timeout, network error, endpoint missing).
+    setStatus(panel, 'sanitizando contexto', 'info');
+    var cloudEl = panel.querySelector('.js-smart-help-cloud');
+    var msgEl = panel.querySelector('.js-smart-help-message');
+    post(panel, 'prepare_external_context', {}, { refreshCsrfBeforePost: true }).then(function (resp) {
       if (resp && resp.ok === false && resp.error && !resp.result) {
-        msgEl.textContent = resp.message || 'Pesquisa externa indisponível.';
+        if (msgEl) { msgEl.textContent = resp.message || 'Pré-visualização indisponível.'; }
+        setStatus(panel, resp.error === 'timeout' ? 'tempo esgotado' : 'erro de rede', 'danger');
+        return;
+      }
+      var r = resp && resp.result ? resp.result : {};
+      var sanitized = r.sanitized_text || r.sanitizedText || '';
+      var kinds = r.detected_kinds || r.detectedKinds || [];
+      var safe = (r.safe_for_cloud === true) || (r.safeForCloud === true);
+
+      var kindsBadges = kinds.length
+        ? kinds.map(function (k) { return '<span class="badge bg-warning text-dark me-1">' + esc(k) + '</span>'; }).join('')
+        : '<span class="text-muted">' + esc('nenhum') + '</span>';
+
+      var html = '<div class="border rounded p-2 mt-1">';
+      if (safe) {
+        html += '<div class="fw-bold text-success mb-1">' + esc('Contexto sanitizado pronto para envio') + '</div>';
+      } else {
+        html += '<div class="fw-bold text-danger mb-1">' + esc('Bloqueado por PII — não será enviado à nuvem') + '</div>';
+      }
+      html += '<div class="small text-muted mb-1">' + esc('Tipos detectados/removidos:') + ' ' + kindsBadges + '</div>';
+      html += '<label class="form-label small mb-1">' + esc('Pré-visualização sanitizada (somente isto poderia ir à nuvem):') + '</label>';
+      html += '<textarea class="form-control form-control-sm js-smart-help-external-preview" rows="4" readonly>' + esc(sanitized) + '</textarea>';
+      html += '<div class="d-flex gap-2 mt-2 flex-wrap">';
+      if (safe) {
+        html += '<button type="button" class="btn btn-sm btn-warning js-smart-help-external-send">'
+          + '<i class="ti ti-cloud-upload me-1"></i>' + esc('Confirmar envio sanitizado para a nuvem') + '</button>';
+      } else {
+        html += '<span class="text-danger small align-self-center">' + esc('Há PII residual: revise o chamado. Envio bloqueado.') + '</span>';
+      }
+      html += '<button type="button" class="btn btn-sm btn-outline-secondary js-smart-help-copy" data-text="' + esc(sanitized) + '">'
+        + esc('Copiar contexto sanitizado') + '</button>';
+      html += '</div></div>';
+
+      if (cloudEl) { cloudEl.innerHTML = html; }
+      if (msgEl) { msgEl.textContent = ''; }
+      setStatus(panel, safe ? 'pronto para envio' : 'PII bloqueado', safe ? 'success' : 'danger');
+    });
+  }
+
+  // Step 2: the operator confirmed. Send to the cloud (consent=1). Node re-sanitizes
+  // and blocks on PII independently — the provider never receives raw context.
+  function handleExternalSend(panel) {
+    if (!window.confirm('Enviar o contexto SANITIZADO para a nuvem? Nada do conteúdo bruto do chamado é enviado.')) { return; }
+    setStatus(panel, 'pesquisando externamente', 'info');
+    var cloudEl = panel.querySelector('.js-smart-help-cloud');
+    var msgEl = panel.querySelector('.js-smart-help-message');
+    post(panel, 'smart_external', { consent: '1' }, { refreshCsrfBeforePost: true }).then(function (resp) {
+      if (resp && resp.ok === false && resp.error && !resp.result) {
+        if (msgEl) { msgEl.textContent = resp.message || 'Pesquisa externa indisponível.'; }
         setStatus(panel, resp.error === 'timeout' ? 'tempo esgotado' : 'erro de rede', 'danger');
         return;
       }
       var r = resp && resp.result ? resp.result : {};
       if (r.status === 'provider_unavailable') {
-        msgEl.textContent = r.message || 'Pesquisa externa não configurada.';
+        if (msgEl) { msgEl.textContent = r.message || 'Pesquisa externa não configurada.'; }
         setStatus(panel, 'nuvem indisponível', 'secondary');
       } else if (r.status === 'no_actionable_result') {
-        // The provider answered but with nothing usable — be honest, no fake candidate.
-        panel.querySelector('.js-smart-help-cloud').innerHTML = '';
-        msgEl.textContent = r.message || 'A pesquisa não retornou orientação técnica utilizável.';
+        if (cloudEl) { cloudEl.innerHTML = ''; }
+        if (msgEl) { msgEl.textContent = r.message || 'A pesquisa não retornou orientação técnica utilizável.'; }
         setStatus(panel, 'sem resposta útil', 'warning');
       } else if (r.status === 'blocked_pii') {
-        msgEl.textContent = 'Bloqueado: o contexto contém dados sensíveis e não foi enviado.';
+        if (msgEl) { msgEl.textContent = 'Bloqueado: o contexto ainda contém dados sensíveis e não foi enviado.'; }
         setStatus(panel, 'PII bloqueado', 'danger');
       } else if (r.ok && r.answer) {
         var a = r.answer;
-        panel.querySelector('.js-smart-help-cloud').innerHTML =
-          '<div class="border rounded p-2 mt-1"><strong>Diagnóstico:</strong> ' + esc(a.diagnosis) + '<br>'
-          + '<strong>Passos:</strong><ul>' + (a.steps || []).map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') + '</ul>'
-          + '<strong>Riscos:</strong> ' + esc((a.risks || []).join('; ')) + '</div>';
+        if (cloudEl) {
+          cloudEl.innerHTML =
+            '<div class="border rounded p-2 mt-1"><strong>Diagnóstico:</strong> ' + esc(a.diagnosis) + '<br>'
+            + '<strong>Passos:</strong><ul>' + (a.steps || []).map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') + '</ul>'
+            + '<strong>Riscos:</strong> ' + esc((a.risks || []).join('; ')) + '</div>';
+        }
         setStatus(panel, 'resposta externa', 'success');
       } else {
-        msgEl.textContent = r.message || 'Pesquisa externa indisponível.';
+        if (msgEl) { msgEl.textContent = r.message || 'Pesquisa externa indisponível.'; }
         setStatus(panel, 'erro', 'danger');
       }
     });
@@ -352,6 +408,7 @@
       runSmartHelp(panel, true);  // userInitiated = true → desabilita botão
       return;
     }
+    if (t.closest('.js-smart-help-external-send')) { event.preventDefault(); handleExternalSend(panel); return; }
     if (t.closest('.js-smart-help-external')) { event.preventDefault(); handleExternal(panel); return; }
 
     var copyBtn = t.closest('.js-smart-help-copy');
@@ -365,12 +422,39 @@
 
     var fb = t.closest('.js-smart-help-feedback');
     if (fb) {
+      fb.disabled = true;
+      var originalFeedbackLabel = fb.textContent || '';
       post(panel, 'kb_feedback', {
         kb_candidate_id: fb.getAttribute('data-kb-candidate-id') || '0',
         glpi_knowbaseitem_id: fb.getAttribute('data-glpi-knowbaseitem-id') || '0',
         helpful: fb.getAttribute('data-helpful') || '0'
       })
-        .then(function () { fb.parentNode.innerHTML = '<span class="text-muted small">obrigado</span>'; });
+        .then(function (resp) {
+          var result = resp && resp.result ? resp.result : resp;
+          if (result && result.ok === true && result.status === 'recorded') {
+            fb.parentNode.innerHTML = '<span class="text-muted small">feedback registrado</span>';
+            return;
+          }
+
+          fb.disabled = false;
+          fb.textContent = originalFeedbackLabel;
+          var msgEl = panel.querySelector('.js-smart-help-message');
+          if (msgEl) {
+            msgEl.textContent = (result && result.message)
+              ? result.message
+              : 'Feedback indisponível: schema 044 pode estar pendente de homologação.';
+            msgEl.className = 'mt-2 small js-smart-help-message text-warning';
+          }
+        })
+        .catch(function () {
+          fb.disabled = false;
+          fb.textContent = originalFeedbackLabel;
+          var msgEl = panel.querySelector('.js-smart-help-message');
+          if (msgEl) {
+            msgEl.textContent = 'Feedback indisponível: schema 044 pode estar pendente de homologação.';
+            msgEl.className = 'mt-2 small js-smart-help-message text-warning';
+          }
+        });
       return;
     }
 

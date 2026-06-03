@@ -150,7 +150,7 @@ try {
     }
 
     $action = trim((string) ($_POST['smart_action'] ?? $_POST['whatsapp_action'] ?? 'smart_help'));
-    $allowedActions = ['smart_help', 'kb_feedback', 'suggest_kb', 'smart_external'];
+    $allowedActions = ['smart_help', 'kb_feedback', 'suggest_kb', 'prepare_external_context', 'smart_external'];
     if (!in_array($action, $allowedActions, true)) {
         integaglpiSmartHelpJsonResponse([
             'ok' => false,
@@ -171,7 +171,9 @@ try {
         exit;
     }
 
-    if ($action === 'smart_external' && !Plugin::canUpdate()) {
+    // Both cloud-flow steps (preview AND send) require the strong UPDATE permission.
+    // Consent is enforced only on the actual send below.
+    if (in_array($action, ['prepare_external_context', 'smart_external'], true) && !Plugin::canUpdate()) {
         integaglpiSmartHelpJsonResponse([
             'ok' => false,
             'error' => 'forbidden',
@@ -216,11 +218,34 @@ try {
         exit;
     }
 
-    $consent = ($_POST['consent'] ?? '') === '1' || ($_POST['consent'] ?? '') === 'true';
+    if ($action === 'prepare_external_context') {
+        // Step 1: sanitized preview only. No cloud send, no consent required here.
+        // Context is built server-side from the ticket (never trusts client text).
+        integaglpiSmartHelpJsonResponse([
+            'ok' => true,
+            'result' => $smartHelp->prepareExternalContext($ticketId, $summary),
+        ], 200);
+        exit;
+    }
+
+    if ($action === 'smart_external') {
+        // Step 2: the actual cloud send. Requires explicit consent; Node re-sanitizes
+        // and blocks on PII independently before reaching any provider.
+        $consent = ($_POST['consent'] ?? '') === '1' || ($_POST['consent'] ?? '') === 'true';
+        integaglpiSmartHelpJsonResponse([
+            'ok' => true,
+            'result' => $smartHelp->externalResearch($ticketId, $summary, $consent),
+        ], 200);
+        exit;
+    }
+
+    // Unreachable: $allowedActions is validated above. Defensive typed response.
     integaglpiSmartHelpJsonResponse([
-        'ok' => true,
-        'result' => $smartHelp->externalResearch($ticketId, $summary, $consent),
-    ], 200);
+        'ok' => false,
+        'error' => 'invalid_action',
+        'error_type' => 'missing_context',
+        'message' => __('Ação inválida para Ajuda Inteligente.', 'glpiintegaglpi'),
+    ], 400);
 } catch (Throwable $exception) {
     $errorType = integaglpiSmartHelpErrorType($exception->getMessage(), $exception);
     error_log('[integaglpi][smart_help][error] '

@@ -106,7 +106,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(front).toContain("(string) (\$_GET['csrf_token'] ?? '') === '1'");
     expect(front).toContain('Plugin::isCsrfValid($_POST)');
     expect(front).toContain('SmartHelpService::canViewPanel()');
-    expect(front).toContain("\$allowedActions = ['smart_help', 'kb_feedback', 'suggest_kb', 'smart_external']");
+    expect(front).toContain("\$allowedActions = ['smart_help', 'kb_feedback', 'suggest_kb', 'prepare_external_context', 'smart_external']");
     expect(front).toContain('localFirstAssist($ticketId, $summary, $wantAiSummary)');
     expect(front).not.toMatch(/->update\(|->add\(|ITILFollowup|TicketTask|sendOutbound|sendWhatsApp/i);
   });
@@ -172,8 +172,8 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
   it('smart_external cloud action requires Plugin::canUpdate() on top of canViewPanel()', async () => {
     const front = await read('integaglpi/front/smart.help.php');
 
-    // smart_external gate: canUpdate() checked before externalResearch is called.
-    expect(front).toContain("if ($action === 'smart_external' && !Plugin::canUpdate())");
+    // Cloud-flow gate: both preview AND send require canUpdate() before any cloud step.
+    expect(front).toContain("in_array(\$action, ['prepare_external_context', 'smart_external'], true) && !Plugin::canUpdate()");
     expect(front).toContain("'error_type' => 'permission_denied'");
     expect(front).toContain('SmartHelpService::canViewPanel()');
     // Human consent still required even after permission check.
@@ -182,6 +182,46 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(front).toContain("if ($action === 'smart_help')");
     expect(front).toContain("if ($action === 'kb_feedback')");
     expect(front).toContain("if ($action === 'suggest_kb')");
+  });
+
+  it('cloud external research is a two-step sanitized-preview flow (prepare → confirm send)', async () => {
+    const front = await read('integaglpi/front/smart.help.php');
+    const svc = await read('integaglpi/src/Service/SmartHelpService.php');
+    const node = await read('integration-service/src/controllers/ai.controller.ts');
+    const js = await read('integaglpi/js/ticket_ai_panel.js');
+
+    // ── PHP: prepare step exists, builds context server-side, no consent (no send) ──
+    expect(front).toContain("if (\$action === 'prepare_external_context')");
+    expect(front).toContain('prepareExternalContext($ticketId, $summary)');
+    // Send step still requires explicit consent.
+    expect(front).toContain("\$consent = (\$_POST['consent'] ?? '') === '1'");
+    expect(front).toContain('externalResearch($ticketId, $summary, $consent)');
+
+    // ── PHP service: preview path is the dedicated preview endpoint ──
+    expect(svc).toContain("/internal/glpi/ai/external-research/preview");
+    expect(svc).toContain('function prepareExternalContext');
+
+    // ── Node controller: preview returns sanitized text + safe flag, never raw, no cloud ──
+    expect(node).toContain('createExternalResearchPreviewController');
+    expect(node).toContain('sanitized_text: preview.sanitizedText');
+    expect(node).toContain('detected_kinds: preview.detectedKinds');
+    expect(node).toContain('safe_for_cloud: !preview.blocked');
+    expect(node).toContain('remote_execution: false');
+    // The preview controller must NOT call researchDynamic (no cloud send in step 1).
+    const prevStart = node.indexOf('createExternalResearchPreviewController');
+    const prevEnd = node.indexOf('createCoachingChecklistController');
+    const prevBody = node.slice(prevStart, prevEnd);
+    expect(prevBody).not.toContain('researchDynamic');
+
+    // ── JS: step 1 calls prepare; step 2 (confirmed) calls smart_external with consent ──
+    expect(js).toContain("post(panel, 'prepare_external_context'");
+    expect(js).toContain('function handleExternalSend');
+    expect(js).toContain("post(panel, 'smart_external', { consent: '1' }");
+    expect(js).toContain('js-smart-help-external-send');
+    // Clear blocked / ready messaging — never a silent failure.
+    expect(js).toContain('Contexto sanitizado pronto para envio');
+    expect(js).toContain('Bloqueado por PII');
+    expect(js).toContain('Tipos detectados/removidos:');
   });
 
   it("the smart help JS never auto-runs SmartHelp or cloud (manual click only)", async () => {
@@ -200,6 +240,11 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).toContain('PII Guard');
     expect(js).toContain('glpi_knowbaseitem_id');
     expect(js).toContain('Confiança operacional');
+    expect(js).toContain('var feedbackEnabled = !!schema.ok');
+    expect(js).toContain('Feedback indisponível: schema 044 pendente de homologação.');
+    expect(js).toContain("result.ok === true && result.status === 'recorded'");
+    expect(js).toContain('feedback registrado');
+    expect(js).not.toContain("fb.parentNode.innerHTML = '<span class=\"text-muted small\">obrigado</span>'");
     // External (cloud) only via the explicit button + confirm dialog.
     expect(js).toContain('window.confirm');
     expect(js).toContain("post(panel, 'smart_external', { consent: '1' }");
@@ -273,9 +318,9 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
       .toBeLessThan(front.indexOf('Plugin::isCsrfValid($_POST)'));
     // Empty token is never accepted (alias only copied when non-empty).
     expect(front).toContain("if (\$aliasToken !== '') {");
-    // CSRF validation stays mandatory; smart_external still requires UPDATE.
+    // CSRF validation stays mandatory; cloud flow (preview + send) still requires UPDATE.
     expect(front).toContain('Plugin::isCsrfValid($_POST)');
-    expect(front).toContain("\$action === 'smart_external' && !Plugin::canUpdate()");
+    expect(front).toContain("in_array(\$action, ['prepare_external_context', 'smart_external'], true) && !Plugin::canUpdate()");
 
     // SmartHelp JS no longer targets the legacy ticket action endpoint.
     expect(js).not.toContain('ticket.whatsapp.action.php');

@@ -28,6 +28,7 @@ final class SmartHelpService
     private const PATH_SMART_HELP        = '/internal/glpi/ai/smart-help';
     private const PATH_TECHNICAL_SUMMARY = '/internal/glpi/ai/technical-summary';
     private const PATH_EXTERNAL_RESEARCH = '/internal/glpi/ai/external-research/dynamic';
+    private const PATH_EXTERNAL_PREVIEW  = '/internal/glpi/ai/external-research/preview';
     private const PATH_KB_FEEDBACK       = '/internal/glpi/ai/kb-feedback';
     private const PATH_COACHING_CHECKLIST = '/internal/glpi/ai/coaching/checklist';
     private const PATH_COACHING_SUGGEST_KB = '/internal/glpi/ai/coaching/suggest-kb';
@@ -320,6 +321,23 @@ final class SmartHelpService
             'Aparece alguma mensagem de erro? Qual é o texto exato?',
             'Outras pessoas ou equipamentos apresentam o mesmo problema?',
         ];
+    }
+
+    /**
+     * Step 1 of the two-step cloud flow: sanitize the ticket context and return a
+     * preview WITHOUT calling the cloud. The Node sanitizer strips PII; we surface the
+     * sanitized text + detected kinds + safe_for_cloud so the operator can review before
+     * any send. No consent required here (nothing leaves to the cloud). The raw context
+     * is never returned to the panel — only the sanitized text.
+     *
+     * @return array<string, mixed>
+     */
+    public function prepareExternalContext(int $ticketId, string $context): array
+    {
+        return $this->postJson(self::PATH_EXTERNAL_PREVIEW, [
+            'ticket_id' => $ticketId,
+            'context'   => mb_substr($context, 0, 6000, 'UTF-8'),
+        ]);
     }
 
     /**

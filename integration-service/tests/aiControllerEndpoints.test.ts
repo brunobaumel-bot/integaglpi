@@ -7,6 +7,7 @@ import {
   createCoachingChecklistController,
   createCoachingSuggestKbController,
   createExternalResearchDynamicController,
+  createExternalResearchPreviewController,
   createSmartHelpController,
   createTechnicalSummaryController,
 } from '../src/controllers/ai.controller.js';
@@ -51,6 +52,54 @@ describe('AI controller endpoints', () => {
     expect(res.status).toBe(403);
     expect(service.researchDynamic).toHaveBeenCalledOnce();
     expect(service.researchDynamic.mock.calls[0]?.[0].humanConsent).toBe(false);
+  });
+
+  it('POST external-research/preview returns sanitized text + safe_for_cloud=true for clean context', async () => {
+    const service = {
+      preview: vi.fn(() => ({
+        inputHash: 'h1', anonymizedPayloadHash: 'h2',
+        sanitizedText: 'office trava ao abrir documento grande',
+        detectedKinds: [], blocked: false, blockedReason: null,
+      })),
+    };
+    const res = await request(app('/prev', 'post', createExternalResearchPreviewController(service as never)))
+      .post('/prev').send({ ticket_id: 5, context: 'office trava ao abrir documento grande' });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.safe_for_cloud).toBe(true);
+    expect(res.body.sanitized_text).toContain('office trava');
+    expect(res.body.detected_kinds).toEqual([]);
+    expect(res.body.read_only).toBe(true);
+  });
+
+  it('POST external-research/preview blocks (safe_for_cloud=false) and never echoes raw context', async () => {
+    const service = {
+      preview: vi.fn(() => ({
+        inputHash: 'h1', anonymizedPayloadHash: 'h2',
+        sanitizedText: 'Cliente [nome], CPF [documento], telefone [telefone], email [email]',
+        detectedKinds: ['cpf_cnpj', 'email', 'name', 'phone'], blocked: true,
+        blockedReason: 'EXTERNAL_RESEARCH_PAYLOAD_BLOCKED_PII_OR_SECRET',
+      })),
+    };
+    const res = await request(app('/prev', 'post', createExternalResearchPreviewController(service as never)))
+      .post('/prev').send({ ticket_id: 5, context: 'Cliente João da Silva, CPF 123.456.789-00, joao@empresa.com.br' });
+    expect(res.status).toBe(200);
+    expect(res.body.safe_for_cloud).toBe(false);
+    expect(res.body.detected_kinds).toEqual(expect.arrayContaining(['email', 'name']));
+    // The raw PII must NOT be present anywhere in the response.
+    const raw = JSON.stringify(res.body);
+    expect(raw).not.toContain('João');
+    expect(raw).not.toContain('123.456.789');
+    expect(raw).not.toContain('joao@empresa.com.br');
+  });
+
+  it('POST external-research/preview rejects empty context', async () => {
+    const service = { preview: vi.fn() };
+    const res = await request(app('/prev', 'post', createExternalResearchPreviewController(service as never)))
+      .post('/prev').send({ ticket_id: 5, context: '   ' });
+    expect(res.status).toBe(400);
+    expect(res.body.safe_for_cloud).toBe(false);
+    expect(service.preview).not.toHaveBeenCalled();
   });
 
   it('POST external-research returns 422 when PII is blocked', async () => {

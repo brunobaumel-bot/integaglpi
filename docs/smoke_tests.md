@@ -142,6 +142,25 @@ Os itens abaixo são verificações de ausência (confirmam que integrações n�
 | S-V7-M2-11 | Pesquisa externa com clique | Exige confirmação humana e PII Guard; contexto enviado é sanitizado |
 | S-V7-M2-12 | PII detectada na pesquisa externa | Bloqueia envio para cloud e registra audit sanitizado |
 | S-V7-M2-13 | Provider cloud indisponível | Mostra mensagem útil; não falha o atendimento |
+| S-V7-M2-14 | Feedback com schema 044 pendente/indisponível | Botões ficam ocultos quando o status seguro indica pendência; se a persistência falhar, o UI mostra aviso e não confirma falso sucesso |
+| S-V7-M2-15 | Feedback persistido com schema 044 aplicado | Botão muda para "feedback registrado" somente quando o Node retorna `ok=true` e `status=recorded` |
+
+## V8 — Pesquisa Externa (nuvem) com preview sanitizado (PII Guard UX)
+
+Fluxo em duas etapas: `prepare_external_context` (preview sanitizado, sem cloud) → confirmação →
+`smart_external` (envio só do contexto sanitizado). Ambas exigem UPDATE; o envio exige consentimento.
+
+| ID | Smoke | Resultado esperado |
+|----|-------|--------------------|
+| S-V8-CLOUD-01 | Clicar "Pedir ajuda externa (nuvem)" | Mostra preview sanitizado + tipos detectados; NÃO chama a nuvem ainda |
+| S-V8-CLOUD-02 | Contexto com PII (nome/telefone/CPF/email) | `safe_for_cloud=false`: "Bloqueado por PII", lista os tipos, botão de envio NÃO aparece; permite copiar o texto sanitizado |
+| S-V8-CLOUD-03 | Contexto técnico limpo (sem PII) | `safe_for_cloud=true`: "Contexto sanitizado pronto para envio" + botão "Confirmar envio sanitizado" |
+| S-V8-CLOUD-04 | Confirmar envio (contexto limpo) | Só então chama a nuvem (consent=1); provider recebe apenas texto sanitizado; resposta exibida |
+| S-V8-CLOUD-05 | Network/preview | A resposta de preview nunca contém o contexto bruto — apenas `sanitized_text`/`detected_kinds`/`safe_for_cloud` |
+| S-V8-CLOUD-06 | Perfil sem UPDATE | `prepare_external_context` e `smart_external` retornam 403 `permission_denied` |
+| S-V8-CLOUD-07 | Auditoria | cloud_compliance_audit não registra payload bruto (somente metadados/sanitizado) |
+
+---
 
 ## V7 M2 Fix10 — Transporte CSRF da Ajuda Inteligente (endpoint dedicado)
 

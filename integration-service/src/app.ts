@@ -46,6 +46,7 @@ import {
   createCoachingChecklistController,
   createCoachingSuggestKbController,
   createExternalResearchDynamicController,
+  createExternalResearchPreviewController,
   createSmartHelpController,
   createTechnicalSummaryController,
 } from './controllers/ai.controller.js';
@@ -293,6 +294,13 @@ export function createApp(dependencies: AppDependencies) {
         aiAuth,
         createJsonParser(),
         createExternalResearchDynamicController(dependencies.externalResearchService),
+      );
+      // Step 1 of the two-step cloud flow: sanitized preview (no cloud call).
+      app.post(
+        '/internal/glpi/ai/external-research/preview',
+        aiAuth,
+        createJsonParser(),
+        createExternalResearchPreviewController(dependencies.externalResearchService),
       );
     }
     if (dependencies.coachingService) {

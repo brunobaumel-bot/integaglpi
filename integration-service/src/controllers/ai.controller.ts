@@ -157,6 +157,48 @@ export function createExternalResearchDynamicController(service: ExternalResearc
   };
 }
 
+/**
+ * POST /internal/glpi/ai/external-research/preview
+ *
+ * Step 1 of the two-step cloud flow: sanitize the context and return a SAFE preview.
+ * NEVER calls the cloud and NEVER echoes the raw context. Returns the sanitized text,
+ * the detected PII kinds (for operator transparency) and `safe_for_cloud` (= the PII
+ * Guard did NOT flag the context). The actual send still goes through researchDynamic,
+ * which re-sanitizes and blocks on PII independently — this preview never relaxes that.
+ */
+export function createExternalResearchPreviewController(service: ExternalResearchService) {
+  return async (request: Request, response: Response): Promise<Response> => {
+    try {
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      const context = String(body.context ?? '');
+      if (context.trim() === '') {
+        return response.status(400).json({
+          ok: false,
+          error_type: 'missing_context',
+          safe_for_cloud: false,
+          message: 'Contexto vazio para pré-visualização.',
+          read_only: true,
+        });
+      }
+      const preview = service.preview(context);
+      return response.status(200).json({
+        ok: true,
+        // Sanitized text only — the raw context is never returned.
+        sanitized_text: preview.sanitizedText,
+        detected_kinds: preview.detectedKinds,
+        safe_for_cloud: !preview.blocked,
+        blocked_reason: preview.blockedReason,
+        anonymized_payload_hash: preview.anonymizedPayloadHash,
+        read_only: true,
+        remote_execution: false,
+      });
+    } catch (error: unknown) {
+      logger.error({ error_message: error instanceof Error ? error.message : String(error) }, '[ai][external-research-preview]');
+      return fail(response, 500, 'Pré-visualização da pesquisa externa indisponível.');
+    }
+  };
+}
+
 /** GET /internal/glpi/ai/coaching/checklist?ticket_id=&technician_id=&category= */
 export function createCoachingChecklistController(service: CoachingService) {
   return async (request: Request, response: Response): Promise<Response> => {
