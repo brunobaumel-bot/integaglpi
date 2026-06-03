@@ -130,17 +130,18 @@ Os itens abaixo são verificações de ausência (confirmam que integrações n�
 | ID | Smoke | Resultado esperado |
 |----|-------|--------------------|
 | S-V7-M2-01 | Abrir aba WhatsApp do chamado | Painel Ajuda Inteligente aparece abaixo da resposta manual; Copiloto não envia WhatsApp automaticamente |
-| S-V7-M2-02 | Ajuda Inteligente local-first | Busca KB GLPI local primeiro; sem cloud automática |
-| S-V7-M2-03 | Resumo técnico | Campo "Resumo técnico sem dados pessoais" preenchido com texto sanitizado |
-| S-V7-M2-04 | Sugestões KB | Cada sugestão mostra fonte, categoria, trecho, motivo e confiança operacional |
-| S-V7-M2-05 | Checklist/perguntas | Passos de diagnóstico e perguntas faltantes aparecem para revisão do técnico |
-| S-V7-M2-06 | Feedback "Ajudou" em artigo GLPI | Registra `glpi_knowbaseitem_id`; não grava métrica nominal punitiva |
-| S-V7-M2-07 | Feedback "Não ajudou" em candidato | Registra `kb_candidate_id`; ranking futuro só usa agregados |
-| S-V7-M2-08 | Schema 044 | Status mostra compatibilidade da migration 044 por check seguro sem DB mutation |
-| S-V7-M2-09 | Pesquisa externa sem clique | Nenhuma chamada cloud ocorre no carregamento ou na consulta local |
-| S-V7-M2-10 | Pesquisa externa com clique | Exige confirmação humana e PII Guard; contexto enviado é sanitizado |
-| S-V7-M2-11 | PII detectada na pesquisa externa | Bloqueia envio para cloud e registra audit sanitizado |
-| S-V7-M2-12 | Provider cloud indisponível | Mostra mensagem útil; não falha o atendimento |
+| S-V7-M2-02 | Clicar em Ajuda Inteligente | Botão mostra "Analisando localmente...", preenche o resumo técnico sem PII quando houver conteúdo, exibe KB/checklist ou erro claro de schema/config; sem cloud automática |
+| S-V7-M2-03 | Ajuda Inteligente local-first | Busca KB GLPI local primeiro; sem cloud automática; pesquisa externa só com clique/consentimento |
+| S-V7-M2-04 | Resumo técnico | Campo "Resumo técnico sem dados pessoais" preenchido com texto sanitizado |
+| S-V7-M2-05 | Sugestões KB | Cada sugestão mostra fonte, categoria, trecho, motivo e confiança operacional |
+| S-V7-M2-06 | Checklist/perguntas | Passos de diagnóstico e perguntas faltantes aparecem para revisão do técnico |
+| S-V7-M2-07 | Feedback "Ajudou" em artigo GLPI | Registra `glpi_knowbaseitem_id`; não grava métrica nominal punitiva |
+| S-V7-M2-08 | Feedback "Não ajudou" em candidato | Registra `kb_candidate_id`; ranking futuro só usa agregados |
+| S-V7-M2-09 | Schema 044 | Status mostra compatibilidade da migration 044 por check seguro sem DB mutation |
+| S-V7-M2-10 | Pesquisa externa sem clique | Nenhuma chamada cloud ocorre no carregamento ou na consulta local |
+| S-V7-M2-11 | Pesquisa externa com clique | Exige confirmação humana e PII Guard; contexto enviado é sanitizado |
+| S-V7-M2-12 | PII detectada na pesquisa externa | Bloqueia envio para cloud e registra audit sanitizado |
+| S-V7-M2-13 | Provider cloud indisponível | Mostra mensagem útil; não falha o atendimento |
 | S-V7-M2-13 | Gerar Base por chamados resolvidos | Tela usa linguagem operacional, sem exigir leitura de etapas P2/P3/P4 |
 | S-V7-M2-14 | Rascunhos KB | Rascunhos permanecem para revisão humana; sem publicação automática |
 | S-V7-M2-15 | Guards preservados | CSRF/RBAC continuam ativos; IA não altera ticket/status/prioridade |

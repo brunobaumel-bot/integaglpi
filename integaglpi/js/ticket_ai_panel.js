@@ -14,6 +14,9 @@
   }
 
   function post(panel, action, extra) {
+    if (!panel.dataset.actionUrl) {
+      return Promise.reject(new Error('Smart Help endpoint não configurado.'));
+    }
     var params = new URLSearchParams();
     params.set('whatsapp_action', action);
     params.set('ticket_id', panel.dataset.ticketId || '0');
@@ -30,7 +33,23 @@
         'X-Requested-With': 'XMLHttpRequest'
       },
       body: params.toString()
-    }).then(function (r) { return r.json().catch(function () { return { ok: false }; }); });
+    }).then(function (r) {
+      return r.json().catch(function () {
+        return {
+          ok: false,
+          error: 'invalid_json',
+          message: 'A resposta do servidor não pôde ser interpretada.'
+        };
+      }).then(function (body) {
+        if (!r.ok) {
+          body = body || {};
+          body.ok = false;
+          body.httpStatus = r.status;
+          body.message = body.message || ('Falha HTTP ' + r.status + ' ao consultar a Ajuda Inteligente.');
+        }
+        return body;
+      });
+    });
   }
 
   function setStatus(panel, text, cls) {
@@ -61,8 +80,10 @@
     // Articles + feedback buttons.
     var articles = (result.relatedArticles || result.related_articles || []);
     if (articles.length === 0) {
-      articlesEl.innerHTML = '<div class="text-muted">' + esc('Nenhum artigo local com alta confiança.') + '</div>';
-    } else {
+      if (articlesEl) {
+        articlesEl.innerHTML = '<div class="text-muted">' + esc('Nenhum artigo local com alta confiança.') + '</div>';
+      }
+    } else if (articlesEl) {
       articlesEl.innerHTML = articles.map(function (a) {
         var kbCandidateId = a.kbCandidateId || a.kb_candidate_id || 0;
         var glpiKnowbaseitemId = a.glpiKnowbaseitemId || a.glpi_knowbaseitem_id || 0;
@@ -82,25 +103,48 @@
       }).join('');
     }
 
-    checklistEl.innerHTML = (result.checklist || []).map(function (c) { return '<li>' + esc(c) + '</li>'; }).join('');
-    questionsEl.innerHTML = (result.suggestedQuestions || result.suggested_questions || []).map(function (q) {
-      return '<li class="d-flex justify-content-between align-items-center gap-2 py-1">'
-        + '<span>' + esc(q) + '</span>'
-        + '<button type="button" class="btn btn-outline-secondary btn-sm js-smart-help-copy" data-text="' + esc(q) + '">' + esc('Copiar') + '</button></li>';
-    }).join('');
+    if (checklistEl) {
+      checklistEl.innerHTML = (result.checklist || []).map(function (c) { return '<li>' + esc(c) + '</li>'; }).join('');
+    }
+    if (questionsEl) {
+      questionsEl.innerHTML = (result.suggestedQuestions || result.suggested_questions || []).map(function (q) {
+        return '<li class="d-flex justify-content-between align-items-center gap-2 py-1">'
+          + '<span>' + esc(q) + '</span>'
+          + '<button type="button" class="btn btn-outline-secondary btn-sm js-smart-help-copy" data-text="' + esc(q) + '">' + esc('Copiar') + '</button></li>';
+      }).join('');
+    }
 
     var offer = result.cloudOffer || result.cloud_offer || { available: false };
-    if (offer.available) {
+    if (offer.available && externalBtn) {
       externalBtn.classList.remove('d-none');
-      cloudEl.innerHTML = '<span class="text-muted">' + esc(offer.reason || '') + '</span>';
+      if (cloudEl) {
+        cloudEl.innerHTML = '<span class="text-muted">' + esc(offer.reason || '') + '</span>';
+      }
     } else {
-      externalBtn.classList.add('d-none');
-      cloudEl.innerHTML = '';
+      if (externalBtn) {
+        externalBtn.classList.add('d-none');
+      }
+      if (cloudEl) {
+        cloudEl.innerHTML = '';
+      }
     }
-    msgEl.textContent = result.message || '';
+    if (msgEl) {
+      msgEl.textContent = result.message || '';
+    }
   }
 
   function runSmartHelp(panel) {
+    var runBtn = panel.querySelector('.js-smart-help-run');
+    var msgEl = panel.querySelector('.js-smart-help-message');
+    if (runBtn) {
+      runBtn.disabled = true;
+      runBtn.dataset.originalText = runBtn.dataset.originalText || (runBtn.textContent || '');
+      runBtn.textContent = 'Analisando localmente...';
+    }
+    if (msgEl) {
+      msgEl.textContent = 'Analisando localmente...';
+      msgEl.className = 'mt-2 small js-smart-help-message text-muted';
+    }
     setStatus(panel, 'analisando', 'info');
     post(panel, 'smart_help').then(function (resp) {
       var r = resp && resp.result ? resp.result : null;
@@ -113,12 +157,17 @@
         }
       } else {
         // Local-first never returns a raw error; this is a transport-only fallback.
-        setStatus(panel, 'modo local', 'warning');
-        renderResult(panel, { message: 'Não foi possível contatar o serviço. Consulte a base de conhecimento manualmente.' });
+        setStatus(panel, 'erro', 'danger');
+        renderResult(panel, { message: (resp && resp.message) ? resp.message : 'Não foi possível consultar a Ajuda Inteligente. Revise permissões, schema 044 e configuração local.' });
       }
-    }).catch(function () {
-      setStatus(panel, 'modo local', 'warning');
-      renderResult(panel, { message: 'Não foi possível contatar o serviço. Consulte a base de conhecimento manualmente.' });
+    }).catch(function (error) {
+      setStatus(panel, 'erro', 'danger');
+      renderResult(panel, { message: (error && error.message) ? error.message : 'Não foi possível consultar a Ajuda Inteligente. Revise permissões, schema 044 e configuração local.' });
+    }).finally(function () {
+      if (runBtn) {
+        runBtn.disabled = false;
+        runBtn.textContent = runBtn.dataset.originalText || 'Ajuda Inteligente';
+      }
     });
   }
 
@@ -159,8 +208,8 @@
     var panel = t.closest('.integaglpi-smart-help');
     if (!panel) { return; }
 
-    if (t.closest('.js-smart-help-run')) { runSmartHelp(panel); return; }
-    if (t.closest('.js-smart-help-external')) { handleExternal(panel); return; }
+    if (t.closest('.js-smart-help-run')) { event.preventDefault(); runSmartHelp(panel); return; }
+    if (t.closest('.js-smart-help-external')) { event.preventDefault(); handleExternal(panel); return; }
 
     var copyBtn = t.closest('.js-smart-help-copy');
     if (copyBtn) {
@@ -193,8 +242,13 @@
   }, false);
 
   // Proactive auto-load on render (local KB only; no cloud).
-  document.addEventListener('DOMContentLoaded', function () {
+  function initSmartHelpPanels() {
     var panels = document.querySelectorAll('.integaglpi-smart-help');
     Array.prototype.forEach.call(panels, function (p) { runSmartHelp(p); });
-  });
+  }
+
+  document.addEventListener('DOMContentLoaded', initSmartHelpPanels);
+  if (document.readyState !== 'loading') {
+    initSmartHelpPanels();
+  }
 })();

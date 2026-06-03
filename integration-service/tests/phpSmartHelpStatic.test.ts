@@ -106,6 +106,8 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(action.indexOf('Plugin::isCsrfValid($_POST)')).toBeLessThan(action.indexOf('$aiAssistActions'));
     // The AI branch runs before the ticket-mutation action map.
     expect(action.indexOf('$aiAssistActions')).toBeLessThan(action.indexOf('$actionRightMap = ['));
+    expect(action.indexOf('$aiAssistActions')).toBeLessThan(action.indexOf('Plugin::requireUpdate();'));
+    expect(action.indexOf('Plugin::requireUpdate();')).toBeLessThan(action.indexOf('$actionRightMap = ['));
     // Cloud consent is enforced; context built server-side.
     expect(action).toContain("(\$_POST['consent'] ?? '') === '1'");
     // The AI branch never mutates the ticket / sends WhatsApp.
@@ -118,6 +120,12 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // Proactive auto-load calls smart_help (local), NOT smart_external.
     expect(js).toContain('runSmartHelp(p)');
     expect(js).toContain("post(panel, 'smart_help')");
+    expect(js).toContain('document.readyState !== \'loading\'');
+    expect(js).toContain('event.preventDefault(); runSmartHelp(panel); return;');
+    expect(js).toContain('Analisando localmente...');
+    expect(js).toContain('runBtn.disabled = true');
+    expect(js).toContain('Falha HTTP ');
+    expect(js).toContain('Revise permissões, schema 044 e configuração local.');
     expect(js).toContain('PII Guard');
     expect(js).toContain('glpi_knowbaseitem_id');
     expect(js).toContain('Confiança operacional');

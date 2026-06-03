@@ -11,7 +11,6 @@ include '../../../inc/includes.php';
 error_log('[integaglpi][action][REQUEST] method=' . ($_SERVER['REQUEST_METHOD'] ?? '') . ' uri=' . ($_SERVER['REQUEST_URI'] ?? '') . ' post_keys=' . json_encode(array_keys($_POST ?? []), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 
 Session::checkLoginUser();
-Plugin::requireUpdate();
 
 function plugin_integaglpi_ticket_action_json(array $payload, int $statusCode): never
 {
@@ -113,6 +112,8 @@ if (in_array($action, $aiAssistActions, true)) {
         plugin_integaglpi_ticket_action_json(['ok' => true, 'result' => $smartHelp->suggestKb($ticketId)], 200);
     }
 }
+
+Plugin::requireUpdate();
 
 $actionRightMap = [
     'claim' => SecurityPermissionService::RIGHT_CLAIM_TICKET,
