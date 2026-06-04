@@ -451,19 +451,60 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).toContain('return postOnce(panel, action, extra);');
   });
 
-  it('technical summary is structured and PII-sanitized (local-first, deterministic)', async () => {
+  it('external AI assist renders a source-optional suggestion (review required, no misleading success)', async () => {
+    const js = await read('integaglpi/js/ticket_ai_panel.js');
+    const svc = await read('integration-service/src/domain/services/ExternalResearchService.ts');
+
+    // Node: source-optional contract fields on the completed answer.
+    expect(svc).toContain("sourceType: hasSources ? 'external_ai_with_sources' : 'external_ai_no_sources'");
+    expect(svc).toContain("confidenceLabel: hasSources ? 'media' : 'baixa'");
+    expect(svc).toContain('reviewRequired: true');
+
+    // JS: suggestion framing, review reminder, no-sources note, not evidence.
+    expect(js).toContain('Ajuda externa por IA — sugestão, revise antes de aplicar');
+    expect(js).toContain('Sem fontes externas verificáveis; use como sugestão técnica.');
+    expect(js).toContain('Nada é enviado ao cliente nem altera o chamado automaticamente.');
+    // Cloud send still requires consent.
+    expect(js).toContain("post(panel, 'smart_external', { consent: '1'");
+  });
+
+  it('technical summarizer aligns to the same effective LOCAL provider/model as the Copilot', async () => {
+    const deps = await read('integration-service/src/buildDependencies.ts');
+
+    // Summarizer resolves the effective model from the copilot runtime config (DB ->
+    // copilot_model -> COPILOT_DRAFT_MODEL -> AI_SUPERVISOR_MODEL), not the bare supervisor model.
+    expect(deps).toContain('const technicalSummarizer');
+    expect(deps).toContain('loadCopilotRuntimeConfig()');
+    expect(deps).toContain('env.COPILOT_DRAFT_MODEL.trim()');
+    // Uses the local Ollama base URL (no cloud) and generateText (free text).
+    expect(deps).toContain('new OllamaClient(env.AI_SUPERVISOR_BASE_URL, model, timeoutMs).generateText(prompt)');
+    // Prompt asks for clean prose without structural labels (no duplicate "Problema relatado:").
+    expect(deps).toContain('sem rótulos, sem listas');
+    expect(deps).not.toContain('Problema relatado: ...');
+  });
+
+  it('technical summary is clean prose, idempotent and PII-hardened (local-first, deterministic)', async () => {
     const svc = await read('integaglpi/src/Service/SmartHelpService.php');
 
-    // Dedicated sanitizer removes PII (email/CPF/CNPJ/phone) before use as context.
+    // Sanitizer removes e-mail/CPF/CNPJ/phone + company/ticket/asset/name/credential/url.
     expect(svc).toContain('function sanitizeContext');
-    expect(svc).toContain('[dado pessoal removido]');
-    // Structured summary fields for the technician.
-    expect(svc).toContain('Problema relatado:');
-    expect(svc).toContain('Contexto técnico:');
-    expect(svc).toContain('Próxima ação sugerida:');
-    // Still returns technicalSummary / technical_summary in the result payload.
-    expect(svc).toContain("'technicalSummary'");
+    expect(svc).toContain('[email removido]');
+    expect(svc).toContain('[empresa removida]');
+    expect(svc).toContain('[chamado removido]');
+    expect(svc).toContain('[patrimonio removido]');
+    expect(svc).toContain('[nome removido]');
+    expect(svc).toContain('[credencial removida]');
+    expect(svc).toContain('[url removida]');
+    // Idempotent prose: strips existing labels and de-duplicates sentences.
+    expect(svc).toContain('function stripSummaryBoilerplate');
+    expect(svc).toContain('Problema relatado|Contexto t[eé]cnico|Pr[oó]xima a[cç][aã]o sugerida');
+    // buildTechnicalSummary uses the boilerplate strip (no double "Problema relatado:").
+    expect(svc).toMatch(/buildTechnicalSummary[\s\S]*stripSummaryBoilerplate/);
+    // AI summary output is also stripped of labels before reaching the textarea.
+    expect(svc).toContain('$this->stripSummaryBoilerplate($this->sanitizeContext($aiSummary))');
+    // Still returns technicalSummary / technical_summary + honest summary_source.
     expect(svc).toContain("'technical_summary'");
+    expect(svc).toContain("'summary_source'");
     // The next-action hint is non-mutating (never auto-resolves / auto-sends).
     expect(svc).not.toMatch(/->update\(|sendOutbound|sendWhatsApp|auto_publish/i);
   });

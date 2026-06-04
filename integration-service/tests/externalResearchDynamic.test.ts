@@ -184,6 +184,40 @@ describe('ExternalResearchService.researchDynamic (cloud, human-gated, PII-safe)
     expect(result.answer?.steps.length).toBeGreaterThan(0);
   });
 
+  it('a source-less answer is still a valid suggestion (external_ai_no_sources, never alta)', async () => {
+    const noRefs = (): DynamicResearchAnswer => ({ ...answer(), references: [] });
+    const provider: CloudResearchProvider = { research: vi.fn(async () => noRefs()) };
+    const { repo } = auditMock();
+    const service = new ExternalResearchService(provider, repo, true);
+
+    const result = await service.researchDynamic({
+      context: 'falha de autenticacao em estacao windows ao acessar dominio', ticketId: 9, profileId: 9, category: 'Rede', humanConsent: true,
+    });
+
+    // Sources are optional: still a success/suggestion.
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe('completed');
+    expect(result.sourceType).toBe('external_ai_no_sources');
+    expect(result.reviewRequired).toBe(true);
+    // Without sources, confidence is never 'alta'.
+    expect(result.confidenceLabel).not.toBe('alta');
+  });
+
+  it('an answer WITH references is labeled external_ai_with_sources', async () => {
+    const withRefs = (): DynamicResearchAnswer => ({ ...answer(), references: ['https://learn.microsoft.com/x'] });
+    const provider: CloudResearchProvider = { research: vi.fn(async () => withRefs()) };
+    const { repo } = auditMock();
+    const service = new ExternalResearchService(provider, repo, true);
+
+    const result = await service.researchDynamic({
+      context: 'spooler de impressao travado apos atualizacao', ticketId: 9, profileId: 9, category: 'Office', humanConsent: true,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(result.sourceType).toBe('external_ai_with_sources');
+    expect(result.reviewRequired).toBe(true);
+  });
+
   it('calls the cloud only when the flag is ON and a provider exists', async () => {
     const provider: CloudResearchProvider = { research: vi.fn(async () => answer()) };
     const { repo } = auditMock();

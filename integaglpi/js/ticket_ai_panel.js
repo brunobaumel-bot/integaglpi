@@ -475,13 +475,26 @@
         setStatus(panel, 'PII bloqueado', 'danger');
       } else if (r.ok && r.answer) {
         var a = r.answer;
+        var sourceType = r.sourceType || r.source_type || 'external_ai_no_sources';
+        var confidence = r.confidenceLabel || r.confidence_label || 'baixa';
+        var noSources = sourceType !== 'external_ai_with_sources';
         if (cloudEl) {
+          var refs = (a.references || []).filter(function (x) { return String(x).trim() !== ''; });
+          var sourceNote = noSources
+            ? '<div class="text-muted small mt-1">' + esc('Sem fontes externas verificáveis; use como sugestão técnica.') + '</div>'
+            : '<div class="small mt-1"><strong>' + esc('Fontes:') + '</strong> ' + refs.map(function (x) { return esc(x); }).join('; ') + '</div>';
           cloudEl.innerHTML =
-            '<div class="border rounded p-2 mt-1"><strong>Diagnóstico:</strong> ' + esc(a.diagnosis) + '<br>'
-            + '<strong>Passos:</strong><ul>' + (a.steps || []).map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') + '</ul>'
-            + '<strong>Riscos:</strong> ' + esc((a.risks || []).join('; ')) + '</div>';
+            '<div class="border rounded p-2 mt-1">'
+            + '<div class="fw-bold text-primary mb-1"><i class="ti ti-robot me-1"></i>' + esc('Ajuda externa por IA — sugestão, revise antes de aplicar') + '</div>'
+            + '<div class="small text-muted mb-1">' + esc('Confiança operacional:') + ' ' + esc(confidence) + ' · ' + esc('Nada é enviado ao cliente nem altera o chamado automaticamente.') + '</div>'
+            + '<strong>Hipótese de diagnóstico:</strong> ' + esc(a.diagnosis) + '<br>'
+            + '<strong>Passos sugeridos:</strong><ul>' + (a.steps || []).map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') + '</ul>'
+            + ((a.commands && a.commands.length) ? ('<strong>Comandos/verificações:</strong><ul>' + a.commands.map(function (c) { return '<li><code>' + esc(c) + '</code></li>'; }).join('') + '</ul>') : '')
+            + '<strong>Cuidados:</strong> ' + esc((a.risks || []).join('; '))
+            + sourceNote
+            + '</div>';
         }
-        setStatus(panel, 'resposta externa', 'success');
+        setStatus(panel, noSources ? 'sugestão IA externa' : 'sugestão IA + fontes', 'success');
       } else {
         if (msgEl) { msgEl.textContent = r.message || 'Pesquisa externa indisponível.'; }
         setStatus(panel, 'erro', 'danger');

@@ -53,6 +53,15 @@ export interface DynamicResearchResult {
   piiDetectedKinds: string[];
   /** True only when the answer carries usable technical guidance (diagnosis + steps). */
   actionable: boolean;
+  /**
+   * Whether the external AI returned verifiable sources. Sources are OPTIONAL: a
+   * source-less answer is still a valid technician-facing SUGGESTION (not evidence).
+   */
+  sourceType?: 'external_ai_no_sources' | 'external_ai_with_sources';
+  /** Operational confidence label. Never 'alta' without sources. */
+  confidenceLabel?: 'baixa' | 'media' | 'alta';
+  /** External AI answers are always suggestions — human review is mandatory. */
+  reviewRequired?: boolean;
 }
 
 /** An answer is actionable only if it gives a diagnosis AND at least one concrete step. */
@@ -285,6 +294,10 @@ export class ExternalResearchService {
         };
       }
 
+      // Sources are OPTIONAL. The answer is a technician-facing SUGGESTION whether or
+      // not the provider returned references. Without sources we never claim 'alta'.
+      const hasSources = Array.isArray(answer.references)
+        && answer.references.filter((r) => String(r).trim() !== '').length > 0;
       return {
         ok: true,
         status: 'completed',
@@ -292,6 +305,9 @@ export class ExternalResearchService {
         answer,
         piiDetectedKinds: sanitized.detectedKinds,
         actionable: true,
+        sourceType: hasSources ? 'external_ai_with_sources' : 'external_ai_no_sources',
+        confidenceLabel: hasSources ? 'media' : 'baixa',
+        reviewRequired: true,
       };
     } catch {
       if (auditId > 0) {

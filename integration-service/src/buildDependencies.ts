@@ -321,27 +321,38 @@ export function buildDependencies() {
   // "Ajuda Inteligente" click path; never on auto-run (PHP gates on ai_summary=1).
   // Cloud is never used here. The prompt forbids personal data; the PHP side also
   // sanitizes PII before sending the context.
-  const technicalSummaryTimeoutMs = envInt('AI_TECHNICAL_SUMMARY_TIMEOUT_MS', 7_000, 1_000, 20_000);
+  const technicalSummaryTimeoutMs = envInt('AI_TECHNICAL_SUMMARY_TIMEOUT_MS', 12_000, 1_000, 60_000);
   const technicalSummarizer = {
     async generate(input: { ticketId: number; context: string }): Promise<string> {
+      // Use the SAME effective LOCAL provider/model as the working internal Copilot
+      // (DB ai_settings -> copilot_model -> COPILOT_DRAFT_MODEL -> AI_SUPERVISOR_MODEL).
+      // This avoids provider_unavailable when AI_SUPERVISOR_MODEL (default llama3.1)
+      // is not pulled but the Copilot model (e.g. qwen2.5:7b) is. Cloud is never used.
+      let model = env.COPILOT_DRAFT_MODEL.trim() !== '' ? env.COPILOT_DRAFT_MODEL.trim() : env.AI_SUPERVISOR_MODEL;
+      let timeoutMs = Math.max(technicalSummaryTimeoutMs, copilotTimeoutSeconds * 1000);
+      try {
+        const runtime = await loadCopilotRuntimeConfig();
+        if (runtime && typeof runtime.model === 'string' && runtime.model.trim() !== '') {
+          model = runtime.model.trim();
+        }
+        if (runtime && typeof runtime.timeoutMs === 'number' && runtime.timeoutMs > 0) {
+          timeoutMs = Math.max(technicalSummaryTimeoutMs, runtime.timeoutMs);
+        }
+      } catch {
+        // DB settings unavailable: keep the env-derived effective model/timeout above.
+      }
       const prompt = [
         'Você é um assistente técnico de suporte de TI.',
-        'Resuma o chamado abaixo em português, em no máximo 4 linhas, tom técnico e objetivo.',
-        'NÃO inclua dados pessoais: sem nomes próprios, telefones, e-mails, CPF, CNPJ ou endereços.',
-        'Não invente informações que não estejam no texto.',
-        'Estruture exatamente assim:',
-        'Problema relatado: ...',
-        'Contexto técnico: ...',
-        'Próxima ação sugerida: ...',
+        'Reescreva o atendimento abaixo como uma DESCRIÇÃO TÉCNICA do problema, em português,',
+        'em no máximo 3 frases, em prosa corrida (sem rótulos, sem listas, sem bullet points).',
+        'NÃO inclua dados pessoais: sem nomes próprios, empresa, telefones, e-mails, CPF, CNPJ,',
+        'número do chamado, patrimônio/etiqueta ou endereços.',
+        'Não invente informações que não estejam no texto. Foque no sintoma técnico e na próxima verificação.',
         '',
-        'Chamado:',
+        'Atendimento:',
         input.context,
       ].join('\n');
-      return new OllamaClient(
-        env.AI_SUPERVISOR_BASE_URL,
-        env.AI_SUPERVISOR_MODEL,
-        technicalSummaryTimeoutMs,
-      ).generateText(prompt);
+      return new OllamaClient(env.AI_SUPERVISOR_BASE_URL, model, timeoutMs).generateText(prompt);
     },
   };
   const coachingService = new CoachingService(postgresPool, auditService);

@@ -83,7 +83,7 @@ final class SmartHelpService
                 $aiSummary = trim((string) ($ai['technical_summary'] ?? $ai['technicalSummary'] ?? ''));
                 $aiOk = (($ai['ok'] ?? false) === true) && $aiSummary !== '';
                 if ($aiOk) {
-                    $technicalSummary = $this->sanitizeContext($aiSummary);
+                    $technicalSummary = $this->stripSummaryBoilerplate($this->sanitizeContext($aiSummary));
                     $summarySource = 'local_ai';
                 } else {
                     $summaryErrorType = (string) ($ai['error_type'] ?? 'provider_unavailable');
@@ -310,16 +310,60 @@ final class SmartHelpService
     private function sanitizeContext(string $text): string
     {
         $clean = html_entity_decode(strip_tags($text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
-        $patterns = [
-            '/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/iu',          // e-mail
-            '/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/u',                   // CPF
-            '/\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/u',           // CNPJ
-            '/(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?9?\d{4}[-\s]?\d{4}/u', // telefone
+
+        // High-confidence secrets / identifiers first (specific placeholders, not over-broad).
+        $clean = preg_replace('/\b(?:senha|password|token|api[_-]?key|app[_-]?secret|secret|bearer)\s*[:=]\s*\S+/iu', '[credencial removida]', $clean) ?? $clean;
+        $clean = preg_replace('/https?:\/\/\S*\?\S+/u', '[url removida]', $clean) ?? $clean;
+
+        $pii = [
+            '/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/iu'          => '[email removido]',
+            '/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/u'                  => '[documento removido]',
+            '/\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/u'          => '[documento removido]',
+            '/(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?9?\d{4}[-\s]?\d{4}/u' => '[telefone removido]',
+            // Empresa com sufixo societário (LTDA/ME/EPP/S.A./EIRELI).
+            '/\b[A-ZÀ-Ý][\wÀ-ÿ&.\-]*(?:\s+[A-ZÀ-Ý][\wÀ-ÿ&.\-]*){0,4}\s+(?:LTDA|ME|EPP|EIRELI|S\.?\s?A\.?)\b/u' => '[empresa removida]',
+            // Ticket/chamado id rotulado.
+            '/\b(?:ticket|chamado|protocolo)\s*(?:id|n[ºo°]|#|number)?\s*[:#]?\s*\d{2,}\b/iu' => '[chamado removido]',
+            // Patrimônio / etiqueta / tombamento rotulado.
+            '/\b(?:patrim[oô]nio|etiqueta|tombamento|asset(?:\s*tag)?|tag)\s*[:#]?\s*[A-Z0-9][A-Z0-9\-\/]{1,}\b/iu' => '[patrimonio removido]',
+            // Nome próprio após rótulo (cliente/contato/solicitante/usuário/Sr./Sra.).
+            '/\b(?:nome|cliente|contato|solicitante|usu[áa]rio|funcion[áa]rio|sr|sra|sr\.|sra\.)\s*[:\-]?\s*[A-ZÀ-Ý][a-zà-ÿ]+(?:\s+[A-ZÀ-Ý][a-zà-ÿ]+){0,3}/u' => '[nome removido]',
         ];
-        $clean = preg_replace($patterns, '[dado pessoal removido]', $clean) ?? $clean;
+        $clean = preg_replace(array_keys($pii), array_values($pii), $clean) ?? $clean;
+
+        // Collapse repeated placeholders ("[email removido] [email removido]" -> one).
+        $clean = preg_replace('/(\[[^\]]+removid[ao]\])(\s+\1)+/u', '$1', $clean) ?? $clean;
         $clean = preg_replace('/\s+/u', ' ', $clean) ?? $clean;
 
         return trim($clean);
+    }
+
+    /**
+     * Removes structural label boilerplate and duplicated sentences so the deterministic
+     * summary never produces "Problema relatado: Problema relatado" when the input is
+     * already structured. Returns clean technical prose.
+     */
+    private function stripSummaryBoilerplate(string $text): string
+    {
+        // Drop leading structural labels anywhere they appear (idempotency).
+        $text = preg_replace('/(?:^|\n|\.\s*)\s*(?:Problema relatado|Contexto t[eé]cnico|Pr[oó]xima a[cç][aã]o sugerida)\s*:\s*/iu', ' ', $text) ?? $text;
+        $text = preg_replace('/\s+/u', ' ', $text) ?? $text;
+        $text = trim($text);
+
+        // De-duplicate consecutive identical sentences.
+        $sentences = preg_split('/(?<=[.!?])\s+/u', $text) ?: [$text];
+        $seen = [];
+        $unique = [];
+        foreach ($sentences as $s) {
+            $key = mb_strtolower(trim($s));
+            if ($key === '' || isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+            $unique[] = trim($s);
+        }
+
+        return trim(implode(' ', $unique));
     }
 
     /**
@@ -399,26 +443,24 @@ final class SmartHelpService
 
     private function buildTechnicalSummary(string $summary): string
     {
-        $clean = $this->sanitizeContext($summary);
+        // PII-sanitize, then strip any existing labels/duplication for idempotency.
+        $clean = $this->stripSummaryBoilerplate($this->sanitizeContext($summary));
         if ($clean === '') {
             return '';
         }
 
-        // Split into sentences to separate the reported problem from extra context.
-        $parts = preg_split('/(?<=[.!?])\s+/u', $clean) ?: [$clean];
-        $problema = trim((string) ($parts[0] ?? ''));
-        $contexto = trim(implode(' ', array_slice($parts, 1)));
+        // Build clean technical prose: keep the first sentences as the problem
+        // description and append a single, non-mutating next-action sentence.
+        $sentences = preg_split('/(?<=[.!?])\s+/u', $clean) ?: [$clean];
+        $prose = trim(implode(' ', array_slice($sentences, 0, 3)));
+        $nextAction = 'Validar reprodução, registrar a mensagem de erro exata e testar contorno conhecido antes de escalar.';
 
-        $lines = [];
-        if ($problema !== '') {
-            $lines[] = 'Problema relatado: ' . mb_substr($problema, 0, 240, 'UTF-8');
+        // Avoid repeating the next-action sentence if the prose already ends with it.
+        if (mb_stripos($prose, 'antes de escalar') === false) {
+            $prose = $prose . ' ' . $nextAction;
         }
-        if ($contexto !== '') {
-            $lines[] = 'Contexto técnico: ' . mb_substr($contexto, 0, 240, 'UTF-8');
-        }
-        $lines[] = 'Próxima ação sugerida: confirmar reprodução, registrar mensagem de erro exata e validar contorno antes de escalar.';
 
-        return mb_substr(implode("\n", $lines), 0, 600, 'UTF-8');
+        return mb_substr($this->stripSummaryBoilerplate($prose), 0, 600, 'UTF-8');
     }
 
     /**
