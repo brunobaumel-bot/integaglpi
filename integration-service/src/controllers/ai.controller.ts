@@ -130,6 +130,9 @@ export function createExternalResearchDynamicController(service: ExternalResearc
       const body = (request.body ?? {}) as Record<string, unknown>;
       // human_consent MUST be explicitly true — proves a human click reached here.
       const humanConsent = body.human_consent === true || body.human_consent === 'true';
+      // Same safety flag as the preview step: residual mode rewrites + blocks on
+      // residual; default OFF keeps the strict block-on-detected (raw) policy.
+      const policy = process.env.SMARTHELP_CLOUD_RESIDUAL_MODE === '1' ? 'residual' : 'detected';
       const result = await service.researchDynamic({
         context: String(body.context ?? ''),
         ticketId: intOrNull(body.ticket_id),
@@ -137,6 +140,7 @@ export function createExternalResearchDynamicController(service: ExternalResearc
         category: body.category !== undefined ? String(body.category) : null,
         provider: body.provider !== undefined ? String(body.provider) : null,
         humanConsent,
+        policy,
       });
       const code = result.ok
         ? 200
@@ -180,15 +184,25 @@ export function createExternalResearchPreviewController(service: ExternalResearc
           read_only: true,
         });
       }
-      const preview = service.preview(context);
+      // Cloud-safe REWRITE of the local summary (deterministic; never raw ticket).
+      const rw = service.rewriteCloudSafe(context);
+      // Safety flag: residual mode (default OFF = strict block-on-detected). When OFF
+      // the legacy strict behavior is preserved; homologation may enable it manually.
+      const residualMode = process.env.SMARTHELP_CLOUD_RESIDUAL_MODE === '1';
+      const safeForCloud = residualMode ? rw.safeForCloudResidual : rw.safeForCloudStrict;
       return response.status(200).json({
         ok: true,
-        // Sanitized text only — the raw context is never returned.
-        sanitized_text: preview.sanitizedText,
-        detected_kinds: preview.detectedKinds,
-        safe_for_cloud: !preview.blocked,
-        blocked_reason: preview.blockedReason,
-        anonymized_payload_hash: preview.anonymizedPayloadHash,
+        // Cloud-safe text only — raw context/ticket is never returned.
+        cloud_safe_context: rw.cloudSafeContext,
+        sanitized_text: rw.cloudSafeContext, // back-compat alias for the panel JS
+        detected_kinds: rw.detectedKinds,
+        removed_kinds: rw.removedKinds,
+        safe_for_cloud: safeForCloud,
+        blocked_reason: safeForCloud ? null : (rw.blockedReason ?? 'PII_DETECTED'),
+        payload_hash: rw.payloadHash,
+        char_count: rw.charCount,
+        source: rw.source,
+        residual_mode: residualMode,
         read_only: true,
         remote_execution: false,
       });

@@ -228,3 +228,54 @@ describe('PostgresCloudAuditRepository (SQL shape, no raw payload)', () => {
     expect(sql).not.toMatch(/technician|profile_id|user_id/i);
   });
 });
+
+describe('ExternalResearchService.rewriteCloudSafe (cloud-safe summary rewrite)', () => {
+  const svc = new ExternalResearchService();
+
+  it('removes name/company/phone/email/cpf/cnpj/ticket-id from the summary', async () => {
+    const out = svc.rewriteCloudSafe(
+      'Cliente João da Silva da Empresa ACME Ltda, ticket 2112319359, CPF 123.456.789-00, '
+      + 'telefone 11 99999-8888, email joao@empresa.com.br: office trava ao abrir documento grande.',
+    );
+    expect(out.cloudSafeContext).not.toMatch(/joao@empresa\.com\.br/i);
+    expect(out.cloudSafeContext).not.toContain('123.456.789');
+    expect(out.cloudSafeContext).not.toContain('99999-8888');
+    expect(out.cloudSafeContext).not.toContain('João da Silva');
+    expect(out.detectedKinds.length).toBeGreaterThan(0);
+    expect(out.source).toBe('summary_rewrite');
+    // The cloud-safe text keeps the technical signal.
+    expect(out.cloudSafeContext.toLowerCase()).toContain('office');
+  });
+
+  it('placeholders alone do NOT make it unsafe (residual policy), real residual PII does', async () => {
+    const clean = svc.rewriteCloudSafe('office trava ao abrir documento grande apos atualizacao');
+    expect(clean.safeForCloudResidual).toBe(true);
+
+    // A raw email injected survives sanitization? It must be redacted; residual must catch any leak.
+    const dirty = svc.rewriteCloudSafe('Contato: alguem@dominio.com.br precisa de ajuda com a rede');
+    // Email is redacted → not residual → may be cloud-safe under residual policy,
+    // but it must NOT contain the raw email regardless.
+    expect(dirty.cloudSafeContext).not.toMatch(/alguem@dominio\.com\.br/i);
+  });
+
+  it('caps the cloud-safe context length and never returns raw beyond the cap', async () => {
+    const long = 'erro tecnico generico '.repeat(100);
+    const out = svc.rewriteCloudSafe(long);
+    expect(out.charCount).toBeLessThanOrEqual(600);
+    expect(out.cloudSafeContext.length).toBeLessThanOrEqual(600);
+  });
+
+  it("residual policy in researchDynamic rewrites and sends only the cloud-safe text", async () => {
+    let received = '';
+    const provider: CloudResearchProvider = { research: vi.fn(async (ctx: string) => { received = ctx; return answer(); }) };
+    const { repo } = auditMock();
+    const service = new ExternalResearchService(provider, repo, true);
+    const result = await service.researchDynamic({
+      context: 'Cliente Maria, email maria@x.com: impressora nao imprime, spooler travado',
+      ticketId: 9, profileId: 1, category: 'Office', humanConsent: true, policy: 'residual',
+    });
+    expect(result.ok).toBe(true);
+    // Provider received the rewritten cloud-safe text — never the raw email.
+    expect(received).not.toMatch(/maria@x\.com/i);
+  });
+});

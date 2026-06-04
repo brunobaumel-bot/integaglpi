@@ -145,6 +145,23 @@ Os itens abaixo são verificações de ausência (confirmam que integrações n�
 | S-V7-M2-14 | Feedback com schema 044 pendente/indisponível | Botões ficam ocultos quando o status seguro indica pendência; se a persistência falhar, o UI mostra aviso e não confirma falso sucesso |
 | S-V7-M2-15 | Feedback persistido com schema 044 aplicado | Botão muda para "feedback registrado" somente quando o Node retorna `ok=true` e `status=recorded` |
 
+## V8 — Cloud-safe rewrite do contexto de nuvem (SMARTHELP_CLOUD_RESIDUAL_MODE)
+
+A nuvem usa o resumo técnico editável reescrito em contexto genérico (nunca ticket bruto).
+Flag `SMARTHELP_CLOUD_RESIDUAL_MODE` default OFF (estrito); homologação pode habilitar manualmente.
+
+| ID | Smoke | Resultado esperado |
+|----|-------|--------------------|
+| S-V8-CR-01 | Resumo com nome/empresa → "Pedir ajuda externa" | Preview rotulado "Contexto técnico para nuvem gerado a partir do resumo local"; nome/empresa/tel/email/CPF removidos; tipos removidos listados |
+| S-V8-CR-02 | Flag OFF (estrito) + qualquer PII detectada | safe_for_cloud=false; envio bloqueado (comportamento atual preservado) |
+| S-V8-CR-03 | Flag ON (residual) + texto reescrito sem PII residual | safe_for_cloud=true; botão Confirmar habilitado |
+| S-V8-CR-04 | Confirmar envio | Provider recebe SOMENTE o texto cloud-safe (sem ticket id/histórico/nome/email); consent=1 + UPDATE exigidos |
+| S-V8-CR-05 | Resumo vazio → pedir nuvem | 400 missing_context "Gere o resumo técnico antes de pedir ajuda externa" |
+| S-V8-CR-06 | Auditoria | hash + tipos + status + char_count; sem texto bruto/PII |
+| S-V8-CR-07 | Ollama indisponível | Reescrita determinística funciona (não depende da IA local) |
+
+---
+
 ## V8 — Pesquisa Externa (nuvem) com preview sanitizado (PII Guard UX)
 
 Fluxo em duas etapas: `prepare_external_context` (preview sanitizado, sem cloud) → confirmação →

@@ -414,8 +414,8 @@
         return;
       }
       var r = resp && resp.result ? resp.result : {};
-      var sanitized = r.sanitized_text || r.sanitizedText || '';
-      var kinds = r.detected_kinds || r.detectedKinds || [];
+      var sanitized = r.cloud_safe_context || r.sanitized_text || r.sanitizedText || '';
+      var kinds = r.removed_kinds || r.detected_kinds || r.detectedKinds || [];
       var safe = (r.safe_for_cloud === true) || (r.safeForCloud === true);
 
       var kindsBadges = kinds.length
@@ -423,13 +423,14 @@
         : '<span class="text-muted">' + esc('nenhum') + '</span>';
 
       var html = '<div class="border rounded p-2 mt-1">';
+      html += '<div class="small text-muted mb-1">' + esc('Contexto técnico para nuvem gerado a partir do resumo local') + '</div>';
       if (safe) {
-        html += '<div class="fw-bold text-success mb-1">' + esc('Contexto sanitizado pronto para envio') + '</div>';
+        html += '<div class="fw-bold text-success mb-1">' + esc('Contexto técnico pronto para envio') + '</div>';
       } else {
         html += '<div class="fw-bold text-danger mb-1">' + esc('Bloqueado por PII — não será enviado à nuvem') + '</div>';
       }
-      html += '<div class="small text-muted mb-1">' + esc('Tipos detectados/removidos:') + ' ' + kindsBadges + '</div>';
-      html += '<label class="form-label small mb-1">' + esc('Pré-visualização sanitizada (somente isto poderia ir à nuvem):') + '</label>';
+      html += '<div class="small text-muted mb-1">' + esc('Tipos removidos:') + ' ' + kindsBadges + '</div>';
+      html += '<label class="form-label small mb-1">' + esc('Pré-visualização (somente isto poderia ir à nuvem):') + '</label>';
       html += '<textarea class="form-control form-control-sm js-smart-help-external-preview" rows="4" readonly>' + esc(sanitized) + '</textarea>';
       html += '<div class="d-flex gap-2 mt-2 flex-wrap">';
       if (safe) {

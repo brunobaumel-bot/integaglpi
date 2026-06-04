@@ -93,3 +93,15 @@ o ambiente. Regras de exibição:
 | `META_WEBHOOK_CONFIGURED` | Diagnóstico | informativo | Meta owner | Diagnóstico incompleto | Read-only; não altera configuração |
 
 Defaults seguros significam: cloud OFF, LogMeIn OFF, IA assistiva sem mutação, KB sem autopublicação, produção com gate humano.
+
+## V8 — SmartHelp cloud-safe rewrite (`SMARTHELP_CLOUD_RESIDUAL_MODE`)
+
+| Flag | Default seguro | Domínio | Efeito |
+| --- | --- | --- | --- |
+| `SMARTHELP_CLOUD_RESIDUAL_MODE` | `0` (OFF) | Ajuda externa/nuvem | OFF: política estrita `block-on-detected` (qualquer PII detectada bloqueia — comportamento atual preservado). ON: `block-on-residual` somente sobre o texto reescrito cloud-safe (placeholders não bloqueiam; PII residual real bloqueia). |
+
+Regras:
+- A nuvem usa SOMENTE o resumo técnico editável, reescrito em contexto genérico (`rewriteCloudSafe`); nunca `ticket.content`/histórico bruto.
+- Reescrita determinística (sanitização dupla + cap de 600 chars); IA local opcional, nunca filtro único.
+- Provider recebe apenas o texto cloud-safe; auditoria grava hash + tipos + status, sem texto bruto.
+- Habilitar a flag exige gate humano + smoke em homologação; nunca alterar `.env` por automação.

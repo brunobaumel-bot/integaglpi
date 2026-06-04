@@ -235,11 +235,12 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(svc).toContain("/internal/glpi/ai/external-research/preview");
     expect(svc).toContain('function prepareExternalContext');
 
-    // ── Node controller: preview returns sanitized text + safe flag, never raw, no cloud ──
+    // ── Node controller: cloud-safe rewrite returns cloud-safe text + safe flag, never raw, no cloud ──
     expect(node).toContain('createExternalResearchPreviewController');
-    expect(node).toContain('sanitized_text: preview.sanitizedText');
-    expect(node).toContain('detected_kinds: preview.detectedKinds');
-    expect(node).toContain('safe_for_cloud: !preview.blocked');
+    expect(node).toContain('service.rewriteCloudSafe(context)');
+    expect(node).toContain('cloud_safe_context: rw.cloudSafeContext');
+    expect(node).toContain('removed_kinds: rw.removedKinds');
+    expect(node).toContain('SMARTHELP_CLOUD_RESIDUAL_MODE');
     expect(node).toContain('remote_execution: false');
     // The preview controller must NOT call researchDynamic (no cloud send in step 1).
     const prevStart = node.indexOf('createExternalResearchPreviewController');
@@ -253,9 +254,10 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).toContain("post(panel, 'smart_external', { consent: '1', technical_summary: currentSummary(panel) }");
     expect(js).toContain('js-smart-help-external-send');
     // Clear blocked / ready messaging — never a silent failure.
-    expect(js).toContain('Contexto sanitizado pronto para envio');
+    expect(js).toContain('Contexto técnico para nuvem gerado a partir do resumo local');
+    expect(js).toContain('Contexto técnico pronto para envio');
     expect(js).toContain('Bloqueado por PII');
-    expect(js).toContain('Tipos detectados/removidos:');
+    expect(js).toContain('Tipos removidos:');
   });
 
   it("the smart help JS never auto-runs guided SmartHelp or cloud (manual click only)", async () => {

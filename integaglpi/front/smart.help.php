@@ -254,10 +254,20 @@ try {
     }
 
     if ($action === 'prepare_external_context') {
-        // Step 1: sanitized preview only. No cloud send, no consent required here.
-        // Context uses the current technician-edited summary when present.
+        // Step 1: cloud-safe rewrite/preview. No cloud send, no consent here.
+        // Base is the technician-edited LOCAL SUMMARY only — never the raw ticket
+        // content/history. Node rewrites it into a generic technical context.
         $currentSummary = trim((string) ($_POST['technical_summary'] ?? $_POST['summary'] ?? ''));
-        $externalSummary = $currentSummary !== '' ? mb_substr($currentSummary, 0, 2000, 'UTF-8') : $summary;
+        if ($currentSummary === '') {
+            integaglpiSmartHelpJsonResponse([
+                'ok' => false,
+                'error' => 'missing_summary',
+                'error_type' => 'missing_context',
+                'message' => __('Gere o resumo técnico antes de pedir ajuda externa.', 'glpiintegaglpi'),
+            ], 400);
+            exit;
+        }
+        $externalSummary = mb_substr($currentSummary, 0, 2000, 'UTF-8');
         integaglpiSmartHelpJsonResponse([
             'ok' => true,
             'result' => $smartHelp->prepareExternalContext($ticketId, $externalSummary),
@@ -266,11 +276,21 @@ try {
     }
 
     if ($action === 'smart_external') {
-        // Step 2: the actual cloud send. Requires explicit consent; Node re-sanitizes
-        // and blocks on PII independently before reaching any provider.
+        // Step 2: the actual cloud send. Requires explicit consent. Base is the LOCAL
+        // SUMMARY only (never raw ticket). Node rewrites to a cloud-safe context and
+        // re-validates the PII Guard before any provider call.
         $consent = ($_POST['consent'] ?? '') === '1' || ($_POST['consent'] ?? '') === 'true';
         $currentSummary = trim((string) ($_POST['technical_summary'] ?? $_POST['summary'] ?? ''));
-        $externalSummary = $currentSummary !== '' ? mb_substr($currentSummary, 0, 2000, 'UTF-8') : $summary;
+        if ($currentSummary === '') {
+            integaglpiSmartHelpJsonResponse([
+                'ok' => false,
+                'error' => 'missing_summary',
+                'error_type' => 'missing_context',
+                'message' => __('Gere o resumo técnico antes de pedir ajuda externa.', 'glpiintegaglpi'),
+            ], 400);
+            exit;
+        }
+        $externalSummary = mb_substr($currentSummary, 0, 2000, 'UTF-8');
         integaglpiSmartHelpJsonResponse([
             'ok' => true,
             'result' => $smartHelp->externalResearch($ticketId, $externalSummary, $consent),

@@ -36,6 +36,12 @@ export interface DynamicResearchInput {
   provider?: string | null;
   /** MUST be true — proves an explicit human click reached this call. */
   humanConsent: boolean;
+  /**
+   * PII Guard policy. 'detected' (default) blocks on any detected kind (raw/legacy).
+   * 'residual' rewrites the summary into a cloud-safe technical context and blocks
+   * only on residual PII. The controller selects this from the safety feature flag.
+   */
+  policy?: 'detected' | 'residual';
 }
 
 export interface DynamicResearchResult {
@@ -75,6 +81,65 @@ export class ExternalResearchService {
 
   public preview(prompt: string): ReturnType<typeof sanitizeExternalResearchPrompt> {
     return sanitizeExternalResearchPrompt(prompt);
+  }
+
+  /** Max length of the cloud-safe technical context (chars). */
+  private static readonly CLOUD_SAFE_MAX_CHARS = 600;
+
+  /**
+   * Hardened residual-PII detector run on the FINAL rewritten text. Independent from
+   * the sanitizer's own residual check — defense in depth. If any of these survive a
+   * double sanitize pass, the text is NOT cloud-safe.
+   */
+  private static readonly RESIDUAL_PII =
+    /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|\bBearer\s+[A-Za-z0-9._~+/=-]{12,}\b|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:password|senha|token|api[_-]?key|app[_-]?secret|secret)\s*[:=]\s*\S{4,}|\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b|\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b|\b(?:\+?55\s?)?\(?\d{2}\)?\s?9?\d{4}[-.\s]?\d{4}\b|\b(?:[a-z0-9-]+\.)+(?:local|lan|corp|internal|intra)\b/i;
+
+  private residualPiiPresent(text: string): boolean {
+    return ExternalResearchService.RESIDUAL_PII.test(text);
+  }
+
+  /**
+   * Build a CLOUD-SAFE technical context from the technician's local summary.
+   *
+   * Deterministic-first and never trusts AI as the sole filter:
+   *   1. sanitize (deterministic redaction of email/phone/cpf/cnpj/name/secret/...)
+   *   2. sanitize again (idempotent second pass — catches anything re-exposed)
+   *   3. cap length
+   *   4. independent hardened residual check
+   *
+   * The raw ticket context, history and ticket object are NEVER used here — only the
+   * already-sanitized local summary text passed in. Returns metadata + the cloud-safe
+   * text only; the caller never receives the raw input back.
+   */
+  public rewriteCloudSafe(summary: string): {
+    cloudSafeContext: string;
+    safeForCloudResidual: boolean;
+    safeForCloudStrict: boolean;
+    detectedKinds: string[];
+    removedKinds: string[];
+    blockedReason: string | null;
+    payloadHash: string;
+    charCount: number;
+    source: 'summary_rewrite';
+  } {
+    const pass1 = sanitizeExternalResearchPrompt(String(summary ?? ''));
+    const pass2 = sanitizeExternalResearchPrompt(pass1.sanitizedText);
+    const finalText = pass2.sanitizedText.slice(0, ExternalResearchService.CLOUD_SAFE_MAX_CHARS).trim();
+    const detectedKinds = [...new Set([...pass1.detectedKinds, ...pass2.detectedKinds])].sort();
+    const residual = this.residualPiiPresent(finalText);
+    return {
+      cloudSafeContext: finalText,
+      // block-on-residual: only real residual PII blocks (placeholders are fine).
+      safeForCloudResidual: !residual && finalText !== '',
+      // block-on-detected: strict legacy mode (any detected kind blocks).
+      safeForCloudStrict: detectedKinds.length === 0 && finalText !== '',
+      detectedKinds,
+      removedKinds: detectedKinds,
+      blockedReason: residual ? 'RESIDUAL_PII_AFTER_REWRITE' : (finalText === '' ? 'EMPTY_AFTER_REWRITE' : null),
+      payloadHash: pass2.anonymizedPayloadHash,
+      charCount: finalText.length,
+      source: 'summary_rewrite',
+    };
   }
 
   public validateSources(urls: string[], catalog: ExternalSourceCatalogEntry[]): SourceValidationResult[] {
@@ -117,9 +182,21 @@ export class ExternalResearchService {
       };
     }
 
-    const sanitized = sanitizeExternalResearchPrompt(input.context);
+    // Cloud-safe policy. 'residual' (rewritten path): rewrite the local summary into a
+    // generic technical context and block only if residual PII survives. 'detected'
+    // (default/legacy, raw path): block if ANY PII kind is detected. The rewrite never
+    // uses raw ticket content — only the summary text passed in input.context.
+    const policy = input.policy === 'residual' ? 'residual' : 'detected';
+    const effectiveContext = policy === 'residual'
+      ? this.rewriteCloudSafe(input.context).cloudSafeContext
+      : input.context;
 
-    if (sanitized.blocked) {
+    const sanitized = sanitizeExternalResearchPrompt(effectiveContext);
+    const blocked = policy === 'residual'
+      ? this.residualPiiPresent(sanitized.sanitizedText) || sanitized.sanitizedText.trim() === ''
+      : sanitized.blocked;
+
+    if (blocked) {
       // PII/secret detected → never sent to cloud; record the blocked attempt.
       await this.safeAudit({
         glpiTicketId: input.ticketId,
