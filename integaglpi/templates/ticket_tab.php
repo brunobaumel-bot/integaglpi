@@ -691,7 +691,7 @@ $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
                             <input type="hidden" name="whatsapp_action" value="analyze_conversation">
                             <input type="hidden" name="ticket_id" value="<?= (int) $ticket->getID(); ?>">
                             <input type="hidden" name="conversation_id" value="<?= $this->escape((string) ($contextConversation['conversation_id'] ?? '')); ?>">
-                            <button type="submit" class="btn btn-sm btn-outline-primary">
+                            <button type="button" class="btn btn-sm btn-outline-primary js-integaglpi-ai-quality-analyze-submit">
                                 <?= $this->escape($contextAiQuality === null ? __('Analisar conversa', 'glpiintegaglpi') : __('Analisar novamente', 'glpiintegaglpi')); ?>
                             </button>
                             <span class="small text-muted ms-2 js-integaglpi-ai-quality-analyze-status"></span>
@@ -2142,19 +2142,20 @@ document.addEventListener('submit', function (event) {
 }, true);
 </script>
 <script>
-document.addEventListener('submit', function (event) {
-    var form = event.target && event.target.closest
-        ? event.target.closest('.js-integaglpi-ai-quality-analyze-form')
-        : null;
+(function () {
+function runIntegaglpiAiQualityAnalysis(form, event) {
     if (!form) {
         return;
     }
-    event.preventDefault();
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
     if (form.dataset.submitted === '1') {
         return;
     }
     form.dataset.submitted = '1';
-    var button = form.querySelector('button[type="submit"]');
+    var button = form.querySelector('.js-integaglpi-ai-quality-analyze-submit');
     var status = form.querySelector('.js-integaglpi-ai-quality-analyze-status');
     var originalText = button ? button.textContent : '';
     if (button) {
@@ -2169,7 +2170,10 @@ document.addEventListener('submit', function (event) {
     fetch(form.action, {
         method: 'POST',
         credentials: 'same-origin',
-        headers: { 'Accept': 'application/json' },
+        headers: {
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest'
+        },
         body: new FormData(form)
     })
         .then(function (response) {
@@ -2217,7 +2221,28 @@ document.addEventListener('submit', function (event) {
                 button.textContent = originalText;
             }
         });
+}
+
+document.addEventListener('click', function (event) {
+    var button = event.target && event.target.closest
+        ? event.target.closest('.js-integaglpi-ai-quality-analyze-submit')
+        : null;
+    if (!button) {
+        return;
+    }
+    runIntegaglpiAiQualityAnalysis(button.closest('.js-integaglpi-ai-quality-analyze-form'), event);
 }, true);
+
+document.addEventListener('submit', function (event) {
+    var form = event.target && event.target.closest
+        ? event.target.closest('.js-integaglpi-ai-quality-analyze-form')
+        : null;
+    if (!form) {
+        return;
+    }
+    runIntegaglpiAiQualityAnalysis(form, event);
+}, true);
+})();
 </script>
 <?php } ?>
 

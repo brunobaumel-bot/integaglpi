@@ -31,6 +31,22 @@ function plugin_integaglpi_ticket_action_json(array $payload, int $statusCode): 
     exit;
 }
 
+function plugin_integaglpi_ticket_action_safe_text(string $message, int $statusCode): never
+{
+    http_response_code($statusCode);
+    header('Content-Type: text/plain; charset=UTF-8');
+    echo $message;
+    exit;
+}
+
+function plugin_integaglpi_is_ajax_json_request(): bool
+{
+    $xhr = strtolower((string) ($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '')) === 'xmlhttprequest';
+    $accept = strtolower((string) ($_SERVER['HTTP_ACCEPT'] ?? ''));
+
+    return $xhr && str_contains($accept, 'application/json');
+}
+
 function plugin_integaglpi_ai_error_type(Throwable $exception): string
 {
     $message = $exception->getMessage();
@@ -109,6 +125,17 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET')) !== 'POST') {
     ], 405);
 }
 
+$ticketId = (int) ($_POST['ticket_id'] ?? 0);
+$conversationId = trim((string) ($_POST['conversation_id'] ?? ''));
+$action = trim((string) ($_POST['whatsapp_action'] ?? ''));
+$aiAssistActions = ['smart_help', 'kb_feedback', 'smart_external', 'suggest_kb', 'analyze_conversation'];
+if (in_array($action, $aiAssistActions, true) && !plugin_integaglpi_is_ajax_json_request()) {
+    plugin_integaglpi_ticket_action_safe_text(
+        __('Ação de IA disponível apenas pela interface do chamado.', 'glpiintegaglpi'),
+        400
+    );
+}
+
 if (!Plugin::isCsrfValid($_POST)) {
     // Typed CSRF failure. CSRF stays mandatory — no bypass.
     plugin_integaglpi_ticket_action_json([
@@ -118,10 +145,6 @@ if (!Plugin::isCsrfValid($_POST)) {
         'message' => __('Sessão/token de segurança expirado. Tente novamente.', 'glpiintegaglpi'),
     ], 403);
 }
-
-$ticketId = (int) ($_POST['ticket_id'] ?? 0);
-$conversationId = trim((string) ($_POST['conversation_id'] ?? ''));
-$action = trim((string) ($_POST['whatsapp_action'] ?? ''));
 error_log('[integaglpi][action] ' . json_encode([
     'ticket_id' => $ticketId,
     'conversation_id' => $conversationId,
@@ -139,7 +162,6 @@ error_log('[integaglpi][action] ' . json_encode([
 //   smart_external                       — cloud/external: requires Plugin::canUpdate()
 //                                          PLUS explicit human consent on every call.
 //   Ticket-mutation actions              — always require Plugin::requireUpdate() below.
-$aiAssistActions = ['smart_help', 'kb_feedback', 'smart_external', 'suggest_kb', 'analyze_conversation'];
 if (in_array($action, $aiAssistActions, true)) {
     $smartHelp = new \GlpiPlugin\Integaglpi\Service\SmartHelpService();
 
