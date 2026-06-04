@@ -41,6 +41,37 @@ export interface TechnicalSummarizerPort {
 }
 
 /**
+ * Deterministic anti-hallucination guard for the local summary. The model sometimes
+ * invents context (GLPI, banco de dados, "registro/atualização de informações",
+ * "teste com o sistema") that is NOT present in the actual conversation. We remove
+ * such fabricated phrases when their trigger term is absent from the sanitized input,
+ * replacing them with an honest "detalhes técnicos ainda não informados". Real terms
+ * that appear in the input are preserved.
+ */
+const SUMMARY_FABRICATION_GUARD: Array<{ phrase: RegExp; needs: RegExp }> = [
+  { phrase: /\bteste[s]?\s+com\s+o\s+sistema\s+glpi\b/gi, needs: /\bglpi\b/i },
+  { phrase: /\bsistema\s+glpi\b/gi, needs: /\bglpi\b/i },
+  { phrase: /\bglpi\b/gi, needs: /\bglpi\b/i },
+  { phrase: /\bbanco\s+de\s+dados\b/gi, needs: /\bbanco\s+de\s+dados|database\b/i },
+  { phrase: /\bregistro\s+ou\s+atualiza[çc][ãa]o\s+de\s+informa[çc][õo]es\b/gi, needs: /\bregistro|atualiza[çc]/i },
+  { phrase: /\bprocessamento\s+dos\s+registros\b/gi, needs: /\bprocessamento|registro/i },
+];
+
+export function scrubSummaryFabrications(summary: string, context: string): string {
+  const ctx = String(context ?? '').toLowerCase();
+  let out = String(summary ?? '');
+  for (const guard of SUMMARY_FABRICATION_GUARD) {
+    if (!guard.needs.test(ctx)) {
+      out = out.replace(guard.phrase, 'detalhes técnicos ainda não informados');
+    }
+  }
+  // Collapse repeated replacement phrases and whitespace.
+  out = out.replace(/(detalhes técnicos ainda não informados)(\s*[,.;]?\s*\1)+/gi, '$1');
+  out = out.replace(/\s+/g, ' ').trim();
+  return out;
+}
+
+/**
  * POST /internal/glpi/ai/technical-summary
  *
  * Generates a short, PII-free technical summary using the LOCAL AI provider only.
@@ -67,7 +98,9 @@ export function createTechnicalSummaryController(summarizer: TechnicalSummarizer
       });
     }
     try {
-      const summary = (await summarizer.generate({ ticketId, context })).trim();
+      const raw = (await summarizer.generate({ ticketId, context })).trim();
+      // Strip fabricated context the model may have invented (not in the conversation).
+      const summary = scrubSummaryFabrications(raw, context);
       if (summary === '') {
         return response.status(200).json({
           ok: false,

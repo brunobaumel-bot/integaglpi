@@ -10,6 +10,7 @@ import {
   createExternalResearchPreviewController,
   createSmartHelpController,
   createTechnicalSummaryController,
+  scrubSummaryFabrications,
 } from '../src/controllers/ai.controller.js';
 
 function app(path: string, method: 'get' | 'post', handler: express.RequestHandler) {
@@ -143,6 +144,33 @@ describe('AI controller endpoints', () => {
     expect(res.body.technical_summary).toContain('Problema relatado');
     expect(summarizer.generate).toHaveBeenCalledOnce();
     expect(summarizer.generate.mock.calls[0]?.[0].ticketId).toBe(7);
+  });
+
+  it('POST technical-summary scrubs hallucinated GLPI/banco/registro absent from the conversation', async () => {
+    const summarizer = {
+      generate: vi.fn(async () => (
+        'O usuário está realizando um teste com o sistema GLPI e relata que o problema afeta a '
+        + 'funcionalidade de registro ou atualização de informações em banco de dados existente, '
+        + 'com possível falha no processamento dos registros relacionados à sincronização do AD.'
+      )),
+    };
+    const res = await request(app('/ts', 'post', createTechnicalSummaryController(summarizer as never)))
+      .post('/ts').send({ ticket_id: 7, context: 'quero urgencia. problema grave. estou com problemas. problemas de sync do ad' });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    const out = String(res.body.technical_summary);
+    // Fabricated context (not in the conversation) is removed.
+    expect(out).not.toMatch(/\bGLPI\b/i);
+    expect(out).not.toMatch(/banco de dados/i);
+    expect(out).not.toMatch(/registro ou atualiza/i);
+    expect(out).not.toMatch(/processamento dos registros/i);
+    // The real technical term from the conversation is preserved.
+    expect(out.toLowerCase()).toContain('sincronização do ad');
+  });
+
+  it('scrubSummaryFabrications keeps GLPI when it IS in the conversation', async () => {
+    const kept = scrubSummaryFabrications('Erro ao acessar o GLPI ao abrir chamado.', 'não consigo abrir o glpi');
+    expect(kept).toMatch(/GLPI/i);
   });
 
   it('POST technical-summary rejects missing ticket_id', async () => {

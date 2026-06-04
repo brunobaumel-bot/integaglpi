@@ -451,6 +451,23 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).toContain('return postOnce(panel, action, extra);');
   });
 
+  it('local summary prompt is evidence-bound and a deterministic guard scrubs fabricated context', async () => {
+    const deps = await read('integration-service/src/buildDependencies.ts');
+    const ctrl = await read('integration-service/src/controllers/ai.controller.ts');
+
+    // Prompt forbids inventing context and preserves exact technical terms.
+    expect(deps).toContain('REGRAS DE FIDELIDADE');
+    expect(deps).toContain('NÃO invente causa, sistema, produto');
+    expect(deps).toContain('Preserve os termos técnicos exatos');
+    expect(deps).toContain('diga explicitamente que faltam dados');
+
+    // Deterministic anti-hallucination guard exists and is applied before returning.
+    expect(ctrl).toContain('function scrubSummaryFabrications');
+    expect(ctrl).toContain('SUMMARY_FABRICATION_GUARD');
+    expect(ctrl).toContain('scrubSummaryFabrications(raw, context)');
+    expect(ctrl).toContain('detalhes técnicos ainda não informados');
+  });
+
   it('external AI assist renders a source-optional suggestion (review required, no misleading success)', async () => {
     const js = await read('integaglpi/js/ticket_ai_panel.js');
     const svc = await read('integration-service/src/domain/services/ExternalResearchService.ts');
