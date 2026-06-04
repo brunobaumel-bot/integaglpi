@@ -6,6 +6,7 @@ import {
   parseReminderMinutes,
   type InactivityConfig,
 } from '../src/domain/services/InactivityAutomationService.js';
+import { GlpiRequestError } from '../src/errors/GlpiRequestError.js';
 import type {
   InactivityTrackingRecord,
   InactivityTrackingRepository,
@@ -484,6 +485,9 @@ describe('InactivityAutomationService', () => {
       123,
       expect.stringContaining('Encerrado por falta de retorno do usuário'),
     );
+    expect(glpiClient.solveTicketByInactivity.mock.invocationCallOrder[0]).toBeLessThan(
+      outbound.send.mock.invocationCallOrder[0],
+    );
     expect(repository.autocloseCompleted).toEqual(['conv-1']);
   });
 
@@ -529,11 +533,38 @@ describe('InactivityAutomationService', () => {
     await service.runOnce();
     await service.runOnce();
 
-    expect(outbound.send).toHaveBeenCalledTimes(2);
+    expect(outbound.send).not.toHaveBeenCalled();
     expect(glpiClient.solveTicketByInactivity).toHaveBeenCalledTimes(1);
     expect(repository.failed).toEqual([{
       conversationId: 'conv-1',
-      reason: 'GLPI refused status transition',
+      reason: 'autoclose_failed',
+    }]);
+  });
+
+  it('records GLPI permission denied autoclose failures without sending WhatsApp', async () => {
+    const { service, repository, glpiClient, outbound } = createService(makeRecord({
+      lastOutboundActivityAt: minutesAgo(151),
+      reminder1SentAt: minutesAgo(28),
+      reminder2SentAt: minutesAgo(25),
+      reminder3SentAt: minutesAgo(20),
+      status: 'reminder_3_sent',
+    }));
+    glpiClient.solveTicketByInactivity.mockRejectedValue(new GlpiRequestError(
+      'GLPI request failed for /Ticket/123.',
+      403,
+      ['ERROR_RIGHT_MISSING', 'Você não tem permissão para executar essa ação.'],
+      'glpi_ticket_update',
+      'https://glpi.example.local/apirest.php/Ticket/123',
+    ));
+
+    await service.runOnce();
+    await service.runOnce();
+
+    expect(outbound.send).not.toHaveBeenCalled();
+    expect(glpiClient.solveTicketByInactivity).toHaveBeenCalledTimes(1);
+    expect(repository.failed).toEqual([{
+      conversationId: 'conv-1',
+      reason: 'glpi_permission_denied',
     }]);
   });
 

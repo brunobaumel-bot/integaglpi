@@ -1891,6 +1891,8 @@ export class InboundWebhookService {
             glpiTicketId: newTicketId,
             status: 'open',
             lastMessageAt: new Date(),
+            glpiEntityId: rememberedEntity.glpiEntityId,
+            glpiEntityName: rememberedEntity.glpiEntityName,
           });
           conversationId = newConversation.id;
           await this.messageRepository.updateState({
@@ -2056,6 +2058,8 @@ export class InboundWebhookService {
           glpiTicketId: ticketId,
           status: 'open',
           lastMessageAt: new Date(),
+          glpiEntityId: rememberedEntity.glpiEntityId,
+          glpiEntityName: rememberedEntity.glpiEntityName,
         });
         conversationId = createdConversation.id;
         await this.messageRepository.updateState({

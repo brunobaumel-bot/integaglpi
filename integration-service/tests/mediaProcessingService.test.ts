@@ -172,6 +172,8 @@ describe('MediaProcessingService', () => {
     expect(uploadDocument).not.toHaveBeenCalled();
     expect(linkDocumentToTicket).not.toHaveBeenCalled();
     expect(result.mediaInfo.status).toBe('skipped');
+    expect(result.mediaInfo.error_code).toBe('UNSUPPORTED_MEDIA_TYPE');
+    expect(result.mediaInfo.error_type).toBe('unsupported_media_type');
     expect(result.mediaInfo.glpi_document_id).toBeNull();
     expect(result.followUpContent).toContain('não suportado');
   });
@@ -208,6 +210,8 @@ describe('MediaProcessingService', () => {
     expect(result.mediaInfo.status).toBe('skipped');
     expect(result.mediaInfo.mime_type).toBe('application/x-msdownload');
     expect(result.mediaInfo.error).toContain('application/x-msdownload');
+    expect(result.mediaInfo.error_code).toBe('UNSUPPORTED_MEDIA_TYPE');
+    expect(result.mediaInfo.error_type).toBe('unsupported_media_type');
     expect(uploadDocument).not.toHaveBeenCalled();
     expect(linkDocumentToTicket).not.toHaveBeenCalled();
   });
@@ -260,6 +264,7 @@ describe('MediaProcessingService', () => {
       glpi_document_id: 3844,
       glpi_ticket_id: 2112319214,
       error_code: 'GLPI_DOCUMENT_ITEM_PERMISSION_DENIED',
+      error_type: 'glpi_permission_denied',
       error_stage: 'glpi_document_item_link',
     });
     expect(result.followUpContent).toContain('documento enviado ao GLPI');

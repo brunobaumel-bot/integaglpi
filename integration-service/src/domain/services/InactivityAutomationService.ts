@@ -1,4 +1,5 @@
 import type { GlpiClient } from '../../adapters/glpi/GlpiClient.js';
+import { GlpiRequestError } from '../../errors/GlpiRequestError.js';
 import { logger } from '../../infra/logger/logger.js';
 import type { AuditStatus } from '../../repositories/contracts/AuditEventRepository.js';
 import type {
@@ -46,6 +47,7 @@ export type InactivitySkipReasonCode =
   | 'not_eligible_status'
   | 'missing_ticket'
   | 'glpi_ticket_pending'
+  | 'glpi_permission_denied'
   | 'awaiting_customer'
   | 'recent_inbound'
   | 'recent_outbound'
@@ -169,6 +171,8 @@ export function normalizeInactivitySkipReason(reason: string | null | undefined)
       return 'not_eligible_status';
     case 'glpi_ticket_pending':
       return 'glpi_ticket_pending';
+    case 'glpi_permission_denied':
+      return 'glpi_permission_denied';
     case 'awaiting_customer':
       return 'awaiting_customer';
     case 'missing_ticket':
@@ -181,6 +185,15 @@ export function normalizeInactivitySkipReason(reason: string | null | undefined)
     default:
       return reason ? 'not_eligible_status' : null;
   }
+}
+
+function classifyAutocloseFailureReason(error: unknown): { reason: string; message: string } {
+  const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof GlpiRequestError && error.statusCode === 403) {
+    return { reason: 'glpi_permission_denied', message };
+  }
+
+  return { reason: 'autoclose_failed', message };
 }
 
 export function decideInactivityAction(
@@ -819,6 +832,9 @@ export class InactivityAutomationService {
       const windowOpen = refreshed.lastClientActivityAt
         ? this.nowProvider().getTime() - refreshed.lastClientActivityAt.getTime() < 24 * 60 * 60 * 1000
         : false;
+      await this.glpiClient.solveTicketByInactivity(record.ticketId, `${AUTOCLOSE_REASON}\n\n${AUTOCLOSE_TEXT}`);
+      await this.repository.markAutocloseCompleted(record.conversationId, this.nowProvider());
+
       const warningSent = await this.sendAutocloseConfiguredMessage(
         record,
         'inactivity_autoclose_warning',
@@ -828,7 +844,6 @@ export class InactivityAutomationService {
         windowOpen,
       );
       if (!warningSent) {
-        await this.repository.markFailed(record.conversationId, 'window_closed_no_template');
         this.recordAudit(record, 'SYSTEM_AUTOCLOSE_SKIPPED', 'ignored', correlationId, {
           reason_code: 'window_closed_no_template',
           event_key: 'inactivity_autoclose_warning',
@@ -845,7 +860,6 @@ export class InactivityAutomationService {
         windowOpen,
       );
       if (!noticeSent) {
-        await this.repository.markFailed(record.conversationId, 'window_closed_no_template');
         this.recordAudit(record, 'SYSTEM_AUTOCLOSE_SKIPPED', 'ignored', correlationId, {
           reason_code: 'window_closed_no_template',
           event_key: 'inactivity_autoclose_message',
@@ -853,8 +867,6 @@ export class InactivityAutomationService {
         return;
       }
 
-      await this.glpiClient.solveTicketByInactivity(record.ticketId, `${AUTOCLOSE_REASON}\n\n${AUTOCLOSE_TEXT}`);
-      await this.repository.markAutocloseCompleted(record.conversationId, this.nowProvider());
       await this.recordDiagnostic(record, 'sent', {
         eventKey: 'inactivity_autoclose_message',
         reason: 'autoclose_done',
@@ -868,15 +880,16 @@ export class InactivityAutomationService {
         glpi_status: SOLVED_STATUS,
       });
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      await this.repository.markFailed(record.conversationId, message);
+      const failure = classifyAutocloseFailureReason(error);
+      await this.repository.markFailed(record.conversationId, failure.reason);
       await this.recordDiagnostic(record, 'failed', {
         eventKey: 'inactivity_autoclose_message',
-        reason: 'autoclose_failed',
-        metaErrorMessageSanitized: message.slice(0, 500),
+        reason: failure.reason,
+        metaErrorMessageSanitized: failure.message.slice(0, 500),
       });
       this.recordAudit(record, 'INACTIVITY_AUTOCLOSE_FAILED', 'failed', correlationId, {
-        error_message: message.slice(0, 500),
+        reason: failure.reason,
+        error_message: failure.message.slice(0, 500),
       });
     }
   }

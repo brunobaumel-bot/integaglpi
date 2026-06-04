@@ -569,8 +569,8 @@ export class GlpiClient {
       {
         stage: 'glpi_ticket_update',
         ticketId,
-        glpiTicketUpdateBody: updateBody,
-        glpiTicketUpdateBodyJson: JSON.stringify(updateBody),
+        status,
+        hasExtraInput: Object.keys(extraInput).length > 0,
       },
       '[GLPI PoC] PUT /Ticket request body',
     );

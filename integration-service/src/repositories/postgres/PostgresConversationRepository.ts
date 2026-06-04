@@ -161,6 +161,14 @@ export class PostgresConversationRepository implements ConversationRepository {
   }
 
   public async create(input: CreateConversationInput): Promise<Conversation> {
+    const normalizedEntityId = typeof input.glpiEntityId === 'number'
+      && Number.isInteger(input.glpiEntityId)
+      && input.glpiEntityId > 0
+      ? input.glpiEntityId
+      : null;
+    const normalizedEntityName = typeof input.glpiEntityName === 'string' && input.glpiEntityName.trim() !== ''
+      ? input.glpiEntityName.trim()
+      : null;
     const result = await this.executor.query<Parameters<typeof mapConversationRow>[0]>(
       `
         INSERT INTO ${DATABASE_TABLES.conversations} (
@@ -168,12 +176,22 @@ export class PostgresConversationRepository implements ConversationRepository {
           contact_id,
           glpi_ticket_id,
           status,
-          last_message_at
+          last_message_at,
+          glpi_entity_id,
+          glpi_entity_name
         )
-        VALUES ($1, $2, $3, $4, $5)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING *
       `,
-      [input.phoneE164, input.contactId, input.glpiTicketId, input.status, input.lastMessageAt],
+      [
+        input.phoneE164,
+        input.contactId,
+        input.glpiTicketId,
+        input.status,
+        input.lastMessageAt,
+        normalizedEntityId,
+        normalizedEntityName,
+      ],
     );
 
     return mapConversationRow(result.rows[0]);

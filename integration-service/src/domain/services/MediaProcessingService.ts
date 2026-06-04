@@ -20,6 +20,7 @@ export interface MediaInfo {
   glpi_ticket_id: number | null;
   error: string | null;
   error_code?: string | null;
+  error_type?: string | null;
   error_stage?: string | null;
   attachment_status?: AttachmentStatus;
   attachment_blocked_reason?: string | null;
@@ -477,6 +478,7 @@ export class MediaProcessingService {
         glpi_ticket_id: ticketId,
         error: errorMessage,
         error_code: null,
+        error_type: classifyError(error),
         error_stage: stage,
         attachment_status: 'failed',
         attachment_blocked_reason: null,
@@ -543,7 +545,8 @@ export class MediaProcessingService {
       glpi_document_id: null,
       glpi_ticket_id: ticketId,
       error: `${reason}: ${mimeType ?? 'unknown'}`,
-      error_code: null,
+      error_code: 'UNSUPPORTED_MEDIA_TYPE',
+      error_type: 'unsupported_media_type',
       error_stage: null,
       attachment_status: 'blocked',
       attachment_blocked_reason: reason,
@@ -584,6 +587,7 @@ export class MediaProcessingService {
       glpi_ticket_id: ticketId,
       error: reason,
       error_code: 'ATTACHMENT_BLOCKED',
+      error_type: 'attachment_blocked',
       error_stage: 'attachment_validation',
       attachment_status: 'blocked',
       attachment_blocked_reason: reason,
@@ -646,6 +650,9 @@ export class MediaProcessingService {
     const errorCode = isDocumentItemPermissionDenied(input.error)
       ? 'GLPI_DOCUMENT_ITEM_PERMISSION_DENIED'
       : 'GLPI_DOCUMENT_ITEM_LINK_FAILED';
+    const errorType = errorCode === 'GLPI_DOCUMENT_ITEM_PERMISSION_DENIED'
+      ? 'glpi_permission_denied'
+      : classifyError(input.error);
 
     logger.error(
       {
@@ -657,7 +664,7 @@ export class MediaProcessingService {
         correlation_id: input.context.correlationId ?? null,
         stage: 'glpi_document_item_link',
         error_code: errorCode,
-        error_type: classifyError(input.error),
+        error_type: errorType,
         error_message: errorMessage,
       },
       '[integration-service][media][DOCUMENT_UPLOADED_UNLINKED]',
@@ -678,6 +685,7 @@ export class MediaProcessingService {
         glpi_ticket_id: input.ticketId,
         error: errorMessage,
         error_code: errorCode,
+        error_type: errorType,
         error_stage: 'glpi_document_item_link',
         attachment_status: 'failed',
         attachment_blocked_reason: null,

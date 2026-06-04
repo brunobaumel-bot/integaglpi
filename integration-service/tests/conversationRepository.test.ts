@@ -7,10 +7,12 @@ type QueryResult<T> = { rowCount: number; rows: T[] };
 
 class FakeSqlExecutor implements SqlExecutor {
   public queries: Array<{ text: string; params: unknown[] }> = [];
+  public nextRows: unknown[] = [];
 
   public async query<T>(text: string, params?: unknown[]): Promise<QueryResult<T>> {
     this.queries.push({ text, params: params ?? [] });
-    return { rowCount: 0, rows: [] };
+    const rows = this.nextRows.length > 0 ? this.nextRows.splice(0) as T[] : [];
+    return { rowCount: rows.length, rows };
   }
 }
 
@@ -19,6 +21,53 @@ function compactSql(sql: string): string {
 }
 
 describe('PostgresConversationRepository', () => {
+  it('persists remembered entity metadata when creating a ticket-linked conversation', async () => {
+    const executor = new FakeSqlExecutor();
+    const now = new Date('2026-06-04T12:00:00.000Z');
+    executor.nextRows = [{
+      id: 'conv-entity',
+      phone_e164: '+5511999996562',
+      contact_id: 'contact-1',
+      glpi_ticket_id: 2112319300,
+      glpi_entity_id: '54',
+      glpi_entity_name: 'Cliente Teste',
+      queue_id: null,
+      profile_collection_state: null,
+      status: 'open',
+      last_message_at: now,
+      created_at: now,
+      updated_at: now,
+    }];
+    const repository = new PostgresConversationRepository(executor);
+
+    const conversation = await repository.create({
+      phoneE164: '+5511999996562',
+      contactId: 'contact-1',
+      glpiTicketId: 2112319300,
+      status: 'open',
+      lastMessageAt: now,
+      glpiEntityId: 54,
+      glpiEntityName: ' Cliente Teste ',
+    });
+
+    expect(compactSql(executor.queries[0]?.text ?? '')).toContain('glpi_entity_id, glpi_entity_name');
+    expect(executor.queries[0]?.params).toEqual([
+      '+5511999996562',
+      'contact-1',
+      2112319300,
+      'open',
+      now,
+      54,
+      'Cliente Teste',
+    ]);
+    expect(conversation).toMatchObject({
+      id: 'conv-entity',
+      glpiTicketId: 2112319300,
+      glpiEntityId: 54,
+      glpiEntityName: 'Cliente Teste',
+    });
+  });
+
   it('prioritizes an open ticket-linked conversation over newer triage conversations for inbound reuse', async () => {
     const executor = new FakeSqlExecutor();
     const repository = new PostgresConversationRepository(executor);

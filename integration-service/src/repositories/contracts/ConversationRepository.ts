@@ -6,6 +6,8 @@ export interface CreateConversationInput {
   glpiTicketId: number | null;
   status: string;
   lastMessageAt: Date;
+  glpiEntityId?: number | null;
+  glpiEntityName?: string | null;
 }
 
 export type EntitySelectionAttemptStatus =
