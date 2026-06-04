@@ -292,6 +292,16 @@ describe('ExternalResearchService.rewriteCloudSafe (cloud-safe summary rewrite)'
     expect(dirty.cloudSafeContext).not.toMatch(/alguem@dominio\.com\.br/i);
   });
 
+  it('rewriteCloudSafe neutralizes residual company/placeholders so a clean summary is cloud-safe', async () => {
+    const out = svc.rewriteCloudSafe(
+      'O [nome removido], da empresa Etica Informatica, relata problema de sync do AD com urgência.',
+    );
+    expect(out.cloudSafeContext).not.toMatch(/Etica|Inform[aá]tica|\[nome|da empresa/i);
+    expect(out.cloudSafeContext.toLowerCase()).toContain('sync do ad');
+    // Neutral technical text must NOT be blocked as residual PII.
+    expect(out.safeForCloudResidual).toBe(true);
+  });
+
   it('caps the cloud-safe context length and never returns raw beyond the cap', async () => {
     const long = 'erro tecnico generico '.repeat(100);
     const out = svc.rewriteCloudSafe(long);

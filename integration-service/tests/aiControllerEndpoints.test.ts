@@ -10,6 +10,7 @@ import {
   createExternalResearchPreviewController,
   createSmartHelpController,
   createTechnicalSummaryController,
+  neutralizeResidualPii,
   scrubSummaryFabrications,
 } from '../src/controllers/ai.controller.js';
 
@@ -166,6 +167,33 @@ describe('AI controller endpoints', () => {
     expect(out).not.toMatch(/processamento dos registros/i);
     // The real technical term from the conversation is preserved.
     expect(out.toLowerCase()).toContain('sincronização do ad');
+  });
+
+  it('POST technical-summary neutralizes residual name/company/placeholders (smoke case)', async () => {
+    const summarizer = {
+      generate: vi.fn(async () => (
+        'O [nome removido], da empresa Etica Informatica, relata um problema de sync do AD '
+        + 'com urgência. [nome: [nome]] Ainda faltam detalhes técnicos.'
+      )),
+    };
+    const res = await request(app('/ts', 'post', createTechnicalSummaryController(summarizer as never)))
+      .post('/ts').send({ ticket_id: 7, context: 'bruno baumel etica informatica problemas de sync do ad urgencia' });
+    expect(res.status).toBe(200);
+    const out = String(res.body.technical_summary);
+    expect(out).not.toMatch(/Etica/i);
+    expect(out).not.toMatch(/Inform[aá]tica/i);
+    expect(out).not.toContain('[nome');
+    expect(out).not.toMatch(/\[nome removido\]/i);
+    expect(out).not.toMatch(/da empresa/i);
+    // Technical signal preserved.
+    expect(out.toLowerCase()).toContain('sync do ad');
+    expect(out.toLowerCase()).toContain('urgência');
+  });
+
+  it('neutralizeResidualPii strips company + labeled placeholders, keeps technical text', () => {
+    const out = neutralizeResidualPii('O [nome removido], da empresa Etica Informatica, problema de sync do AD. [nome: [nome]]');
+    expect(out).not.toMatch(/Etica|Inform[aá]tica|\[nome|da empresa/i);
+    expect(out.toLowerCase()).toContain('sync do ad');
   });
 
   it('scrubSummaryFabrications keeps GLPI when it IS in the conversation', async () => {

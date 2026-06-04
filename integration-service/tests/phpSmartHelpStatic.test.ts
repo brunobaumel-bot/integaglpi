@@ -464,8 +464,25 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // Deterministic anti-hallucination guard exists and is applied before returning.
     expect(ctrl).toContain('function scrubSummaryFabrications');
     expect(ctrl).toContain('SUMMARY_FABRICATION_GUARD');
-    expect(ctrl).toContain('scrubSummaryFabrications(raw, context)');
     expect(ctrl).toContain('detalhes técnicos ainda não informados');
+
+    // Residual person/company/placeholder neutralization applied to the summary.
+    expect(ctrl).toContain('function neutralizeResidualPii');
+    expect(ctrl).toContain('neutralizeResidualPii(scrubSummaryFabrications(raw, context))');
+    expect(ctrl).toContain('em ambiente corporativo');
+  });
+
+  it('PHP and cloud-safe rewrite neutralize residual company/placeholders', async () => {
+    const php = await read('integaglpi/src/Service/SmartHelpService.php');
+    const ext = await read('integration-service/src/domain/services/ExternalResearchService.ts');
+
+    expect(php).toContain('function neutralizeResidual');
+    expect(php).toContain('em ambiente corporativo');
+    expect(php).toContain('$this->neutralizeResidual($clean)');
+
+    expect(ext).toContain('neutralizeResidual');
+    expect(ext).toContain('em ambiente corporativo');
+    expect(ext).toContain('this.neutralizeResidual(pass2.sanitizedText)');
   });
 
   it('external AI assist renders a source-optional suggestion (review required, no misleading success)', async () => {

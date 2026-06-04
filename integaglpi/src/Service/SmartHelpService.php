@@ -333,9 +333,41 @@ final class SmartHelpService
 
         // Collapse repeated placeholders ("[email removido] [email removido]" -> one).
         $clean = preg_replace('/(\[[^\]]+removid[ao]\])(\s+\1)+/u', '$1', $clean) ?? $clean;
+        // Neutralize residual company phrases + labeled placeholders into neutral prose.
+        $clean = $this->neutralizeResidual($clean);
         $clean = preg_replace('/\s+/u', ' ', $clean) ?? $clean;
 
         return trim($clean);
+    }
+
+    /**
+     * Removes residual company phrases (no societary suffix) and labeled placeholders
+     * that would otherwise re-trigger the PII Guard ("O [nome removido], da empresa
+     * Etica Informatica", "[nome: [nome]]"), restoring neutral technical prose.
+     */
+    private function neutralizeResidual(string $text): string
+    {
+        $t = $text;
+        $company = [
+            '/\bd[ao]\s+empresa\s+[^,.;:]+/iu',
+            '/\bempresa\s+informada\s*[:\-]?\s*[^,.;:]+/iu',
+            '/\bempresa\s+[A-ZÀ-Ý][\p{L}\p{N}.&\- ]{1,40}/u',
+            '/\b[A-ZÀ-Ý][\p{L}\p{N}]+\s+inform[aá]tica\b/iu',
+        ];
+        $t = preg_replace($company, 'em ambiente corporativo', $t) ?? $t;
+        // Remove labeled bracket placeholders, twice for nested "[nome: [nome]]".
+        $t = preg_replace('/\[[^\[\]]*\]/u', '', $t) ?? $t;
+        $t = preg_replace('/\[[^\[\]]*\]/u', '', $t) ?? $t;
+        // Restore neutral subject where a placeholder left a dangling article.
+        $t = preg_replace('/\bO\s+,/u', 'O solicitante,', $t) ?? $t;
+        $t = preg_replace('/\bA\s+,/u', 'O solicitante,', $t) ?? $t;
+        $t = preg_replace('/\b[Cc]liente\s+(?=[,.;:]|$)/u', 'o solicitante ', $t) ?? $t;
+        $t = preg_replace('/\s{2,}/u', ' ', $t) ?? $t;
+        $t = preg_replace('/\s+([,.;:])/u', '$1', $t) ?? $t;
+        $t = preg_replace('/([,;:])\1+/u', '$1', $t) ?? $t;
+        $t = preg_replace('/^[\s,;:.]+/u', '', $t) ?? $t;
+
+        return trim($t);
     }
 
     /**
