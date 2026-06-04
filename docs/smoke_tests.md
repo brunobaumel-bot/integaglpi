@@ -1,7 +1,7 @@
 # Smoke Tests IntegraGLPI — Roadmap V5 Final
 
 **Versão:** 2.0  
-**Atualizado em:** 2026-05-28  
+**Atualizado em:** 2026-06-04
 **Uso:** Executar manualmente em TESTE/HOMOLOGACAO.  
 **Regra:** Nunca chamar IA automaticamente, nunca enviar WhatsApp, nunca alterar produção.
 
@@ -324,6 +324,11 @@ na Saúde Técnica (read-only). A reorganização da Central por jornadas fica p
 | S-V8-FINAL-10 | Migrations 044/045 | Status verificado por evidência/health/readiness; aplicação em banco é manual e fora do Codex |
 | S-V8-FINAL-11 | Feature flags seguras | Cloud OFF, LogMeIn OFF/opcional, IA sem mutação, KB sem autopublicação, produção com gate humano |
 | S-V8-FINAL-12 | Rollback | Plano de rollback manual está aprovado, backup validado e janela aberta antes de produção |
+| S-V8-FINAL-13 | Seleção/memória de entidade | Contato com entidade pendente não abre ticket com entidade nula; contato com memória válida segue sem pedir novamente |
+| S-V8-FINAL-14 | Monitoramento Operacional | Saúde Técnica, Auditoria, Eventos, Diagnóstico/Readiness e Health/Runtime abrem sem ação mutável |
+| S-V8-FINAL-15 | Central do Supervisor | Drill-downs de Backoffice, Qualidade/SLA, Inatividade/Autoclose, Alertas IA e Saúde Técnica abrem sem nova rota quebrada |
+| S-V8-FINAL-16 | Logs sem PII | Inspecionar logs GLPI/Node: sem telefone completo, email, token, PSK, bearer, raw prompt ou payload bruto |
+| S-V8-FINAL-17 | Go/no-go | Produção permanece NO-GO até assinatura humana, backup, rollback e smoke de homologação |
 
 Observação: a Ajuda Inteligente (runtime V7-M2) NÃO foi tocada neste pacote.
 

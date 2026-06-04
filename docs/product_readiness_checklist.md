@@ -1,7 +1,7 @@
 # Product Readiness Checklist - IntegraGLPI V8
 
-Phase: `integaglpi_v8_governance_lgpd_product_readiness_001`
-Updated: 2026-06-03
+Phase: `integaglpi_v8_final_governance_lgpd_readiness_and_release_gate_001`
+Updated: 2026-06-04
 
 ## Purpose
 
@@ -94,3 +94,57 @@ Production package must include:
 - rollback plan;
 - feature flags review;
 - LGPD owner status.
+
+## Final V8 Installation And Environment Checklist
+
+| Area | Minimum requirement | Evidence expected |
+| --- | --- | --- |
+| GLPI plugin | Installed in the GLPI plugin directory, no GLPI core patch. | Plugin page loads and menu appears by profile rights. |
+| PHP runtime | Compatible with the deployed GLPI version. | PHP lint or operational smoke evidence. |
+| Node integration-service | Built package from approved commit. | Health/readiness endpoint passing. |
+| PostgreSQL integration DB | Required migrations reviewed and applied manually when authorized. | DBA evidence; no Codex production migration. |
+| Redis | Available for locks/queues where configured. | Health or service status evidence. |
+| Meta WhatsApp | Webhook and outbound mode aligned with environment. | TESTE/HOMOLOGACAO smoke; no real send outside gate. |
+| SmartHelp/Ollama | Optional assistive feature, manual click only. | UI smoke; no auto-send and no ticket mutation. |
+| Cloud research | OFF by default and gated by PII Guard, consent and strong permission. | Feature flag review and audit evidence. |
+| LogMeIn | Optional read-only cache/reconciliation. | Flags OFF unless smoke read-only is approved. |
+
+## Homologation Package
+
+- Approved commit hash and changed-files manifest.
+- Cursor review result.
+- Node test evidence: TypeScript and Vitest.
+- PHP lint/PHPUnit evidence or environmental ressalva.
+- Feature flags matrix reviewed.
+- LGPD retention owner status checked.
+- Final V8 smoke plan ready.
+- Rollback owner and rollback package available.
+
+## Production Package
+
+- Homologation acceptance.
+- Backup evidence for plugin, integration-service package, GLPI DB, PostgreSQL and configuration outside the repo.
+- Go/no-go signed by operations, security and DPO/owner when applicable.
+- Manual deployment window and named operator.
+- Manual rollback plan with owner available during the window.
+- Post-deploy baseline capture plan.
+
+## L1/L2 Support Split
+
+| Level | Responsibilities | Escalate when |
+| --- | --- | --- |
+| L1 | Capture sanitized evidence, check health page, confirm user/profile, verify known feature flag status. | Any PII/secret exposure, provider outage, RBAC failure, or customer-impacting WhatsApp failure. |
+| L2 | Inspect sanitized logs, Node health, GLPI plugin errors, PostgreSQL/Redis status, Meta provider errors. | Requires DBA, DPO, infrastructure change, production rollback, or code fix. |
+
+## Final Go/No-Go
+
+V8 is NO-GO if any item below is true:
+
+- smoke final V8 was not executed in HOMOLOGACAO;
+- any owner remains `OWNER_A_DEFINIR` for a required LGPD decision;
+- cloud can run without operator consent, PII Guard and strong permission;
+- IA can send WhatsApp or mutate ticket automatically;
+- KB can autopublish;
+- LogMeIn is required for WhatsApp/ticket operation;
+- logs/UI expose PII, token, secret, PSK or raw payload;
+- backup or rollback is not validated.

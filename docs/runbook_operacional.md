@@ -79,3 +79,31 @@ Objetivo: orientar validação e resposta operacional sem alterar código, banco
 ## Segurança Documental
 
 Nunca versionar, copiar ou colar em documentação: .env real, .ovpn, tokens, Bearer tokens, PSK, Phone Number ID real, senhas, dumps SQL, backups reais, payloads brutos sensíveis ou dados pessoais desnecessários.
+
+## V8 Final — Runbook L1/L2
+
+### L1
+
+- Confirmar ambiente: TESTE, HOMOLOGACAO ou PRODUCAO.
+- Capturar evidência sanitizada: horário, usuário, tela, action, correlation_id e erro resumido.
+- Verificar Saúde Técnica e readiness.
+- Validar se a feature flag esperada está OFF/read-only quando aplicável.
+- Não alterar `.env`, banco, Docker, flags, tickets ou mensagens sem procedimento aprovado.
+
+### L2
+
+- Revisar logs sanitizados do GLPI e integration-service.
+- Confirmar CSRF/RBAC quando houver ação negada.
+- Conferir PostgreSQL/Redis/Meta somente com comandos aprovados do ambiente.
+- Escalar para DBA antes de qualquer migration ou restore.
+- Escalar para DPO/security se houver suspeita de PII, segredo ou payload bruto.
+
+### Release Gate Operacional
+
+Produção permanece bloqueada se:
+
+- smoke final V8 não foi executado;
+- rollback não está pronto;
+- backup não foi validado;
+- owner/DPO está `OWNER_A_DEFINIR` para decisão LGPD necessária;
+- cloud/IA/KB/LogMeIn não seguem defaults seguros.

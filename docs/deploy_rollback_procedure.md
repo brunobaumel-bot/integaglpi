@@ -88,3 +88,17 @@ Nao apagar documentos ja criados e nao alterar `glpi_documents_items` manualment
 ## Segurança Documental
 
 Nunca versionar, copiar ou colar em documentação: .env real, .ovpn, tokens, Bearer tokens, PSK, Phone Number ID real, senhas, dumps SQL, backups reais, payloads brutos sensíveis ou dados pessoais desnecessários.
+
+## V8 Final — Manual Release Gate
+
+Antes de qualquer promoção:
+
+- [ ] Homologação aprovada com smoke final V8.
+- [ ] Backup do plugin, Node, GLPI DB, PostgreSQL e configurações externas validado.
+- [ ] Rollback manual testado ou revisado.
+- [ ] Feature flags revisadas com defaults seguros.
+- [ ] LGPD owner/DPO definido ou produção bloqueada.
+- [ ] Logs/UI verificados contra PII, segredo e payload bruto.
+- [ ] Go/no-go assinado por responsáveis.
+
+Não há deploy automático, promoção automática, migration automática ou expurgo automático neste procedimento.

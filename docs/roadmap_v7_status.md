@@ -1,6 +1,6 @@
 # Roadmap V7 Status
 
-Atualizado em: 2026-06-03
+Atualizado em: 2026-06-04
 
 ## Macro 1 - Nova Porta de Entrada WhatsApp
 
@@ -131,3 +131,14 @@ Pacote final — Governance, LGPD e Product Readiness:
 - **Documentado**: checklist de readiness em `docs/product_readiness_checklist.md`, cobrindo separação TESTE/HOMOLOGAÇÃO/PRODUÇÃO, dependências, pre-deploy, post-deploy, go/no-go e suporte.
 - **Atualizado**: `docs/feature_flags_matrix.md`, `docs/release_runbook.md`, `docs/v7_final_readiness.md` e `docs/smoke_tests.md` com gates V8 finais.
 - **Sem runtime**: nenhum PHP operacional, Node, migration, Docker, `.env`, WhatsApp, SmartHelp, LogMeIn ou banco foi alterado nesta fase documental.
+- **Gate final V8**: `integaglpi_v8_final_governance_lgpd_readiness_and_release_gate_001` consolida governança de ambientes, LGPD/retencao, feature flags, security final gate, smoke final, go/no-go e backlog V9.
+- **Produção**: continua NO-GO até smoke real em HOMOLOGACAO, backup validado, rollback validado e assinatura humana.
+
+## Backlog V9 — Não Implementado
+
+- Expurgo LGPD automático controlado, com dry-run, backup e aprovação DPO/DBA.
+- SaaS/multi-tenant/billing.
+- LogMeIn avançado além de read-only/cache/reconciliação.
+- Dashboards executivos avançados.
+- IA autônoma ou ações automáticas em WhatsApp/ticket, somente se política futura permitir.
+- Publicação automática de KB, somente se política futura substituir revisão humana.

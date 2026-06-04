@@ -1,7 +1,7 @@
 # V7/V8 Final Readiness
 
-Phase: `integaglpi_v8_governance_lgpd_product_readiness_001`
-Updated: 2026-06-03
+Phase: `integaglpi_v8_final_governance_lgpd_readiness_and_release_gate_001`
+Updated: 2026-06-04
 
 ## Executive Status
 
@@ -79,3 +79,25 @@ V8 adiciona readiness documental de produto: governança de ambientes, LGPD/rete
 ## Manual Handoff
 
 Próximo passo: Cursor review da Macro 5 e decisão humana sobre commit/deploy. Não há ação automática pendente.
+
+## Final V8 Readiness Decision
+
+| Area | Result |
+| --- | --- |
+| Governance documentation | Ready for Cursor review |
+| LGPD/retention | Documented with `OWNER_A_DEFINIR` blockers |
+| Feature flags | Safe defaults documented |
+| Security final gate | Documented; backend enforcement must be confirmed by smoke/review |
+| Smoke final V8 | Documented; real HOMOLOGACAO execution remains mandatory |
+| Production | NO-GO until signed manual gate |
+
+## Backlog V9
+
+The following items are backlog only and were not implemented in V8:
+
+- controlled retention purge with dry-run and restore workflow;
+- SaaS/multi-tenant/billing model;
+- advanced LogMeIn operational dashboards and provider analytics;
+- advanced executive dashboards;
+- autonomous IA actions, only if future policy allows;
+- automated KB publication, only if future human-review policy changes.

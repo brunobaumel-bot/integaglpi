@@ -1,7 +1,7 @@
 # LGPD Retention Policy - IntegraGLPI V8
 
-Phase: `integaglpi_v8_governance_lgpd_product_readiness_001`
-Updated: 2026-06-03
+Phase: `integaglpi_v8_final_governance_lgpd_readiness_and_release_gate_001`
+Updated: 2026-06-04
 
 ## Status
 
@@ -69,3 +69,37 @@ Production promotion remains blocked if:
 - feature flags are not reviewed;
 - logs or UI expose PII/secrets;
 - any document or package suggests automatic production deploy.
+
+## Final V8 Retention Gate
+
+This policy is a release-readiness document only. It does not implement purge, cron jobs, cleanup workers, migrations, SQL execution, or production data deletion.
+
+| Data class | Proposed V8 handling | Future purge gate |
+| --- | --- | --- |
+| WhatsApp message history | Preserve with the linked GLPI ticket history. | DPO + operations + legal retention decision. |
+| WhatsApp attachments | Preserve according to GLPI document/storage policy; PostgreSQL keeps only metadata. | DPO + DBA + verified backup. |
+| Raw provider payloads | Avoid storing; if diagnostic snapshots exist, propose 90 days and minimization. | Separate phase with inventory and dry-run row counts. |
+| Application logs | Proposed 180 days for sanitized operational logs. | Log owner + security review. |
+| Security and operational audit | Proposed 5 years, sanitized payload only. | DPO/security sign-off. |
+| Cloud audit | Proposed 5 years for consent, provider, hash and PII Guard metadata. | DPO + cloud owner; no raw prompt retention. |
+| KB feedback and candidates | Proposed 3 years or until review closure; aggregate and non-punitive. | KB owner + DPO if personal identifiers are present. |
+| Local AI summaries and suggestions | Session/UI only unless explicitly persisted by an approved flow. | DPO + AI owner. |
+| LogMeIn cache and reconciliation | Cache proposed 180 days; audit/reconciliation proposed 1 year. | Infra + security; LogMeIn remains read-only. |
+| Aggregated metrics | Up to 5 years when non-identifying and non-punitive. | Operations + DPO review. |
+
+Owner placeholders remain release blockers:
+
+- DPO/LGPD owner: `OWNER_A_DEFINIR`
+- Security owner: `OWNER_A_DEFINIR`
+- Operations owner: `OWNER_A_DEFINIR`
+- DBA owner: `OWNER_A_DEFINIR`
+
+## Future V9/V10 Only
+
+The following items are explicitly deferred and require a new phase:
+
+- controlled automatic purge with dry-run and restore plan;
+- retention dashboard with row-count evidence;
+- data-subject request workflow;
+- automated minimization of historical raw payloads;
+- SaaS/multi-tenant retention policies.

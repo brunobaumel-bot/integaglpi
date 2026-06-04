@@ -1,7 +1,7 @@
 # Release Runbook - IntegraGLPI V7/V8
 
-Phase: `integaglpi_v8_governance_lgpd_product_readiness_001`
-Updated: 2026-06-03
+Phase: `integaglpi_v8_final_governance_lgpd_readiness_and_release_gate_001`
+Updated: 2026-06-04
 
 ## Purpose
 
@@ -121,3 +121,34 @@ Executar a seção `V8 Final — Product Readiness Smoke` em `docs/smoke_tests.m
 ### V8 Rollback Rule
 
 Rollback deve ser manual, preferencialmente por pacote/código anterior. Dados operacionais devem ser preservados; qualquer expurgo ou restauração de banco exige DPO/DBA e fase própria.
+
+## Final V8 Release Decision Record
+
+Preencher manualmente antes de qualquer promoção:
+
+| Campo | Valor |
+| --- | --- |
+| Commit alvo | `A_DEFINIR` |
+| Ambiente origem | TESTE/HOMOLOGACAO |
+| Ambiente destino | HOMOLOGACAO/PRODUCAO |
+| Operador responsável | `OWNER_A_DEFINIR` |
+| Operations approval | `PENDENTE` |
+| Security approval | `PENDENTE` |
+| DPO/LGPD approval | `PENDENTE` |
+| DBA approval for migrations | `PENDENTE` |
+| Backup validated | `PENDENTE` |
+| Rollback validated | `PENDENTE` |
+| Final smoke result | `PENDENTE` |
+| Decision | NO-GO until all required approvals are complete |
+
+## Final V8 Security Gate
+
+- CSRF/RBAC active in plugin endpoints.
+- Node does not access GLPI MariaDB.
+- Cloud calls require explicit operator consent, PII Guard and strong permission.
+- SmartHelp and Copilot never send WhatsApp automatically.
+- IA never changes ticket status, priority, category, solution or assignee automatically.
+- KB publication remains manual.
+- LogMeIn remains read-only and non-operational dependency.
+- UI/logs do not expose raw payloads, secrets or full PII.
+- Production promotion remains manual.

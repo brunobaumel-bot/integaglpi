@@ -52,3 +52,21 @@ Versão documental atual: IntegraGLPI produção estável pós-entrega de Consol
 ## Segurança Documental
 
 Nunca versionar, copiar ou colar em documentação: .env real, .ovpn, tokens, Bearer tokens, PSK, Phone Number ID real, senhas, dumps SQL, backups reais, payloads brutos sensíveis ou dados pessoais desnecessários.
+
+## V8 Final — Baseline A Capturar Após Produção
+
+Esta seção é checklist documental. Não executa deploy e não autoriza produção.
+
+- Commit/pacote implantado.
+- Horário da janela.
+- Operador responsável.
+- Resultado do smoke final V8.
+- Status do health/readiness.
+- Status da Central Enterprise.
+- Status do Monitoramento Operacional.
+- Status da Central do Supervisor.
+- Status de SmartHelp: manual, sem autoenvio, sem mutação.
+- Status de cloud: OFF ou gate completo com evidência.
+- Status de LogMeIn: OFF/read-only/opcional.
+- Resultado da inspeção de logs sem PII/segredo/payload bruto.
+- Rollback window encerrada somente após aceite humano.

@@ -1,7 +1,7 @@
 # Feature Flags Matrix - IntegraGLPI V7
 
-Phase: `integaglpi_v7_m5_enterprise_controlado_001`
-Updated: 2026-06-03
+Phase: `integaglpi_v8_final_governance_lgpd_readiness_and_release_gate_001`
+Updated: 2026-06-04
 
 ## Rule
 
@@ -105,3 +105,22 @@ Regras:
 - Reescrita determinística (sanitização dupla + cap de 600 chars); IA local opcional, nunca filtro único.
 - Provider recebe apenas o texto cloud-safe; auditoria grava hash + tipos + status, sem texto bruto.
 - Habilitar a flag exige gate humano + smoke em homologação; nunca alterar `.env` por automação.
+
+## Final V8 Feature Flag Matrix
+
+| Domain | Flag / control | TESTE default | HOMOLOGACAO default | PRODUCAO default | Owner | Human gate |
+| --- | --- | --- | --- | --- | --- | --- |
+| WhatsApp | `OUTBOUND_SEND_MODE` | `mock` | controlled | production-approved only | Operations WhatsApp | Required before real send |
+| WhatsApp | Meta webhook configuration | test phone only | homologation phone only | production phone only | Meta owner | Required per environment |
+| SmartHelp | Guided workflow buttons | enabled manually | enabled manually | enabled manually if smoke passed | Support lead | Required for production enablement |
+| IA local | Ollama/local provider | optional/manual | optional/manual | optional/manual | AI owner | Required if provider changes |
+| Cloud | `EXTERNAL_RESEARCH_CLOUD_ENABLED` | `false` | `false` until DPO smoke | `false` until signed GO | DPO + direction + admin | Required |
+| Cloud | PII Guard / sanitized preview | required | required | required | Security/DPO | Cannot be disabled |
+| KB | Feedback and candidates | local/reviewed | local/reviewed | local/reviewed | KB owner | Required for publish |
+| KB | Autopublish | forbidden | forbidden | forbidden | KB owner | Not allowed in V8 |
+| LogMeIn | `LOGMEIN_INTEGRATION_ENABLED` | `false` | `false` unless read-only smoke | `false` unless explicit GO | Infra/security | Required |
+| LogMeIn | `LOGMEIN_RECONCILIATION_ENABLED` | `false` | `false` unless provider stable | `false` unless explicit GO | Infra/security | Required |
+| Observability | Technical Health | read-only | read-only | read-only | Operations | No mutation allowed |
+| Production | Production promotion | blocked | blocked | manual only | Release owner | Signed go/no-go |
+
+Safe default rule: if owner or gate evidence is missing, keep the flag OFF or read-only.
