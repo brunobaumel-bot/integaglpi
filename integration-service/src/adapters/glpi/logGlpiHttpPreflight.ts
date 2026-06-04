@@ -2,11 +2,7 @@ import { logger } from '../../infra/logger/logger.js';
 import { sanitizeUrlForLog } from '../../infra/logger/sanitizeUrlForLog.js';
 
 export function maskSecret(value: string): string {
-  if (!value || value.length < 8) {
-    return '[REDACTED]';
-  }
-
-  return `${value.slice(0, 6)}…(len=${value.length})`;
+  return value ? '[REDACTED]' : '[REDACTED]';
 }
 
 /** Log estruturado antes do fetch (PoC): URL final, método, query e headers mascarados. */

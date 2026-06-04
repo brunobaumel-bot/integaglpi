@@ -1,160 +1,225 @@
-# Relatório de Execução — Auditoria Pós-Fix em Homologação
+# Relatório de Execução — Smoke E2E Pós-Fix em Homologação
 
-Phase: `integaglpi_v8_post_fix_full_homologation_audit_002`
-Executado em: 2026-06-04 (UTC-3) por auditoria operacional read-only via SSH.
+Phase: `integaglpi_v8_post_fix_e2e_synthetic_smoke_001`
+Executado em: 2026-06-04 (UTC-3) via SSH na homologação (host `GLPIv5`).
 Fix sob avaliação: commit `601461c` ("fix(integaglpi): address homologation regression failures").
+Número de teste autorizado: `41988334449` (E.164 no banco: `+5541988334449`). Mensagens enviadas pelo operador.
 
-> Este documento é apenas relatório de auditoria. Não altera runtime, não corrige código,
-> não toca produção, não faz deploy/commit. Toda evidência foi coletada read-only.
+> Relatório de auditoria. Não corrige código, não toca produção, não faz deploy/commit.
+> Nenhum segredo/token/telefone de cliente real foi impresso.
 
 ---
 
 ## 1. Veredito
 
-**VERDICT: NO_GO** (bloqueio de validação, não falha de fix).
+**VERDICT: PARTIAL (backend pós-fix VERDE; restam apenas testes de camada de UI).**
 
-O fix `601461c` está **corretamente implantado** em homologação e **nenhuma regressão pós-fix foi
-observada**, porém a missão central — "validar com eventos novos, não resíduos históricos" — **não
-pôde ser cumprida** porque:
+Com os eventos reais enviados pelo número autorizado, os três alvos do fix foram **exercitados com
+eventos novos pós-cutoff e passaram**:
 
-1. Não há tráfego pós-cutoff em homologação (último evento `2026-06-04 12:58:18Z`, anterior ao
-   restart pós-fix `14:13:48Z`).
-2. Os insumos obrigatórios não foram fornecidos: `TEST_WHATSAPP_NUMBER`, `TEST_ENTITY_ID`,
-   `TEST_QUEUE_ID`, `TEST_TECHNICIAN_A/B`, sessão/credencial de UI GLPI.
-3. `OUTBOUND_SEND_MODE=real` em HML: gerar evento sintético poderia disparar WhatsApp **real**.
-4. Webhook guard ativo (assinatura Meta) impede injeção de inbound sintético sem segredo.
+- **T01 PASS** — entidade preservada em nova conversa.
+- **T13 PASS** — mídia anexada com `Document_Item` vinculado (cadeia completa).
+- **T10 PASS (caminho skip)** — inatividade respeitou atividade recente; sem autoclose/WhatsApp indevido.
 
-As STOP_CONDITIONS da própria fase ("test number não confirmado", "UI autenticada não disponível")
-exigem `NO_GO`. **Não é um NO_GO por falha do fix** — é um NO_GO por impossibilidade de prova em
-runtime sob as condições/insumos atuais.
+Além disso T02, T18, T20 e o fluxo FSM/append passaram. **Nenhum FAIL.** Permanecem `INCONCLUSIVE`
+apenas os testes que exigem sessão de **UI GLPI por navegador** (não disponível nesta execução).
 
 ---
 
-## 2. Ambiente validado (read-only)
+## 2. Ambiente e cutoff
 
-| Item | Resultado | Evidência |
+| Item | Resultado |
+|---|---|
+| Host | `GLPIv5` (homologação); `prod-*` ignorados |
+| Containers HML | `glpi-integaglpi-{integration,postgres,redis}` UP, restarts=0 |
+| `/health` | ok:true; postgres ok; redis ready; webhook_guard ativo |
+| cutoff_utc | `2026-06-04T14:13:48Z` |
+| Evento novo pós-cutoff | conversa `0a7c415c…` criada `2026-06-04 15:12:31Z` |
+| OUTBOUND_SEND_MODE | `real` (todo outbound foi só para `+5541988334449`) |
+| Deploy do fix | confirmado no `dist` (marcadores T01/T10/T13) |
+
+---
+
+## 3. Foco pós-fix (T01/T10/T13) — RUNTIME
+
+### T01 — Entidade preservada — **PASS**
+- Nova conversa `0a7c415c-fdf9-45ee-bc73-c0233abc4ebb` (pós-cutoff) →
+  `glpi_ticket_id=2112319360`, `glpi_entity_id=28`, `glpi_entity_name="Ética > Klarind"`.
+- Cross-check GLPI API: ticket `2112319360` existe, `entities_id=28`, `status=2`.
+- Evidência: SELECT conversations + GLPI API GET /Ticket/2112319360.
+
+### T10 — Inatividade não fecha indevidamente — **PASS (skip path)**
+- `inactivity_tracking` da conversa: `status=skipped_by_response`, `skip_reason=recent_inbound`,
+  `autoclose_attempted_at=NULL`, sem WhatsApp de cobrança.
+- O caminho de falha GLPI (`glpi_permission_denied` sem WhatsApp) não foi disparado porque o GLPI
+  não falhou; permanece confirmado por deploy/código + testes unitários.
+
+### T13 — Mídia/anexo com Document_Item — **PASS**
+- Imagem inbound `image/jpeg` (228 KB): `media_status=synced`, `glpi_document_id=3894`,
+  vinculada ao ticket `2112319360`.
+- Logs: `DOWNLOAD_OK → GLPI_DOCUMENT_UPLOAD_OK → POST /Document_Item → "Item adicionado com sucesso ID 16962" → GLPI_DOCUMENT_ITEM_LINK_OK`.
+- GLPI API Document/3894/Document_Item: 1 vínculo ao ticket `2112319360`.
+- `post_cutoff_uploaded_unlinked/error = 0`.
+
+---
+
+## 4. Matriz T01–T23
+
+| Teste | Status | Evidência |
 |---|---|---|
-| Host SSH | `GLPIv5` / `azureuser` | `hostname && whoami` |
-| Produção isolada | Sim | containers `prod-*` (3002/5433) ignorados; nenhum comando os tocou |
-| integration-service | OK | `/health` ok:true, uptime estável, restarts=0 |
-| PostgreSQL HML | OK | `current_database=glpi_integaglpi`, latência 1ms |
-| Redis HML | OK | `PONG`, `DBSIZE=0`, 0 locks/dead/queue |
-| Worker inatividade | OK (idle) | `[inactivity][JOB_STARTED]` interval=60s, ciclos `no_eligible_candidates` |
-| Migrations | Aplicadas no boot | logs `Applied schema migration file` (automático no container) |
-| Cutoff pós-fix | `2026-06-04T14:13:48Z` | `docker inspect StartedAt` do container de integração |
+| T01 Entidade | **PASS** | nova conversa pós-cutoff, entity_id=28 + nome; ticket GLPI entities_id=28 |
+| T02 Protocolo→GLPI | **PASS** | ticket 2112319360 criado e acessível via GLPI API |
+| T03 Travados | INCONCLUSIVE | requer UI Central (Redis 0 locks/dead=0 read-only ok) |
+| T04 Categoria/tempo | INCONCLUSIVE | requer UI |
+| T05 Salvar/403 | INCONCLUSIVE | requer UI; nenhum 403 indevido nos logs do fluxo |
+| T06 Técnico exibido | INCONCLUSIVE | requer UI/atribuição |
+| T07 Transferência | INCONCLUSIVE | requer UI + técnicos de teste |
+| T08 Notificação | INCONCLUSIVE | requer UI |
+| T09 Telefone mascarado | INCONCLUSIVE | requer UI Central |
+| T10 Inatividade | **PASS** | skipped_by_response/recent_inbound; sem WhatsApp/autoclose indevido |
+| T11 Reabertura | INCONCLUSIVE | requer UI |
+| T12 Histórico | **PASS (parcial)** | inbound anexado como follow-up GLPI (4204/4205/4206) |
+| T13 Mídia | **PASS** | Document 3894 + Document_Item 16962 vinculados ao ticket |
+| T14 Foto na abertura | INCONCLUSIVE | imagem enviada no meio do fluxo (não na abertura); pipeline ok |
+| T15 Abas | **PASS (parcial)** | mensagens persistidas + follow-up GLPI consistentes |
+| T16 Automação invasiva | **PASS** | sem outbound automático indevido; envios só ao número de teste |
+| T17 Nome remetente | INCONCLUSIVE | nome do contato consistente; sem cenário de troca |
+| T18 Bot health | **PASS** | /health ok; worker ativo; FSM roteando |
+| T19 Abertura manual | INCONCLUSIVE | não executado (entidade 28 é cliente real) |
+| T20 Locks/dead-letter | **PASS** | 0 locks; dead_letter=0; DBSIZE baixo |
+| T21 Sessão/CSRF | INCONCLUSIVE | requer UI |
+| T22 SmartHelp guiado | INCONCLUSIVE | requer UI; endpoint interno exige bearer (401 sem token) |
+| T23 Menus/drilldowns | INCONCLUSIVE | requer UI por perfil |
 
-**Confirmação de deploy do fix (marcadores no `dist` em execução):**
-- T10 → `classifyAutocloseFailureReason`, `glpi_permission_denied` em `InactivityAutomationService.js`.
-- T13 → `UNSUPPORTED_MEDIA_TYPE`, `glpi_permission_denied` em `MediaProcessingService.js`.
-- T01 → `glpiEntityName` em `InboundWebhookService.js`.
-
----
-
-## 3. Foco pós-fix (T01 / T10 / T13)
-
-### T01 — Entidade preservada
-- **Legacy (pré-cutoff):** 180 tickets; **117 sem entidade válida** (65%), 63 com entidade nomeada.
-  Confirma que o bug era real antes do fix.
-- **Pós-cutoff:** 0 conversas criadas → **sem evento novo para provar a correção**.
-- Código implantado agora propaga `glpiEntityId`/`glpiEntityName` na criação de conversa a partir
-  da entidade lembrada (`InboundWebhookService` linhas ~1891 e ~2058 do commit).
-- **Status: INCONCLUSIVE** (deploy correto, sem evento novo).
-
-### T10 — Inatividade não envia WhatsApp se GLPI falha
-- **Legacy:** 25 `failed` + múltiplos `skip_reason='GLPI request failed for /Ticket/...'`, 2 `autoclose_done`.
-- **Pós-cutoff:** 0 linhas `failed`/`permission`/autoclose; worker roda mas `checked_count=0`.
-- Código implantado agora: resolve o ticket no GLPI **antes** de qualquer envio; em falha, classifica
-  `glpi_permission_denied` (403) ou `autoclose_failed` e **não envia WhatsApp**.
-- **post_cutoff_403_count = 0**, **post_cutoff_failed_count = 0**, **whatsapp_sent_after_glpi_fail = não observado**.
-- **Status: INCONCLUSIVE** (deploy correto, sem ciclo de inatividade novo).
-
-### T13 — Mídia/anexo tipados
-- **Legacy:** `document/error=3`, `audio/uploaded_unlinked=2`, `image/error=1`, `document/blocked=skipped` etc.
-- **Pós-cutoff:** 0 mensagens de mídia; `error_type` pós-cutoff vazio.
-- Código implantado agora tipa `unsupported_media_type`, `attachment_blocked`,
-  `glpi_permission_denied` e `error_code=UNSUPPORTED_MEDIA_TYPE`.
-- **post_cutoff_media_error_count = 0**, **post_cutoff_uploaded_unlinked_count = 0**.
-- **Status: INCONCLUSIVE** (deploy correto, sem mídia nova).
+Resumo: **PASS=9** (T01,T02,T10,T13,T16,T18,T20 + T12/T15 parciais), **INCONCLUSIVE=12**, **FAIL=0**, NOT_APPLICABLE=0 (T14/T19 INCONCLUSIVE por condição de teste).
 
 ---
 
-## 4. Matriz regressiva T01–T23
+## 5. Segurança da execução
 
-| Teste | Status | Base da avaliação |
+- Produção não tocada; `prod-*` apenas listados.
+- Outbound exclusivamente para `+5541988334449` (3 mensagens) — nenhum cliente real acionado.
+- Nenhum SQL destrutivo (apenas SELECT/INFO/SCAN); GLPI via API REST oficial.
+- Nenhuma alteração de runtime/código/`.env`/migration/deploy/commit.
+- Webhook Meta com assinatura; endpoints internos com bearer (401 sem token).
+- Sem segredos no relatório (tokens aparecem truncados já na origem dos logs).
+
+## 6. Achados de melhoria (análise sênior)
+1. **Log hygiene**: corpos de `POST /Document_Item` e `/ITILFollowup` logam telefone e nome do contato
+   em claro nos logs do integration-service. Avaliar mascaramento parcial (LGPD), como já feito no PUT de Ticket.
+2. `OUTBOUND_SEND_MODE=real` em HML — preferir `mock` salvo janela E2E.
+3. Container `glpi-integaglpi-ai` inexistente — habilitar para validar T22/IA local.
+4. `LOGMEIN_INTEGRATION_ENABLED=true` em HML — diverge do default seguro (OFF).
+5. Redis sem `maxmemory`/eviction.
+6. O número "de teste" pertence à entidade de **cliente real** "Ética > Klarind" — recomenda-se número/entidade sintéticos dedicados.
+
+## 7. Para fechar (PARTIAL → GO_READY)
+- Executar T03–T09/T11/T17/T19/T21/T22/T23 via sessão de **UI GLPI HML** (perfis técnico/supervisor/admin).
+- Opcional: forçar cenário T10 com GLPI negando fechamento (ticket de teste em entidade dedicada) para
+  exercitar o ramo `glpi_permission_denied` sem WhatsApp em runtime.
+- Enviar uma mídia **não suportada** para exercitar `error_type=unsupported_media_type` em runtime.
+
+---
+
+## 8. Execução complementar UI autenticada — 2026-06-04
+
+Phase: `integaglpi_v8_ui_ai_full_homologation_smoke_001`.
+
+Resultado: **NO_GO para GO final**, com autenticação HML funcional, páginas principais acessíveis e bloqueios de
+segurança preservados, porém com dois impedimentos para fechamento completo:
+
+- não existe conversa/ticket `AUDIT-*` disponível no banco HML para executar mutações reais sem tocar dados não sintéticos;
+- logs recentes do `glpi-integaglpi-integration` ainda contêm telefone autorizado em claro e prefixos truncados de tokens
+  em logs HTTP, então o requisito "logs sem PII/segredos" não está fechado.
+
+Evidências resumidas:
+
+| Item | Resultado |
+|---|---|
+| Credencial HML | `glpi_hml_ui.env` presente, `600`, `azureuser:azureuser`, chaves esperadas presentes |
+| Autenticação GLPI | PASS; login redirecionou para `/front/central.php` |
+| Central WhatsApp | PASS; `/plugins/integaglpi/front/central.php` HTTP 200 autenticado |
+| Refresh Central | PASS; `central.refresh.php` HTTP 200 JSON `ok=true` |
+| Lista técnicos | PASS; `central.technicians.php` HTTP 200 JSON `ok=true` |
+| Mensagens sem contexto | PASS guard; `central.messages.php` HTTP 400 `invalid_request` |
+| CSRF mutável | PASS guard; `central.action.php` com token inválido retornou 403 antes de mutação |
+| SmartHelp token | PASS; `smart.help.php?csrf_token=1` HTTP 200 JSON `ok=true` |
+| SmartHelp sem ticket | PASS guard; POST `summarize_ticket` com `ticket_id=0` retornou 403/contexto negado |
+| Monitoramento Operacional | PASS; `technical.health.php` HTTP 200 com Auditoria/Eventos/SLA/Inatividade |
+| Central Supervisor | PASS; `supervisor.command.php` HTTP 200 com SLA/Inatividade/drilldowns |
+| Segurança | PASS; `security.center.php` HTTP 200 autenticado |
+| Auditoria | PASS; `audit.php` HTTP 200 autenticado |
+| T09 máscara visual | PASS visual; número autorizado não aparece no texto renderizado |
+| T09 ressalva técnica | HTML contém telefone em `data-phone`, embora mascarado visualmente |
+| Redis locks | PASS; scan `*lock*` retornou 0 |
+| Dead letter | PASS; `glpi_plugin_integaglpi_dead_letter` retornou 0 |
+| Migrations 044/045 | PASS estrutural; tabela KB feedback existe e índices 045 estão presentes |
+
+Matriz UI pendente:
+
+| Teste | Status | Evidência |
 |---|---|---|
-| T01 Entidade | INCONCLUSIVE | Fix implantado; sem criação pós-cutoff |
-| T02 Protocolo→ticket GLPI | INCONCLUSIVE | Sem abertura nova; exige API/UI autenticada |
-| T03 Chamados travados | INCONCLUSIVE | Exige UI Central + dados ativos |
-| T04 Categoria/tempo editáveis | INCONCLUSIVE | Exige UI GLPI autenticada |
-| T05 Salvar/403 | INCONCLUSIVE | Sem UI; logs pós-cutoff sem 403 de plugin |
-| T06 Técnico exibido | INCONCLUSIVE | Exige UI + claim sintético |
-| T07 Transferência | INCONCLUSIVE | Exige UI + 2 técnicos de teste |
-| T08 Notificação atribuição | INCONCLUSIVE | Exige claim sintético (outbound real = risco) |
-| T09 Telefone mascarado | INCONCLUSIVE | Exige UI Central/ticket |
-| T10 Inatividade | INCONCLUSIVE | Fix implantado; sem ciclo novo |
-| T11 Reabertura | INCONCLUSIVE | Exige UI + ticket resolvido sintético |
-| T12 Histórico ao responder | INCONCLUSIVE | Exige UI + conversa com timeline |
-| T13 Mídia | INCONCLUSIVE | Fix implantado; sem mídia nova |
-| T14 Foto na abertura | INCONCLUSIVE | Exige número de teste + inbound real |
-| T15 Abas Conversas vs Chamados | INCONCLUSIVE | Exige UI |
-| T16 Automação invasiva | INCONCLUSIVE→tendência PASS | Sem outbound automático nos logs pós-cutoff; garantias estáticas mantidas |
-| T17 Nome remetente | INCONCLUSIVE | Exige UI + contato |
-| T18 Bot health | PASS (parcial) | `/health` ok, FSM/worker ativos, restarts=0, sem erro pós-cutoff |
-| T19 Abertura manual e-mail/telefone | INCONCLUSIVE | Exige UI GLPI |
-| T20 Locks/dead-letter | PASS | Redis 0 locks/0 dead; tabela `dead_letter`=0; `DBSIZE=0` |
-| T21 Sessão/CSRF | INCONCLUSIVE | Exige UI; logs sem CSRF inválido pós-cutoff |
-| T22 SmartHelp guiado | INCONCLUSIVE | Exige UI; ver risco do container AI ausente |
-| T23 Menus/drilldowns | INCONCLUSIVE | Exige UI GLPI por perfil |
+| T03 Central/travados | PASS parcial | Central e refresh autenticados OK; Redis locks 0 |
+| T04 Categoria/tempo | INCONCLUSIVE | requer conversa/ticket `AUDIT-*` selecionável |
+| T05 Salvar/403 | PASS parcial | CSRF inválido bloqueado com 403; mutação real não executada sem `AUDIT-*` |
+| T06 Técnico exibido | PASS parcial | Central contém rótulo de técnico/responsável; validação em ticket `AUDIT-*` não executada |
+| T07 Transferência | INCONCLUSIVE | endpoint de técnicos OK; transferência real não executada sem `AUDIT-*` |
+| T08 Notificação atribuição | INCONCLUSIVE | requer claim/transfer sintético |
+| T09 Telefone mascarado | PASS_COM_RESSALVA | mascarado visualmente; raw phone em atributo técnico HTML |
+| T11 Reabertura | INCONCLUSIVE | requer ticket/conversa `AUDIT-*` fechado |
+| T12 Histórico ao responder | PASS guard/parcial | endpoint mensagens rejeita contexto inválido; resposta real não enviada |
+| T15 Abas Conversas vs Chamados | PASS parcial | Central exibe jornadas/abas; validação funcional em `AUDIT-*` não executada |
+| T19 Abertura manual | INCONCLUSIVE | não executada sem dado sintético dedicado |
+| T21 Sessão/CSRF | PASS | login OK; POST mutável com CSRF inválido bloqueado |
+| T22 SmartHelp guiado/IA | PASS guard/parcial | token OK e contexto inválido bloqueado; execução com ticket real não feita |
+| T23 Menus/drilldowns | PASS parcial | rotas Monitoramento/Supervisor/Segurança/Auditoria autenticadas OK |
 
-Resumo: **PASS=2 (T18, T20)**, **PASS parcial/tendência=1 (T16)**, **INCONCLUSIVE=20**, FAIL=0, NOT_APPLICABLE=0.
-Nenhum FAIL pós-cutoff — porém ausência de FAIL aqui reflete ausência de tráfego, não prova de correção.
+Decisão desta rodada: manter **NO_GO** para promoção final até corrigir higiene de logs e disponibilizar massa
+`AUDIT-*` dedicada para executar mutações de UI sem usar ticket/conversa não sintética.
 
 ---
 
-## 5. Análise sênior — saúde geral e melhorias
+## 9. Correção log hygiene + nova checagem HML — 2026-06-04
 
-### Achados de configuração/risco (não bloqueiam, mas exigem atenção)
-1. **`OUTBOUND_SEND_MODE=real` em homologação** — alto risco operacional: qualquer fluxo que
-   dispare outbound envia WhatsApp real. Recomenda-se `mock`/número de teste dedicado em HML, salvo
-   janela de teste E2E controlada com número autorizado.
-2. **`glpi-integaglpi-ai` definido no compose mas inexistente** (`No such object`). Funções de IA
-   (resumo SmartHelp, copiloto) dependem do provider local; se o Ollama esperado vive nesse serviço,
-   T22 e o resumo local podem cair em `provider_unavailable`. Validar onde o Ollama está servindo.
-3. **`LOGMEIN_INTEGRATION_ENABLED=true` em HML** — diverge do default seguro de governança (OFF).
-   Confirmar se é intencional para teste read-only; manter OFF se não houver smoke ativo.
-4. **Redis sem limite de memória** (`maxmemory=0`, `noeviction`). Definir `maxmemory` + política de
-   eviction adequada para evitar OOM em pico.
-5. **Migrations aplicadas automaticamente no boot do container** em HML. Aceitável em homologação,
-   mas confirmar que produção exige gate manual (não aplicar no boot).
-6. **`NODE_ENV=development`** no integration HML — esperado em homologação; garantir que produção
-   roda `production`.
+Phase: `integaglpi_v8_hml_log_hygiene_and_ui_audit_fix_001`.
 
-### Pontos positivos
-- Higiene de logs do fix: `GlpiClient` deixou de logar o corpo completo do PUT (`glpiTicketUpdateBody`),
-  passando a logar apenas `status`/`hasExtraInput` — reduz exposição de payload. Bom para LGPD.
-- Worker de inatividade resiliente e idempotente (ciclo 60s, sem candidatos → `CHECKED` limpo).
-- Sem dead-letter, sem locks presos, sem reinícios de container.
-- `/health` expõe readiness e webhook guard (`app_signature_configured`, `allowlist_configured`).
+Resultado: **PARTIAL**.
 
-### Recomendação para fechar a auditoria (flip NO_GO → GO_READY)
-Fornecer e executar um **smoke E2E controlado em HML** com:
-- número WhatsApp de teste dedicado (`TEST_WHATSAPP_NUMBER`);
-- `TEST_ENTITY_ID`, `TEST_QUEUE_ID`, `TEST_TECHNICIAN_A/B`;
-- sessão de UI GLPI autenticada (perfis admin/supervisor/técnico);
-- preferível `OUTBOUND_SEND_MODE=mock` ou janela autorizada para o número de teste.
+O pacote local corrige a higiene de logs do `integration-service` e remove telefone completo do DOM da Central.
+O Node foi rebuildado/recriado apenas em HOMOLOGAÇÃO (`glpi-integaglpi-integration`) e os logs novos não exibiram
+o número autorizado nem Bearer em claro. A parte PHP da Central foi sincronizada para `/home/azureuser/projeto`,
+mas a cópia para o plugin publicado em `/home/glpi.eticainformatica.com.br/public_html/plugins/integaglpi` ficou
+bloqueada porque `sudo` exige senha interativa.
 
-Com isso: criar conversa AUDIT-* → confirmar `glpi_entity_id>0`/`glpi_entity_name` (T01);
-forçar ciclo de inatividade com GLPI indisponível e confirmar ausência de WhatsApp (T10);
-enviar mídia suportada e não-suportada e confirmar Document_Item / `unsupported_media_type` (T13);
-e percorrer os 12 testes de UI.
+Evidências:
 
----
+| Item | Resultado |
+|---|---|
+| Ambiente | `GLPIv5`, containers HML `integration/postgres/redis`; `prod-*` não usados |
+| Node HML | Rebuild/recreate somente `glpi-integaglpi-integration`; `/health` `ok=true`, postgres `true`, redis `ready` |
+| Logs novos HML | `raw_test_phone_occurrences=0`, `raw_test_e164_occurrences=0`, `authorization_value_occurrences=0` |
+| Token/app-token | Linha `app-token` presente apenas com valor redigido; sem prefixo real impresso |
+| UI phone local | `templates/central.php` usa `data-phone` mascarado e JS usa `maskedPhone` |
+| PII guard local | `AttendanceCenterService` não libera telefone bruto por simples ownership; exige `RIGHT_VIEW_UNMASKED_PII` |
+| UI phone HML live | Ainda contém telefone autorizado em atributo HTML porque plugin publicado não pôde ser atualizado sem sudo |
+| Massa AUDIT-* | Não criada nesta rodada; mutações UI ficaram bloqueadas pelo gate de publicação PHP |
 
-## 6. Segurança da execução
+Validações locais:
 
-- Produção não tocada (containers `prod-*` apenas listados, nunca acessados).
-- Nenhum SQL destrutivo; apenas `SELECT`/`information_schema`/`INFO`/`SCAN`/`DBSIZE`.
-- Nenhuma mensagem enviada a cliente real.
-- Nenhuma alteração de runtime/código/`.env`/migration/deploy/commit pela auditoria.
-- Segredos não impressos; `env` filtrado com redaction.
-- Node não acessou MariaDB GLPI (apenas PostgreSQL de integração + API quando aplicável).
+- `cd integration-service && npx tsc --noEmit`: PASS.
+- `cd integration-service && npx vitest run tests/logHygieneSanitizer.test.ts tests/sanitizeUrlForLog.test.ts`: 16 PASS.
+- `cd integration-service && npx vitest run`: 109 arquivos / 909 testes PASS.
+- `php -l` em `templates/central.php`, `AttendanceCenterService.php`, `CentralEntitySelectionStaticTest.php`: PASS.
+- `git diff --check`: PASS, com aviso esperado de CRLF no Windows.
+
+Arquivos alterados nesta fase:
+
+- `integration-service/src/infra/logger/logger.ts`
+- `integration-service/src/adapters/glpi/logGlpiHttpPreflight.ts`
+- `integration-service/tests/logHygieneSanitizer.test.ts`
+- `integaglpi/src/Service/AttendanceCenterService.php`
+- `integaglpi/templates/central.php`
+- `integaglpi/tests/CentralEntitySelectionStaticTest.php`
+- `docs/production_reports_regression_audit_execution_report.md`
+
+Decisão: **não fechar GO_READY** até aplicar a parte PHP no plugin HML publicado e repetir T03–T23 com massa `AUDIT-*`.

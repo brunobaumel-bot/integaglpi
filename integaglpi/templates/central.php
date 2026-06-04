@@ -835,7 +835,7 @@ $operationalFilterMap = [
                             class="<?= $this->escape(implode(' ', $cardClasses)); ?>"
                             data-conversation-id="<?= $this->escape($conversationId); ?>"
                             data-ticket-id="<?= $ticketId; ?>"
-                            data-phone="<?= $this->escape(!empty($row['pii_unmasked']) ? $phone : $maskedPhone); ?>"
+                            data-phone="<?= $this->escape($maskedPhone); ?>"
                             data-masked-phone="<?= $this->escape($maskedPhone); ?>"
                             data-contact-name="<?= $this->escape($contactName); ?>"
                             data-profile-name="<?= $this->escape($profileName); ?>"
@@ -1799,8 +1799,7 @@ $operationalFilterMap = [
         const ticketId = Number(row.glpi_ticket_id || 0);
         const queueId = Number(row.queue_id || 0);
         const conversationId = String(row.conversation_id || '');
-        const phone = String(row.phone_e164 || '');
-        const maskedPhone = String(row.masked_phone || phone);
+        const maskedPhone = String(row.masked_phone || row.phone_e164 || '');
         const contactName = String(row.contact_name || '');
         const title = contactName || maskedPhone || conversationId;
         const status = String(row.effective_status || row.conversation_status || '');
@@ -1960,7 +1959,7 @@ $operationalFilterMap = [
         element.className = rowClasses.join(' ');
         element.setAttribute('data-conversation-id', conversationId);
         element.setAttribute('data-ticket-id', String(ticketId));
-        element.setAttribute('data-phone', phone);
+        element.setAttribute('data-phone', maskedPhone);
         element.setAttribute('data-masked-phone', maskedPhone);
         element.setAttribute('data-contact-name', contactName);
         element.setAttribute('data-profile-name', profileName);

@@ -170,6 +170,11 @@ final class CentralEntitySelectionStaticTest extends TestCase
         self::assertStringContainsString('SecurityAuditService::logPiiUnmaskedView', $service);
         self::assertStringContainsString("\$row['phone_e164'] = \$maskedPhone", $service);
         self::assertStringContainsString("\$row['profile_context']['email'] = \$maskedEmail", $service);
-        self::assertStringContainsString("!empty(\$row['pii_unmasked']) ? \$phone : \$maskedPhone", $template);
+        self::assertStringContainsString('SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_VIEW_UNMASKED_PII)', $service);
+        self::assertStringNotContainsString('$assignedUserId === $currentUserId', $service);
+        self::assertStringContainsString('data-phone="<?= $this->escape($maskedPhone); ?>"', $template);
+        self::assertStringNotContainsString("!empty(\$row['pii_unmasked']) ? \$phone : \$maskedPhone", $template);
+        self::assertStringContainsString("element.setAttribute('data-phone', maskedPhone);", $template);
+        self::assertStringNotContainsString("element.setAttribute('data-phone', phone);", $template);
     }
 }

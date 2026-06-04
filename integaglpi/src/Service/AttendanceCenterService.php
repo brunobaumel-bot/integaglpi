@@ -2482,10 +2482,7 @@ final class AttendanceCenterService
     {
         $currentUserId = $this->resolveCurrentUserId();
         $canViewRawPii = $currentUserId > 0
-            && (
-                ($assignedUserId > 0 && $assignedUserId === $currentUserId)
-                || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_VIEW_UNMASKED_PII)
-            );
+            && SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_VIEW_UNMASKED_PII);
 
         $rawPhone = trim((string) ($row['phone_e164'] ?? ''));
         $rawEmail = trim((string) ($row['email_address'] ?? ''));
