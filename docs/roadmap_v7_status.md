@@ -142,3 +142,12 @@ Pacote final — Governance, LGPD e Product Readiness:
 - Dashboards executivos avançados.
 - IA autônoma ou ações automáticas em WhatsApp/ticket, somente se política futura permitir.
 - Publicação automática de KB, somente se política futura substituir revisão humana.
+
+## V8 — Auditoria regressiva dos relatos de produção
+
+Status: documentado para execução em HOMOLOGACAO, sem correção nesta fase.
+
+- Criado `docs/production_reports_regression_audit.md` com matriz T01-T23.
+- Atualizado `docs/smoke_tests.md` com resumo dos testes regressivos.
+- Produção permanece bloqueada.
+- Falhas encontradas devem virar fase de correção separada, com evidência sanitizada.

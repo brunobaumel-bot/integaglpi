@@ -334,6 +334,40 @@ Observação: a Ajuda Inteligente (runtime V7-M2) NÃO foi tocada neste pacote.
 
 ---
 
+## V8 — Auditoria regressiva dos relatos de produção
+
+Executar somente em HOMOLOGACAO/TESTE com dados sintéticos ou formalmente autorizados. Produção é proibida. Correções são proibidas durante a auditoria; qualquer FAIL deve abrir fase separada.
+
+| ID | Prioridade | Smoke resumido | Evidência mínima |
+|----|------------|----------------|------------------|
+| T01 | P0 | Entidade preservada na criação/migração | conversation/ticket com entidade correta e print sanitizado |
+| T02 | P0 | Chamado criado via celular aparece no GLPI | protocolo, `glpi_ticket_id`, `conversation_id` |
+| T03 | P0 | Chamados travados na Central | status/runtime/proxima ação ou evidência de trava |
+| T04 | P1 | Categoria e tempo editáveis por perfil autorizado | print antes/depois ou erro RBAC esperado |
+| T05 | P0 | Botão Salvar / erro 403 | Network/status HTTP e mensagem UI sanitizada |
+| T06 | P1 | Técnico exibido corretamente no plugin | assigned_user_id/GLPI/tela coerentes |
+| T07 | P0 | Transferência de técnico | técnico antigo bloqueado e técnico atual autorizado |
+| T08 | P1 | Notificação/mensagem em atribuição | audit/mensagem única por evento aprovado |
+| T09 | P1 | Telefone mascarado vs acionamento técnico | telefone mascarado e ação por ids internos |
+| T10 | P0 | Fechamento por inatividade respeita pendente/ação interna | event/status de inactivity/autoclose |
+| T11 | P0 | Reabertura manual | status ticket/conversation antes/depois |
+| T12 | P1 | Histórico ao responder | timeline ordenada e resposta contextual |
+| T13 | P1 | Áudio/vídeo/mídia anexados | metadados/anexo ou erro controlado |
+| T14 | P1 | Foto enviada na abertura | fallback ou anexo conforme estado permitido |
+| T15 | P1 | Mensagens em Conversas WhatsApp vs aba Chamados | prints comparativos com timestamps |
+| T16 | P0 | Automação invasiva | ausência de outbound/mutação automática |
+| T17 | P2 | Divergência de nome do remetente | nome exibido coerente com perfil/contato |
+| T18 | P0 | Bot principal não carrega | health/readiness e resposta FSM |
+| T19 | P1 | Abertura manual por e-mail/telefone | ticket manual sem duplicidade/vazamento |
+| T20 | P0 | Locks Redis / dead-letter / filas presas | snapshot read-only de locks/dead-letter/fila |
+| T21 | P0 | Sessão expirada / CSRF prolongado | 403 amigável sem mutação; sessão válida opera |
+| T22 | P1 | SmartHelp guiado | resumo-only, busca local, cloud-safe e PII Guard |
+| T23 | P2 | Menus/drilldowns | Monitoramento/Supervisão/Eventos/SLA/Inatividade acessíveis |
+
+Referência detalhada: `docs/production_reports_regression_audit.md`.
+
+---
+
 ## Worker IA Observadora Online (TESTE/HOMOLOGACAO)
 
 ```bash
