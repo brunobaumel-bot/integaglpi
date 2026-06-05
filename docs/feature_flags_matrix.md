@@ -124,3 +124,27 @@ Regras:
 | Production | Production promotion | blocked | blocked | manual only | Release owner | Signed go/no-go |
 
 Safe default rule: if owner or gate evidence is missing, keep the flag OFF or read-only.
+
+## V8 Final — Copilot e comportamentos operacionais
+
+| Flag / controle | Default produção | Efeito | Gate |
+| --- | --- | --- | --- |
+| Copilot/IA local (`AI_SUPERVISOR_ENABLED`) | `false` por padrão | Pode gerar rascunho assistivo somente após aprovação manual; se modelo retornar JSON inválido (`invalid_provider_response`) UI exibe mensagem amigável e bloqueia o rascunho por segurança. Sem WhatsApp, sem mutação de ticket. | `GO_WITH_RESSALVA_ONLY_IF_DISABLED_OR_FALLBACK`; habilitação manual exige modelo Ollama instalado e smoke aprovado |
+| Copilot desabilitado (`provider=disabled`) | Aceito em produção | UI exibe "Copiloto indisponível no momento" sem parecer falha crítica. Técnico redige manualmente. | Documentar a decisão antes do GO |
+| Meta 24h window (`WINDOW_24H_CLOSED_TEMPLATE_REQUIRED`) | Comportamento Meta — não flag interna | Mensagens de texto livre fora da janela de 24h após último inbound são bloqueadas pelo sistema. Templates e mensagens interativas aprovadas podem ser enviados. **Não é bug** — é a regra da plataforma Meta. | Técnico deve usar template aprovado para retomar conversa |
+| `OUTBOUND_SEND_MODE` | `real` (produção) | Envio real via Meta. Em HML só para número de teste autorizado. | Operação WhatsApp |
+
+### Política final de IA em produção
+
+```yaml
+production_ai_policy:
+  AI_SUPERVISOR_ENABLED: false_by_default
+  COPILOT_PROVIDER: disabled_or_local_fallback_unless_manually_approved
+  EXTERNAL_RESEARCH_CLOUD_ENABLED: false
+  AI_AUTO_WHATSAPP: false
+  AI_TICKET_MUTATION: false
+  KB_AUTOPUBLISH: false
+  production_default: false
+  release_status: GO_WITH_RESSALVA_ONLY_IF_DISABLED_OR_FALLBACK
+  manual_enable_gate: required
+```

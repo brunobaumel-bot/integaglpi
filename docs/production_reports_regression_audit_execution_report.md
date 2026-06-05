@@ -10,9 +10,23 @@ Número de teste autorizado: `41988334449` (E.164 no banco: `+5541988334449`). M
 
 ---
 
+## CURRENT_FINAL_DECISION — fonte autoritativa atual
+
+```yaml
+current_release_status: GO_WITH_RESSALVA_CANDIDATE
+production_allowed_now: false
+not_go_ready_reason: "producao ainda depende de Cursor final, commit manual escopado, backup/deploy manual, smoke pos-deploy e monitoramento 24h"
+historical_statuses:
+  note: "Vereditos PARTIAL/BLOCKED anteriores neste relatorio sao evidencias historicas ou limitacoes de automacao, nao a decisao final vigente."
+blockers_remaining: []
+```
+
+---
+
 ## 1. Veredito
 
-**VERDICT: PARTIAL (backend pós-fix VERDE; restam apenas testes de camada de UI).**
+**VERDICT histórico: PARTIAL (backend pós-fix VERDE; restam apenas testes de camada de UI).**
+**Status atual: SUPERSEDED_BY_MANUAL_ASSISTED_SMOKE e consolidado na seção CURRENT_FINAL_DECISION.**
 
 Com os eventos reais enviados pelo número autorizado, os três alvos do fix foram **exercitados com
 eventos novos pós-cutoff e passaram**:
@@ -527,6 +541,10 @@ Resultados revalidados:
 | Logs sem PII | PASS_RECENT | Logs do `glpi-integaglpi-integration` desde a publicação: `PII_HITS=0`, `SECRET_HITS=0` |
 | Schema 044/045 | PASS | `glpi_plugin_integaglpi_kb_article_helpfulness` possui colunas esperadas; índices de messages/inactivity/helpfulness presentes |
 
+Nota atual: os resultados `BLOCKED_PROFILE` desta execução são histórico de limitação automatizada e foram
+superados pelo smoke manual assistido registrado no relatório final de prontidão. Não representam blocker
+técnico atual do release.
+
 Validações locais:
 
 | Comando | Resultado |
@@ -592,3 +610,139 @@ Ressalvas:
 - T07/T11 automatizados dependem de perfil HML autorizado. O teste manual do usuário validou transferência para técnico `803`; o perfil automatizado continua sem permissão para mutações.
 
 Decisão: **PARTIAL**. P0 não está totalmente fechável por automação enquanto T07/T11 dependerem de perfil HML autorizado para mutação. I10/I11 foram corrigidos e publicados em HML sem tocar produção.
+
+---
+
+## 17. HISTORICAL / SUPERSEDED — Profile rights and behavioral rerun — HML — 2026-06-05
+
+Phase: `integaglpi_v8_final_profile_rights_and_behavioral_rerun_001`.
+
+Resultado historico: **BLOCKED**.
+Status atual: **SUPERSEDED_BY_MANUAL_ASSISTED_SMOKE**.
+
+Ambiente:
+
+| Item | Resultado |
+|---|---|
+| Host | `GLPIv5` HML |
+| Produção | Containers `prod-*` listados, mas ignorados |
+| Node HML | `/health` OK |
+| PostgreSQL HML | OK |
+| Redis HML | Locks `0` |
+| dead_letter | `0` em status ativo |
+
+Diagnostico de perfil:
+
+| Item | Resultado |
+|---|---|
+| Usuario HML | Autenticado, sem senha/token impresso |
+| Profile GLPI | `Super-Admin` vinculado e ativo |
+| Direito plugin | `plugin_integaglpi=3` |
+| Direito ticket | Direito nativo de ticket presente |
+| Tecnico 809 | Ativo |
+| Tecnico 810 | Ativo |
+
+Resultado comportamental:
+
+| Teste | Status | Evidência |
+|---|---|---|
+| T07 transferencia 809→810 | BLOCKED_OWNERSHIP | Fixture `AUDIT-RUNTIME-20260604162545` estava atribuida ao tecnico `809`; a sessao HML autenticada nao e o tecnico dono; `central.action.php` retornou HTTP 403 e o runtime permaneceu `809|open|open|2112319362` |
+| T11/I01/I02/I07 | BLOCKED_NOT_RUN | Stop condition aplicado para nao contornar ownership/RBAC nem mutar fixture fora do caminho operacional aprovado |
+
+Conclusao:
+
+- O bloqueio atual nao e falta de perfil Super-Admin nem falta de `plugin_integaglpi` UPDATE.
+- Para fechar a bateria mutavel com a fixture exigida, e necessaria sessao/credencial do tecnico `809`; alternativamente, criar nova fixture `AUDIT-*` em que o usuario HML autenticado seja o dono operacional inicial.
+- Nenhuma producao, container `prod-*`, SQL destrutivo, envio WhatsApp, IA mutavel ou KB autopublish foi usado.
+
+---
+
+## 18. HISTORICAL / SUPERSEDED — Ownership validated behavioral rerun — HML — 2026-06-05
+
+Phase: `integaglpi_v8_final_ownership_validated_behavioral_rerun_001`.
+
+Resultado historico: **BLOCKED**.
+Status atual: **SUPERSEDED_BY_MANUAL_ASSISTED_SMOKE**.
+
+Ambiente:
+
+| Item | Resultado |
+|---|---|
+| Host | `GLPIv5` HML |
+| Produção | Containers `prod-*` ignorados |
+| Node HML | `/health` OK |
+| GLPI UI | Autenticada; Central HTTP 200 |
+| Redis HML | Locks `0` |
+| dead_letter | `0` em status ativo |
+
+Ownership:
+
+| Item | Resultado |
+|---|---|
+| Metodo A — owner session | BLOCKED: nao ha credencial/sessao do tecnico owner disponivel |
+| Metodo B — nova fixture | BLOCKED: numero autorizado ja tem conversa aberta |
+| Conversa aberta autorizada | `AUDIT-RUNTIME-20260604162545` |
+| Ticket aberto autorizado | `2112319362` |
+| Owner atual | `810` |
+| Usuario autenticado | Diferente do owner operacional |
+
+Conclusao:
+
+- Nao foi possivel reexecutar T07/T11/I01/I02/I07 por caminho legitimo.
+- Criar nova fixture com o mesmo numero autorizado enquanto existe conversa aberta poderia continuar a conversa atual, nao criar fixture isolada.
+- A alternativa segura e fornecer sessao/credencial do tecnico owner `810` ou fechar/concluir a conversa AUDIT atual por fluxo operacional humano antes de gerar nova fixture.
+- Nenhuma alteracao de codigo, SQL destrutivo, producao, envio para outro numero, IA mutavel ou KB autopublish foi executada.
+
+---
+
+## 19. HISTORICAL / SUPERSEDED — Safe ownership unblock and behavioral smoke — HML — 2026-06-05
+
+Phase: `integaglpi_v8_final_ownership_safe_unblock_and_behavioral_smoke_001`.
+
+Resultado historico: **BLOCKED**.
+Status atual: **SUPERSEDED_BY_MANUAL_ASSISTED_SMOKE**.
+
+Ambiente:
+
+| Item | Resultado |
+|---|---|
+| Host | `GLPIv5` HML |
+| Produção | Containers `prod-*` ignorados |
+| Node HML | `/health` OK |
+| Redis HML | Locks `0` |
+| dead_letter | `0` em status ativo |
+
+Caminhos avaliados:
+
+| Caminho | Resultado | Evidência |
+|---|---|---|
+| Owner 810 session | BLOCKED | arquivo seguro HML nao possui sessao/credencial do tecnico owner `810` |
+| Segundo numero autorizado | BLOCKED | nenhum segundo numero autorizado foi encontrado no arquivo seguro |
+| Fechar conversa atual e criar fixture | BLOCKED | exige acao legitima do owner `810` ou operador humano; nao foi feito bypass |
+
+Conclusao:
+
+- T07/T11/I01/I02/I07 continuam bloqueados por falta de caminho legitimo de ownership.
+- A conversa autorizada atual segue aberta no ticket `2112319362` com owner `810`.
+- Nenhuma mutacao, SQL destrutivo, alteracao de codigo, producao, IA mutavel ou KB autopublish foi executada.
+
+---
+
+## 20. CURRENT_FINAL_DECISION — V8 release docs consistency — 2026-06-05
+
+```yaml
+current_release_status: GO_WITH_RESSALVA_CANDIDATE
+production_allowed_now: false
+not_go_ready_reason: "producao ainda depende de Cursor final, commit manual escopado, backup/deploy manual, smoke pos-deploy e monitoramento 24h"
+historical_blocked_attempts:
+  status: SUPERSEDED_BY_MANUAL_ASSISTED_SMOKE
+  note: "As tentativas bloqueadas por perfil/ownership foram preservadas como historico e nao representam o estado final atual."
+blockers_remaining: []
+accepted_ressalvas:
+  - Copilot/IA local pode ficar OFF ou fallback em producao.
+  - Cloud externa OFF por padrao.
+  - LogMeIn OFF ou read-only por padrao.
+  - package_manifest incomplete aceito apenas em HML.
+  - backup do plugin produtivo obrigatorio antes do deploy.
+  - smoke pos-deploy e monitoramento 24h obrigatorios.
+```

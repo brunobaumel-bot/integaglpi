@@ -1814,6 +1814,9 @@ $smartHelpReadGateVisible  = $isExternalConfigured
             if (errorType === 'provider_unavailable') {
                 return <?= json_encode(__('Provider do Copiloto indisponível no momento. Verifique o serviço IA local.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
             }
+            if (errorType === 'invalid_provider_response') {
+                return <?= json_encode(__('Copiloto indisponível: resposta do modelo inválida. A sugestão foi bloqueada por segurança. Redija manualmente ou tente novamente quando o modelo IA local estiver configurado.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+            }
             if (errorType === 'type_error') {
                 return <?= json_encode(__('Erro interno ao normalizar dados do Copiloto. O retorno foi bloqueado com segurança.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
             }
