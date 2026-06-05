@@ -19,6 +19,12 @@ final class SecurityAuditService
     public const EVENT_PII_UNMASKED_VIEW     = 'SECURITY_PII_UNMASKED_VIEW';
     public const EVENT_MATRIX_VIEWED         = 'SECURITY_MATRIX_VIEWED';
     public const EVENT_MATRIX_SAVE_ATTEMPTED = 'SECURITY_MATRIX_SAVE_ATTEMPTED';
+    public const EVENT_PROFILE_ROLE_MAPPING_CREATED = 'PROFILE_ROLE_MAPPING_CREATED';
+    public const EVENT_PROFILE_ROLE_MAPPING_UPDATED = 'PROFILE_ROLE_MAPPING_UPDATED';
+    public const EVENT_PROFILE_ROLE_MAPPING_DISABLED = 'PROFILE_ROLE_MAPPING_DISABLED';
+    public const EVENT_ENTITY_SELECTED_FIRST_CONTACT = 'ENTITY_SELECTED_FIRST_CONTACT';
+    public const EVENT_ENTITY_OVERRIDE_DENIED_BY_ROLE = 'ENTITY_OVERRIDE_DENIED_BY_ROLE';
+    public const EVENT_ENTITY_OVERRIDE_APPROVED = 'ENTITY_OVERRIDE_APPROVED';
     public const EVENT_LOGMEIN_CONTEXT_VIEWED = 'LOGMEIN_CONTEXT_VIEWED';
     public const EVENT_LOGMEIN_MAPPING_CREATED = 'LOGMEIN_MAPPING_CREATED';
     public const EVENT_LOGMEIN_MAPPING_UPDATED = 'LOGMEIN_MAPPING_UPDATED';
@@ -95,6 +101,49 @@ final class SecurityAuditService
             'conversation_id' => $conversationId,
             'previous_entity_id' => $previousEntityId,
             'new_entity_id' => $newEntityId,
+            'reason' => self::truncateReason($reason),
+        ]);
+    }
+
+    public static function logProfileRoleMappingChanged(string $change, int $profileId, string $previousRole, string $newRole): void
+    {
+        $eventType = self::EVENT_PROFILE_ROLE_MAPPING_UPDATED;
+        if ($change === 'created') {
+            $eventType = self::EVENT_PROFILE_ROLE_MAPPING_CREATED;
+        } elseif ($change === 'disabled') {
+            $eventType = self::EVENT_PROFILE_ROLE_MAPPING_DISABLED;
+        }
+
+        self::log($eventType, [
+            'profile_id' => $profileId,
+            'previous_role' => $previousRole,
+            'new_role' => $newRole,
+            'context' => self::sanitize(['source' => 'security.center.php']),
+        ]);
+    }
+
+    public static function logEntitySelectedFirstContact(string $conversationId, int $entityId): void
+    {
+        self::log(self::EVENT_ENTITY_SELECTED_FIRST_CONTACT, [
+            'conversation_hash' => $conversationId !== '' ? hash('sha256', $conversationId) : '',
+            'new_entity_id' => $entityId,
+        ]);
+    }
+
+    public static function logEntityOverrideDeniedByRole(string $conversationId, int $entityId, string $role): void
+    {
+        self::log(self::EVENT_ENTITY_OVERRIDE_DENIED_BY_ROLE, [
+            'conversation_hash' => $conversationId !== '' ? hash('sha256', $conversationId) : '',
+            'requested_entity_id' => $entityId,
+            'role' => $role,
+        ]);
+    }
+
+    public static function logEntityOverrideApproved(string $conversationId, int $entityId, string $reason): void
+    {
+        self::log(self::EVENT_ENTITY_OVERRIDE_APPROVED, [
+            'conversation_hash' => $conversationId !== '' ? hash('sha256', $conversationId) : '',
+            'new_entity_id' => $entityId,
             'reason' => self::truncateReason($reason),
         ]);
     }

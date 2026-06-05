@@ -16,6 +16,17 @@ final class SecurityPermissionService
     public const ROLE_DIRECAO    = 'direcao';
     public const ROLE_UNKNOWN    = 'unknown';
 
+    /**
+     * Higher priority wins when the GLPI session carries multiple profiles.
+     *
+     * @var array<string, int>
+     */
+    private const ROLE_PRIORITY = [
+        self::ROLE_TECNICO    => 10,
+        self::ROLE_SUPERVISAO => 20,
+        self::ROLE_DIRECAO    => 30,
+    ];
+
     public const RIGHT_VIEW_CENTRAL                  = 'view_central';
     public const RIGHT_VIEW_OWN_QUEUE                = 'view_own_queue';
     public const RIGHT_VIEW_ALL_QUEUES               = 'view_all_queues';
@@ -69,6 +80,7 @@ final class SecurityPermissionService
             self::RIGHT_CLAIM_TICKET,
             self::RIGHT_REPLY_OWNED_TICKET,
             self::RIGHT_SOLVE_OWNED_TICKET,
+            self::RIGHT_SELECT_ENTITY,
             self::RIGHT_USE_COPILOT_AS_DRAFT,
             self::RIGHT_VIEW_KB_REFERENCE,
             self::RIGHT_VIEW_MASKED_PII,
@@ -107,13 +119,43 @@ final class SecurityPermissionService
         ],
         self::ROLE_DIRECAO => [
             self::RIGHT_ENFORCE_ENTITY_ISOLATION,
+            self::RIGHT_VIEW_CENTRAL,
+            self::RIGHT_VIEW_OWN_QUEUE,
+            self::RIGHT_VIEW_ALL_QUEUES,
+            self::RIGHT_CLAIM_TICKET,
+            self::RIGHT_REPLY_OWNED_TICKET,
+            self::RIGHT_REPLY_ANY_TICKET,
+            self::RIGHT_TRANSFER_TICKET,
+            self::RIGHT_SOLVE_OWNED_TICKET,
+            self::RIGHT_SOLVE_TICKET,
+            self::RIGHT_ADMINISTRATIVE_CLOSE,
+            self::RIGHT_SELECT_ENTITY,
+            self::RIGHT_OVERRIDE_ENTITY_MEMORY,
+            self::RIGHT_MANAGE_MESSAGE_SETTINGS,
+            self::RIGHT_MANAGE_TEMPLATES,
+            self::RIGHT_VIEW_AI_CONSOLE,
+            self::RIGHT_USE_COPILOT_AS_DRAFT,
+            self::RIGHT_MANAGE_AI_SETTINGS,
+            self::RIGHT_VIEW_AI_ALERTS,
+            self::RIGHT_REVIEW_AI_ALERTS,
+            self::RIGHT_VIEW_KB_REFERENCE,
+            self::RIGHT_REVIEW_KB_CANDIDATES,
+            self::RIGHT_VIEW_EXTERNAL_RESEARCH,
+            self::RIGHT_RUN_EXTERNAL_RESEARCH,
+            self::RIGHT_VIEW_AUDIT_OPERATIONAL,
             self::RIGHT_VIEW_EXECUTIVE_DASHBOARD,
             self::RIGHT_VIEW_SLA_AGGREGATED,
             self::RIGHT_VIEW_CONTRACTS_READONLY,
+            self::RIGHT_MANAGE_CONTRACTS,
             self::RIGHT_VIEW_AUDIT_READONLY_SANITIZED,
+            self::RIGHT_EXPORT_OPERATIONAL_REPORTS,
             self::RIGHT_EXPORT_EXECUTIVE_REPORTS,
             self::RIGHT_VIEW_MASKED_PII,
+            self::RIGHT_VIEW_SECURITY_CENTER,
+            self::RIGHT_MANAGE_SECURITY_CENTER,
             self::RIGHT_VIEW_LOGMEIN_CONTEXT,
+            self::RIGHT_MANAGE_LOGMEIN_MAPPING,
+            self::RIGHT_MANAGE_LOGMEIN_RECONCILIATION,
         ],
     ];
 
@@ -151,24 +193,8 @@ final class SecurityPermissionService
             self::RIGHT_VIEW_UNMASKED_PII,
         ],
         self::ROLE_DIRECAO => [
-            self::RIGHT_REPLY_OWNED_TICKET,
-            self::RIGHT_REPLY_ANY_TICKET,
-            self::RIGHT_CLAIM_TICKET,
-            self::RIGHT_TRANSFER_TICKET,
-            self::RIGHT_SOLVE_TICKET,
-            self::RIGHT_SOLVE_OWNED_TICKET,
-            self::RIGHT_ADMINISTRATIVE_CLOSE,
-            self::RIGHT_SELECT_ENTITY,
-            self::RIGHT_OVERRIDE_ENTITY_MEMORY,
-            self::RIGHT_MANAGE_MESSAGE_SETTINGS,
-            self::RIGHT_MANAGE_TEMPLATES,
-            self::RIGHT_MANAGE_AI_SETTINGS,
             self::RIGHT_MANAGE_AI_SECRETS,
-            self::RIGHT_REVIEW_AI_ALERTS,
-            self::RIGHT_MANAGE_SECURITY_CENTER,
             self::RIGHT_VIEW_UNMASKED_PII,
-            self::RIGHT_MANAGE_LOGMEIN_MAPPING,
-            self::RIGHT_MANAGE_LOGMEIN_RECONCILIATION,
         ],
     ];
 
@@ -182,32 +208,30 @@ final class SecurityPermissionService
             return self::ROLE_UNKNOWN;
         }
 
-        $profileName = strtolower(trim((string) ($_SESSION['glpiactiveprofile']['name'] ?? '')));
-        if ($profileName === '') {
+        $mappings = self::loadProfileRoleMappings();
+        if ($mappings === []) {
             return self::ROLE_UNKNOWN;
         }
 
-        if (strpos($profileName, 'diret') !== false || strpos($profileName, 'executiv') !== false) {
-            return self::ROLE_DIRECAO;
-        }
-
-        if (strpos($profileName, 'supervis') !== false || strpos($profileName, 'coordenador') !== false) {
-            return self::ROLE_SUPERVISAO;
-        }
-
-        if (in_array($profileName, ['super-admin', 'super admin', 'admin', 'administrator', 'administrador'], true)) {
-            return self::ROLE_SUPERVISAO;
-        }
-
-        try {
-            if (Session::haveRight(Plugin::RIGHT_NAME, READ)) {
-                return self::ROLE_TECNICO;
+        $bestRole = self::ROLE_UNKNOWN;
+        $bestPriority = -1;
+        foreach (self::getCurrentProfileIds() as $profileId) {
+            $mapping = $mappings[$profileId] ?? null;
+            if (!is_array($mapping) || ($mapping['enabled'] ?? false) !== true) {
+                continue;
             }
-        } catch (Throwable $exception) {
-            return self::ROLE_UNKNOWN;
+            $role = is_string($mapping['role'] ?? null) ? $mapping['role'] : '';
+            if (!isset(self::ROLE_PRIORITY[$role])) {
+                continue;
+            }
+            $priority = self::ROLE_PRIORITY[$role];
+            if ($priority > $bestPriority) {
+                $bestRole = $role;
+                $bestPriority = $priority;
+            }
         }
 
-        return self::ROLE_UNKNOWN;
+        return $bestRole;
     }
 
     public static function hasRight(string $right): bool
@@ -262,6 +286,206 @@ final class SecurityPermissionService
         return array_keys($all);
     }
 
+    /**
+     * @return array<string, int>
+     */
+    public static function getRolePriorityMap(): array
+    {
+        return self::ROLE_PRIORITY;
+    }
+
+    /**
+     * @return list<string>
+     */
+    public static function getValidRoles(): array
+    {
+        return array_keys(self::ROLE_PRIORITY);
+    }
+
+    /**
+     * @return list<int>
+     */
+    public static function getCurrentProfileIds(): array
+    {
+        $ids = [];
+
+        foreach ([
+            $_SESSION['glpiactiveprofile']['id'] ?? null,
+            $_SESSION['glpiactiveprofile']['profiles_id'] ?? null,
+        ] as $candidate) {
+            if (is_int($candidate) || (is_string($candidate) && ctype_digit($candidate))) {
+                $id = (int) $candidate;
+                if ($id > 0) {
+                    $ids[$id] = true;
+                }
+            }
+        }
+
+        $profiles = $_SESSION['glpiprofiles'] ?? [];
+        if (is_array($profiles)) {
+            foreach ($profiles as $key => $profile) {
+                if (is_int($key) || (is_string($key) && ctype_digit($key))) {
+                    $id = (int) $key;
+                    if ($id > 0) {
+                        $ids[$id] = true;
+                    }
+                }
+
+                if (is_array($profile)) {
+                    foreach ([$profile['id'] ?? null, $profile['profiles_id'] ?? null] as $candidate) {
+                        if (is_int($candidate) || (is_string($candidate) && ctype_digit($candidate))) {
+                            $id = (int) $candidate;
+                            if ($id > 0) {
+                                $ids[$id] = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return array_keys($ids);
+    }
+
+    /**
+     * @return array<int, array{role: string, enabled: bool, updated_at?: string, updated_by?: int}>
+     */
+    public static function loadProfileRoleMappings(): array
+    {
+        try {
+            if (!class_exists('Config') || !method_exists('Config', 'getConfigurationValues')) {
+                return [];
+            }
+            $values = Config::getConfigurationValues(self::CONFIG_CONTEXT);
+            if (!is_array($values) || !isset($values[self::PROFILE_ROLE_MAPPING_CONFIG_KEY])) {
+                return [];
+            }
+            $decoded = json_decode((string) $values[self::PROFILE_ROLE_MAPPING_CONFIG_KEY], true);
+            if (!is_array($decoded)) {
+                return [];
+            }
+
+            $out = [];
+            foreach ($decoded as $profileIdRaw => $mapping) {
+                if (!is_array($mapping)) {
+                    continue;
+                }
+                if (!is_int($profileIdRaw) && !(is_string($profileIdRaw) && ctype_digit($profileIdRaw))) {
+                    continue;
+                }
+                $profileId = (int) $profileIdRaw;
+                if ($profileId <= 0) {
+                    continue;
+                }
+                $role = is_string($mapping['role'] ?? null) ? trim($mapping['role']) : '';
+                if (!isset(self::ROLE_PRIORITY[$role])) {
+                    continue;
+                }
+                $out[$profileId] = [
+                    'role' => $role,
+                    'enabled' => ($mapping['enabled'] ?? true) === true,
+                    'updated_at' => is_string($mapping['updated_at'] ?? null) ? $mapping['updated_at'] : '',
+                    'updated_by' => (int) ($mapping['updated_by'] ?? 0),
+                ];
+            }
+
+            return $out;
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][security_profile_role_mapping][load_failed] ' . $exception->getMessage());
+            return [];
+        }
+    }
+
+    public static function hasDirecaoProfileMapping(): bool
+    {
+        foreach (self::loadProfileRoleMappings() as $mapping) {
+            if (($mapping['enabled'] ?? false) === true && ($mapping['role'] ?? '') === self::ROLE_DIRECAO) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public static function canBootstrapFirstDirecaoMapping(): bool
+    {
+        return !self::hasDirecaoProfileMapping() && self::isSecurityAdmin();
+    }
+
+    public static function canManageProfileRoleMappings(): bool
+    {
+        return self::hasRight(self::RIGHT_MANAGE_SECURITY_CENTER)
+            || self::canBootstrapFirstDirecaoMapping();
+    }
+
+    /**
+     * @param array<int|string, string> $profileRoles
+     * @return array<int, array{before: string, after: string, change: string}>
+     */
+    public static function saveProfileRoleMappings(array $profileRoles): array
+    {
+        $current = self::loadProfileRoleMappings();
+        $clean = [];
+        $now = gmdate('c');
+        $userId = 0;
+        try {
+            $userId = (int) Session::getLoginUserID();
+        } catch (Throwable $exception) {
+            $userId = 0;
+        }
+
+        foreach ($profileRoles as $profileIdRaw => $roleRaw) {
+            if (!is_int($profileIdRaw) && !(is_string($profileIdRaw) && ctype_digit($profileIdRaw))) {
+                continue;
+            }
+            $profileId = (int) $profileIdRaw;
+            if ($profileId <= 0) {
+                continue;
+            }
+            $role = is_string($roleRaw) ? trim($roleRaw) : '';
+            if ($role === '' || $role === 'disabled') {
+                continue;
+            }
+            if (!isset(self::ROLE_PRIORITY[$role])) {
+                continue;
+            }
+            $clean[$profileId] = [
+                'role' => $role,
+                'enabled' => true,
+                'updated_at' => $now,
+                'updated_by' => $userId,
+            ];
+        }
+
+        $diff = [];
+        $allProfileIds = array_unique(array_merge(array_keys($current), array_keys($clean)));
+        foreach ($allProfileIds as $profileId) {
+            $before = ($current[$profileId]['enabled'] ?? false) === true ? (string) ($current[$profileId]['role'] ?? '') : '';
+            $after = ($clean[$profileId]['enabled'] ?? false) === true ? (string) ($clean[$profileId]['role'] ?? '') : '';
+            if ($before === $after) {
+                continue;
+            }
+            $diff[(int) $profileId] = [
+                'before' => $before,
+                'after' => $after,
+                'change' => $before === '' ? 'created' : ($after === '' ? 'disabled' : 'updated'),
+            ];
+        }
+
+        try {
+            if (class_exists('Config') && method_exists('Config', 'setConfigurationValues')) {
+                Config::setConfigurationValues(self::CONFIG_CONTEXT, [
+                    self::PROFILE_ROLE_MAPPING_CONFIG_KEY => json_encode($clean, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                ]);
+            }
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][security_profile_role_mapping][save_failed] ' . $exception->getMessage());
+            throw $exception;
+        }
+
+        return $diff;
+    }
+
     public static function canSolveTicket(int $assignedUserId = 0, int $currentUserId = 0): bool
     {
         if (self::hasRight(self::RIGHT_SOLVE_TICKET)) {
@@ -278,23 +502,19 @@ final class SecurityPermissionService
     public static function canViewSecurityCenter(): bool
     {
         return self::hasRight(self::RIGHT_VIEW_SECURITY_CENTER)
+            || self::canBootstrapFirstDirecaoMapping()
             || self::canManageSecurityCenter();
     }
 
     /**
-     * FIX1: operational role is no longer the gate for managing security —
-     * Super-Admin/admin in GLPI must always be able to govern the matrix,
-     * even if they sit in ROLE_SUPERVISAO for day-to-day work.
-     *
-     * canManageSecurityCenter() now delegates to isSecurityAdmin(), and
-     * isSecurityAdmin() recognises any session that holds the canonical
-     * GLPI admin signals (config UPDATE, user UPDATE, profile UPDATE), with
-     * the well-known profile-name list as a fast path and the plugin's own
-     * UPDATE right as a fall-back. Profile/User IDs are NEVER hard-coded.
+     * Security management belongs to Direção after the initial mapping exists.
+     * Before any Direção profile is mapped, GLPI security administrator may only
+     * bootstrap the first Direção mapping.
      */
     public static function canManageSecurityCenter(): bool
     {
-        return self::isSecurityAdmin();
+        return self::hasRight(self::RIGHT_MANAGE_SECURITY_CENTER)
+            || self::canBootstrapFirstDirecaoMapping();
     }
 
     public static function isSecurityAdmin(): bool
@@ -307,8 +527,8 @@ final class SecurityPermissionService
             return false;
         }
 
-        // (1) Strong native signals: anyone who can configure GLPI, manage
-        // users or manage profiles is a Super-Admin from GLPI's point of view.
+        // Strong native signals: anyone who can configure GLPI, manage users
+        // or manage profiles can perform the initial bootstrap.
         $strongRights = [
             ['config', UPDATE],
             ['user', UPDATE],
@@ -321,19 +541,6 @@ final class SecurityPermissionService
                 }
             } catch (Throwable $exception) {
                 // continue
-            }
-        }
-
-        // (2) Known admin profile names + UPDATE on the plugin's own right.
-        $profileName = strtolower(trim((string) ($_SESSION['glpiactiveprofile']['name'] ?? '')));
-        $adminNames = ['super-admin', 'super admin', 'admin', 'administrator', 'administrador'];
-        if ($profileName !== '' && in_array($profileName, $adminNames, true)) {
-            try {
-                if (Session::haveRight(Plugin::RIGHT_NAME, UPDATE)) {
-                    return true;
-                }
-            } catch (Throwable $exception) {
-                // fall through
             }
         }
 
@@ -351,6 +558,7 @@ final class SecurityPermissionService
 
     public const CONFIG_CONTEXT  = 'plugin:integaglpi';
     public const CONFIG_KEY      = 'security_matrix_overrides';
+    public const PROFILE_ROLE_MAPPING_CONFIG_KEY = 'security_profile_role_mapping';
 
     /**
      * Returns the effective matrix: ROLE_MATRIX defaults merged with any
@@ -387,6 +595,10 @@ final class SecurityPermissionService
             }
             $effective[$role] = array_values(array_unique($rights));
         }
+        $effective[self::ROLE_DIRECAO] = array_values(array_unique(array_merge(
+            $effective[self::ROLE_DIRECAO] ?? [],
+            [self::RIGHT_VIEW_SECURITY_CENTER, self::RIGHT_MANAGE_SECURITY_CENTER]
+        )));
 
         return $effective;
     }
@@ -449,6 +661,10 @@ final class SecurityPermissionService
                     continue;
                 }
                 $filtered[] = $right;
+            }
+            if ($role === self::ROLE_DIRECAO) {
+                $filtered[] = self::RIGHT_VIEW_SECURITY_CENTER;
+                $filtered[] = self::RIGHT_MANAGE_SECURITY_CENTER;
             }
             $clean[$role] = array_values(array_unique($filtered));
         }

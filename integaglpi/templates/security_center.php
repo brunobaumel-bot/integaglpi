@@ -7,10 +7,15 @@ use GlpiPlugin\Integaglpi\Service\SecurityPermissionService;
 
 /** @var string $currentRole */
 /** @var bool $canManage */
+/** @var bool $canManageMatrix */
 /** @var bool $isSecurityAdmin */
+/** @var bool $canBootstrapFirstDirecao */
+/** @var bool $canManageProfileMappings */
 /** @var array<string, list<string>> $matrix */
 /** @var array<string, list<string>> $denied */
 /** @var list<string> $allRights */
+/** @var array<int, array{role: string, enabled: bool}> $profileRoleMappings */
+/** @var array<int, string> $availableProfiles */
 
 $roleLabels = [
     SecurityPermissionService::ROLE_TECNICO    => __('Técnico', 'glpiintegaglpi'),
@@ -28,7 +33,7 @@ $roleDescriptions = [
         'glpiintegaglpi'
     ),
     SecurityPermissionService::ROLE_DIRECAO => __(
-        'Read-only e agregado: SLA, contratos, dashboards executivos, auditoria sanitizada. Sem ações operacionais e sem PII por padrão.',
+        'Papel de governança do plugin: acesso amplo operacional, supervisão, auditoria e configuração. PII não mascarada e segredos de IA continuam fora do padrão.',
         'glpiintegaglpi'
     ),
 ];
@@ -73,6 +78,7 @@ $rightLabels = [
     SecurityPermissionService::RIGHT_VIEW_UNMASKED_PII             => __('Ver PII não mascarada', 'glpiintegaglpi'),
     SecurityPermissionService::RIGHT_VIEW_LOGMEIN_CONTEXT          => __('Ver contexto LogMeIn read-only', 'glpiintegaglpi'),
     SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_MAPPING        => __('Gerenciar mapeamento LogMeIn -> entidade', 'glpiintegaglpi'),
+    SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_RECONCILIATION => __('Gerenciar conciliação LogMeIn', 'glpiintegaglpi'),
 ];
 
 $flagBadges = static function (string $right): string {
@@ -122,10 +128,15 @@ $selfUrl = htmlspecialchars($_SERVER['PHP_SELF'] ?? '', ENT_QUOTES, 'UTF-8');
             <h2 class="card-title mb-0"><?= __('Central de Segurança e Permissões', 'glpiintegaglpi') ?></h2>
         </div>
         <div>
-            <?php if ($isSecurityAdmin): ?>
+            <?php if ($canManageMatrix): ?>
                 <span class="badge bg-success">
                     <i class="ti ti-shield-check me-1"></i>
-                    <?= __('Administrador de Segurança', 'glpiintegaglpi') ?>
+                    <?= __('Direção · Segurança', 'glpiintegaglpi') ?>
+                </span>
+            <?php elseif ($canBootstrapFirstDirecao): ?>
+                <span class="badge bg-warning text-dark">
+                    <i class="ti ti-shield-check me-1"></i>
+                    <?= __('Bootstrap inicial', 'glpiintegaglpi') ?>
                 </span>
             <?php else: ?>
                 <span class="badge bg-secondary"><?= __('Somente leitura', 'glpiintegaglpi') ?></span>
@@ -141,7 +152,7 @@ $selfUrl = htmlspecialchars($_SERVER['PHP_SELF'] ?? '', ENT_QUOTES, 'UTF-8');
             <code><?= htmlspecialchars($currentRole, ENT_QUOTES, 'UTF-8') ?></code>
             &middot;
             <strong><?= __('Administrador de Segurança:', 'glpiintegaglpi') ?></strong>
-            <code><?= $isSecurityAdmin ? 'sim' : 'não' ?></code>
+            <code><?= $canManageMatrix ? 'direcao' : ($canBootstrapFirstDirecao ? 'bootstrap' : 'não') ?></code>
         </p>
         <div class="alert alert-info">
             <i class="ti ti-info-circle me-1"></i>
@@ -162,10 +173,10 @@ $selfUrl = htmlspecialchars($_SERVER['PHP_SELF'] ?? '', ENT_QUOTES, 'UTF-8');
                         <?= __('controla sessão, perfil ativo e escopo de entidade. Perfil GLPI "Ler/Atualizar" no plugin é apenas o bootstrap de acesso.', 'glpiintegaglpi') ?>
                     </li>
                     <li><strong><?= __('IntegraGLPI granular:', 'glpiintegaglpi') ?></strong>
-                        <?= __('controla quem pode assumir, responder, transferir, solucionar, encerrar administrativamente e gerir configurações — papel a papel (Técnico / Supervisão / Direção).', 'glpiintegaglpi') ?>
+                        <?= __('controla quem pode selecionar entidade, sobrepor entidade com motivo, assumir, responder, transferir, solucionar, encerrar administrativamente e gerir configurações — papel a papel (Técnico / Supervisão / Direção).', 'glpiintegaglpi') ?>
                     </li>
                     <li><strong><?= __('Direção:', 'glpiintegaglpi') ?></strong>
-                        <?= __('é read-only e agregado, sem ações operacionais e sem PII detalhada por padrão.', 'glpiintegaglpi') ?>
+                        <?= __('é o papel canônico para governança do plugin e gestão de permissões. Super-Admin GLPI só pode criar o primeiro vínculo Direção quando nenhum existir.', 'glpiintegaglpi') ?>
                     </li>
                     <li><strong><?= __('Backend enforcement:', 'glpiintegaglpi') ?></strong>
                         <?= __('todas as ações críticas validam CSRF + permissão granular antes de qualquer mutação. Esconder botão na UI não é segurança.', 'glpiintegaglpi') ?>
@@ -194,6 +205,83 @@ $selfUrl = htmlspecialchars($_SERVER['PHP_SELF'] ?? '', ENT_QUOTES, 'UTF-8');
                     <i class="ti ti-external-link me-1"></i>
                     <?= __('Abrir bootstrap de perfil GLPI', 'glpiintegaglpi') ?>
                 </a>
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header">
+                <h3 class="card-title mb-0">
+                    <i class="ti ti-users-group me-1"></i>
+                    <?= __('Mapeamento GLPI → papéis IntegraGLPI', 'glpiintegaglpi') ?>
+                </h3>
+            </div>
+            <div class="card-body">
+                <p class="text-muted small">
+                    <?= __('Os nomes dos perfis GLPI não são interpretados. Cada perfil deve ser vinculado explicitamente a Técnico, Supervisão ou Direção. Usuários com múltiplos perfis recebem o papel de maior prioridade: Técnico=10, Supervisão=20, Direção=30.', 'glpiintegaglpi') ?>
+                </p>
+                <?php if ($canBootstrapFirstDirecao): ?>
+                    <div class="alert alert-warning">
+                        <i class="ti ti-alert-triangle me-1"></i>
+                        <?= __('Bootstrap inicial ativo: como ainda não existe perfil Direção mapeado, Super-Admin GLPI pode mapear apenas o primeiro perfil Direção. Depois disso, somente Direção gerencia permissões.', 'glpiintegaglpi') ?>
+                    </div>
+                <?php endif; ?>
+                <form method="post" action="<?= $selfUrl ?>" class="js-integaglpi-profile-role-mapping-form">
+                    <?= Plugin::renderCsrfToken() ?>
+                    <input type="hidden" name="action" value="save_profile_roles">
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle js-integaglpi-profile-role-mapping-table">
+                            <thead>
+                                <tr>
+                                    <th><?= __('Perfil GLPI', 'glpiintegaglpi') ?></th>
+                                    <th><?= __('Papel IntegraGLPI', 'glpiintegaglpi') ?></th>
+                                    <th><?= __('Prioridade', 'glpiintegaglpi') ?></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($availableProfiles as $profileId => $profileName):
+                                    $mappedRole = (string) ($profileRoleMappings[$profileId]['role'] ?? 'disabled');
+                                ?>
+                                    <tr>
+                                        <td>
+                                            <?= htmlspecialchars($profileName, ENT_QUOTES, 'UTF-8') ?>
+                                            <code class="text-muted">#<?= (int) $profileId ?></code>
+                                        </td>
+                                        <td>
+                                            <select
+                                                class="form-select form-select-sm"
+                                                name="profile_roles[<?= (int) $profileId ?>]"
+                                                <?= $canManageProfileMappings ? '' : 'disabled' ?>
+                                            >
+                                                <option value="disabled"><?= __('Sem papel IntegraGLPI', 'glpiintegaglpi') ?></option>
+                                                <?php foreach ($roleLabels as $role => $label): ?>
+                                                    <option value="<?= htmlspecialchars($role, ENT_QUOTES, 'UTF-8') ?>" <?= $mappedRole === $role ? 'selected' : '' ?>>
+                                                        <?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?>
+                                                    </option>
+                                                <?php endforeach; ?>
+                                            </select>
+                                        </td>
+                                        <td>
+                                            <code><?= (int) (SecurityPermissionService::getRolePriorityMap()[$mappedRole] ?? 0) ?></code>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="d-flex gap-2 align-items-center flex-wrap">
+                        <?php if ($canManageProfileMappings): ?>
+                            <button type="submit" class="btn btn-primary">
+                                <i class="ti ti-device-floppy me-1"></i>
+                                <?= __('Salvar mapeamento de perfis', 'glpiintegaglpi') ?>
+                            </button>
+                        <?php else: ?>
+                            <div class="alert alert-info mb-0 w-100">
+                                <i class="ti ti-info-circle me-1"></i>
+                                <?= __('Somente Direção pode alterar este mapeamento; Super-Admin GLPI só é aceito no bootstrap inicial.', 'glpiintegaglpi') ?>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                </form>
             </div>
         </div>
 
@@ -269,7 +357,7 @@ $selfUrl = htmlspecialchars($_SERVER['PHP_SELF'] ?? '', ENT_QUOTES, 'UTF-8');
                                                     name="matrix[<?= htmlspecialchars($role, ENT_QUOTES, 'UTF-8') ?>][]"
                                                     value="<?= htmlspecialchars($right, ENT_QUOTES, 'UTF-8') ?>"
                                                     <?= $isAllowed ? 'checked' : '' ?>
-                                                    <?= $canManage ? '' : 'disabled' ?>
+                                                    <?= $canManageMatrix ? '' : 'disabled' ?>
                                                 >
                                             </div>
                                         <?php endif; ?>
@@ -283,7 +371,7 @@ $selfUrl = htmlspecialchars($_SERVER['PHP_SELF'] ?? '', ENT_QUOTES, 'UTF-8');
             </div>
 
             <div class="d-flex gap-2 mt-3 align-items-center flex-wrap">
-                <?php if ($canManage): ?>
+                <?php if ($canManageMatrix): ?>
                     <button type="submit" name="action" value="save_matrix" class="btn btn-primary">
                         <i class="ti ti-device-floppy me-1"></i>
                         <?= __('Salvar permissões', 'glpiintegaglpi') ?>
@@ -298,7 +386,7 @@ $selfUrl = htmlspecialchars($_SERVER['PHP_SELF'] ?? '', ENT_QUOTES, 'UTF-8');
                 <?php else: ?>
                     <div class="alert alert-info mb-0 w-100">
                         <i class="ti ti-info-circle me-1"></i>
-                        <?= __('Apenas Administrador de Segurança (Super-Admin GLPI) pode alterar a matriz. Você está em modo somente leitura.', 'glpiintegaglpi') ?>
+                        <?= __('Apenas o papel Direção pode alterar a matriz granular. Você está em modo somente leitura para permissões.', 'glpiintegaglpi') ?>
                     </div>
                 <?php endif; ?>
             </div>

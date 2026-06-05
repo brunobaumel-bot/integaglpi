@@ -27,7 +27,7 @@ final class SecurityCenterStaticTest extends TestCase
         self::assertFileExists($this->pluginPath('templates/security_center.php'));
     }
 
-    public function testDirecaoOperationalActionsAreDenied(): void
+    public function testDirecaoHasPluginGovernanceRights(): void
     {
         $svc = $this->read('src/Service/SecurityPermissionService.php');
         foreach ([
@@ -38,10 +38,24 @@ final class SecurityCenterStaticTest extends TestCase
             'RIGHT_SOLVE_TICKET',
             'RIGHT_SOLVE_OWNED_TICKET',
             'RIGHT_ADMINISTRATIVE_CLOSE',
+            'RIGHT_SELECT_ENTITY',
+            'RIGHT_OVERRIDE_ENTITY_MEMORY',
             'RIGHT_MANAGE_SECURITY_CENTER',
         ] as $right) {
             self::assertMatchesRegularExpression('/ROLE_DIRECAO\s*=>\s*\[[^\]]*' . $right . '/s', $svc);
         }
+        self::assertDoesNotMatchRegularExpression(
+            '/ROLE_DENIED\s*=\s*\[[\s\S]+ROLE_DIRECAO\s*=>\s*\[[^\]]*RIGHT_MANAGE_SECURITY_CENTER/s',
+            $svc
+        );
+        self::assertMatchesRegularExpression(
+            '/ROLE_DENIED\s*=\s*\[[\s\S]+ROLE_DIRECAO\s*=>\s*\[[^\]]*RIGHT_VIEW_UNMASKED_PII/s',
+            $svc
+        );
+        self::assertMatchesRegularExpression(
+            '/ROLE_DENIED\s*=\s*\[[\s\S]+ROLE_DIRECAO\s*=>\s*\[[^\]]*RIGHT_MANAGE_AI_SECRETS/s',
+            $svc
+        );
     }
 
     public function testSupervisaoDoesNotManageSecurityCenter(): void
@@ -72,6 +86,29 @@ final class SecurityCenterStaticTest extends TestCase
         self::assertStringContainsString('RIGHT_SOLVE_OWNED_TICKET', $action);
         self::assertStringContainsString('hasRight(SecurityPermissionService::RIGHT_SOLVE_TICKET)', $action);
         self::assertStringContainsString('requirePermissionOrDeny($requiredRight', $action);
+    }
+
+    public function testEntitySelectionAndOverrideAreAuditedByRole(): void
+    {
+        $action = $this->read('front/central.action.php');
+        $audit = $this->read('src/Service/SecurityAuditService.php');
+
+        self::assertStringContainsString("'confirm_entity' => SecurityPermissionService::RIGHT_SELECT_ENTITY", $action);
+        self::assertStringContainsString("'update_entity' => SecurityPermissionService::RIGHT_OVERRIDE_ENTITY_MEMORY", $action);
+        self::assertStringContainsString('logEntitySelectedFirstContact', $action);
+        self::assertStringContainsString('logEntityOverrideDeniedByRole', $action);
+        self::assertStringContainsString('logEntityOverrideApproved', $action);
+
+        foreach ([
+            'PROFILE_ROLE_MAPPING_CREATED',
+            'PROFILE_ROLE_MAPPING_UPDATED',
+            'PROFILE_ROLE_MAPPING_DISABLED',
+            'ENTITY_SELECTED_FIRST_CONTACT',
+            'ENTITY_OVERRIDE_DENIED_BY_ROLE',
+            'ENTITY_OVERRIDE_APPROVED',
+        ] as $eventName) {
+            self::assertStringContainsString($eventName, $audit);
+        }
     }
 
     public function testSecurityAuditDoesNotRunRuntimeDdl(): void
@@ -114,10 +151,14 @@ final class SecurityCenterStaticTest extends TestCase
             'front/central.action.php',
             'front/ticket.whatsapp.reply.php',
             'front/ticket.whatsapp.action.php',
-            'front/security.center.php',
         ] as $relative) {
             self::assertStringContainsString('requirePermissionOrDeny', $this->read($relative), $relative);
         }
+
+        $securityCenter = $this->read('front/security.center.php');
+        self::assertStringContainsString('canViewSecurityCenter', $securityCenter);
+        self::assertStringContainsString('canManageProfileRoleMappings', $securityCenter);
+        self::assertStringContainsString('hasRight(SecurityPermissionService::RIGHT_MANAGE_SECURITY_CENTER)', $securityCenter);
     }
 
     public function testSecurityCenterMenuRegistered(): void
@@ -138,11 +179,10 @@ final class SecurityCenterStaticTest extends TestCase
         $svc = $this->read('src/Service/SecurityPermissionService.php');
         // isSecurityAdmin() is a first-class method.
         self::assertStringContainsString('public static function isSecurityAdmin', $svc);
-        // canManageSecurityCenter() delegates to isSecurityAdmin().
-        self::assertMatchesRegularExpression(
-            '/public static function canManageSecurityCenter\(\):\s*bool\s*\{\s*return self::isSecurityAdmin\(\);\s*\}/s',
-            $svc
-        );
+        // canManageSecurityCenter() is now role-mapping driven, with only the
+        // first Direção mapping allowed through GLPI bootstrap.
+        self::assertStringContainsString('canBootstrapFirstDirecaoMapping', $svc);
+        self::assertMatchesRegularExpression('/canManageSecurityCenter[\s\S]+RIGHT_MANAGE_SECURITY_CENTER/s', $svc);
     }
 
     public function testIsSecurityAdminAcceptsNativeGlpiAdminSignals(): void
@@ -152,20 +192,21 @@ final class SecurityCenterStaticTest extends TestCase
         self::assertStringContainsString("['config', UPDATE]", $svc);
         self::assertStringContainsString("['user', UPDATE]", $svc);
         self::assertStringContainsString("['profile', UPDATE]", $svc);
+        self::assertStringNotContainsString('$adminNames', $svc);
+        self::assertStringNotContainsString('super-admin', $svc);
         // No hardcoded user_id / profile_id.
         self::assertDoesNotMatchRegularExpression('/profile_id\s*===?\s*\d/', $svc);
         self::assertDoesNotMatchRegularExpression('/profiles_id\s*===?\s*\d/', $svc);
         self::assertDoesNotMatchRegularExpression('/getLoginUserID\(\)\s*===?\s*\d/', $svc);
     }
 
-    public function testOperationalRolesCannotManageSecurityCenter(): void
+    public function testOnlyDirecaoCanManageSecurityCenterAfterBootstrap(): void
     {
         $svc = $this->read('src/Service/SecurityPermissionService.php');
-        // Técnico / Supervisão / Direção all explicitly denied manage_security_center.
+        // Técnico / Supervisão are explicitly denied manage_security_center.
         foreach ([
             'ROLE_TECNICO',
             'ROLE_SUPERVISAO',
-            'ROLE_DIRECAO',
         ] as $role) {
             self::assertMatchesRegularExpression(
                 '/' . $role . '\s*=>\s*\[[^\]]*RIGHT_MANAGE_SECURITY_CENTER/s',
@@ -173,6 +214,17 @@ final class SecurityCenterStaticTest extends TestCase
                 $role . ' must be in ROLE_DENIED for RIGHT_MANAGE_SECURITY_CENTER'
             );
         }
+        self::assertMatchesRegularExpression('/ROLE_DIRECAO\s*=>\s*\[[^\]]*RIGHT_MANAGE_SECURITY_CENTER/s', $svc);
+    }
+
+    public function testTecnicoCanOnlySelectInitialEntity(): void
+    {
+        $svc = $this->read('src/Service/SecurityPermissionService.php');
+        self::assertMatchesRegularExpression('/ROLE_TECNICO\s*=>\s*\[[^\]]*RIGHT_SELECT_ENTITY/s', $svc);
+        self::assertMatchesRegularExpression(
+            '/ROLE_DENIED\s*=\s*\[[\s\S]+ROLE_TECNICO\s*=>\s*\[[^\]]*RIGHT_OVERRIDE_ENTITY_MEMORY/s',
+            $svc
+        );
     }
 
     // ── FIX1: matrix persistence via GLPI Config ────────────────────────────
@@ -182,6 +234,7 @@ final class SecurityCenterStaticTest extends TestCase
         $svc = $this->read('src/Service/SecurityPermissionService.php');
         self::assertStringContainsString("CONFIG_CONTEXT  = 'plugin:integaglpi'", $svc);
         self::assertStringContainsString("CONFIG_KEY      = 'security_matrix_overrides'", $svc);
+        self::assertStringContainsString("PROFILE_ROLE_MAPPING_CONFIG_KEY = 'security_profile_role_mapping'", $svc);
         self::assertStringContainsString('Config::setConfigurationValues', $svc);
         self::assertStringContainsString('Config::getConfigurationValues', $svc);
         self::assertStringContainsString('getEffectiveMatrix', $svc);
@@ -192,6 +245,20 @@ final class SecurityCenterStaticTest extends TestCase
         self::assertStringNotContainsString('ALTER TABLE', $svc);
         self::assertStringNotContainsString('CREATE INDEX', $svc);
         self::assertStringNotContainsString('ensureSchema', $svc);
+    }
+
+    public function testProfileRoleMappingDoesNotUseProfileNames(): void
+    {
+        $svc = $this->read('src/Service/SecurityPermissionService.php');
+        self::assertStringContainsString('loadProfileRoleMappings', $svc);
+        self::assertStringContainsString('saveProfileRoleMappings', $svc);
+        self::assertStringContainsString('getCurrentProfileIds', $svc);
+        self::assertStringContainsString('ROLE_PRIORITY', $svc);
+        self::assertStringContainsString('TECNICO    => 10', $svc);
+        self::assertStringContainsString('SUPERVISAO => 20', $svc);
+        self::assertStringContainsString('DIRECAO    => 30', $svc);
+        self::assertStringNotContainsString("strpos(\$profileName", $svc);
+        self::assertStringNotContainsString('coordenador', $svc);
     }
 
     public function testRoleDeniedNeverRelaxableViaSavedMatrix(): void
@@ -216,6 +283,8 @@ final class SecurityCenterStaticTest extends TestCase
         $template = $this->read('templates/security_center.php');
         self::assertStringContainsString('js-integaglpi-security-matrix-form', $template);
         self::assertStringContainsString('js-integaglpi-security-matrix-table', $template);
+        self::assertStringContainsString('js-integaglpi-profile-role-mapping-form', $template);
+        self::assertStringContainsString('name="profile_roles[', $template);
         self::assertStringContainsString('js-integaglpi-perm-checkbox', $template);
         self::assertStringContainsString("name=\"matrix[", $template);
         self::assertStringContainsString('Plugin::renderCsrfToken()', $template);
@@ -224,7 +293,8 @@ final class SecurityCenterStaticTest extends TestCase
         self::assertStringContainsString("value=\"review_matrix\"", $template);
         // Security admin badge separated from operational role label.
         self::assertStringContainsString('isSecurityAdmin', $template);
-        self::assertStringContainsString('Administrador de Segurança', $template);
+        self::assertStringContainsString('Direção · Segurança', $template);
+        self::assertStringContainsString('Bootstrap inicial', $template);
         // Read-only fallback for non-admin viewers.
         self::assertStringContainsString('disabled', $template);
     }
@@ -234,8 +304,13 @@ final class SecurityCenterStaticTest extends TestCase
         $controller = $this->read('front/security.center.php');
         self::assertStringContainsString("\$postedAction === 'save_matrix'", $controller);
         self::assertStringContainsString("\$postedAction === 'review_matrix'", $controller);
+        self::assertStringContainsString("\$postedAction === 'save_profile_roles'", $controller);
         self::assertStringContainsString('saveMatrixOverrides', $controller);
+        self::assertStringContainsString('saveProfileRoleMappings', $controller);
+        self::assertStringContainsString('canManageProfileRoleMappings', $controller);
+        self::assertStringContainsString('canBootstrapFirstDirecaoMapping', $controller);
         self::assertStringContainsString('logPermissionChanged', $controller);
+        self::assertStringContainsString('logProfileRoleMappingChanged', $controller);
         self::assertStringContainsString("logMatrixSaveAttempted('saved'", $controller);
         self::assertStringContainsString("logMatrixSaveAttempted('noop_v1'", $controller);
         self::assertStringContainsString('isCsrfValid', $controller);

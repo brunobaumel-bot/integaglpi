@@ -15,16 +15,49 @@ Session::checkLoginUser();
  *
  * Backend enforcement:
  *  - GET  → requires canViewSecurityCenter (view_security_center OR
- *           isSecurityAdmin → admin/super-admin).
- *  - POST → requires canManageSecurityCenter (= isSecurityAdmin) and CSRF.
+ *           initial Super-Admin bootstrap).
+ *  - POST → requires CSRF plus the granular action gate.
  *
- * Two POST actions are supported, both auditable:
+ * POST actions are supported and auditable:
  *  - action=save_matrix   → persists ROLE_MATRIX overrides via Config::setConfigurationValues
  *                           and emits SECURITY_PERMISSION_CHANGED per added/removed right.
  *  - action=review_matrix → noop_v1, only emits SECURITY_MATRIX_SAVE_ATTEMPTED with
  *                           result=noop_v1 (registro de revisão sem alterar matriz).
+ *  - action=save_profile_roles → maps GLPI profile IDs to operational roles
+ *                                Técnico/Supervisão/Direção. GLPI bootstrap admin
+ *                                may only bootstrap the first Direção mapping.
  */
 $method = strtoupper(trim((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET')));
+
+/**
+ * @return array<int, string>
+ */
+function plugin_integaglpi_security_available_profiles(): array
+{
+    global $DB;
+
+    $profiles = [];
+    try {
+        if (!isset($DB) || !is_object($DB) || !method_exists($DB, 'request')) {
+            return [];
+        }
+        foreach ($DB->request([
+            'SELECT' => ['id', 'name'],
+            'FROM' => 'glpi_profiles',
+            'ORDER' => 'name',
+        ]) as $row) {
+            $id = (int) ($row['id'] ?? 0);
+            $name = trim((string) ($row['name'] ?? ''));
+            if ($id > 0 && $name !== '') {
+                $profiles[$id] = $name;
+            }
+        }
+    } catch (\Throwable $exception) {
+        error_log('[integaglpi][security_center][profiles_load_failed] ' . $exception->getMessage());
+    }
+
+    return $profiles;
+}
 
 if ($method === 'GET' && !SecurityPermissionService::canViewSecurityCenter()) {
     SecurityAuditService::logAccessDenied(
@@ -41,17 +74,77 @@ if ($method === 'POST') {
         Html::displayErrorAndDie(__('Token de segurança inválido.', 'glpiintegaglpi'));
     }
 
-    $gate = SecurityPermissionService::requirePermissionOrDeny(
-        SecurityPermissionService::RIGHT_MANAGE_SECURITY_CENTER,
-        ['endpoint' => 'security.center.php', 'method' => 'POST']
-    );
-    if (!$gate['ok']) {
-        SecurityAuditService::logMatrixSaveAttempted('forbidden', ['endpoint' => 'security.center.php']);
-        http_response_code(403);
-        Html::displayErrorAndDie($gate['message']);
+    $postedAction = trim((string) ($_POST['action'] ?? ''));
+    if ($postedAction === 'save_profile_roles') {
+        if (!SecurityPermissionService::canManageProfileRoleMappings()) {
+            SecurityAuditService::logMatrixSaveAttempted('forbidden_profile_mapping', ['endpoint' => 'security.center.php']);
+            http_response_code(403);
+            Html::displayErrorAndDie(__('Você não tem permissão para mapear perfis do GLPI.', 'glpiintegaglpi'));
+        }
+
+        $rawProfileRoles = $_POST['profile_roles'] ?? [];
+        $proposedProfileRoles = [];
+        if (is_array($rawProfileRoles)) {
+            foreach ($rawProfileRoles as $profileId => $role) {
+                if ((is_int($profileId) || (is_string($profileId) && ctype_digit($profileId))) && is_string($role)) {
+                    $proposedProfileRoles[(int) $profileId] = trim($role);
+                }
+            }
+        }
+
+        if (SecurityPermissionService::canBootstrapFirstDirecaoMapping()) {
+            $enabledRoles = array_values(array_filter(
+                $proposedProfileRoles,
+                static fn (string $role): bool => $role !== '' && $role !== 'disabled'
+            ));
+            $direcaoCount = count(array_filter(
+                $enabledRoles,
+                static fn (string $role): bool => $role === SecurityPermissionService::ROLE_DIRECAO
+            ));
+            if ($direcaoCount < 1 || $direcaoCount !== count($enabledRoles)) {
+                SecurityAuditService::logMatrixSaveAttempted('bootstrap_requires_direcao_only', ['endpoint' => 'security.center.php']);
+                http_response_code(403);
+                Html::displayErrorAndDie(__('Bootstrap inicial permite apenas mapear o primeiro perfil Direção.', 'glpiintegaglpi'));
+            }
+        }
+
+        try {
+            $diff = SecurityPermissionService::saveProfileRoleMappings($proposedProfileRoles);
+            foreach ($diff as $profileId => $change) {
+                SecurityAuditService::logProfileRoleMappingChanged(
+                    (string) ($change['change'] ?? 'updated'),
+                    (int) $profileId,
+                    (string) ($change['before'] ?? ''),
+                    (string) ($change['after'] ?? '')
+                );
+            }
+            SecurityAuditService::logMatrixSaveAttempted('profile_mapping_saved', [
+                'endpoint' => 'security.center.php',
+                'profiles_changed' => array_keys($diff),
+            ]);
+            Session::addMessageAfterRedirect(__('Mapeamento de perfis atualizado com sucesso.', 'glpiintegaglpi'));
+        } catch (\Throwable $exception) {
+            error_log('[integaglpi][security_center][profile_mapping_save_failed] ' . $exception->getMessage());
+            SecurityAuditService::logMatrixSaveAttempted('profile_mapping_save_failed', [
+                'endpoint' => 'security.center.php',
+                'error' => $exception->getMessage(),
+            ]);
+            Session::addMessageAfterRedirect(__('Falha ao salvar o mapeamento de perfis.', 'glpiintegaglpi'), false, ERROR);
+        }
+
+        Html::redirect($_SERVER['PHP_SELF']);
     }
 
-    $postedAction = trim((string) ($_POST['action'] ?? ''));
+    if (!SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_MANAGE_SECURITY_CENTER)) {
+        SecurityAuditService::logAccessDenied(
+            SecurityPermissionService::RIGHT_MANAGE_SECURITY_CENTER,
+            ['endpoint' => 'security.center.php', 'method' => 'POST', 'action' => $postedAction]
+        );
+        SecurityAuditService::logMatrixSaveAttempted('forbidden', ['endpoint' => 'security.center.php']);
+        http_response_code(403);
+        Html::displayErrorAndDie(__('Você não tem permissão para executar esta ação.', 'glpiintegaglpi'));
+    }
+
     if ($postedAction === 'save_matrix') {
         $raw = $_POST['matrix'] ?? [];
         $proposed = [];
@@ -139,9 +232,14 @@ SecurityAuditService::logMatrixViewed();
 $currentRole     = SecurityPermissionService::resolveCurrentRole();
 $isSecurityAdmin = SecurityPermissionService::isSecurityAdmin();
 $canManage       = SecurityPermissionService::canManageSecurityCenter();
+$canManageMatrix = SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_MANAGE_SECURITY_CENTER);
+$canBootstrapFirstDirecao = SecurityPermissionService::canBootstrapFirstDirecaoMapping();
+$canManageProfileMappings = SecurityPermissionService::canManageProfileRoleMappings();
 $matrix          = SecurityPermissionService::getEffectiveMatrix();
 $denied          = SecurityPermissionService::getRoleDenied();
 $allRights       = SecurityPermissionService::getAllRights();
+$profileRoleMappings = SecurityPermissionService::loadProfileRoleMappings();
+$availableProfiles = plugin_integaglpi_security_available_profiles();
 sort($allRights);
 
 include __DIR__ . '/../templates/security_center.php';

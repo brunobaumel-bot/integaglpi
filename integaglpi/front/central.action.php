@@ -88,6 +88,21 @@ try {
         'ticket_id' => $ticketId,
     ]);
     if (!$rbacGate['ok']) {
+        if ($action === 'update_entity') {
+            $requestedEntityId = 0;
+            $rawEntityId = $_POST['glpi_entity_id'] ?? null;
+            if (is_string($rawEntityId) || is_int($rawEntityId)) {
+                $trimmed = trim((string) $rawEntityId);
+                if ($trimmed !== '' && ctype_digit($trimmed)) {
+                    $requestedEntityId = (int) $trimmed;
+                }
+            }
+            SecurityAuditService::logEntityOverrideDeniedByRole(
+                $conversationId,
+                $requestedEntityId,
+                SecurityPermissionService::resolveCurrentRole()
+            );
+        }
         plugin_integaglpi_central_json([
             'ok' => false,
             'error' => $rbacGate['error'],
@@ -151,6 +166,9 @@ try {
             (int) ($_POST['service_catalog_id'] ?? 0),
             (string) ($_POST['service_checklist_json'] ?? '')
         );
+        if (($result['ok'] ?? false) === true) {
+            SecurityAuditService::logEntitySelectedFirstContact($conversationId, $glpiEntityId);
+        }
     } elseif ($action === 'update_entity') {
         $rawEntityId = $_POST['glpi_entity_id'] ?? null;
         $glpiEntityId = 0;
@@ -194,6 +212,9 @@ try {
             $userId,
             (string) ($_POST['apply_to_ticket'] ?? '0') === '1'
         );
+        if (($result['ok'] ?? false) === true) {
+            SecurityAuditService::logEntityOverrideApproved($conversationId, $glpiEntityId, $reasonForOverride);
+        }
     } elseif ($action === 'entity_status') {
         $result = $service->getConversationEntityStatus($conversationId);
     } elseif ($action === 'soft_close') {
