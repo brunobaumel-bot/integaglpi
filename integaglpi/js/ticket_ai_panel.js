@@ -170,6 +170,7 @@
   function renderExternalHelpCard(panel, result) {
     var vm = normalizeExternalHelpViewModel(result);
     var cloudEl = panel.querySelector('.js-smart-help-cloud');
+    var historyId = result && (result.history_id || result.id || (result.history_item && result.history_item.id)) ? String(result.history_id || result.id || result.history_item.id) : '';
     var noSources = !vm.references.length;
     var questionsText = sectionText('Perguntas ao cliente', vm.customer_questions);
     var stepsText = sectionText('Passos técnicos', vm.technical_steps);
@@ -204,13 +205,137 @@
     html += '<button type="button" class="btn btn-sm btn-outline-secondary js-smart-help-copy" data-text="' + esc(commandsText) + '">' + esc('Copiar comandos') + '</button>';
     html += '<button type="button" class="btn btn-sm btn-outline-primary js-smart-help-copy" data-text="' + esc(allText) + '">' + esc('Copiar tudo') + '</button>';
     if (vm.can_create_kb_candidate !== false) {
-      html += '<button type="button" class="btn btn-sm btn-outline-success js-smart-help-suggest-kb">' + esc('Gerar candidato KB manual') + '</button>';
+      html += '<button type="button" class="btn btn-sm btn-outline-success js-smart-help-suggest-kb" data-history-id="' + esc(historyId) + '">' + esc('Gerar candidato KB manual') + '</button>';
     }
     html += '</div>';
     html += '</div>';
 
     if (cloudEl) { cloudEl.innerHTML = html; }
     return vm;
+  }
+
+  function selectedExternalProvider(panel) {
+    var select = panel.querySelector('.js-smart-help-provider');
+    var value = select ? String(select.value || '') : 'disabled|';
+    var parts = value.split('|');
+    return {
+      provider: parts[0] || 'disabled',
+      model: parts.slice(1).join('|') || ''
+    };
+  }
+
+  function renderExternalProviderCatalog(panel, catalog) {
+    var select = panel.querySelector('.js-smart-help-provider');
+    if (!select) { return; }
+    var providers = catalog && Array.isArray(catalog.providers) ? catalog.providers : [];
+    if (!providers.length) {
+      providers = [{ provider: 'disabled', model: '', label: 'Manual / sem provider IA', source: 'manual', enabled: true, disabled_reason: '' }];
+    }
+    var defaultProvider = catalog && catalog.default_provider ? String(catalog.default_provider) : 'disabled';
+    var defaultModel = catalog && catalog.default_model ? String(catalog.default_model) : '';
+    var html = providers.map(function (item) {
+      var provider = String(item.provider || 'disabled');
+      var model = String(item.model || '');
+      var label = String(item.label || (provider + (model ? ' / ' + model : '')));
+      var source = item.source ? ' (' + String(item.source) + ')' : '';
+      var disabled = item.enabled === false;
+      var selected = provider === defaultProvider && model === defaultModel;
+      return '<option value="' + esc(provider + '|' + model) + '"' + (disabled ? ' disabled' : '') + (selected ? ' selected' : '') + '>'
+        + esc(label + source + (disabled && item.disabled_reason ? ' — indisponível: ' + item.disabled_reason : ''))
+        + '</option>';
+    }).join('');
+    select.innerHTML = html;
+    if (!select.value && select.options.length) {
+      select.selectedIndex = 0;
+    }
+  }
+
+  function externalHistoryCardHtml(item, active) {
+    var vm = normalizeExternalHelpViewModel((item && (item.view_model || item.external_help_view_model)) || item || {});
+    var id = item && item.id ? String(item.id) : '';
+    var provider = item && item.provider ? String(item.provider) : '';
+    var model = item && item.model ? String(item.model) : '';
+    var createdAt = item && item.created_at ? String(item.created_at) : '';
+    var questionsText = sectionText('Perguntas ao cliente', vm.customer_questions);
+    var stepsText = sectionText('Passos técnicos', vm.technical_steps);
+    var commandsText = sectionText('Comandos/verificações', vm.commands_or_checks);
+    var allText = [
+      'Diagnóstico provável: ' + (vm.diagnostic_hypothesis || ''),
+      questionsText,
+      stepsText,
+      commandsText,
+      sectionText('Riscos e cuidados', vm.cautions),
+      sectionText('Fontes', vm.references),
+      'Revisão humana obrigatória. Nada é enviado ao cliente nem altera o chamado automaticamente.'
+    ].filter(Boolean).join('\n\n');
+
+    var html = '<div class="border rounded p-2 mb-2 js-smart-help-history-card' + (active ? ' border-primary' : '') + '" data-history-id="' + esc(id) + '">';
+    html += '<div class="d-flex justify-content-between gap-2 flex-wrap align-items-start">';
+    html += '<button type="button" class="btn btn-sm ' + (active ? 'btn-primary' : 'btn-outline-primary') + ' js-smart-help-history-open" data-history-id="' + esc(id) + '">' + esc('Pesquisa #' + id) + '</button>';
+    html += '<span class="badge bg-light text-dark border">' + esc((provider || 'provider') + (model ? ' / ' + model : '')) + '</span>';
+    html += '</div>';
+    html += '<div class="text-muted small mt-1">' + esc(createdAt || 'histórico persistido') + ' · ' + esc('confiança: ' + (item.confidence_label || vm.confidence_label || 'baixa')) + '</div>';
+    if (active) {
+      html += '<div class="mt-2 fw-bold small">' + esc('Diagnóstico provável') + '</div>';
+      html += '<p class="mb-2">' + esc(vm.diagnostic_hypothesis || 'Resposta externa recebida para revisão humana.') + '</p>';
+      html += renderExternalSection('Perguntas ao cliente', vm.customer_questions, false);
+      html += renderExternalSection('Passos técnicos', vm.technical_steps, false);
+      html += renderExternalSection('Comandos/verificações', vm.commands_or_checks, true);
+      html += renderExternalSection('Riscos e cuidados', vm.cautions, false);
+      html += renderExternalSection('Fontes', vm.references, false);
+      html += '<div class="d-flex flex-wrap gap-2 mt-2">';
+      html += '<button type="button" class="btn btn-sm btn-outline-secondary js-smart-help-copy" data-text="' + esc(questionsText) + '">' + esc('Copiar perguntas') + '</button>';
+      html += '<button type="button" class="btn btn-sm btn-outline-secondary js-smart-help-copy" data-text="' + esc(stepsText) + '">' + esc('Copiar passos') + '</button>';
+      html += '<button type="button" class="btn btn-sm btn-outline-secondary js-smart-help-copy" data-text="' + esc(commandsText) + '">' + esc('Copiar comandos') + '</button>';
+      html += '<button type="button" class="btn btn-sm btn-outline-primary js-smart-help-copy" data-text="' + esc(allText) + '">' + esc('Copiar tudo') + '</button>';
+      html += '<button type="button" class="btn btn-sm btn-outline-success js-smart-help-suggest-kb" data-history-id="' + esc(id) + '">' + esc('Gerar candidato KB manual') + '</button>';
+      html += '</div>';
+      html += '<div class="alert alert-warning py-1 mt-2 mb-0 small">' + esc('Revisão humana obrigatória; publicação KB é manual.') + '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function renderExternalHistory(panel, items, activeId) {
+    var target = panel.querySelector('.js-smart-help-history');
+    if (!target) { return; }
+    items = Array.isArray(items) ? items : [];
+    if (!items.length) {
+      panel.dataset.activeExternalHistoryId = '';
+      target.innerHTML = '<div class="alert alert-light border small mb-2">' + esc('Histórico de pesquisas externas vazio.') + '</div>';
+      return;
+    }
+    activeId = activeId ? String(activeId) : String(items[0].id || '');
+    panel.dataset.activeExternalHistoryId = activeId;
+    var html = '<div class="fw-bold small mb-1">' + esc('Histórico de pesquisas externas') + '</div>';
+    html += items.map(function (item) {
+      return externalHistoryCardHtml(item, String(item.id || '') === activeId);
+    }).join('');
+    target.innerHTML = html;
+
+    var active = items.find(function (item) { return String(item.id || '') === activeId; }) || items[0];
+    if (active) {
+      renderExternalHelpCard(panel, {
+        id: active.id,
+        history_id: active.id,
+        external_help_view_model: active.view_model || active,
+        provider: active.provider,
+        model: active.model,
+        status: active.status
+      });
+    }
+  }
+
+  function loadExternalHistory(panel, activeId) {
+    post(panel, 'list_external_history', {
+      conversation_id: panel.dataset.conversationId || ''
+    }, { refreshCsrfBeforePost: true, quiet: true }).then(function (resp) {
+      var result = resp && resp.result ? resp.result : {};
+      renderExternalProviderCatalog(panel, result.provider_catalog || {});
+      renderExternalHistory(panel, result.history || [], activeId || '');
+    }).catch(function () {
+      renderExternalProviderCatalog(panel, { providers: [] });
+    });
   }
 
   // Smart Help fetch timeout (ms). Without a timeout, a hung Node/PHP call leaves
@@ -383,21 +508,21 @@
     return Math.abs(hash).toString(36);
   }
 
+  var SMART_HELP_CACHE_PREFIX = 'integaglpiSmartHelpViewModel:v3';
+
   function contextHash(panel) {
     return hashString([
       panel.dataset.ticketId || '0',
       panel.dataset.conversationId || 'none',
-      panel.dataset.contextUpdatedAt || 'unknown',
-      currentSummary(panel)
+      panel.dataset.contextUpdatedAt || 'unknown'
     ].join('|'));
   }
 
   function flowKey(panel, mode) {
     return [
-      'integaglpiSmartHelpWorkflow',
+      SMART_HELP_CACHE_PREFIX,
       panel.dataset.ticketId || '0',
       panel.dataset.conversationId || 'none',
-      panel.dataset.contextUpdatedAt || 'unknown',
       contextHash(panel),
       mode || 'workflow'
     ].join(':');
@@ -406,7 +531,11 @@
   function loadFlow(panel, mode) {
     try {
       var state = JSON.parse(sessionStorage.getItem(flowKey(panel, mode)) || '{}') || {};
-      if (state.context_hash && state.context_hash !== contextHash(panel)) {
+      if (
+        state.context_hash && state.context_hash !== contextHash(panel)
+        || state.ticket_id && String(state.ticket_id) !== String(panel.dataset.ticketId || '0')
+        || state.conversation_id && String(state.conversation_id) !== String(panel.dataset.conversationId || 'none')
+      ) {
         return {};
       }
       return state;
@@ -418,10 +547,22 @@
   function saveFlow(panel, state, mode) {
     try {
       state = state || {};
+      state.ticket_id = panel.dataset.ticketId || '0';
+      state.conversation_id = panel.dataset.conversationId || 'none';
       state.context_hash = contextHash(panel);
+      state.mode = mode || 'workflow';
+      state.updated_at = new Date().toISOString();
       sessionStorage.setItem(flowKey(panel, mode), JSON.stringify(state));
     } catch (e) {
       // Session state is only a UX hint; failure must not block SmartHelp.
+    }
+  }
+
+  function clearFlow(panel, mode) {
+    try {
+      sessionStorage.removeItem(flowKey(panel, mode));
+    } catch (e) {
+      // Cache cleanup is best-effort.
     }
   }
 
@@ -429,6 +570,9 @@
     ['.js-smart-help-articles', '.js-smart-help-local-suggestion', '.js-smart-help-cloud'].forEach(function (selector) {
       var el = panel.querySelector(selector);
       if (el) { el.innerHTML = ''; }
+    });
+    ['local_search', 'external_preview', 'external_result', 'workflow'].forEach(function (mode) {
+      clearFlow(panel, mode);
     });
   }
 
@@ -461,6 +605,189 @@
       : (fallbackText || btn.textContent || '');
   }
 
+  function nextRequestId(panel, mode) {
+    var id = [mode || 'request', String(new Date().getTime()), String(Math.random()).slice(2)].join(':');
+    panel.dataset.smartHelpActiveRequestId = id;
+    panel.dataset.smartHelpActiveRequestMode = mode || 'request';
+    return id;
+  }
+
+  function isCurrentRequest(panel, requestId) {
+    return requestId !== '' && panel.dataset.smartHelpActiveRequestId === requestId;
+  }
+
+  function finishRequest(panel, requestId) {
+    if (isCurrentRequest(panel, requestId)) {
+      delete panel.dataset.smartHelpActiveRequestId;
+      delete panel.dataset.smartHelpActiveRequestMode;
+    }
+  }
+
+  function safeScalar(value, max) {
+    var text = viewText(value);
+    if (!text) { return ''; }
+    max = max || 500;
+    return text.length > max ? text.slice(0, max) : text;
+  }
+
+  function safeListForStorage(value, maxItems, maxChars) {
+    return viewList(value).slice(0, maxItems || 8).map(function (item) {
+      return safeScalar(item, maxChars || 500);
+    }).filter(Boolean);
+  }
+
+  function safeArticleForStorage(article) {
+    article = article || {};
+    return {
+      title: safeScalar(article.title, 180),
+      excerpt: safeScalar(article.excerpt, 600),
+      category: safeScalar(article.category, 120),
+      sourceLabel: safeScalar(article.sourceLabel || article.source_label, 120),
+      confidenceReason: safeScalar(article.confidenceReason || article.confidence_reason, 240),
+      confidence: Number(article.confidence || 0) || 0,
+      kbCandidateId: Number(article.kbCandidateId || article.kb_candidate_id || 0) || 0,
+      glpiKnowbaseitemId: Number(article.glpiKnowbaseitemId || article.glpi_knowbaseitem_id || 0) || 0
+    };
+  }
+
+  function safeSmartHelpViewModel(result) {
+    result = result || {};
+    var schema = result.schema044Status || result.schema_044_status || {};
+    var search = result.kbSearchSource || result.kb_search_source || {};
+    var offer = result.cloudOffer || result.cloud_offer || { available: false };
+    var localSuggestion = result.localSuggestion || result.local_suggestion || null;
+    return {
+      technicalSummary: safeScalar(result.technicalSummary || result.technical_summary, 2000),
+      schema044Status: { ok: schema.ok === true },
+      kbSearchSource: { label: safeScalar(search.label || 'Base de Conhecimento local', 120) },
+      relatedArticles: Array.isArray(result.relatedArticles || result.related_articles)
+        ? (result.relatedArticles || result.related_articles).slice(0, 5).map(safeArticleForStorage)
+        : [],
+      checklist: safeListForStorage(result.checklist || [], 8, 240),
+      suggestedQuestions: safeListForStorage(result.suggestedQuestions || result.suggested_questions || [], 8, 240),
+      localSuggestion: localSuggestion && localSuggestion.unverified ? {
+        unverified: true,
+        title: safeScalar(localSuggestion.title || 'Sugestão IA local — valide antes de aplicar', 160),
+        content: safeScalar(localSuggestion.content || localSuggestion.summary || localSuggestion.text || localSuggestion.answer, 1200)
+      } : null,
+      cloudOffer: {
+        available: offer.available === true,
+        reason: safeScalar(offer.reason || '', 240)
+      },
+      message: safeScalar(result.message || '', 240),
+      workflow_step: safeScalar(result.workflow_step || result.workflowStep || '', 80)
+    };
+  }
+
+  function safeExternalPreviewViewModel(result) {
+    result = result || {};
+    return {
+      sanitized_text: safeScalar(result.cloud_safe_context || result.sanitized_text || result.sanitizedText || '', 2500),
+      removed_kinds: safeListForStorage(result.removed_kinds || result.detected_kinds || result.detectedKinds || [], 12, 80),
+      safe_for_cloud: result.safe_for_cloud === true || result.safeForCloud === true
+    };
+  }
+
+  function safeExternalResultViewModel(result, requestId) {
+    var vm = normalizeExternalHelpViewModel(result || {});
+    return {
+      request_id: safeScalar(requestId || result.request_id || result.requestId || '', 120),
+      status: safeScalar(vm.status || 'completed', 80),
+      title: safeScalar(vm.title || 'Ajuda externa por IA — sugestão, revise antes de aplicar', 180),
+      diagnostic_hypothesis: safeScalar(vm.diagnostic_hypothesis || '', 1600),
+      customer_questions: safeListForStorage(vm.customer_questions || [], 8, 320),
+      technical_steps: safeListForStorage(vm.technical_steps || [], 12, 420),
+      commands_or_checks: safeListForStorage(vm.commands_or_checks || [], 10, 320),
+      cautions: safeListForStorage(vm.cautions || [], 8, 320),
+      references: safeListForStorage(vm.references || [], 8, 420),
+      confidence_label: safeScalar(vm.confidence_label || 'baixa', 80),
+      source_type: safeScalar(vm.source_type || 'external_ai_no_sources', 120),
+      source_warning: safeScalar(vm.source_warning || '', 240),
+      human_review_required: true,
+      can_create_kb_candidate: vm.can_create_kb_candidate !== false,
+      no_auto_send: true,
+      no_auto_publish: true
+    };
+  }
+
+  function renderExternalPreview(panel, preview) {
+    preview = safeExternalPreviewViewModel(preview || {});
+    var cloudEl = panel.querySelector('.js-smart-help-cloud');
+    var msgEl = panel.querySelector('.js-smart-help-message');
+    var sanitized = preview.sanitized_text;
+    var kinds = preview.removed_kinds;
+    var safe = preview.safe_for_cloud === true;
+    var kindsBadges = kinds.length
+      ? kinds.map(function (k) { return '<span class="badge bg-warning text-dark me-1">' + esc(k) + '</span>'; }).join('')
+      : '<span class="text-muted">' + esc('nenhum') + '</span>';
+
+    var html = '<div class="border rounded p-2 mt-1 js-smart-help-external-preview-card">';
+    html += '<div class="small text-muted mb-1">' + esc('Contexto técnico para nuvem gerado a partir do resumo local') + '</div>';
+    html += safe
+      ? '<div class="fw-bold text-success mb-1">' + esc('Contexto técnico pronto para envio') + '</div>'
+      : '<div class="fw-bold text-danger mb-1">' + esc('Bloqueado por PII — não será enviado à nuvem') + '</div>';
+    html += '<div class="small text-muted mb-1">' + esc('Tipos removidos:') + ' ' + kindsBadges + '</div>';
+    html += '<label class="form-label small mb-1">' + esc('Pré-visualização (somente isto poderia ir à nuvem):') + '</label>';
+    html += '<textarea class="form-control form-control-sm js-smart-help-external-preview" rows="4" readonly>' + esc(sanitized) + '</textarea>';
+    html += '<div class="d-flex gap-2 mt-2 flex-wrap">';
+    if (safe) {
+      html += '<button type="button" class="btn btn-sm btn-warning js-smart-help-external-send">'
+        + '<i class="ti ti-cloud-upload me-1"></i>' + esc('Confirmar envio sanitizado para a nuvem') + '</button>';
+    } else {
+      html += '<span class="text-danger small align-self-center">' + esc('Há PII residual: revise o chamado. Envio bloqueado.') + '</span>';
+    }
+    html += '<button type="button" class="btn btn-sm btn-outline-secondary js-smart-help-copy" data-text="' + esc(sanitized) + '">'
+      + esc('Copiar contexto sanitizado') + '</button>';
+    html += '</div></div>';
+
+    if (cloudEl) { cloudEl.innerHTML = html; }
+    if (msgEl) { msgEl.textContent = ''; }
+    setStatus(panel, safe ? 'pronto para envio' : 'PII bloqueado', safe ? 'success' : 'danger');
+    return preview;
+  }
+
+  function restoreSmartHelpPanel(panel) {
+    var summaryBtn = panel.querySelector('.js-smart-help-summarize');
+    var localBtn = panel.querySelector('.js-smart-help-local-search');
+    var externalBtn = panel.querySelector('.js-smart-help-external');
+    setButtonLoading(summaryBtn, '', false);
+    setButtonLoading(localBtn, '', false);
+    setButtonLoading(externalBtn, '', false);
+
+    var summaryState = loadFlow(panel, 'summary');
+    var localState = loadFlow(panel, 'local_search');
+    var previewState = loadFlow(panel, 'external_preview');
+    var externalState = loadFlow(panel, 'external_result');
+    var restored = false;
+
+    if (summaryState.view_model) {
+      renderResult(panel, summaryState.view_model, { skipPersist: true });
+      saveFlow(panel, { step: 'summarized' }, 'workflow');
+      setStatus(panel, 'resumo restaurado', 'success');
+      restored = true;
+    }
+    if (localState.view_model) {
+      renderResult(panel, localState.view_model, { skipPersist: true });
+      saveFlow(panel, { step: 'local_searched' }, 'workflow');
+      setStatus(panel, 'busca local restaurada', 'success');
+      restored = true;
+    }
+    if (previewState.view_model) {
+      renderExternalPreview(panel, previewState.view_model);
+      saveFlow(panel, { step: 'cloud_ready' }, 'workflow');
+      restored = true;
+    }
+    if (externalState.view_model) {
+      renderExternalHelpCard(panel, { external_help_view_model: externalState.view_model, status: 'completed' });
+      saveFlow(panel, { step: 'cloud_ready' }, 'workflow');
+      setStatus(panel, 'ajuda externa restaurada', 'success');
+      restored = true;
+    }
+    if (restored) {
+      updateGuidedState(panel);
+    }
+  }
+
   function updateGuidedState(panel) {
     var state = loadFlow(panel);
     var summary = currentSummary(panel);
@@ -482,7 +809,8 @@
     }
   }
 
-  function renderResult(panel, result) {
+  function renderResult(panel, result, options) {
+    options = options || {};
     var articlesEl = panel.querySelector('.js-smart-help-articles');
     var checklistEl = panel.querySelector('.js-smart-help-checklist');
     var questionsEl = panel.querySelector('.js-smart-help-questions');
@@ -496,7 +824,10 @@
     var feedbackEnabled = !!schema.ok;
 
     if (technicalSummaryEl) {
-      technicalSummaryEl.value = result.technicalSummary || result.technical_summary || '';
+      var technicalSummary = result.technicalSummary || result.technical_summary || '';
+      if (technicalSummary !== '') {
+        technicalSummaryEl.value = technicalSummary;
+      }
     }
     if (schemaStatusEl) {
       var search = result.kbSearchSource || result.kb_search_source || {};
@@ -571,16 +902,21 @@
       externalBtn.classList.remove('d-none');
     }
     if (offer.available) {
-      if (cloudEl) {
+      if (cloudEl && !loadFlow(panel, 'external_result').view_model && !loadFlow(panel, 'external_preview').view_model) {
         cloudEl.innerHTML = '<span class="text-muted">' + esc(offer.reason || '') + '</span>';
       }
     } else {
-      if (cloudEl) {
+      if (cloudEl && !loadFlow(panel, 'external_result').view_model && !loadFlow(panel, 'external_preview').view_model) {
         cloudEl.innerHTML = '';
       }
     }
     if (msgEl) {
       msgEl.textContent = result.message || '';
+    }
+    if (!options.skipPersist) {
+      var workflowStep = result.workflow_step || result.workflowStep || '';
+      var mode = workflowStep === 'local_searched' ? 'local_search' : 'summary';
+      saveFlow(panel, { step: workflowStep || (mode === 'local_search' ? 'local_searched' : 'summarized'), view_model: safeSmartHelpViewModel(result) }, mode);
     }
     updateGuidedState(panel);
   }
@@ -588,6 +924,7 @@
   function handleSummarize(panel) {
     var runBtn = panel.querySelector('.js-smart-help-summarize');
     var msgEl = panel.querySelector('.js-smart-help-message');
+    var requestId = nextRequestId(panel, 'summary');
     setButtonLoading(runBtn, 'Gerando resumo...', true);
     if (msgEl) {
       msgEl.textContent = 'Gerando resumo com IA local...';
@@ -595,6 +932,7 @@
     }
     setStatus(panel, 'resumo em andamento', 'info');
     post(panel, 'summarize_ticket', { ai_summary: '1' }, { refreshCsrfBeforePost: true }).then(function (resp) {
+      if (!isCurrentRequest(panel, requestId)) { return; }
       var r = resp && resp.result ? resp.result : null;
       if (r) {
         renderResult(panel, r);
@@ -609,7 +947,7 @@
         } else {
           setStatus(panel, r.localResolved ? 'KB local encontrada' : 'sem KB local', r.localResolved ? 'success' : 'info');
         }
-        saveFlow(panel, { step: 'summarized' }, 'summary');
+        saveFlow(panel, { step: 'summarized', view_model: safeSmartHelpViewModel(r) }, 'summary');
         saveFlow(panel, { step: 'summarized' }, 'workflow');
         updateGuidedState(panel);
       } else {
@@ -621,11 +959,15 @@
         renderResult(panel, { message: errorMessage });
       }
     }).catch(function (error) {
+      if (!isCurrentRequest(panel, requestId)) { return; }
       setStatus(panel, 'erro', 'danger');
       renderResult(panel, { message: (error && error.message) ? error.message : 'Não foi possível consultar a Ajuda Inteligente. Revise permissões, schema 044 e configuração local.' });
     }).finally(function () {
-      setButtonLoading(runBtn, '', false);
-      updateGuidedState(panel);
+      if (isCurrentRequest(panel, requestId)) {
+        setButtonLoading(runBtn, '', false);
+        finishRequest(panel, requestId);
+        updateGuidedState(panel);
+      }
     });
   }
 
@@ -639,13 +981,15 @@
       updateGuidedState(panel);
       return;
     }
+    var requestId = nextRequestId(panel, 'local_search');
     setButtonLoading(searchBtn, 'Buscando localmente...', true);
     setStatus(panel, 'busca local', 'info');
     post(panel, 'local_search', { technical_summary: summary }, { refreshCsrfBeforePost: true }).then(function (resp) {
+      if (!isCurrentRequest(panel, requestId)) { return; }
       var r = resp && resp.result ? resp.result : null;
       if (r) {
         renderResult(panel, r);
-        saveFlow(panel, { step: 'local_searched' }, 'local_search');
+        saveFlow(panel, { step: 'local_searched', view_model: safeSmartHelpViewModel(r) }, 'local_search');
         saveFlow(panel, { step: 'local_searched' }, 'workflow');
         setStatus(panel, r.localResolved ? 'KB local encontrada' : 'sugestão local', r.localResolved ? 'success' : 'warning');
       } else {
@@ -653,11 +997,15 @@
         renderResult(panel, { message: (resp && resp.message) ? resp.message : 'Não foi possível executar a busca local.' });
       }
     }).catch(function (error) {
+      if (!isCurrentRequest(panel, requestId)) { return; }
       setStatus(panel, 'erro', 'danger');
       renderResult(panel, { message: (error && error.message) ? error.message : 'Não foi possível executar a busca local.' });
     }).finally(function () {
-      setButtonLoading(searchBtn, '', false);
-      updateGuidedState(panel);
+      if (isCurrentRequest(panel, requestId)) {
+        setButtonLoading(searchBtn, '', false);
+        finishRequest(panel, requestId);
+        updateGuidedState(panel);
+      }
     });
   }
 
@@ -666,48 +1014,22 @@
   // operator sees the sanitized text, the detected PII kinds and whether it is safe to
   // send — then confirms the send explicitly. Raw context never leaves the server.
   function handleExternal(panel) {
+    var requestId = nextRequestId(panel, 'external_preview');
     setStatus(panel, 'sanitizando contexto', 'info');
-    var cloudEl = panel.querySelector('.js-smart-help-cloud');
     var msgEl = panel.querySelector('.js-smart-help-message');
     post(panel, 'prepare_external_context', { technical_summary: currentSummary(panel) }, { refreshCsrfBeforePost: true }).then(function (resp) {
+      if (!isCurrentRequest(panel, requestId)) { return; }
       if (resp && resp.ok === false && resp.error && !resp.result) {
         if (msgEl) { msgEl.textContent = resp.message || 'Pré-visualização indisponível.'; }
         setStatus(panel, resp.error === 'timeout' ? 'tempo esgotado' : 'erro de rede', 'danger');
         return;
       }
       var r = resp && resp.result ? resp.result : {};
-      var sanitized = viewText(r.cloud_safe_context || r.sanitized_text || r.sanitizedText || '');
-      var kinds = viewList(r.removed_kinds || r.detected_kinds || r.detectedKinds || []);
-      var safe = (r.safe_for_cloud === true) || (r.safeForCloud === true);
-
-      var kindsBadges = kinds.length
-        ? kinds.map(function (k) { return '<span class="badge bg-warning text-dark me-1">' + esc(k) + '</span>'; }).join('')
-        : '<span class="text-muted">' + esc('nenhum') + '</span>';
-
-      var html = '<div class="border rounded p-2 mt-1">';
-      html += '<div class="small text-muted mb-1">' + esc('Contexto técnico para nuvem gerado a partir do resumo local') + '</div>';
-      if (safe) {
-        html += '<div class="fw-bold text-success mb-1">' + esc('Contexto técnico pronto para envio') + '</div>';
-      } else {
-        html += '<div class="fw-bold text-danger mb-1">' + esc('Bloqueado por PII — não será enviado à nuvem') + '</div>';
-      }
-      html += '<div class="small text-muted mb-1">' + esc('Tipos removidos:') + ' ' + kindsBadges + '</div>';
-      html += '<label class="form-label small mb-1">' + esc('Pré-visualização (somente isto poderia ir à nuvem):') + '</label>';
-      html += '<textarea class="form-control form-control-sm js-smart-help-external-preview" rows="4" readonly>' + esc(sanitized) + '</textarea>';
-      html += '<div class="d-flex gap-2 mt-2 flex-wrap">';
-      if (safe) {
-        html += '<button type="button" class="btn btn-sm btn-warning js-smart-help-external-send">'
-          + '<i class="ti ti-cloud-upload me-1"></i>' + esc('Confirmar envio sanitizado para a nuvem') + '</button>';
-      } else {
-        html += '<span class="text-danger small align-self-center">' + esc('Há PII residual: revise o chamado. Envio bloqueado.') + '</span>';
-      }
-      html += '<button type="button" class="btn btn-sm btn-outline-secondary js-smart-help-copy" data-text="' + esc(sanitized) + '">'
-        + esc('Copiar contexto sanitizado') + '</button>';
-      html += '</div></div>';
-
-      if (cloudEl) { cloudEl.innerHTML = html; }
-      if (msgEl) { msgEl.textContent = ''; }
-      setStatus(panel, safe ? 'pronto para envio' : 'PII bloqueado', safe ? 'success' : 'danger');
+      var preview = renderExternalPreview(panel, r);
+      saveFlow(panel, { step: 'cloud_ready', view_model: preview }, 'external_preview');
+      saveFlow(panel, { step: 'cloud_ready' }, 'workflow');
+    }).finally(function () {
+      finishRequest(panel, requestId);
     });
   }
 
@@ -725,7 +1047,17 @@
       setStatus(panel, 'preview necessário', 'warning');
       return;
     }
-    post(panel, 'smart_external', { consent: '1', sanitized_context: sanitizedContext, technical_summary: sanitizedContext }, { refreshCsrfBeforePost: true }).then(function (resp) {
+    var providerSelection = selectedExternalProvider(panel);
+    var requestId = nextRequestId(panel, 'external_result');
+    post(panel, 'smart_external', {
+      consent: '1',
+      sanitized_context: sanitizedContext,
+      technical_summary: sanitizedContext,
+      conversation_id: panel.dataset.conversationId || '',
+      ai_provider: providerSelection.provider,
+      ai_model: providerSelection.model
+    }, { refreshCsrfBeforePost: true }).then(function (resp) {
+      if (!isCurrentRequest(panel, requestId)) { return; }
       if (resp && resp.ok === false && resp.error && !resp.result) {
         if (msgEl) { msgEl.textContent = resp.message || 'Pesquisa externa indisponível.'; }
         setStatus(panel, resp.error === 'timeout' ? 'tempo esgotado' : 'erro de rede', 'danger');
@@ -736,20 +1068,32 @@
         if (msgEl) { msgEl.textContent = r.message || 'Pesquisa externa não configurada.'; }
         setStatus(panel, 'nuvem indisponível', 'secondary');
       } else if (r.status === 'no_actionable_result') {
-        if (cloudEl) { cloudEl.innerHTML = ''; }
+        if (cloudEl && !loadFlow(panel, 'external_result').view_model) { cloudEl.innerHTML = ''; }
         if (msgEl) { msgEl.textContent = r.message || 'A pesquisa não retornou orientação técnica utilizável.'; }
         setStatus(panel, 'sem resposta útil', 'warning');
       } else if (r.status === 'blocked_pii') {
         if (msgEl) { msgEl.textContent = 'Bloqueado: o contexto ainda contém dados sensíveis e não foi enviado.'; }
         setStatus(panel, 'PII bloqueado', 'danger');
       } else if (r.ok && (r.external_help_view_model || r.externalHelpViewModel || r.summary || r.answer || r.message)) {
-        var vm = renderExternalHelpCard(panel, r);
+        var cardPayload = r.history_item
+          ? { id: r.history_item.id, history_id: r.history_item.id, external_help_view_model: r.history_item.view_model || r.external_help_view_model || r }
+          : r;
+        var vm = renderExternalHelpCard(panel, cardPayload);
+        if (Array.isArray(r.history)) {
+          renderExternalHistory(panel, r.history, r.history_item && r.history_item.id ? String(r.history_item.id) : '');
+        } else if (r.history_item) {
+          renderExternalHistory(panel, [r.history_item], String(r.history_item.id || ''));
+        }
+        saveFlow(panel, { step: 'cloud_ready', request_id: requestId, view_model: safeExternalResultViewModel({ external_help_view_model: vm }, requestId) }, 'external_result');
+        saveFlow(panel, { step: 'cloud_ready' }, 'workflow');
         if (msgEl) { msgEl.textContent = 'Ajuda externa retornou uma sugestão para revisão humana.'; }
         setStatus(panel, vm.references.length ? 'sugestão IA + fontes' : 'sugestão IA externa', 'success');
       } else {
         if (msgEl) { msgEl.textContent = r.message || 'Pesquisa externa indisponível.'; }
         setStatus(panel, 'erro', 'danger');
       }
+    }).finally(function () {
+      finishRequest(panel, requestId);
     });
   }
 
@@ -779,6 +1123,14 @@
       if (navigator.clipboard) { navigator.clipboard.writeText(text); }
       copyBtn.textContent = 'Copiado';
       setTimeout(function () { copyBtn.textContent = 'Copiar'; }, 1500);
+      return;
+    }
+
+    var historyOpen = t.closest('.js-smart-help-history-open');
+    if (historyOpen) {
+      event.preventDefault();
+      var historyId = historyOpen.getAttribute('data-history-id') || '';
+      loadExternalHistory(panel, historyId);
       return;
     }
 
@@ -820,11 +1172,18 @@
       return;
     }
 
-    if (t.closest('.js-smart-help-suggest-kb')) {
-      post(panel, 'suggest_kb').then(function (resp) {
+    var kbButton = t.closest('.js-smart-help-suggest-kb');
+    if (kbButton) {
+      var selectedHistoryId = kbButton.getAttribute('data-history-id') || panel.dataset.activeExternalHistoryId || '';
+      var action = selectedHistoryId ? 'create_kb_candidate_from_external_history' : 'suggest_kb';
+      var payload = selectedHistoryId ? { history_id: selectedHistoryId } : {};
+      post(panel, action, payload, { refreshCsrfBeforePost: true }).then(function (resp) {
         var msgEl = panel.querySelector('.js-smart-help-message');
         var r = resp && resp.result ? resp.result : {};
-        msgEl.textContent = r.ok ? 'Rascunho de KB gerado para revisão manual.' : (r.message || 'Sem conhecimento reutilizável suficiente.');
+        if (!msgEl) { return; }
+        msgEl.textContent = r.ok
+          ? ('Candidato KB gerado para revisão manual' + (r.glpi_category_name ? ' em ' + r.glpi_category_name : '') + '.')
+          : (r.message || 'Sem conhecimento reutilizável suficiente.');
       });
       return;
     }
@@ -838,6 +1197,8 @@
     Array.prototype.forEach.call(panels, function (p) {
       // Mark panel so smoke tests / browser DevTools can confirm JS is active.
       p.dataset.smartHelpJsReady = '1';
+      restoreSmartHelpPanel(p);
+      loadExternalHistory(p);
       updateGuidedState(p);
       var summaryEl = p.querySelector('.js-smart-help-technical-summary');
       if (summaryEl) {

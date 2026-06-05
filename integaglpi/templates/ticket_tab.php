@@ -367,6 +367,7 @@ $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
             <?php if (\GlpiPlugin\Integaglpi\Service\SmartHelpService::canViewPanel()) { ?>
                 <div class="border rounded p-3 mt-3 mb-0 integaglpi-smart-help"
                      data-ticket-id="<?= (int) $ticket->getID(); ?>"
+                     data-conversation-id="<?= $this->escape((string) ($contextConversation['conversation_id'] ?? '')); ?>"
                      data-context-updated-at="<?= $this->escape((string) ($ticket->fields['date_mod'] ?? $ticket->fields['date'] ?? '')); ?>"
                      data-action-url="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/front/smart.help.php'); ?>"
                      data-csrf="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getCsrfToken()); ?>">
@@ -387,6 +388,21 @@ $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
                     </div>
                     <div class="text-muted small mb-2">
                         <?= $this->escape(__('Processo guiado somente leitura: gere o resumo, execute a busca local e só depois peça ajuda externa se necessário. Nada é enviado ao cliente nem altera o chamado automaticamente.', 'glpiintegaglpi')); ?>
+                    </div>
+                    <div class="row g-2 align-items-end mb-2">
+                        <div class="col-md-7">
+                            <label class="form-label small mb-1">
+                                <?= $this->escape(__('IA para pesquisa externa', 'glpiintegaglpi')); ?>
+                            </label>
+                            <select class="form-select form-select-sm js-smart-help-provider">
+                                <option value="disabled|" selected><?= $this->escape(__('Carregando providers seguros...', 'glpiintegaglpi')); ?></option>
+                            </select>
+                        </div>
+                        <div class="col-md-5">
+                            <div class="form-text js-smart-help-provider-help">
+                                <?= $this->escape(__('Cloud exige consentimento e PII Guard.', 'glpiintegaglpi')); ?>
+                            </div>
+                        </div>
                     </div>
                     <div class="mb-2">
                         <label class="form-label small mb-1" for="smart-help-context-summary-<?= (int) $ticket->getID(); ?>">
@@ -409,6 +425,7 @@ $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
                         </div>
                     </div>
                     <div class="mt-2 js-smart-help-local-suggestion"></div>
+                    <div class="mt-2 js-smart-help-history"></div>
                     <div class="mt-2 js-smart-help-cloud"></div>
                     <div class="mt-2 small js-smart-help-message text-muted"></div>
                     <div class="form-text mt-1">
@@ -1331,6 +1348,7 @@ $smartHelpReadGateVisible  = $isExternalConfigured
 <?php if ($smartHelpReadGateVisible) { ?>
     <div class="border rounded p-3 mt-3 mb-3 integaglpi-smart-help"
          data-ticket-id="<?= (int) $smartHelpReadGateTicketId; ?>"
+         data-conversation-id="<?= $this->escape((string) ($runtime['conversation_id'] ?? '')); ?>"
          data-context-updated-at="<?= $this->escape((string) ($ticket->fields['date_mod'] ?? $ticket->fields['date'] ?? '')); ?>"
          data-action-url="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/front/smart.help.php'); ?>"
          data-csrf="<?= $this->escape($smartHelpReadGateCsrf); ?>">
@@ -1351,6 +1369,21 @@ $smartHelpReadGateVisible  = $isExternalConfigured
         </div>
         <div class="text-muted small mb-2">
             <?= $this->escape(__('Processo guiado somente leitura: gere o resumo, execute a busca local e só depois peça ajuda externa se necessário. Nada é enviado ao cliente nem altera o chamado automaticamente.', 'glpiintegaglpi')); ?>
+        </div>
+        <div class="row g-2 align-items-end mb-2">
+            <div class="col-md-7">
+                <label class="form-label small mb-1">
+                    <?= $this->escape(__('IA para pesquisa externa', 'glpiintegaglpi')); ?>
+                </label>
+                <select class="form-select form-select-sm js-smart-help-provider">
+                    <option value="disabled|" selected><?= $this->escape(__('Carregando providers seguros...', 'glpiintegaglpi')); ?></option>
+                </select>
+            </div>
+            <div class="col-md-5">
+                <div class="form-text js-smart-help-provider-help">
+                    <?= $this->escape(__('Cloud exige consentimento e PII Guard.', 'glpiintegaglpi')); ?>
+                </div>
+            </div>
         </div>
         <div class="mb-2">
             <label class="form-label small mb-1" for="smart-help-summary-ro-<?= (int) $smartHelpReadGateTicketId; ?>">
@@ -1377,6 +1410,7 @@ $smartHelpReadGateVisible  = $isExternalConfigured
             </div>
         </div>
         <div class="mt-2 js-smart-help-local-suggestion"></div>
+        <div class="mt-2 js-smart-help-history"></div>
         <div class="mt-2 js-smart-help-cloud"></div>
         <div class="mt-2 small js-smart-help-message text-muted"></div>
         <div class="form-text mt-1">
@@ -1589,6 +1623,22 @@ $smartHelpReadGateVisible  = $isExternalConfigured
                         <?= $this->escape(__('Processo guiado: gere o resumo, execute a busca local e só depois peça ajuda externa se necessário. Nada é enviado ao cliente nem altera o chamado automaticamente.', 'glpiintegaglpi')); ?>
                     </div>
 
+                    <div class="row g-2 align-items-end mb-2">
+                        <div class="col-md-7">
+                            <label class="form-label small mb-1">
+                                <?= $this->escape(__('IA para pesquisa externa', 'glpiintegaglpi')); ?>
+                            </label>
+                            <select class="form-select form-select-sm js-smart-help-provider">
+                                <option value="disabled|" selected><?= $this->escape(__('Carregando providers seguros...', 'glpiintegaglpi')); ?></option>
+                            </select>
+                        </div>
+                        <div class="col-md-5">
+                            <div class="form-text js-smart-help-provider-help">
+                                <?= $this->escape(__('Cloud exige consentimento e PII Guard.', 'glpiintegaglpi')); ?>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="mb-2">
                         <label class="form-label small mb-1" for="smart-help-summary-<?= (int) $replyTicketId; ?>">
                             <?= $this->escape(__('Resumo técnico sem dados pessoais', 'glpiintegaglpi')); ?>
@@ -1620,6 +1670,7 @@ $smartHelpReadGateVisible  = $isExternalConfigured
 
                     <?php /* cloud offer / states */ ?>
                     <div class="mt-2 js-smart-help-local-suggestion"></div>
+                    <div class="mt-2 js-smart-help-history"></div>
                     <div class="mt-2 js-smart-help-cloud"></div>
                     <div class="mt-2 small js-smart-help-message text-muted"></div>
 

@@ -20,6 +20,7 @@ final class ExternalResearchService
     private const REVIEW_TABLE = 'glpi_plugin_integaglpi_external_research_reviews';
     private const AUDIT_TABLE = 'glpi_plugin_integaglpi_audit_events';
     private const KB_CANDIDATES_TABLE = 'glpi_plugin_integaglpi_kb_candidates';
+    private const HELP_HISTORY_TABLE = 'glpi_plugin_integaglpi_external_help_history';
     private const HIST_INSIGHTS_TABLE = 'glpi_plugin_integaglpi_hist_insights';
     private const MAX_PROMPT_CHARS = 4000;
     private const MAX_SOURCES = 5;
@@ -412,7 +413,7 @@ final class ExternalResearchService
      *
      * @return array<string, mixed>
      */
-    public function confirmInlineResearch(string $technicalSummary, int $userId): array
+    public function confirmInlineResearch(string $technicalSummary, int $userId, array $providerPost = []): array
     {
         if (!$this->pluginConfigService->isConfigured() || !$this->tablesReady()) {
             return ['type' => 'danger', 'message' => __('Pesquisa externa ainda não está disponível.', 'glpiintegaglpi')];
@@ -423,10 +424,318 @@ final class ExternalResearchService
             'technical_summary' => mb_substr($technicalSummary, 0, self::MAX_PROMPT_CHARS, 'UTF-8'),
             'trusted_sanitized_context' => '1',
         ];
+        foreach (['ai_provider', 'ai_model'] as $key) {
+            if (isset($providerPost[$key]) && is_scalar($providerPost[$key])) {
+                $post[$key] = (string) $providerPost[$key];
+            }
+        }
         $context = $this->buildContext($post);
         $post['preview_token'] = $this->previewToken($context);
 
         return $this->confirmResearch($post, $userId);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function providerCatalogForSmartHelp(): array
+    {
+        $catalog = $this->loadOperationalProviderCatalog();
+        $options = [[
+            'provider' => 'disabled',
+            'model' => '',
+            'label' => __('Manual / sem provider IA', 'glpiintegaglpi'),
+            'source' => 'manual',
+            'enabled' => true,
+            'disabled_reason' => '',
+        ]];
+
+        $local = is_array($catalog['local_ollama_available'] ?? null) ? $catalog['local_ollama_available'] : [];
+        $localModels = is_array($local['models'] ?? null) ? array_values(array_map('strval', $local['models'])) : [];
+        if ($localModels === [] && trim((string) ($local['default_model'] ?? '')) !== '') {
+            $localModels[] = (string) $local['default_model'];
+        }
+        foreach ($localModels as $model) {
+            $safeModel = $this->sanitizeModel($model);
+            if ($safeModel === '') {
+                continue;
+            }
+            $options[] = [
+                'provider' => 'ollama',
+                'model' => $safeModel,
+                'label' => sprintf('Ollama local / %s', $safeModel),
+                'source' => 'local',
+                'enabled' => !empty($local['ready']),
+                'disabled_reason' => !empty($local['ready']) ? '' : (string) ($local['blocked_reason'] ?? 'local_model_not_available'),
+            ];
+        }
+
+        foreach ([
+            ['rows' => $catalog['cloud_ready_providers'] ?? [], 'default_enabled' => true],
+            ['rows' => $catalog['cloud_blocked_providers'] ?? [], 'default_enabled' => false],
+        ] as $group) {
+            $rows = is_array($group['rows']) ? $group['rows'] : [];
+            foreach ($rows as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $provider = strtolower(trim((string) ($row['id'] ?? '')));
+                if ($provider === '' || $provider === 'disabled') {
+                    continue;
+                }
+                $models = is_array($row['models'] ?? null) ? array_values(array_map('strval', $row['models'])) : [];
+                foreach ($models as $model) {
+                    $safeModel = $this->sanitizeModel($model);
+                    if ($safeModel === '') {
+                        continue;
+                    }
+                    $enabled = !empty($row['ready_for_controlled_use']) && (bool) $group['default_enabled'];
+                    $options[] = [
+                        'provider' => $provider,
+                        'model' => $safeModel,
+                        'label' => trim((string) ($row['name'] ?? $provider)) . ' / ' . $safeModel,
+                        'source' => 'cloud',
+                        'enabled' => $enabled,
+                        'disabled_reason' => $enabled ? '' : (string) ($row['blocked_reason'] ?? 'provider_not_ready'),
+                    ];
+                }
+            }
+        }
+
+        $default = is_array($catalog['external_research_default'] ?? null) ? $catalog['external_research_default'] : [];
+
+        return [
+            'ok' => true,
+            'providers' => $options,
+            'default_provider' => (string) ($default['provider'] ?? 'disabled'),
+            'default_model' => $this->sanitizeModel((string) ($default['model'] ?? '')),
+            'cloud_requires_consent' => true,
+            'no_secret_exposure' => true,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $research
+     * @param array<string, mixed> $viewModel
+     * @return array<string, mixed>|null
+     */
+    public function recordExternalHelpHistory(
+        int $ticketId,
+        string $conversationId,
+        string $sanitizedContext,
+        array $research,
+        array $viewModel,
+        int $userId
+    ): ?array {
+        if ($ticketId <= 0 || !$this->tableExists(self::HELP_HISTORY_TABLE)) {
+            return null;
+        }
+
+        $result = is_array($research['research_result'] ?? null) ? $research['research_result'] : [];
+        $preview = is_array($research['preview'] ?? null) ? $research['preview'] : [];
+        $previewSanitized = is_array($preview['sanitized'] ?? null) ? $preview['sanitized'] : [];
+        $provider = $this->sanitizeProviderId((string) ($result['provider'] ?? 'disabled'));
+        if ($provider === '') {
+            $provider = 'disabled';
+        }
+        $model = $this->sanitizeModel((string) ($result['model'] ?? ''));
+        $contextHash = hash('sha256', implode('|', [
+            'ticket:' . $ticketId,
+            'conversation:' . $conversationId,
+            'provider:' . $provider,
+            'model:' . $model,
+            mb_substr($sanitizedContext, 0, 6000, 'UTF-8'),
+        ]));
+        $payloadHash = (string) ($previewSanitized['anonymized_payload_hash'] ?? '');
+        if ($payloadHash === '') {
+            $payloadHash = hash('sha256', mb_substr($sanitizedContext, 0, 6000, 'UTF-8'));
+        }
+        $detectedKinds = is_array($previewSanitized['detected_kinds'] ?? null) ? $previewSanitized['detected_kinds'] : [];
+
+        $stmt = $this->getPdo()->prepare(
+            'INSERT INTO public.' . self::HELP_HISTORY_TABLE . ' (
+                ticket_id, conversation_id, context_hash, provider, model, source_type, confidence_label, status,
+                diagnostic_hypothesis, customer_questions_json, technical_steps_json, commands_or_checks_json,
+                cautions_json, references_json, sanitized_context_hash, pii_detected, human_review_required,
+                created_by, created_at, updated_at
+            ) VALUES (
+                :ticket_id, :conversation_id, :context_hash, :provider, :model, :source_type, :confidence_label, :status,
+                :diagnostic_hypothesis, CAST(:customer_questions AS jsonb), CAST(:technical_steps AS jsonb), CAST(:commands_or_checks AS jsonb),
+                CAST(:cautions AS jsonb), CAST(:references AS jsonb), :sanitized_context_hash, :pii_detected, TRUE,
+                :created_by, NOW(), NOW()
+            )
+            RETURNING *'
+        );
+        $stmt->bindValue(':ticket_id', $ticketId, PDO::PARAM_INT);
+        $stmt->bindValue(':conversation_id', $conversationId !== '' ? $conversationId : null, $conversationId !== '' ? PDO::PARAM_STR : PDO::PARAM_NULL);
+        $stmt->bindValue(':context_hash', $contextHash);
+        $stmt->bindValue(':provider', $provider);
+        $stmt->bindValue(':model', $model);
+        $stmt->bindValue(':source_type', self::safeViewText((string) ($viewModel['source_type'] ?? $result['source'] ?? 'external_ai_no_sources'), 80));
+        $stmt->bindValue(':confidence_label', self::safeViewText((string) ($viewModel['confidence_label'] ?? 'baixa'), 40));
+        $stmt->bindValue(':status', self::safeViewText((string) ($result['status'] ?? $research['type'] ?? 'completed'), 40));
+        $stmt->bindValue(':diagnostic_hypothesis', self::safeViewText((string) ($viewModel['diagnostic_hypothesis'] ?? ''), 2200));
+        $stmt->bindValue(':customer_questions', $this->json($this->safeList($viewModel['customer_questions'] ?? [])));
+        $stmt->bindValue(':technical_steps', $this->json($this->safeList($viewModel['technical_steps'] ?? [])));
+        $stmt->bindValue(':commands_or_checks', $this->json($this->safeList($viewModel['commands_or_checks'] ?? [])));
+        $stmt->bindValue(':cautions', $this->json($this->safeList($viewModel['cautions'] ?? [])));
+        $stmt->bindValue(':references', $this->json($this->safeList($viewModel['references'] ?? [])));
+        $stmt->bindValue(':sanitized_context_hash', $payloadHash);
+        $stmt->bindValue(':pii_detected', $detectedKinds !== [], PDO::PARAM_BOOL);
+        $stmt->bindValue(':created_by', $userId > 0 ? $userId : null, $userId > 0 ? PDO::PARAM_INT : PDO::PARAM_NULL);
+        $stmt->execute();
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (is_array($row)) {
+            $this->audit('EXTERNAL_HELP_HISTORY_RECORDED', (string) ($research['request_id'] ?? null), $userId, [
+                'ticket_id' => $ticketId,
+                'conversation_id_hash' => $conversationId !== '' ? hash('sha256', $conversationId) : '',
+                'history_id' => (int) ($row['id'] ?? 0),
+                'provider' => $provider,
+                'model_hash' => hash('sha256', $model),
+                'sanitized_context_hash' => $payloadHash,
+            ]);
+
+            return $this->externalHelpHistoryRowToViewModel($row);
+        }
+
+        return null;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function listExternalHelpHistory(int $ticketId, string $conversationId = ''): array
+    {
+        if ($ticketId <= 0 || !$this->tableExists(self::HELP_HISTORY_TABLE)) {
+            return [];
+        }
+
+        $sql = 'SELECT * FROM public.' . self::HELP_HISTORY_TABLE . ' WHERE ticket_id = :ticket_id';
+        if ($conversationId !== '') {
+            $sql .= ' AND (conversation_id = :conversation_id OR conversation_id IS NULL OR conversation_id = \'\')';
+        }
+        $sql .= ' ORDER BY created_at DESC, id DESC LIMIT 20';
+        $stmt = $this->getPdo()->prepare($sql);
+        $stmt->bindValue(':ticket_id', $ticketId, PDO::PARAM_INT);
+        if ($conversationId !== '') {
+            $stmt->bindValue(':conversation_id', $conversationId);
+        }
+        $stmt->execute();
+        $items = [];
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            if (is_array($row)) {
+                $items[] = $this->externalHelpHistoryRowToViewModel($row);
+            }
+        }
+
+        return $items;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function createKbCandidateFromExternalHistory(int $ticketId, int $historyId, int $userId): array
+    {
+        if ($ticketId <= 0 || $historyId <= 0) {
+            return ['ok' => false, 'status' => 'invalid_history', 'message' => __('Histórico de ajuda externa inválido.', 'glpiintegaglpi')];
+        }
+        if (!$this->tableExists(self::HELP_HISTORY_TABLE) || !$this->tableExists(self::KB_CANDIDATES_TABLE)) {
+            return ['ok' => false, 'status' => 'schema_pending', 'message' => __('Schema de KB pendente para gerar candidato.', 'glpiintegaglpi')];
+        }
+
+        $history = $this->fetchExternalHelpHistory($ticketId, $historyId);
+        if ($history === null) {
+            return ['ok' => false, 'status' => 'history_not_found', 'message' => __('Histórico de ajuda externa não encontrado para este chamado.', 'glpiintegaglpi')];
+        }
+
+        $ticket = new \Ticket();
+        if (!$ticket->getFromDB($ticketId)) {
+            return ['ok' => false, 'status' => 'ticket_not_found', 'message' => __('Chamado não encontrado.', 'glpiintegaglpi')];
+        }
+        $categoryId = (int) ($ticket->fields['itilcategories_id'] ?? 0);
+        if ($categoryId <= 0) {
+            return ['ok' => false, 'status' => 'category_required', 'message' => __('Defina a categoria do chamado antes de gerar o candidato KB.', 'glpiintegaglpi')];
+        }
+        $categoryName = (string) \Dropdown::getDropdownName('glpi_itilcategories', $categoryId);
+        $vm = is_array($history['view_model'] ?? null) ? $history['view_model'] : [];
+        $title = self::safeViewText((string) ($vm['title'] ?? 'Candidato KB a partir de ajuda externa'), 180);
+        $diagnostic = self::safeViewText((string) ($vm['diagnostic_hypothesis'] ?? ''), 2200);
+        $steps = $this->safeList($vm['technical_steps'] ?? []);
+        $questions = $this->safeList($vm['customer_questions'] ?? []);
+        $commands = $this->safeList($vm['commands_or_checks'] ?? []);
+        $cautions = $this->safeList($vm['cautions'] ?? []);
+        $references = $this->safeList($vm['references'] ?? []);
+        $content = $this->buildKbDraftMarkdown($title, $categoryName, $diagnostic, $questions, $steps, $commands, $cautions, $references);
+        $candidateKey = 'external_history:' . $historyId . ':' . substr(hash('sha256', $content), 0, 16);
+        $inputHash = hash('sha256', 'ticket:' . $ticketId . '|history:' . $historyId . '|' . $content);
+        $confidenceScore = $this->confidenceScoreFromLabel((string) ($history['confidence_label'] ?? 'baixa'));
+
+        $stmt = $this->getPdo()->prepare(
+            'INSERT INTO public.' . self::KB_CANDIDATES_TABLE . ' (
+                candidate_key, input_hash, status, article_type, title, content_markdown, problem_pattern,
+                symptoms_json, probable_cause, recommended_procedure_json, checklist_json, humanized_customer_response,
+                tags_json, category_suggestion, related_native_kb_json, possible_duplicate, duplicate_reason,
+                source_pattern_ids_json, source_insight_ids_json, evidence_hashes_json, evidence_summary_sanitized,
+                confidence_score, limitations_json, created_by_glpi_user_id, review_notes,
+                source_external_history_id, glpi_ticket_id, glpi_category_id, glpi_category_name, created_at, updated_at
+            ) VALUES (
+                :candidate_key, :input_hash, \'suggested\', \'procedimento_tecnico\', :title, :content_markdown, :problem_pattern,
+                CAST(:symptoms AS jsonb), :probable_cause, CAST(:recommended_procedure AS jsonb), CAST(:checklist AS jsonb), :humanized_customer_response,
+                CAST(:tags AS jsonb), :category_suggestion, \'[]\'::jsonb, FALSE, NULL,
+                \'[]\'::jsonb, \'[]\'::jsonb, CAST(:evidence_hashes AS jsonb), :evidence_summary_sanitized,
+                :confidence_score, CAST(:limitations AS jsonb), :created_by, :review_notes,
+                :source_external_history_id, :glpi_ticket_id, :glpi_category_id, :glpi_category_name, NOW(), NOW()
+            )
+            ON CONFLICT (candidate_key) DO UPDATE SET updated_at = NOW()
+            RETURNING id, status'
+        );
+        $stmt->bindValue(':candidate_key', $candidateKey);
+        $stmt->bindValue(':input_hash', $inputHash);
+        $stmt->bindValue(':title', $title);
+        $stmt->bindValue(':content_markdown', $content);
+        $stmt->bindValue(':problem_pattern', $diagnostic);
+        $stmt->bindValue(':symptoms', $this->json($questions));
+        $stmt->bindValue(':probable_cause', $diagnostic);
+        $stmt->bindValue(':recommended_procedure', $this->json($steps));
+        $stmt->bindValue(':checklist', $this->json(array_merge($questions, $commands)));
+        $stmt->bindValue(':humanized_customer_response', '');
+        $stmt->bindValue(':tags', $this->json(['smarthelp', 'ajuda_externa', $categoryName]));
+        $stmt->bindValue(':category_suggestion', $categoryName);
+        $stmt->bindValue(':evidence_hashes', $this->json([(string) ($history['sanitized_context_hash'] ?? '')]));
+        $stmt->bindValue(':evidence_summary_sanitized', $diagnostic);
+        $stmt->bindValue(':confidence_score', $confidenceScore, PDO::PARAM_INT);
+        $stmt->bindValue(':limitations', $this->json($cautions !== [] ? $cautions : ['Revisão humana obrigatória antes de publicar.']));
+        $stmt->bindValue(':created_by', $userId > 0 ? $userId : null, $userId > 0 ? PDO::PARAM_INT : PDO::PARAM_NULL);
+        $stmt->bindValue(':review_notes', 'Candidato criado manualmente a partir do histórico de ajuda externa #' . $historyId . '. Publicação não automática.');
+        $stmt->bindValue(':source_external_history_id', $historyId, PDO::PARAM_INT);
+        $stmt->bindValue(':glpi_ticket_id', $ticketId, PDO::PARAM_INT);
+        $stmt->bindValue(':glpi_category_id', $categoryId, PDO::PARAM_INT);
+        $stmt->bindValue(':glpi_category_name', $categoryName);
+        $stmt->execute();
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $candidateId = is_array($row) ? (int) ($row['id'] ?? 0) : 0;
+
+        $this->audit('EXTERNAL_HELP_KB_CANDIDATE_CREATED', null, $userId, [
+            'ticket_id' => $ticketId,
+            'history_id' => $historyId,
+            'candidate_id' => $candidateId,
+            'glpi_category_id' => $categoryId,
+            'glpi_category_name_hash' => hash('sha256', $categoryName),
+            'no_autopublish' => true,
+        ]);
+
+        return [
+            'ok' => true,
+            'status' => 'draft_manual_review',
+            'candidate_id' => $candidateId,
+            'source_external_history_id' => $historyId,
+            'glpi_category_id' => $categoryId,
+            'glpi_category_name' => $categoryName,
+            'publication_status' => 'draft/manual_review',
+            'message' => __('Candidato KB criado para revisão manual com categoria do chamado vinculada.', 'glpiintegaglpi'),
+            'no_autopublish' => true,
+        ];
     }
 
     /**
@@ -1531,6 +1840,164 @@ final class ExternalResearchService
         $stmt->execute();
     }
 
+    /**
+     * @param mixed $value
+     * @return list<string>
+     */
+    private function safeList($value): array
+    {
+        if (!is_array($value)) {
+            return [];
+        }
+
+        $items = [];
+        foreach ($value as $item) {
+            if (is_array($item)) {
+                $json = json_encode($item, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                $item = $json === false ? '' : $json;
+            }
+            if (!is_scalar($item)) {
+                continue;
+            }
+            $text = self::safeViewText((string) $item, 1000);
+            if ($text !== '') {
+                $items[] = $text;
+            }
+        }
+
+        return array_values(array_slice($items, 0, 20));
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private function externalHelpHistoryRowToViewModel(array $row): array
+    {
+        $viewModel = [
+            'title' => 'Ajuda externa por IA — sugestão, revise antes de aplicar',
+            'diagnostic_hypothesis' => self::safeViewText((string) ($row['diagnostic_hypothesis'] ?? ''), 2200),
+            'customer_questions' => $this->decodeJsonList($row['customer_questions_json'] ?? '[]'),
+            'technical_steps' => $this->decodeJsonList($row['technical_steps_json'] ?? '[]'),
+            'commands_or_checks' => $this->decodeJsonList($row['commands_or_checks_json'] ?? '[]'),
+            'cautions' => $this->decodeJsonList($row['cautions_json'] ?? '[]'),
+            'references' => $this->decodeJsonList($row['references_json'] ?? '[]'),
+            'confidence_label' => self::safeViewText((string) ($row['confidence_label'] ?? 'baixa'), 40),
+            'source_type' => self::safeViewText((string) ($row['source_type'] ?? 'external_ai_no_sources'), 80),
+            'source_warning' => 'Revisão humana obrigatória. Nada é enviado ao cliente nem altera o chamado automaticamente.',
+            'can_create_kb_candidate' => true,
+        ];
+
+        return [
+            'id' => (int) ($row['id'] ?? 0),
+            'ticket_id' => (int) ($row['ticket_id'] ?? 0),
+            'conversation_id' => (string) ($row['conversation_id'] ?? ''),
+            'provider' => self::safeViewText((string) ($row['provider'] ?? 'disabled'), 80),
+            'model' => self::safeViewText((string) ($row['model'] ?? ''), 120),
+            'source_type' => $viewModel['source_type'],
+            'confidence_label' => $viewModel['confidence_label'],
+            'status' => self::safeViewText((string) ($row['status'] ?? 'completed'), 40),
+            'created_at' => (string) ($row['created_at'] ?? ''),
+            'updated_at' => (string) ($row['updated_at'] ?? ''),
+            'human_review_required' => true,
+            'pii_detected' => (bool) ($row['pii_detected'] ?? false),
+            'sanitized_context_hash' => (string) ($row['sanitized_context_hash'] ?? ''),
+            'view_model' => $viewModel,
+        ];
+    }
+
+    /**
+     * @param mixed $value
+     * @return list<string>
+     */
+    private function decodeJsonList($value): array
+    {
+        if (is_array($value)) {
+            return $this->safeList($value);
+        }
+        $decoded = json_decode((string) $value, true);
+
+        return is_array($decoded) ? $this->safeList($decoded) : [];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function fetchExternalHelpHistory(int $ticketId, int $historyId): ?array
+    {
+        $stmt = $this->getPdo()->prepare(
+            'SELECT * FROM public.' . self::HELP_HISTORY_TABLE . ' WHERE id = :id AND ticket_id = :ticket_id LIMIT 1'
+        );
+        $stmt->bindValue(':id', $historyId, PDO::PARAM_INT);
+        $stmt->bindValue(':ticket_id', $ticketId, PDO::PARAM_INT);
+        $stmt->execute();
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        return is_array($row) ? $this->externalHelpHistoryRowToViewModel($row) : null;
+    }
+
+    /**
+     * @param list<string> $questions
+     * @param list<string> $steps
+     * @param list<string> $commands
+     * @param list<string> $cautions
+     * @param list<string> $references
+     */
+    private function buildKbDraftMarkdown(
+        string $title,
+        string $categoryName,
+        string $diagnostic,
+        array $questions,
+        array $steps,
+        array $commands,
+        array $cautions,
+        array $references
+    ): string {
+        $sections = [
+            '# ' . $title,
+            '',
+            '**Categoria GLPI:** ' . $categoryName,
+            '',
+            '## Problema / diagnostico',
+            $diagnostic !== '' ? $diagnostic : 'Diagnostico pendente de revisão técnica.',
+            '',
+            $this->markdownList('Perguntas ao cliente', $questions),
+            $this->markdownList('Procedimento técnico sugerido', $steps),
+            $this->markdownList('Comandos e verificações', $commands),
+            $this->markdownList('Riscos e cuidados', $cautions),
+            $this->markdownList('Referências para revisão', $references),
+            '',
+            '> Rascunho gerado para revisão humana. Não publicar sem validação técnica.',
+        ];
+
+        return trim(implode("\n", array_filter($sections, static fn($section): bool => $section !== '')));
+    }
+
+    /**
+     * @param list<string> $items
+     */
+    private function markdownList(string $title, array $items): string
+    {
+        if ($items === []) {
+            return '';
+        }
+
+        return '## ' . $title . "\n" . implode("\n", array_map(static fn(string $item): string => '- ' . $item, $items));
+    }
+
+    private function confidenceScoreFromLabel(string $label): int
+    {
+        $label = strtolower($label);
+        if ($this->contains($label, 'alta')) {
+            return 85;
+        }
+        if ($this->contains($label, 'media') || $this->contains($label, 'média')) {
+            return 65;
+        }
+
+        return 45;
+    }
+
     private function tablesReady(): bool
     {
         foreach ([self::SOURCE_TABLE, self::REQUEST_TABLE, self::RESULT_TABLE, self::CANDIDATE_TABLE, self::REVIEW_TABLE] as $table) {
@@ -1662,6 +2129,16 @@ final class ExternalResearchService
         }
 
         return preg_match('/^[A-Za-z0-9_.:\/-]+$/', $model) === 1 ? $model : '';
+    }
+
+    private function sanitizeProviderId(string $provider): string
+    {
+        $provider = strtolower(trim($provider));
+        if ($provider === '' || strlen($provider) > 80) {
+            return '';
+        }
+
+        return preg_match('/^[a-z0-9_.:-]+$/', $provider) === 1 ? $provider : '';
     }
 
     private function containsSensitiveData(string $text): bool

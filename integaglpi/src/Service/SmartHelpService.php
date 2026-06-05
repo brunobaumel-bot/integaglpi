@@ -793,16 +793,22 @@ final class SmartHelpService
      * Cloud research — ONLY with explicit human consent.
      * @return array<string, mixed>
      */
-    public function externalResearch(int $ticketId, string $context, bool $humanConsent): array
+    /**
+     * @param array<string, string> $providerSelection
+     * @return array<string, mixed>
+     */
+    public function externalResearch(int $ticketId, string $context, bool $humanConsent, string $conversationId = '', array $providerSelection = []): array
     {
         if (!$humanConsent) {
             return ['ok' => false, 'status' => 'no_consent', 'message' => 'Confirmação do técnico necessária.'];
         }
 
         try {
-            $research = (new ExternalResearchService($this->config))->confirmInlineResearch(
+            $externalResearchService = new ExternalResearchService($this->config);
+            $research = $externalResearchService->confirmInlineResearch(
                 mb_substr($context, 0, 6000, 'UTF-8'),
-                Plugin::getCurrentUserId()
+                Plugin::getCurrentUserId(),
+                $providerSelection
             );
             $result = is_array($research['research_result'] ?? null) ? $research['research_result'] : [];
             $status = (string) ($result['status'] ?? ($research['type'] ?? 'failed'));
@@ -812,6 +818,18 @@ final class SmartHelpService
                 'status' => $status,
                 'source_type' => $summary !== '' ? 'external_ai_no_sources' : '',
             ]);
+            $historyItem = null;
+            if (($research['type'] ?? '') === 'success') {
+                $historyItem = $externalResearchService->recordExternalHelpHistory(
+                    $ticketId,
+                    $conversationId,
+                    $context,
+                    $research,
+                    $viewModel,
+                    Plugin::getCurrentUserId()
+                );
+            }
+            $history = $externalResearchService->listExternalHelpHistory($ticketId, $conversationId);
 
             return [
                 'ok' => ($research['type'] ?? '') === 'success',
@@ -819,6 +837,9 @@ final class SmartHelpService
                 'message' => $summary !== '' ? $summary : $message,
                 'summary' => $summary,
                 'external_help_view_model' => $viewModel,
+                'history_item' => $historyItem,
+                'history' => $history,
+                'history_persisted' => $historyItem !== null,
                 'provider' => (string) ($result['provider'] ?? ''),
                 'model' => (string) ($result['model'] ?? ''),
                 'source' => (string) ($result['source'] ?? 'external_research_controlled_php'),
@@ -837,6 +858,58 @@ final class SmartHelpService
                 'no_auto_send' => true,
                 'no_auto_publish' => true,
                 'read_only' => true,
+            ];
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function listExternalHistory(int $ticketId, string $conversationId = ''): array
+    {
+        try {
+            $service = new ExternalResearchService($this->config);
+
+            return [
+                'ok' => true,
+                'history' => $service->listExternalHelpHistory($ticketId, $conversationId),
+                'provider_catalog' => $service->providerCatalogForSmartHelp(),
+                'read_only' => true,
+                'no_auto_send' => true,
+                'no_auto_publish' => true,
+            ];
+        } catch (\Throwable $exception) {
+            error_log('[integaglpi][smart_help][external_history] ' . mb_substr($exception->getMessage(), 0, 160, 'UTF-8'));
+
+            return [
+                'ok' => false,
+                'history' => [],
+                'provider_catalog' => ['ok' => false, 'providers' => []],
+                'message' => __('Histórico de ajuda externa indisponível.', 'glpiintegaglpi'),
+                'read_only' => true,
+            ];
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function createKbCandidateFromExternalHistory(int $ticketId, int $historyId): array
+    {
+        try {
+            return (new ExternalResearchService($this->config))->createKbCandidateFromExternalHistory(
+                $ticketId,
+                $historyId,
+                Plugin::getCurrentUserId()
+            );
+        } catch (\Throwable $exception) {
+            error_log('[integaglpi][smart_help][external_history_kb] ' . mb_substr($exception->getMessage(), 0, 160, 'UTF-8'));
+
+            return [
+                'ok' => false,
+                'status' => 'failed',
+                'message' => __('Não foi possível gerar o candidato KB agora.', 'glpiintegaglpi'),
+                'no_autopublish' => true,
             ];
         }
     }

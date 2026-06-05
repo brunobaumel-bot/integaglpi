@@ -148,7 +148,17 @@ try {
     }
 
     $action = trim((string) ($_POST['smart_action'] ?? $_POST['whatsapp_action'] ?? 'smart_help'));
-    $allowedActions = ['smart_help', 'summarize_ticket', 'local_search', 'kb_feedback', 'suggest_kb', 'prepare_external_context', 'smart_external'];
+    $allowedActions = [
+        'smart_help',
+        'summarize_ticket',
+        'local_search',
+        'kb_feedback',
+        'suggest_kb',
+        'prepare_external_context',
+        'smart_external',
+        'list_external_history',
+        'create_kb_candidate_from_external_history',
+    ];
     if (!in_array($action, $allowedActions, true)) {
         integaglpiSmartHelpJsonResponse([
             'ok' => false,
@@ -171,7 +181,7 @@ try {
 
     // Both cloud-flow steps (preview AND send) require the strong UPDATE permission.
     // Consent is enforced only on the actual send below.
-    if (in_array($action, ['prepare_external_context', 'smart_external'], true) && !Plugin::canUpdate()) {
+    if (in_array($action, ['prepare_external_context', 'smart_external', 'create_kb_candidate_from_external_history'], true) && !Plugin::canUpdate()) {
         integaglpiSmartHelpJsonResponse([
             'ok' => false,
             'error' => 'forbidden',
@@ -251,6 +261,26 @@ try {
         exit;
     }
 
+    if ($action === 'list_external_history') {
+        integaglpiSmartHelpJsonResponse([
+            'ok' => true,
+            'result' => $smartHelp->listExternalHistory(
+                $ticketId,
+                trim((string) ($_POST['conversation_id'] ?? ''))
+            ),
+        ], 200);
+        exit;
+    }
+
+    if ($action === 'create_kb_candidate_from_external_history') {
+        $historyId = (int) ($_POST['history_id'] ?? 0);
+        integaglpiSmartHelpJsonResponse([
+            'ok' => true,
+            'result' => $smartHelp->createKbCandidateFromExternalHistory($ticketId, $historyId),
+        ], 200);
+        exit;
+    }
+
     if ($action === 'prepare_external_context') {
         // Step 1: cloud-safe rewrite/preview. No cloud send, no consent here.
         // Base is the technician-edited LOCAL SUMMARY only — never the raw ticket
@@ -291,7 +321,16 @@ try {
         $externalSummary = mb_substr($currentSummary, 0, 2000, 'UTF-8');
         integaglpiSmartHelpJsonResponse([
             'ok' => true,
-            'result' => $smartHelp->externalResearch($ticketId, $externalSummary, $consent),
+            'result' => $smartHelp->externalResearch(
+                $ticketId,
+                $externalSummary,
+                $consent,
+                trim((string) ($_POST['conversation_id'] ?? '')),
+                [
+                    'ai_provider' => trim((string) ($_POST['ai_provider'] ?? '')),
+                    'ai_model' => trim((string) ($_POST['ai_model'] ?? '')),
+                ]
+            ),
         ], 200);
         exit;
     }

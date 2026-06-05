@@ -679,6 +679,7 @@
 
   function handleSmartHelpClick(button, panel, action) {
     if (!panel || panel.dataset.smartHelpGlobalBusy === '1') return;
+    if (panel.dataset.smartHelpJsReady === '1') return;
     if (!panel.dataset.actionUrl) {
       smartHelpPanelMessage(panel, 'Ajuda Inteligente não iniciou: endpoint ausente.', 'warning');
       return;
@@ -712,6 +713,12 @@
       extra.sanitized_context = sanitizedContext;
       extra.technical_summary = sanitizedContext;
       extra.consent = '1';
+      extra.conversation_id = panel.dataset.conversationId || '';
+      const providerSelect = panel.querySelector('.js-smart-help-provider');
+      const providerValue = providerSelect ? String(providerSelect.value || 'disabled|') : 'disabled|';
+      const providerParts = providerValue.split('|');
+      extra.ai_provider = providerParts[0] || 'disabled';
+      extra.ai_model = providerParts.slice(1).join('|') || '';
     }
 
     smartHelpRefreshCsrf(panel)
