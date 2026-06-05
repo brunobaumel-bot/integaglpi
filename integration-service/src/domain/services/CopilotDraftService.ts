@@ -128,7 +128,7 @@ export class CopilotDraftService {
     }
     const qualityResult = this.applyDraftSourceLabel(effectiveConfig, this.applyLocalKnowledgeFirst(
       context,
-      this.applySupportResponseQuality(context, result, input.tone),
+      this.applyAssistiveReplyContract(context, result, input.tone),
     ));
     const draftHash = this.hash(qualityResult.draftResponse);
 
@@ -371,13 +371,9 @@ export class CopilotDraftService {
       : '';
 
     return {
-      draftResponse: 'Olá! Obrigado pelas informações. Vou revisar o caso com base no histórico e nos procedimentos disponíveis e retorno com a orientação mais adequada. Se puder, confirme também qualquer mensagem de erro que aparece na tela.',
+      draftResponse: this.buildAssistiveCustomerDraft(context),
       tone,
-      kbReferences: context.kbArticles.slice(0, 3).map((article) => ({
-        articleId: article.articleId,
-        title: article.title,
-        internalUrl: article.internalUrl,
-      })),
+      kbReferences: [],
       assumptions: ['Rascunho gerado em modo dry-run ativo para revisão humana.'],
       missingInformation: ['Confirmar evidências finais antes de enviar ao cliente.'],
       safetyWarnings: ['Nenhuma mensagem foi enviada automaticamente.'],
@@ -393,75 +389,49 @@ export class CopilotDraftService {
     };
   }
 
-  private applySupportResponseQuality(
+  private applyAssistiveReplyContract(
     context: CopilotContext,
     result: CopilotDraftResult,
     tone: CopilotTone,
   ): CopilotDraftResult {
-    const detectedIssues = this.detectSupportIssues(context);
-    let draftResponse = this.compactDraftResponse(result.draftResponse);
-    draftResponse = this.removeTemplatePhrases(draftResponse, detectedIssues);
-    draftResponse = this.ensureIssueCoverage(draftResponse, detectedIssues);
-    draftResponse = this.ensureNextAction(draftResponse, detectedIssues);
-    draftResponse = this.compactDraftResponse(draftResponse);
+    const missingInformation = this.detectMissingInformation(context);
+    const draftResponse = this.buildAssistiveCustomerDraft(context);
 
     return {
       ...result,
       draftResponse,
+      kbReferences: [],
       tone,
       missingInformation: this.mergeUnique(
-        detectedIssues.flatMap((issue) => issue.missingInformation),
+        missingInformation,
         result.missingInformation,
         6,
       ),
       technicianChecklist: this.mergeUnique([
-        'Conferir se o rascunho responde ao caso real, não a um modelo genérico.',
-        'Validar dados mínimos antes de prometer execução.',
-        'Enviar a resposta manualmente somente após revisão.',
+        'Conferir tom cordial e aderência ao relato atual.',
+        'Não incluir solução técnica no Copiloto; usar a Ajuda Inteligente para diagnóstico.',
+        'Enviar manualmente somente após revisão.',
       ], result.technicianChecklist, 8),
-      assumptions: detectedIssues.length >= 2
-        ? this.mergeUnique(['Cliente informou múltiplas demandas no mesmo atendimento.'], result.assumptions, 6)
-        : result.assumptions,
+      assumptions: this.mergeUnique([
+        'Copiloto limitado a comunicação com o cliente, sem sugestão de solução técnica.',
+      ], result.assumptions, 6),
+      safetyWarnings: this.mergeUnique([
+        'O Copiloto não executa ação nem define solução; diagnóstico fica na Ajuda Inteligente.',
+      ], result.safetyWarnings, 6),
+      confidenceScore: Math.min(result.confidenceScore, 45),
     };
   }
 
   private applyLocalKnowledgeFirst(context: CopilotContext, result: CopilotDraftResult): CopilotDraftResult {
-    const localReferences = context.kbArticles.slice(0, COPILOT_MAX_KB_ARTICLES).map((article) => ({
-      articleId: article.articleId,
-      title: sanitizeAiQualityText(article.title).slice(0, 180),
-      internalUrl: sanitizeAiQualityText(article.internalUrl).slice(0, 300),
-    }));
-    const seenReferences = new Set<string>();
-    const kbReferences = [...localReferences, ...result.kbReferences]
-      .map((reference) => ({
-        articleId: Number(reference.articleId),
-        title: sanitizeAiQualityText(reference.title).slice(0, 180),
-        internalUrl: sanitizeAiQualityText(reference.internalUrl).slice(0, 300),
-      }))
-      .filter((reference) => {
-        const key = `${reference.articleId}:${reference.internalUrl}`;
-        if (reference.title === '' || seenReferences.has(key)) {
-          return false;
-        }
-        seenReferences.add(key);
-        return true;
-      })
-      .slice(0, COPILOT_MAX_KB_ARTICLES);
-
     return {
       ...result,
-      kbReferences,
-      assumptions: context.kbArticles.length > 0
-        ? this.mergeUnique(['KB local consultada antes da sugestão de resposta.'], result.assumptions, 6)
-        : result.assumptions,
+      kbReferences: [],
+      assumptions: result.assumptions,
       safetyWarnings: this.mergeUnique([
         'Nenhuma mensagem foi enviada automaticamente.',
-        context.kbArticles.length > 0
-          ? 'Valide se os artigos da KB local se aplicam ao caso antes de enviar.'
-          : 'Sem artigo de KB local suficiente; revise tecnicamente antes de enviar.',
+        'Copiloto não usa KB como solução; use a Ajuda Inteligente para pesquisa técnica.',
       ], result.safetyWarnings, 6),
       technicianChecklist: this.mergeUnique([
-        'Conferir artigos da KB local relacionados antes de enviar.',
         'Usar a IA apenas como rascunho revisável pelo técnico.',
       ], result.technicianChecklist, 8),
       noAutoSend: true,
@@ -479,7 +449,7 @@ export class CopilotDraftService {
 
     return {
       ...result,
-      sourceType: result.kbReferences.length > 0 ? 'kb' : config.provider === 'ollama' && !config.dryRun ? 'ai' : 'fallback',
+      sourceType: config.provider === 'ollama' && !config.dryRun ? 'ai' : 'fallback',
       sourceName: result.kbReferences[0]?.title ?? source.replace(/^\[|\]$/g, ''),
       confidence: result.confidenceScore >= 70 ? 'high' : result.confidenceScore >= 40 ? 'medium' : 'low',
       warnings: result.safetyWarnings,
@@ -488,6 +458,43 @@ export class CopilotDraftService {
         `Origem do rascunho: ${source}`,
       ], result.safetyWarnings, 6),
     };
+  }
+
+  private buildAssistiveCustomerDraft(context: CopilotContext): string {
+    const text = this.inboundContextText(context);
+    const normalized = this.normalizeForDetection(text);
+    if (this.isGenericTestContext(normalized)) {
+      return 'Olá! Obrigado pelo contato. Para eu te ajudar corretamente, você pode me enviar mais detalhes do que deseja testar ou qual comportamento precisa validar? Se aparecer algum erro, envie também o texto da mensagem ou um print.';
+    }
+    if (/\bwindows\b/.test(normalized) && /\b(ativacao|ativar|ativa|licenca|license)\b/.test(normalized)) {
+      return 'Olá! Entendi que o Windows está exibindo uma mensagem relacionada à ativação. Para analisarmos com segurança, você pode enviar o texto exato da mensagem ou um print, informar a edição do Windows e se houve alguma mudança recente no equipamento ou na licença?';
+    }
+
+    return 'Olá! Obrigado pelas informações. Vou revisar o caso com cuidado. Para ajudar no diagnóstico, você pode confirmar quando o problema começou, se aparece alguma mensagem de erro e se isso ocorre sempre ou apenas em alguns momentos?';
+  }
+
+  private inboundContextText(context: CopilotContext): string {
+    return context.messages
+      .filter((message) => message.direction.toLowerCase() !== 'outbound')
+      .map((message) => message.text)
+      .join(' ');
+  }
+
+  private isGenericTestContext(normalized: string): boolean {
+    const words = normalized.split(/\s+/).filter(Boolean);
+    return words.length <= 4 && /\bteste\b/.test(normalized);
+  }
+
+  private detectMissingInformation(context: CopilotContext): string[] {
+    const text = this.normalizeForDetection(this.inboundContextText(context));
+    if (this.isGenericTestContext(text)) {
+      return ['descrição do que precisa ser testado', 'mensagem de erro, se houver', 'sistema ou tela afetada'];
+    }
+    if (/\bwindows\b/.test(text) && /\b(ativacao|ativar|ativa|licenca|license)\b/.test(text)) {
+      return ['texto exato da mensagem de ativação', 'edição do Windows', 'tipo de licença ou vínculo corporativo', 'mudanças recentes no equipamento'];
+    }
+
+    return ['mensagem de erro exata, se houver', 'quando começou', 'frequência e impacto'];
   }
 
   private draftSourceLabel(config: Required<CopilotDraftConfig> & { timeoutMs?: number }): string {
@@ -683,10 +690,12 @@ export class CopilotDraftService {
       .filter((line) => line !== '');
   }
 
-  private mergeUnique(primary: string[], secondary: string[], maxItems: number): string[] {
+  private mergeUnique(primary: string[] = [], secondary: string[] = [], maxItems: number): string[] {
     const seen = new Set<string>();
     const merged: string[] = [];
-    for (const item of [...primary, ...secondary]) {
+    const safePrimary = Array.isArray(primary) ? primary : [];
+    const safeSecondary = Array.isArray(secondary) ? secondary : [];
+    for (const item of [...safePrimary, ...safeSecondary]) {
       const clean = sanitizeAiQualityText(item).replace(/\s+/g, ' ').trim();
       const key = this.normalizeForDetection(clean);
       if (clean === '' || seen.has(key)) {

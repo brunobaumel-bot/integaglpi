@@ -344,7 +344,7 @@ final class AiConfigViewService
             $localDefaultModel = (string) $localModels[0];
         }
 
-        $preferredCloud = ['deepseek', 'openai', 'xai'];
+        $preferredCloud = ['deepseek', 'openai', 'xai', 'gemini', 'anthropic'];
         $externalDefault = ['provider' => 'disabled', 'model' => '', 'source' => 'manual_disabled'];
         foreach ($preferredCloud as $preferredProvider) {
             foreach ($readyCloud as $provider) {

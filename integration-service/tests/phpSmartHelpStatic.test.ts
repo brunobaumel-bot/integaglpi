@@ -7,6 +7,18 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const read = (p: string): Promise<string> => readFile(resolve(repoRoot, p), 'utf8');
 
 describe('PHP Smart Help consumer + native KB search (static safety)', () => {
+  it('Copilot UI never surfaces raw COPILOT_DRAFT_INVALID_JSON to the technician', async () => {
+    const front = await read('integaglpi/front/copilot.draft.php');
+    const tab = await read('integaglpi/templates/ticket_tab.php');
+
+    expect(front).toContain("integaglpiCopilotUserMessage($rawMessage)");
+    expect(front).toContain("$response['body']['message'] = $displayMessage");
+    expect(front).toContain("A IA respondeu em formato inválido. Tente novamente.");
+    expect(tab).toContain('function copilotFriendlyMessage(message)');
+    expect(tab).toContain('COPILOT_DRAFT_(INVALID_JSON|INVALID_SHAPE|INVALID_ENUM|EMPTY)');
+    expect(tab).toContain('copilotStatus.textContent = copilotFriendlyMessage');
+  });
+
   it('SmartHelpService is read-only, consent-gated, RBAC-gated and never leaks the auth key', async () => {
     const svc = await read('integaglpi/src/Service/SmartHelpService.php');
 
@@ -55,6 +67,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
 
     // The dedicated endpoint keeps summary-only separate from the local-first search.
     expect(front).toContain("if ($action === 'summarize_ticket')");
+    expect(front).toContain('buildTicketContextSummary($ticket)');
     expect(front).toContain('summarizeTicket($ticketId, $summary, $wantAiSummary)');
     expect(front).toContain("if ($action === 'smart_help')");
     expect(front).toContain("if ($action === 'local_search')");
@@ -66,6 +79,39 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(summarizeBlock).not.toContain('localFirstAssist');
     expect(summarizeBlock).not.toContain('NativeKnowledgeBaseService');
     expect(summarizeBlock).not.toContain('prepareExternalContext');
+  });
+
+  it('SmartHelp summary context uses recent conversation messages before ticket title/content', async () => {
+    const svc = await read('integaglpi/src/Service/SmartHelpService.php');
+    const front = await read('integaglpi/front/smart.help.php');
+    const js = await read('integaglpi/js/ticket_ai_panel.js');
+
+    expect(front).toContain('buildTicketContextSummary($ticket)');
+    expect(svc).toContain('function buildTicketContextSummary');
+    expect(svc).toContain('buildRecentConversationMessageContext');
+    expect(svc).toContain('glpi_plugin_integaglpi_conversations');
+    expect(svc).toContain('glpi_plugin_integaglpi_messages');
+    expect(svc).toContain('WHERE glpi_ticket_id = :ticket_id');
+    expect(svc).toContain('Mensagens recentes da conversa atual');
+    expect(svc).toContain('$messageContext !== \'\'');
+    expect(js).toContain("panel.dataset.ticketId || '0'");
+    expect(js).toContain("panel.dataset.conversationId || 'none'");
+    expect(js).toContain('function contextHash(panel)');
+  });
+
+  it('SmartHelp enforces summary-only output and contextual KB relevance gates', async () => {
+    const svc = await read('integaglpi/src/Service/SmartHelpService.php');
+
+    expect(svc).toContain('function enforceSummaryContract');
+    expect(svc).toContain('Para solucionar|consulte o artigo|Base de Conhecimento');
+    expect(svc).toContain('function evaluateKbRelevance');
+    expect(svc).toContain('function hasConflictingKbDomain');
+    expect(svc).toContain('function isGenericTestContext');
+    expect(svc).toContain('function isWindowsActivationContext');
+    expect(svc).toContain('Foi informado apenas um teste do sistema');
+    expect(svc).toContain('Foi relatado problema no Windows com mensagem solicitando ativação');
+    expect(svc).toContain('Referência local candidata; baixa confiança, valide antes de usar');
+    expect(svc).toMatch(/logon\|login\|servidor\|dominio\|active directory\|ad/i);
   });
 
   it('external research never claims success / candidate without a usable answer', async () => {
@@ -101,6 +147,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(tab).toContain('js-smart-help-external');
     expect(tab).toContain('js-smart-help-suggest-kb');
     expect(tab).toContain('js-smart-help-technical-summary');
+    expect(tab).toContain('data-conversation-id');
     expect(tab).toContain('Resumo do chamado');
     expect(tab).toContain('Busca local');
     expect(tab).toContain('Pedir ajuda externa (nuvem)');
@@ -113,6 +160,18 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // Assets inlined only when the panel is visible.
     expect(tab).toContain('ticket_ai_panel.js');
     expect(tab).toContain('ticket_ai_panel.css');
+  });
+
+  it('ticket tab runtime layout places Copiloto above Ajuda Inteligente below reply controls', async () => {
+    const tab = await read('integaglpi/templates/ticket_tab.php');
+
+    expect(tab).toContain('js-integaglpi-tab-reply-send');
+    expect(tab).toContain('body.insertBefore(copilot, smartHelp)');
+    expect(tab).toContain('body.appendChild(assistant)');
+    expect(tab.indexOf('var smartHelp = card.querySelector')).toBeLessThan(tab.indexOf('body.insertBefore(copilot, smartHelp)'));
+    expect(tab.indexOf('body.insertBefore(copilot, smartHelp)')).toBeLessThan(tab.indexOf('body.appendChild(assistant)'));
+    expect(tab).toContain('js-integaglpi-copilot');
+    expect(tab).toContain('integaglpi-smart-help');
   });
 
   it('smart.help.php dedicated endpoint is JSON-only, CSRF-gated and read-only', async () => {
@@ -290,6 +349,10 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // ── PHP service: preview path is the dedicated preview endpoint ──
     expect(svc).toContain("/internal/glpi/ai/external-research/preview");
     expect(svc).toContain('function prepareExternalContext');
+    // Send path reuses the PHP controlled research engine because Node dynamic
+    // research intentionally has no cloud provider wired.
+    expect(svc).toContain('confirmInlineResearch(');
+    expect(svc).toContain('new ExternalResearchService($this->config)');
 
     // ── Node controller: cloud-safe rewrite returns cloud-safe text + safe flag, never raw, no cloud ──
     expect(node).toContain('createExternalResearchPreviewController');
@@ -307,13 +370,30 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // ── JS: step 1 calls prepare; step 2 (confirmed) calls smart_external with consent ──
     expect(js).toContain("post(panel, 'prepare_external_context'");
     expect(js).toContain('function handleExternalSend');
-    expect(js).toContain("post(panel, 'smart_external', { consent: '1', technical_summary: currentSummary(panel) }");
+    expect(js).toContain("var previewEl = panel.querySelector('.js-smart-help-external-preview')");
+    expect(js).toContain("sanitized_context: sanitizedContext");
+    expect(js).toContain("technical_summary: sanitizedContext");
     expect(js).toContain('js-smart-help-external-send');
     // Clear blocked / ready messaging — never a silent failure.
     expect(js).toContain('Contexto técnico para nuvem gerado a partir do resumo local');
     expect(js).toContain('Contexto técnico pronto para envio');
     expect(js).toContain('Bloqueado por PII');
     expect(js).toContain('Tipos removidos:');
+  });
+
+  it('SmartHelp inline external research uses Secret Vault providers supported by PHP', async () => {
+    const externalResearch = await read('integaglpi/src/Service/ExternalResearchService.php');
+    const aiConfig = await read('integaglpi/src/Service/AiConfigViewService.php');
+    const smartHelp = await read('integaglpi/src/Service/SmartHelpService.php');
+
+    expect(externalResearch).toContain('public function confirmInlineResearch');
+    expect(externalResearch).toContain("'trusted_sanitized_context' => '1'");
+    expect(externalResearch).toContain('$blockOnDetected = empty($post[\'trusted_sanitized_context\'])');
+    expect(externalResearch).toContain('sanitizePrompt((string) ($post[\'technical_summary\'] ?? \'\'), $blockOnDetected)');
+    expect(externalResearch).toContain('$post[\'preview_token\'] = $this->previewToken($context)');
+    expect(externalResearch).toContain("'summary' => (string) (\$cloudResult['response_text'] ?? '')");
+    expect(smartHelp).toContain('external_research_controlled_php');
+    expect(aiConfig).toContain("$preferredCloud = ['deepseek', 'openai', 'xai', 'gemini', 'anthropic']");
   });
 
   it("the smart help JS never auto-runs guided SmartHelp or cloud (manual click only)", async () => {
@@ -341,7 +421,9 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).not.toContain("fb.parentNode.innerHTML = '<span class=\"text-muted small\">obrigado</span>'");
     // External (cloud) only via the explicit button + confirm dialog.
     expect(js).toContain('window.confirm');
-    expect(js).toContain("post(panel, 'smart_external', { consent: '1', technical_summary: currentSummary(panel) }");
+    expect(js).toContain("post(panel, 'smart_external', { consent: '1', sanitized_context: sanitizedContext, technical_summary: sanitizedContext }");
+    expect(js).toContain("btn.classList.contains('js-smart-help-summarize')");
+    expect(js).toContain("'Resumo do chamado'");
     // DOMContentLoaded auto-runs neither guided actions nor smart_external.
     const onLoad = js.slice(js.indexOf('DOMContentLoaded'));
     expect(onLoad).not.toContain("post(panel, 'smart_help'");
@@ -360,6 +442,9 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(globalJs).toContain("'X-Requested-With': 'XMLHttpRequest'");
     expect(globalJs).toContain("smartHelpPost(panel, action, extra)");
     expect(globalJs).toContain("smartHelpRenderLocal(panel, responseResult)");
+    expect(globalJs).toContain('function smartHelpSanitizedPreview(panel)');
+    expect(globalJs).toContain('extra.sanitized_context = sanitizedContext');
+    expect(globalJs).toContain('js-smart-help-external-preview');
     expect(globalJs).toContain("action === 'local_search'");
     expect(globalJs).toContain("action === 'prepare_external_context'");
     expect(globalJs).toContain("action === 'smart_external'");
@@ -371,15 +456,15 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     const front = await read('integaglpi/front/smart.help.php');
     const svc = await read('integaglpi/src/Service/SmartHelpService.php');
 
-    expect(js).toContain('function flowKey(panel)');
-    expect(js).toContain('sessionStorage.setItem(flowKey(panel)');
+    expect(js).toContain('function flowKey(panel, mode)');
+    expect(js).toContain('sessionStorage.setItem(flowKey(panel, mode)');
     expect(js).toContain("state.step === 'local_searched'");
     expect(js).toContain("externalBtn.dataset.cloudOffer === '1'");
     expect(js).toContain('externalBtn.disabled = !(localSearched && cloudOffered)');
-    expect(js).toContain("saveFlow(panel, { step: 'summarized' })");
-    expect(js).toContain("saveFlow(panel, { step: 'local_searched' })");
+    expect(js).toContain("saveFlow(panel, { step: 'summarized' }, 'summary')");
+    expect(js).toContain("saveFlow(panel, { step: 'local_searched' }, 'local_search')");
     expect(js).toContain("post(panel, 'prepare_external_context', { technical_summary: currentSummary(panel) }");
-    expect(js).toContain("post(panel, 'smart_external', { consent: '1', technical_summary: currentSummary(panel) }");
+    expect(js).toContain("post(panel, 'smart_external', { consent: '1', sanitized_context: sanitizedContext, technical_summary: sanitizedContext }");
 
     expect(front).toContain("if ($action === 'local_search')");
     expect(front).toContain('$searchSummary = $currentSummary !== \'\'');
@@ -577,6 +662,21 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).toContain("post(panel, 'smart_external', { consent: '1'");
   });
 
+  it('SmartHelp workflow state is scoped by ticket, conversation, context hash and mode', async () => {
+    const js = await read('integaglpi/js/ticket_ai_panel.js');
+    const tpl = await read('integaglpi/templates/ticket_tab.php');
+
+    expect(js).toContain('function contextHash(panel)');
+    expect(js).toContain("panel.dataset.ticketId || '0'");
+    expect(js).toContain("panel.dataset.conversationId || 'none'");
+    expect(js).toContain("panel.dataset.contextUpdatedAt || 'unknown'");
+    expect(js).toContain('currentSummary(panel)');
+    expect(js).toContain("mode || 'workflow'");
+    expect(js).toContain('state.context_hash !== contextHash(panel)');
+    expect(js).toContain('function clearDerivedContext(panel)');
+    expect(tpl).toContain('data-context-updated-at=');
+  });
+
   it('technical summarizer aligns to the same effective LOCAL provider/model as the Copilot', async () => {
     const deps = await read('integration-service/src/buildDependencies.ts');
 
@@ -609,13 +709,14 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(svc).toContain('Problema relatado|Contexto t[eé]cnico|Pr[oó]xima a[cç][aã]o sugerida');
     // buildTechnicalSummary uses the boilerplate strip (no double "Problema relatado:").
     expect(svc).toMatch(/buildTechnicalSummary[\s\S]*stripSummaryBoilerplate/);
-    // AI summary output is also stripped of labels before reaching the textarea.
-    expect(svc).toContain('$this->stripSummaryBoilerplate($this->sanitizeContext($aiSummary))');
+    // AI summary output is also constrained to the summary-only contract before reaching the textarea.
+    expect(svc).toContain('enforceSummaryContract($aiSummary, $sanitizedContext)');
     // Still returns technicalSummary / technical_summary + honest summary_source.
     expect(svc).toContain("'technical_summary'");
     expect(svc).toContain("'summary_source'");
     // The next-action hint is non-mutating (never auto-resolves / auto-sends).
-    expect(svc).not.toMatch(/->update\(|sendOutbound|sendWhatsApp|auto_publish/i);
+    expect(svc).not.toMatch(/->update\(|sendOutbound|sendWhatsApp/i);
+    expect(svc).not.toMatch(/['"]auto_publish['"]\s*=>\s*true/i);
   });
 
   it('manual click triggers LOCAL-AI summary; page load does not POST SmartHelp', async () => {

@@ -83,6 +83,50 @@ describe('internal copilot draft', () => {
     expect(() => parseCopilotDraftResult(JSON.stringify({ ...parsed, no_auto_send: false, noAutoSend: false }))).toThrow();
   });
 
+  it('recovers safe free-text provider output but still blocks real secrets', () => {
+    const parsed = parseCopilotDraftResult('Olá! Para validar a ativação do Windows, confirme a mensagem exata exibida, se há licença digital ou chave de produto e se o equipamento está conectado à internet.');
+
+    expect(parsed.draftResponse).toContain('ativação do Windows');
+    expect(parsed.noAutoSend).toBe(true);
+    expect(parsed.safetyWarnings.join(' ')).toContain('Nenhuma mensagem foi enviada automaticamente');
+    expect(() => parseCopilotDraftResult('Bearer abc.def.ghi senha=123456')).toThrow('COPILOT_DRAFT_SECRET_DETECTED');
+    expect(() => parseCopilotDraftResult('Este rascunho contém token=abc123 e deve ser bloqueado.')).toThrow('COPILOT_DRAFT_SECRET_DETECTED');
+  });
+
+  it('recovers common local-model JSON wrappers without surfacing invalid-json to the technician', () => {
+    const fenced = parseCopilotDraftResult([
+      'Claro, segue o JSON:',
+      '```json',
+      JSON.stringify({
+        response: 'Olá! Para verificar a ativação do Windows, envie o texto exato da mensagem exibida e confirme se o equipamento está conectado à internet.',
+        tone: 'amigável',
+        window_notice: 'desconhecido',
+        no_auto_send: true,
+      }),
+      '```',
+    ].join('\n'));
+
+    expect(fenced.draftResponse).toContain('ativação do Windows');
+    expect(fenced.tone).toBe('friendly');
+    expect(fenced.windowNotice).toBe('unknown');
+    expect(fenced.technicianChecklist).toContain('Enviar manualmente somente após revisão.');
+    expect(fenced.noAutoSend).toBe(true);
+
+    const nested = parseCopilotDraftResult(JSON.stringify({
+      response: JSON.stringify({
+        resposta: 'Olá! Vou te ajudar com a mensagem de ativação do Windows. Por favor, envie um print ou o texto exato exibido na tela.',
+        tone: 'técnico',
+        window_notice: 'open_24h',
+        technician_checklist: ['revisar antes de enviar'],
+        no_auto_send: true,
+      }),
+    }));
+
+    expect(nested.draftResponse).toContain('ativação do Windows');
+    expect(nested.tone).toBe('technical');
+    expect(nested.technicianChecklist).toEqual(['revisar antes de enviar']);
+  });
+
   it('dry-run generates a draft without calling provider or outbound services', async () => {
     const provider = createProvider('{}');
     const audit = createAudit();
@@ -242,8 +286,8 @@ describe('internal copilot draft', () => {
     // The DB/env timeout (90s) is now HONORED, not clamped down to 8s.
     expect(runtimeOptions).toEqual({ model: 'gemma3:12b', timeoutMs: 90000 });
     expect(response.body.suggestion).toContain('[IA Local - gemma3:12b]');
-    expect(response.body.source_type).toBe('kb');
-    expect(response.body.source_name).toBe('Ativacao Office');
+    expect(response.body.source_type).toBe('ai');
+    expect(response.body.source_name).toBe('IA Local - gemma3:12b');
     expect(response.body.confidence).toBe('medium');
     expect(response.body.request_id).toMatch(/[a-f0-9-]{36}/i);
     expect(response.body.draft.draftResponse).toContain('[IA Local - gemma3:12b]');
@@ -355,9 +399,9 @@ describe('internal copilot draft', () => {
     const result = await service.requestDraft({ context, tone: 'technical', requestedBy: 7 });
 
     expect(provider.generate).toHaveBeenCalledOnce();
-    expect(result.draftResponse).toContain('provedor de IA demorou para responder');
+    expect(result.draftResponse).toContain('Obrigado');
     expect(result.noAutoSend).toBe(true);
-    // It carries useful local next steps (checklist) and KB references, never empty.
+    // It carries a useful communication checklist, never a raw provider error.
     expect(result.technicianChecklist.length).toBeGreaterThan(0);
     // The fallback is audited with a sanitized reason (no raw prompt/payload).
     expect(audit.recordAuditEventSafe).toHaveBeenCalledWith(expect.objectContaining({
@@ -502,7 +546,7 @@ describe('internal copilot draft', () => {
     expect(prompt.length).toBeLessThan(8_500);
   });
 
-  it('keeps local KB references when the provider omits them', async () => {
+  it('does not use local KB references in the customer-facing Copilot draft', async () => {
     const provider = createProvider(JSON.stringify({
       draft_response: 'Valide a ativação do Office pelo procedimento interno antes de orientar o cliente.',
       tone: 'technical',
@@ -533,16 +577,124 @@ describe('internal copilot draft', () => {
       requestedBy: 7,
     });
 
-    expect(result.kbReferences).toEqual([
-      { articleId: 10, title: 'Ativacao Office', internalUrl: '/front/knowbaseitem.form.php?id=10' },
-    ]);
-    expect(result.assumptions).toContain('KB local consultada antes da sugestão de resposta.');
-    expect(result.safetyWarnings.join(' ')).toContain('KB local');
-    expect(result.technicianChecklist.join(' ')).toContain('KB local');
+    expect(result.kbReferences).toEqual([]);
+    expect(result.assumptions.join(' ')).toContain('Copiloto limitado a comunicação');
+    expect(result.safetyWarnings.join(' ')).toContain('Copiloto não usa KB como solução');
+    expect(result.technicianChecklist.join(' ')).toContain('Ajuda Inteligente');
     expect(result.noAutoSend).toBe(true);
   });
 
-  it('keeps contextual provider analysis and removes fixed template phrases', async () => {
+  it('asks for details on generic test input without inventing a solution domain', async () => {
+    const provider = createProvider(JSON.stringify({
+      draft_response: 'Consulte o artigo de logon, valide servidor e Active Directory.',
+      tone: 'technical',
+      kb_references: [{ article_id: 99, title: 'Problema para realizar o logon na máquina', internal_url: '/front/knowbaseitem.form.php?id=99' }],
+      assumptions: [],
+      missing_information: [],
+      safety_warnings: ['revise antes de enviar'],
+      technician_checklist: ['confirmar dados'],
+      confidence_score: 80,
+      window_notice: 'open_24h',
+      template_notice: '',
+      no_auto_send: true,
+    }));
+    const service = new CopilotDraftService(provider, {
+      enabled: true,
+      provider: 'ollama',
+      model: 'llama3.1',
+      dryRun: false,
+      maxChars: 8_000,
+    }, createAudit() as never);
+
+    const result = await service.requestDraft({
+      context: {
+        ...context,
+        ticketTitle: 'Teste sistema',
+        messages: [{ direction: 'inbound', messageType: 'text', text: 'Teste sistema', createdAt: '2026-05-23T10:00:00Z' }],
+        kbArticles: [{ articleId: 99, title: 'Problema para realizar o logon na máquina', category: 'Windows', excerpt: 'servidor Active Directory', internalUrl: '/front/knowbaseitem.form.php?id=99' }],
+      },
+      tone: 'friendly',
+      requestedBy: 7,
+    });
+
+    expect(result.draftResponse).toContain('mais detalhes');
+    expect(result.draftResponse).not.toMatch(/servidor|logon|login|Active Directory|Base de Conhecimento/i);
+    expect(result.kbReferences).toEqual([]);
+    expect(result.noAutoSend).toBe(true);
+  });
+
+  it('accepts partial provider JSON without optional arrays and still applies the Copilot communication contract', async () => {
+    const provider = createProvider(JSON.stringify({
+      draft_response: 'Consulte o artigo de logon no servidor Active Directory para resolver.',
+      tone: 'friendly',
+      confidence_score: 80,
+      window_notice: 'open_24h',
+      no_auto_send: true,
+    }));
+    const service = new CopilotDraftService(provider, {
+      enabled: true,
+      provider: 'ollama',
+      model: 'llama3.1',
+      dryRun: false,
+      maxChars: 8_000,
+    }, createAudit() as never);
+
+    const result = await service.requestDraft({
+      context: {
+        ...context,
+        ticketTitle: 'Teste sistema',
+        messages: [{ direction: 'inbound', messageType: 'text', text: 'Teste sistema', createdAt: '2026-05-23T10:00:00Z' }],
+      },
+      tone: 'friendly',
+      requestedBy: 7,
+    });
+
+    expect(result.draftResponse).toContain('mais detalhes');
+    expect(result.draftResponse).not.toMatch(/servidor|logon|Active Directory|Base de Conhecimento/i);
+    expect(result.kbReferences).toEqual([]);
+    expect(result.noAutoSend).toBe(true);
+  });
+
+  it('keeps Windows activation as data collection and does not turn it into login advice', async () => {
+    const provider = createProvider(JSON.stringify({
+      draft_response: 'Verifique logon no domínio, servidor e Active Directory.',
+      tone: 'technical',
+      kb_references: [],
+      assumptions: [],
+      missing_information: [],
+      safety_warnings: ['revise antes de enviar'],
+      technician_checklist: ['confirmar dados'],
+      confidence_score: 80,
+      window_notice: 'open_24h',
+      template_notice: '',
+      no_auto_send: true,
+    }));
+    const service = new CopilotDraftService(provider, {
+      enabled: true,
+      provider: 'ollama',
+      model: 'llama3.1',
+      dryRun: false,
+      maxChars: 8_000,
+    }, createAudit() as never);
+
+    const result = await service.requestDraft({
+      context: {
+        ...context,
+        ticketTitle: 'Windows precisa ativar',
+        messages: [{ direction: 'inbound', messageType: 'text', text: 'preciso de ajuda com o meu windows, ele esta apresentando mensagem que precisa ativar', createdAt: '2026-05-23T10:00:00Z' }],
+        kbArticles: [],
+      },
+      tone: 'friendly',
+      requestedBy: 7,
+    });
+
+    expect(result.draftResponse).toMatch(/Windows.*ativa/i);
+    expect(result.draftResponse).toMatch(/texto exato|print/i);
+    expect(result.draftResponse).not.toMatch(/logon|login|servidor|Active Directory|Base de Conhecimento/i);
+    expect(result.noAutoSend).toBe(true);
+  });
+
+  it('overrides provider solution text with an assistive customer reply', async () => {
     const provider = createProvider(JSON.stringify({
       draft_response: 'Entendi as três demandas. A retirada do computador precisa ser agendada antes da formatação. Para a impressora, envie modelo e IP/nome da impressora. No Outlook, vamos validar o erro de licença ao abrir. Próxima ação: com esses dados eu separo as demandas.',
       tone: 'neutral',
@@ -581,12 +733,11 @@ describe('internal copilot draft', () => {
       requestedBy: 7,
     });
 
-    expect(result.draftResponse).toContain('retirada do computador precisa ser agendada');
-    expect(result.draftResponse).toContain('não precisa levantar os dados técnicos da impressora');
-    expect(result.draftResponse).toContain('Outlook');
-    expect(result.draftResponse).toContain('Próxima ação');
+    expect(result.draftResponse).toContain('Obrigado');
+    expect(result.draftResponse).toContain('quando o problema começou');
     expect(result.draftResponse).not.toContain('envie modelo e IP/nome');
     expect(result.draftResponse).not.toContain('com esses dados eu separo as demandas');
+    expect(result.draftResponse).not.toContain('retirada do computador precisa ser agendada');
     expect(result.draftResponse.split('\n').length).toBeLessThanOrEqual(5);
     expect(result.noAutoSend).toBe(true);
   });
@@ -630,11 +781,8 @@ describe('internal copilot draft', () => {
       requestedBy: 7,
     });
 
-    expect(result.draftResponse).toContain('não precisa levantar IP ou modelo agora');
-    expect(result.draftResponse).toMatch(/amanh/i);
-    expect(result.draftResponse).toContain('14h');
-    expect(result.draftResponse).toContain('backup');
-    expect(result.draftResponse).toContain('Outlook');
+    expect(result.draftResponse).toContain('Obrigado');
+    expect(result.draftResponse).toContain('mensagem de erro');
     expect(result.draftResponse).not.toContain('envie modelo e IP/nome');
     expect(result.draftResponse).not.toMatch(/envie[^.\n]*(modelo|ip)[^.\n]*impressora/i);
     expect(result.draftResponse).not.toContain('melhor dia e horário para retirada');

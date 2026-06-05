@@ -168,6 +168,28 @@ describe('AI controller endpoints', () => {
     expect(out.toLowerCase()).toContain('sincronização do ad');
   });
 
+  it('POST technical-summary keeps Windows activation context and removes invented AD/GLPI context', async () => {
+    const summarizer = {
+      generate: vi.fn(async () => (
+        'Foi relatado problema no Windows com mensagem solicitando ativação. '
+        + 'O caso parece envolver sync do AD, Active Directory, teste de sistema corporativo, GLPI e banco de dados.'
+      )),
+    };
+    const res = await request(app('/ts', 'post', createTechnicalSummaryController(summarizer as never)))
+      .post('/ts').send({
+        ticket_id: 7,
+        context: 'Cliente: preciso de ajuda com o meu windows, ele esta apresentando mensagem que precisa ativar',
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    const out = String(res.body.technical_summary);
+    expect(out).toMatch(/Windows/i);
+    expect(out).toMatch(/ativa/i);
+    expect(out).not.toMatch(/sync do AD|Active Directory|GLPI|banco de dados|teste de sistema corporativo/i);
+    expect(out).not.toMatch(/Ethica|telefone|e-mail|\[nome removido\]|empresa/i);
+  });
+
+
   it('POST technical-summary neutralizes residual name/company/placeholders and keeps AD sync terms', async () => {
     const summarizer = {
       generate: vi.fn(async () => (

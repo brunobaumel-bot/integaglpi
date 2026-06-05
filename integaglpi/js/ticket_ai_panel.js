@@ -173,24 +173,63 @@
     if (el) { el.textContent = text; el.className = 'badge bg-' + (cls || 'secondary') + ' js-smart-help-status'; }
   }
 
-  function flowKey(panel) {
-    return 'integaglpiSmartHelpWorkflow:' + (panel.dataset.ticketId || '0');
+  function hashString(value) {
+    var hash = 5381;
+    var text = String(value || '');
+    for (var i = 0; i < text.length; i += 1) {
+      hash = ((hash << 5) + hash) + text.charCodeAt(i);
+      hash = hash & hash;
+    }
+    return Math.abs(hash).toString(36);
   }
 
-  function loadFlow(panel) {
+  function contextHash(panel) {
+    return hashString([
+      panel.dataset.ticketId || '0',
+      panel.dataset.conversationId || 'none',
+      panel.dataset.contextUpdatedAt || 'unknown',
+      currentSummary(panel)
+    ].join('|'));
+  }
+
+  function flowKey(panel, mode) {
+    return [
+      'integaglpiSmartHelpWorkflow',
+      panel.dataset.ticketId || '0',
+      panel.dataset.conversationId || 'none',
+      panel.dataset.contextUpdatedAt || 'unknown',
+      contextHash(panel),
+      mode || 'workflow'
+    ].join(':');
+  }
+
+  function loadFlow(panel, mode) {
     try {
-      return JSON.parse(sessionStorage.getItem(flowKey(panel)) || '{}') || {};
+      var state = JSON.parse(sessionStorage.getItem(flowKey(panel, mode)) || '{}') || {};
+      if (state.context_hash && state.context_hash !== contextHash(panel)) {
+        return {};
+      }
+      return state;
     } catch (e) {
       return {};
     }
   }
 
-  function saveFlow(panel, state) {
+  function saveFlow(panel, state, mode) {
     try {
-      sessionStorage.setItem(flowKey(panel), JSON.stringify(state || {}));
+      state = state || {};
+      state.context_hash = contextHash(panel);
+      sessionStorage.setItem(flowKey(panel, mode), JSON.stringify(state));
     } catch (e) {
       // Session state is only a UX hint; failure must not block SmartHelp.
     }
+  }
+
+  function clearDerivedContext(panel) {
+    ['.js-smart-help-articles', '.js-smart-help-local-suggestion', '.js-smart-help-cloud'].forEach(function (selector) {
+      var el = panel.querySelector(selector);
+      if (el) { el.innerHTML = ''; }
+    });
   }
 
   function currentSummary(panel) {
@@ -201,13 +240,25 @@
   function setButtonLoading(btn, loadingText, loading) {
     if (!btn) { return; }
     if (loading) {
-      btn.dataset.originalText = btn.dataset.originalText || (btn.textContent || '');
+      var currentText = btn.textContent || '';
+      if (!btn.dataset.originalText || currentText !== loadingText) {
+        btn.dataset.originalText = currentText;
+      }
       btn.disabled = true;
       btn.textContent = loadingText;
       return;
     }
+    var fallbackText = btn.classList.contains('js-smart-help-summarize')
+      ? 'Resumo do chamado'
+      : btn.classList.contains('js-smart-help-local-search')
+        ? 'Busca local'
+        : btn.classList.contains('js-smart-help-external')
+          ? 'Pedir ajuda externa (nuvem)'
+          : '';
     btn.disabled = false;
-    btn.textContent = btn.dataset.originalText || btn.textContent || '';
+    btn.textContent = (btn.dataset.originalText && btn.dataset.originalText !== loadingText)
+      ? btn.dataset.originalText
+      : (fallbackText || btn.textContent || '');
   }
 
   function updateGuidedState(panel) {
@@ -349,7 +400,8 @@
         } else {
           setStatus(panel, r.localResolved ? 'KB local encontrada' : 'sem KB local', r.localResolved ? 'success' : 'info');
         }
-        saveFlow(panel, { step: 'summarized' });
+        saveFlow(panel, { step: 'summarized' }, 'summary');
+        saveFlow(panel, { step: 'summarized' }, 'workflow');
         updateGuidedState(panel);
       } else {
         setStatus(panel, 'erro', 'danger');
@@ -384,7 +436,8 @@
       var r = resp && resp.result ? resp.result : null;
       if (r) {
         renderResult(panel, r);
-        saveFlow(panel, { step: 'local_searched' });
+        saveFlow(panel, { step: 'local_searched' }, 'local_search');
+        saveFlow(panel, { step: 'local_searched' }, 'workflow');
         setStatus(panel, r.localResolved ? 'KB local encontrada' : 'sugestão local', r.localResolved ? 'success' : 'warning');
       } else {
         setStatus(panel, 'erro', 'danger');
@@ -456,7 +509,14 @@
     setStatus(panel, 'pesquisando externamente', 'info');
     var cloudEl = panel.querySelector('.js-smart-help-cloud');
     var msgEl = panel.querySelector('.js-smart-help-message');
-    post(panel, 'smart_external', { consent: '1', technical_summary: currentSummary(panel) }, { refreshCsrfBeforePost: true }).then(function (resp) {
+    var previewEl = panel.querySelector('.js-smart-help-external-preview');
+    var sanitizedContext = previewEl ? String(previewEl.value || '').trim() : '';
+    if (sanitizedContext === '') {
+      if (msgEl) { msgEl.textContent = 'Gere e revise a pré-visualização sanitizada antes de enviar para ajuda externa.'; }
+      setStatus(panel, 'preview necessário', 'warning');
+      return;
+    }
+    post(panel, 'smart_external', { consent: '1', sanitized_context: sanitizedContext, technical_summary: sanitizedContext }, { refreshCsrfBeforePost: true }).then(function (resp) {
       if (resp && resp.ok === false && resp.error && !resp.result) {
         if (msgEl) { msgEl.textContent = resp.message || 'Pesquisa externa indisponível.'; }
         setStatus(panel, resp.error === 'timeout' ? 'tempo esgotado' : 'erro de rede', 'danger');
@@ -473,6 +533,18 @@
       } else if (r.status === 'blocked_pii') {
         if (msgEl) { msgEl.textContent = 'Bloqueado: o contexto ainda contém dados sensíveis e não foi enviado.'; }
         setStatus(panel, 'PII bloqueado', 'danger');
+      } else if (r.ok && (r.summary || r.message) && !r.answer) {
+        var externalSummary = String(r.summary || r.message || '').trim();
+        if (cloudEl) {
+          cloudEl.innerHTML =
+            '<div class="border rounded p-2 mt-1">'
+            + '<div class="fw-bold text-primary mb-1"><i class="ti ti-robot me-1"></i>' + esc('Ajuda externa por IA — sugestão, revise antes de aplicar') + '</div>'
+            + '<div class="small text-muted mb-1">' + esc('Retorno somente para revisão humana. Nada é enviado ao cliente nem altera o chamado automaticamente.') + '</div>'
+            + '<div class="js-smart-help-external-answer">' + esc(externalSummary) + '</div>'
+            + '</div>';
+        }
+        if (msgEl) { msgEl.textContent = 'Ajuda externa retornou uma sugestão para revisão humana.'; }
+        setStatus(panel, 'sugestão externa', 'success');
       } else if (r.ok && r.answer) {
         var a = r.answer;
         var sourceType = r.sourceType || r.source_type || 'external_ai_no_sources';
@@ -592,8 +664,10 @@
       if (summaryEl) {
         summaryEl.addEventListener('input', function () {
           var state = loadFlow(p);
+          clearDerivedContext(p);
           if (currentSummary(p) !== '' && !state.step) {
-            saveFlow(p, { step: 'summarized' });
+            saveFlow(p, { step: 'summarized' }, 'summary');
+            saveFlow(p, { step: 'summarized' }, 'workflow');
           }
           updateGuidedState(p);
         });

@@ -367,6 +367,7 @@ $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
             <?php if (\GlpiPlugin\Integaglpi\Service\SmartHelpService::canViewPanel()) { ?>
                 <div class="border rounded p-3 mt-3 mb-0 integaglpi-smart-help"
                      data-ticket-id="<?= (int) $ticket->getID(); ?>"
+                     data-context-updated-at="<?= $this->escape((string) ($ticket->fields['date_mod'] ?? $ticket->fields['date'] ?? '')); ?>"
                      data-action-url="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/front/smart.help.php'); ?>"
                      data-csrf="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getCsrfToken()); ?>">
                     <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap mb-2">
@@ -1330,6 +1331,7 @@ $smartHelpReadGateVisible  = $isExternalConfigured
 <?php if ($smartHelpReadGateVisible) { ?>
     <div class="border rounded p-3 mt-3 mb-3 integaglpi-smart-help"
          data-ticket-id="<?= (int) $smartHelpReadGateTicketId; ?>"
+         data-context-updated-at="<?= $this->escape((string) ($ticket->fields['date_mod'] ?? $ticket->fields['date'] ?? '')); ?>"
          data-action-url="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/front/smart.help.php'); ?>"
          data-csrf="<?= $this->escape($smartHelpReadGateCsrf); ?>">
         <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap mb-2">
@@ -1564,6 +1566,8 @@ $smartHelpReadGateVisible  = $isExternalConfigured
             <?php if (\GlpiPlugin\Integaglpi\Service\SmartHelpService::canViewPanel()) { ?>
                 <div class="border rounded p-3 mt-3 mb-3 integaglpi-smart-help"
                      data-ticket-id="<?= (int) $replyTicketId; ?>"
+                     data-conversation-id="<?= $this->escape($replyConvId); ?>"
+                     data-context-updated-at="<?= $this->escape((string) ($ticket->fields['date_mod'] ?? $ticket->fields['date'] ?? '')); ?>"
                      data-action-url="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/front/smart.help.php'); ?>"
                      data-csrf="<?= $this->escape($replyCsrfToken); ?>">
                     <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap mb-2">
@@ -1711,6 +1715,11 @@ $smartHelpReadGateVisible  = $isExternalConfigured
         var body = card.querySelector('.card-body');
         if (body) {
             try {
+                var smartHelp = card.querySelector('.integaglpi-smart-help');
+                var copilot = card.querySelector('.js-integaglpi-copilot');
+                if (smartHelp && copilot && smartHelp.parentNode === copilot.parentNode) {
+                    body.insertBefore(copilot, smartHelp);
+                }
                 body.appendChild(assistant);
             } catch (err) {
                 // Reposition is non-critical; fall back to revealing in place.
@@ -1797,7 +1806,21 @@ $smartHelpReadGateVisible  = $isExternalConfigured
 
         function copilotMessage(result, fallback) {
             if (!result || !result.body) { return fallback; }
-            return result.body.display_message || result.body.message || fallback;
+            return copilotFriendlyMessage(result.body.display_message || result.body.message || fallback);
+        }
+
+        function copilotFriendlyMessage(message) {
+            var text = String(message || '');
+            if (/COPILOT_DRAFT_(INVALID_JSON|INVALID_SHAPE|INVALID_ENUM|EMPTY)/.test(text)) {
+                return <?= json_encode(__('A IA respondeu em formato inválido. Tente novamente ou redija manualmente.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+            }
+            if (/COPILOT_DRAFT_SECRET_DETECTED/.test(text)) {
+                return <?= json_encode(__('A resposta da IA foi bloqueada por conter dado sensível.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+            }
+            if (/COPILOT_DRAFT_CHECKLIST_REQUIRED/.test(text)) {
+                return <?= json_encode(__('A IA retornou um rascunho sem checklist técnico obrigatório. Gere novamente ou revise o contexto antes de usar.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
+            }
+            return text;
         }
 
         function copilotTypedFallback(result, fallback) {
@@ -1839,7 +1862,7 @@ $smartHelpReadGateVisible  = $isExternalConfigured
 
         function setCopilotStatus(message, kind) {
             if (!copilotStatus) { return; }
-            copilotStatus.textContent = message || '';
+            copilotStatus.textContent = copilotFriendlyMessage(message || '');
             copilotStatus.className = 'js-integaglpi-copilot-status small ' + (
                 kind === 'error' ? 'text-danger'
                 : kind === 'success' ? 'text-success'

@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace GlpiPlugin\Integaglpi\Service;
 
+use GlpiPlugin\Integaglpi\External\ExternalDatabase;
 use GlpiPlugin\Integaglpi\Plugin;
+use PDO;
 
 /**
  * PHP consumer of the Node AI/KB endpoints, for the ticket-side Smart Help panel.
@@ -34,6 +36,7 @@ final class SmartHelpService
     private const PATH_COACHING_SUGGEST_KB = '/internal/glpi/ai/coaching/suggest-kb';
     private const TIMEOUT_SECONDS = 8;
     private const LOCAL_CONFIDENCE_THRESHOLD = 0.8;
+    private const MIN_KB_DISPLAY_CONFIDENCE = 0.55;
 
     private PluginConfigService $config;
 
@@ -83,7 +86,7 @@ final class SmartHelpService
                 $aiSummary = trim((string) ($ai['technical_summary'] ?? $ai['technicalSummary'] ?? ''));
                 $aiOk = (($ai['ok'] ?? false) === true) && $aiSummary !== '';
                 if ($aiOk) {
-                    $technicalSummary = $this->stripSummaryBoilerplate($this->sanitizeContext($aiSummary));
+                    $technicalSummary = $this->enforceSummaryContract($aiSummary, $sanitizedContext);
                     $summarySource = 'local_ai';
                 } else {
                     $summaryErrorType = (string) ($ai['error_type'] ?? 'provider_unavailable');
@@ -111,6 +114,78 @@ final class SmartHelpService
             'message' => '',
             'read_only' => true,
         ];
+    }
+
+    public function buildTicketContextSummary(\Ticket $ticket): string
+    {
+        $ticketId = (int) $ticket->getID();
+        $messageContext = $this->buildRecentConversationMessageContext($ticketId);
+        if ($messageContext !== '') {
+            return $messageContext;
+        }
+
+        $name = (string) ($ticket->fields['name'] ?? '');
+        $content = trim(strip_tags((string) ($ticket->fields['content'] ?? '')));
+        return mb_substr(trim($name . '. ' . $content), 0, 2000, 'UTF-8');
+    }
+
+    private function buildRecentConversationMessageContext(int $ticketId): string
+    {
+        if ($ticketId <= 0 || !$this->config->isConfigured()) {
+            return '';
+        }
+
+        try {
+            $pdo = ExternalDatabase::getConnection($this->config->getConnectionConfig());
+            $statement = $pdo->prepare(
+                <<<SQL
+                WITH latest_conversation AS (
+                    SELECT id
+                    FROM glpi_plugin_integaglpi_conversations
+                    WHERE glpi_ticket_id = :ticket_id
+                    ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+                    LIMIT 1
+                )
+                SELECT direction, message_text, created_at
+                FROM (
+                    SELECT m.direction, m.message_text, m.created_at, m.id
+                    FROM glpi_plugin_integaglpi_messages m
+                    JOIN latest_conversation c ON c.id = m.conversation_id
+                    WHERE m.message_text IS NOT NULL
+                      AND trim(m.message_text) <> ''
+                    ORDER BY m.created_at DESC NULLS LAST, m.id DESC
+                    LIMIT 8
+                ) recent
+                ORDER BY created_at ASC NULLS LAST, id ASC
+                SQL
+            );
+            $statement->bindValue(':ticket_id', $ticketId, PDO::PARAM_INT);
+            $statement->execute();
+            $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+            if (!is_array($rows) || $rows === []) {
+                return '';
+            }
+
+            $lines = [];
+            foreach ($rows as $row) {
+                $text = $this->sanitizeContext((string) ($row['message_text'] ?? ''));
+                if ($text === '') {
+                    continue;
+                }
+                $direction = strtolower(trim((string) ($row['direction'] ?? '')));
+                $speaker = $direction === 'outbound' ? 'Técnico' : 'Cliente';
+                $lines[] = $speaker . ': ' . $text;
+            }
+
+            if ($lines === []) {
+                return '';
+            }
+
+            return mb_substr("Mensagens recentes da conversa atual:\n" . implode("\n", $lines), 0, 2000, 'UTF-8');
+        } catch (\Throwable $exception) {
+            error_log('[integaglpi][smart_help][context] ' . mb_substr($exception->getMessage(), 0, 160, 'UTF-8'));
+            return '';
+        }
     }
 
     /**
@@ -144,8 +219,8 @@ final class SmartHelpService
                 $aiSummary = trim((string) ($ai['technical_summary'] ?? $ai['technicalSummary'] ?? ''));
                 $aiOk = (($ai['ok'] ?? false) === true) && $aiSummary !== '';
                 if ($aiOk) {
-                    // Re-sanitize the model output defensively before it reaches the UI.
-                    $technicalSummary = $this->sanitizeContext($aiSummary);
+                    // Re-sanitize and enforce the summary-only contract defensively.
+                    $technicalSummary = $this->enforceSummaryContract($aiSummary, $sanitizedContext);
                     $summarySource = 'local_ai';
                 } else {
                     $summaryErrorType = (string) ($ai['error_type'] ?? 'provider_unavailable');
@@ -157,18 +232,23 @@ final class SmartHelpService
 
         // 1. Local native KB search (PHP-side; never leaves the page; no cloud).
         $localArticles = [];
+        $searchContext = $technicalSummary !== '' ? $technicalSummary : $summary;
         try {
             $native = new NativeKnowledgeBaseService();
-            foreach ($native->searchVisibleArticles($summary, 5) as $a) {
+            foreach ($native->searchVisibleArticles($searchContext, 5) as $a) {
+                $relevance = $this->evaluateKbRelevance($searchContext, $a);
+                if ($relevance === null || (float) $relevance['confidence'] < self::MIN_KB_DISPLAY_CONFIDENCE) {
+                    continue;
+                }
                 $localArticles[] = [
                     'glpiKnowbaseitemId' => (int) ($a['article_id'] ?? 0),
                     'title'              => (string) ($a['title'] ?? ''),
-                    'confidence'         => 0.6,
+                    'confidence'         => (float) $relevance['confidence'],
                     'category'           => (string) ($a['category'] ?? ''),
                     'excerpt'            => (string) ($a['excerpt'] ?? ''),
                     'internal_url'       => (string) ($a['internal_url'] ?? ''),
                     'source_label'       => (string) ($a['source_label'] ?? 'Base de Conhecimento GLPI'),
-                    'confidence_reason'  => (string) ($a['relevance_reason'] ?? 'Correspondência local na Base de Conhecimento GLPI'),
+                    'confidence_reason'  => (string) $relevance['reason'],
                 ];
             }
         } catch (\Throwable $e) {
@@ -428,6 +508,17 @@ final class SmartHelpService
         return trim(implode(' ', $unique));
     }
 
+    private function enforceSummaryContract(string $candidate, string $sourceContext): string
+    {
+        $clean = $this->stripSummaryBoilerplate($this->sanitizeContext($candidate));
+        $forbidden = '/Foi relatado\s+O usuário|O usuário foi relatado|Para solucionar|consulte o artigo|Base de Conhecimento|técnico\s+Bruno|Bruno\s+Baumel|logon|login|servidor|Active Directory|banco de dados/iu';
+        if ($clean === '' || preg_match($forbidden, $clean) === 1) {
+            return $this->buildTechnicalSummary($sourceContext);
+        }
+
+        return $this->buildTechnicalSummary($clean);
+    }
+
     /**
      * Builds a SHORT, structured, PII-free technical summary for the technician.
      * Deterministic (no cloud, no GPU) so it is safe on every auto-load. The first
@@ -506,23 +597,150 @@ final class SmartHelpService
     private function buildTechnicalSummary(string $summary): string
     {
         // PII-sanitize, then strip any existing labels/duplication for idempotency.
-        $clean = $this->stripSummaryBoilerplate($this->sanitizeContext($summary));
+        $clean = $this->extractClientOnlyContext($this->stripSummaryBoilerplate($this->sanitizeContext($summary)));
         if ($clean === '') {
             return '';
         }
 
-        // Build clean technical prose: keep the first sentences as the problem
-        // description and append a single, non-mutating next-action sentence.
-        $sentences = preg_split('/(?<=[.!?])\s+/u', $clean) ?: [$clean];
-        $prose = trim(implode(' ', array_slice($sentences, 0, 3)));
-        $nextAction = 'Validar reprodução, registrar a mensagem de erro exata e testar contorno conhecido antes de escalar.';
+        $normalized = $this->normalizeForRelevance($clean);
+        if ($this->isGenericTestContext($normalized)) {
+            return 'Foi informado apenas um teste do sistema, sem descrição de problema técnico. Faltam detalhes sobre o erro, sistema afetado, mensagem exibida e impacto.';
+        }
+        if ($this->isWindowsActivationContext($normalized)) {
+            return 'Foi relatado problema no Windows com mensagem solicitando ativação. Faltam detalhes sobre a mensagem exata, edição do Windows, tipo de licença, conta Microsoft/domínio corporativo, conectividade e mudanças recentes no equipamento.';
+        }
 
-        // Avoid repeating the next-action sentence if the prose already ends with it.
-        if (mb_stripos($prose, 'antes de escalar') === false) {
-            $prose = $prose . ' ' . $nextAction;
+        $sentences = preg_split('/(?<=[.!?])\s+/u', $clean) ?: [$clean];
+        $prose = trim(implode(' ', array_slice($sentences, 0, 2)));
+        $prose = preg_replace('/\b(?:Para solucionar|Solução|Procedimento|Base de Conhecimento|consulte o artigo)[^.?!]*(?:[.?!]|$)/iu', '', $prose) ?? $prose;
+        $prose = trim($prose);
+        if ($prose === '') {
+            $prose = 'Foi relatado problema técnico sem detalhes suficientes.';
+        }
+        if (!preg_match('/\bFaltam detalhes\b/iu', $prose)) {
+            $prose .= ' Faltam detalhes sobre mensagem de erro, impacto, escopo e quando começou.';
         }
 
         return mb_substr($this->stripSummaryBoilerplate($prose), 0, 600, 'UTF-8');
+    }
+
+    private function extractClientOnlyContext(string $text): string
+    {
+        if (!str_contains($text, 'Cliente:')) {
+            return $text;
+        }
+
+        $clientLines = [];
+        foreach (preg_split('/\r?\n|(?=\b(?:Cliente|Técnico):)/u', $text) ?: [] as $line) {
+            $line = trim($line);
+            if (preg_match('/^Cliente:\s*(.+)$/iu', $line, $matches) === 1) {
+                $clientLines[] = trim((string) $matches[1]);
+            }
+        }
+
+        return $clientLines !== [] ? implode(' ', $clientLines) : $text;
+    }
+
+    /**
+     * @param array<string, mixed> $article
+     * @return array{confidence: float, reason: string}|null
+     */
+    private function evaluateKbRelevance(string $context, array $article): ?array
+    {
+        $contextTokens = $this->technicalTokens($context);
+        if (count($contextTokens) < 2 || $this->isGenericTestContext($this->normalizeForRelevance($context))) {
+            return null;
+        }
+
+        $articleText = implode(' ', [
+            (string) ($article['title'] ?? ''),
+            (string) ($article['category'] ?? ''),
+            (string) ($article['excerpt'] ?? ''),
+        ]);
+        $articleNorm = $this->normalizeForRelevance($articleText);
+        if ($this->hasConflictingKbDomain($this->normalizeForRelevance($context), $articleNorm)) {
+            return null;
+        }
+
+        $matched = [];
+        foreach ($contextTokens as $token) {
+            if (str_contains($articleNorm, $token)) {
+                $matched[] = $token;
+            }
+        }
+        $overlap = count(array_unique($matched));
+        if ($overlap < 2) {
+            return null;
+        }
+
+        $confidence = min(0.95, 0.45 + ($overlap * 0.12));
+        return [
+            'confidence' => $confidence,
+            'reason' => $confidence >= self::LOCAL_CONFIDENCE_THRESHOLD
+                ? 'Correspondência contextual forte com o resumo atual'
+                : 'Referência local candidata; baixa confiança, valide antes de usar',
+        ];
+    }
+
+    private function hasConflictingKbDomain(string $context, string $article): bool
+    {
+        if ($this->isWindowsActivationContext($context)) {
+            return preg_match('/\b(logon|login|servidor|dominio|active directory|ad)\b/u', $article) === 1;
+        }
+
+        return false;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function technicalTokens(string $value): array
+    {
+        $normalized = $this->normalizeForRelevance($value);
+        $tokens = preg_split('/\s+/u', $normalized) ?: [];
+        $stop = [
+            'foi', 'relatado', 'informado', 'problema', 'mensagem', 'sistema', 'usuario', 'cliente',
+            'preciso', 'ajuda', 'com', 'para', 'sobre', 'detalhes', 'faltam', 'exata', 'quando',
+            'impacto', 'escopo', 'tecnico', 'atendimento', 'teste',
+        ];
+        $kept = [];
+        foreach ($tokens as $token) {
+            if (mb_strlen($token, 'UTF-8') < 4 || in_array($token, $stop, true)) {
+                continue;
+            }
+            $kept[$token] = true;
+            if ($token === 'ativar' || $token === 'ativacao' || $token === 'ativa') {
+                $kept['ativacao'] = true;
+                $kept['licenca'] = true;
+            }
+        }
+
+        return array_keys($kept);
+    }
+
+    private function isGenericTestContext(string $normalized): bool
+    {
+        $tokens = array_values(array_filter(preg_split('/\s+/u', $normalized) ?: []));
+        return count($tokens) <= 4 && in_array('teste', $tokens, true);
+    }
+
+    private function isWindowsActivationContext(string $normalized): bool
+    {
+        return str_contains($normalized, 'windows')
+            && preg_match('/\b(ativacao|ativar|ativa|licenca|license)\b/u', $normalized) === 1;
+    }
+
+    private function normalizeForRelevance(string $value): string
+    {
+        $value = mb_strtolower($value, 'UTF-8');
+        $ascii = function_exists('iconv') ? iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $value) : false;
+        if (is_string($ascii)) {
+            $value = $ascii;
+        }
+        $value = preg_replace('/[^a-z0-9]+/i', ' ', $value) ?? $value;
+        $value = preg_replace('/\s+/u', ' ', $value) ?? $value;
+
+        return trim($value);
     }
 
     /**
@@ -580,12 +798,42 @@ final class SmartHelpService
         if (!$humanConsent) {
             return ['ok' => false, 'status' => 'no_consent', 'message' => 'Confirmação do técnico necessária.'];
         }
-        return $this->postJson(self::PATH_EXTERNAL_RESEARCH, [
-            'ticket_id'     => $ticketId,
-            'profile_id'    => (int) ($_SESSION['glpiactiveprofile']['id'] ?? 0),
-            'context'       => mb_substr($context, 0, 6000, 'UTF-8'),
-            'human_consent' => true,
-        ]);
+
+        try {
+            $research = (new ExternalResearchService($this->config))->confirmInlineResearch(
+                mb_substr($context, 0, 6000, 'UTF-8'),
+                Plugin::getCurrentUserId()
+            );
+            $result = is_array($research['research_result'] ?? null) ? $research['research_result'] : [];
+            $status = (string) ($result['status'] ?? ($research['type'] ?? 'failed'));
+            $message = (string) ($research['message'] ?? '');
+            $summary = trim((string) ($result['summary'] ?? ''));
+
+            return [
+                'ok' => ($research['type'] ?? '') === 'success',
+                'status' => $status,
+                'message' => $summary !== '' ? $summary : $message,
+                'summary' => $summary,
+                'provider' => (string) ($result['provider'] ?? ''),
+                'model' => (string) ($result['model'] ?? ''),
+                'source' => (string) ($result['source'] ?? 'external_research_controlled_php'),
+                'request_id' => (string) ($research['request_id'] ?? ''),
+                'no_auto_send' => true,
+                'no_auto_publish' => true,
+                'read_only' => true,
+            ];
+        } catch (\Throwable $exception) {
+            error_log('[integaglpi][smart_help][external_research_php] ' . mb_substr($exception->getMessage(), 0, 160, 'UTF-8'));
+
+            return [
+                'ok' => false,
+                'status' => 'failed',
+                'message' => __('Pesquisa externa indisponível no momento.', 'glpiintegaglpi'),
+                'no_auto_send' => true,
+                'no_auto_publish' => true,
+                'read_only' => true,
+            ];
+        }
     }
 
     /**

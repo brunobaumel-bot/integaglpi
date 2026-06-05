@@ -223,6 +223,9 @@ try {
 
     $rawMessage = (string) ($response['body']['message'] ?? '');
     $displayMessage = $response['success'] ? $rawMessage : integaglpiCopilotUserMessage($rawMessage);
+    if (!$response['success'] && isset($response['body']['message'])) {
+        $response['body']['message'] = $displayMessage;
+    }
     integaglpiCopilotJsonResponse([
         'success' => $response['success'],
         'body' => $response['body'],

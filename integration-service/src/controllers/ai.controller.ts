@@ -50,7 +50,10 @@ export interface TechnicalSummarizerPort {
  * that appear in the input are preserved.
  */
 const SUMMARY_FABRICATION_GUARD: Array<{ phrase: RegExp; needs: RegExp }> = [
+  { phrase: /\bsync\s+d[eo]\s+AD\b/gi, needs: /\bsync\s+d[eo]\s+AD\b|\bactive\s+directory\b|\bAD\b/i },
+  { phrase: /\bactive\s+directory\b/gi, needs: /\bactive\s+directory\b|\bAD\b/i },
   { phrase: /\bteste[s]?\s+com\s+o\s+sistema\s+glpi\b/gi, needs: /\bglpi\b/i },
+  { phrase: /\bteste\s+d[eo]\s+sistema\s+corporativo\b/gi, needs: /\bteste\b.*\b(sistema|corporativo)\b/i },
   { phrase: /\bsistema\s+glpi\b/gi, needs: /\bglpi\b/i },
   { phrase: /\bglpi\b/gi, needs: /\bglpi\b/i },
   { phrase: /\bbanco\s+de\s+dados\b/gi, needs: /\bbanco\s+de\s+dados|database\b/i },

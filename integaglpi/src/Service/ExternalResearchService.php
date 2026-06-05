@@ -114,6 +114,34 @@ final class ExternalResearchService
     }
 
     /**
+     * SmartHelp inline adapter.
+     *
+     * The ticket tab already performed the explicit preview/consent flow before
+     * calling this method. Rebuild the canonical PHP preview token server-side
+     * and reuse the same controlled research path as the dedicated External
+     * Research page, including provider readiness, PII guard, Secret Vault and
+     * audit. No ticket, WhatsApp or KB mutation is performed.
+     *
+     * @return array<string, mixed>
+     */
+    public function confirmInlineResearch(string $technicalSummary, int $userId): array
+    {
+        if (!$this->pluginConfigService->isConfigured() || !$this->tablesReady()) {
+            return ['type' => 'danger', 'message' => __('Pesquisa externa ainda não está disponível.', 'glpiintegaglpi')];
+        }
+
+        $post = [
+            'action' => 'confirm_research',
+            'technical_summary' => mb_substr($technicalSummary, 0, self::MAX_PROMPT_CHARS, 'UTF-8'),
+            'trusted_sanitized_context' => '1',
+        ];
+        $context = $this->buildContext($post);
+        $post['preview_token'] = $this->previewToken($context);
+
+        return $this->confirmResearch($post, $userId);
+    }
+
+    /**
      * @param array<string, mixed> $post
      * @return array<string, mixed>
      */
@@ -305,6 +333,7 @@ final class ExternalResearchService
                 'provider' => (string) ($providerSelection['provider'] ?? 'disabled'),
                 'model' => (string) ($providerSelection['model'] ?? ''),
                 'source' => !empty($providerSelection['cloud']) ? 'external_research_cloud' : 'external_research_manual_catalog',
+                'summary' => (string) ($cloudResult['response_text'] ?? ''),
                 'no_auto_send' => true,
                 'no_auto_publish' => true,
             ],
@@ -476,7 +505,8 @@ final class ExternalResearchService
      */
     private function buildContext(array $post): array
     {
-        $sanitized = $this->sanitizePrompt((string) ($post['technical_summary'] ?? ''));
+        $blockOnDetected = empty($post['trusted_sanitized_context']);
+        $sanitized = $this->sanitizePrompt((string) ($post['technical_summary'] ?? ''), $blockOnDetected);
         $providerSelection = $this->providerSelectionFromPost($post);
         $catalog = $this->loadCatalog();
         $urls = $this->parseSourceUrls((string) ($post['source_urls'] ?? ''));
@@ -743,7 +773,7 @@ final class ExternalResearchService
     /**
      * @return array{text: string, input_hash: string, anonymized_payload_hash: string, detected_kinds: list<string>, blocked: bool, blocked_reason: string|null}
      */
-    private function sanitizePrompt(string $input): array
+    private function sanitizePrompt(string $input, bool $blockOnDetected = true): array
     {
         $original = mb_substr($input, 0, self::MAX_PROMPT_CHARS * 2);
         $detected = [];
@@ -782,13 +812,15 @@ final class ExternalResearchService
         $text = $this->sanitizeText($text, self::MAX_PROMPT_CHARS);
         $detected = array_values(array_unique($detected));
 
+        $blocked = $blockOnDetected ? $detected !== [] : $this->containsSensitiveData($text);
+
         return [
             'text' => $text,
             'input_hash' => hash('sha256', $original),
             'anonymized_payload_hash' => hash('sha256', $text),
             'detected_kinds' => $detected,
-            'blocked' => $detected !== [],
-            'blocked_reason' => $detected !== [] ? 'EXTERNAL_RESEARCH_PAYLOAD_BLOCKED_PII_OR_SECRET' : null,
+            'blocked' => $blocked,
+            'blocked_reason' => $blocked ? 'EXTERNAL_RESEARCH_PAYLOAD_BLOCKED_PII_OR_SECRET' : null,
         ];
     }
 

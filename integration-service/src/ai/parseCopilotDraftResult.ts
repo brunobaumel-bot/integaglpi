@@ -33,6 +33,41 @@ function isWindowNotice(value: unknown): value is CopilotWindowNotice {
   return COPILOT_WINDOW_NOTICES.includes(value as CopilotWindowNotice);
 }
 
+function normalizeTone(value: unknown): CopilotTone {
+  if (isTone(value)) {
+    return value;
+  }
+
+  const text = String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  if (/friendly|amigavel|humano|cordial/.test(text)) {
+    return 'friendly';
+  }
+  if (/technical|tecnico|tecnica/.test(text)) {
+    return 'technical';
+  }
+  if (/concise|curt|objetiv/.test(text)) {
+    return 'concise';
+  }
+
+  return 'neutral';
+}
+
+function normalizeWindowNotice(value: unknown): CopilotWindowNotice {
+  if (isWindowNotice(value)) {
+    return value;
+  }
+
+  const text = String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  if (/closed|fechad|fora.*janela|24h.*fech/.test(text)) {
+    return 'closed_24h';
+  }
+  if (/open|abert|dentro.*janela|24h.*abert/.test(text)) {
+    return 'open_24h';
+  }
+
+  return 'unknown';
+}
+
 function clampConfidence(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return 0;
@@ -48,6 +83,84 @@ function assertSafeDraft(value: string): void {
   if (/\b(enviei|fechei|reabri|alterei|mudei|aprovei|executei|publiquei|acionei template)\b/i.test(value)) {
     throw new Error('COPILOT_DRAFT_UNSAFE_ACTION');
   }
+}
+
+function assertNoRawSecret(value: string): void {
+  if (/(senha|password|bearer|token\s*=|api[_-]?key\s*=|app[_-]?secret\s*=|secret\s*=|BEGIN PRIVATE KEY)/i.test(value)) {
+    throw new Error('COPILOT_DRAFT_SECRET_DETECTED');
+  }
+}
+
+function normalizeFreeTextDraft(raw: string): CopilotDraftResult | null {
+  assertNoRawSecret(raw);
+
+  const text = truncate(raw
+    .replace(/^```(?:json|text)?/i, '')
+    .replace(/```$/i, '')
+    .replace(/^["']|["']$/g, ''), 2_000);
+  if (text.length < 40 || !/[.!?]|\n/.test(text)) {
+    return null;
+  }
+  assertSafeDraft(text);
+
+  return {
+    draftResponse: text,
+    tone: 'neutral',
+    kbReferences: [],
+    assumptions: ['O provedor local retornou texto livre em vez de JSON estruturado.'],
+    missingInformation: ['Revise tecnicamente antes de usar o rascunho.'],
+    safetyWarnings: [
+      'Nenhuma mensagem foi enviada automaticamente.',
+      'Rascunho recuperado de resposta não estruturada; validação humana obrigatória.',
+    ],
+    technicianChecklist: [
+      'Conferir se o rascunho responde ao caso atual.',
+      'Remover qualquer informação sensível antes de enviar.',
+      'Enviar manualmente somente após revisão.',
+    ],
+    confidenceScore: 20,
+    windowNotice: 'unknown',
+    templateNotice: '',
+    noAutoSend: true,
+  };
+}
+
+function parseJsonCandidate(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    // Continue with common local-model wrappers below.
+  }
+
+  const fenced = value.match(/```(?:json|javascript|js)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1] !== undefined) {
+    try {
+      return JSON.parse(fenced[1].trim());
+    } catch {
+      // Fall through to balanced-object extraction.
+    }
+  }
+
+  const firstBrace = value.indexOf('{');
+  const lastBrace = value.lastIndexOf('}');
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    try {
+      return JSON.parse(value.slice(firstBrace, lastBrace + 1));
+    } catch {
+      // The caller will try free-text recovery.
+    }
+  }
+
+  return undefined;
+}
+
+function hasStructuredDraftFields(record: Record<string, unknown>): boolean {
+  return record.draft_response !== undefined
+    || record.draftResponse !== undefined
+    || record.technician_checklist !== undefined
+    || record.technicianChecklist !== undefined
+    || record.no_auto_send !== undefined
+    || record.noAutoSend !== undefined;
 }
 
 function normalizeKbReferences(value: unknown): CopilotDraftResult['kbReferences'] {
@@ -74,10 +187,12 @@ function normalizeKbReferences(value: unknown): CopilotDraftResult['kbReferences
 }
 
 export function parseCopilotDraftResult(raw: string): CopilotDraftResult {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
+  const parsed = parseJsonCandidate(raw);
+  if (parsed === undefined) {
+    const recovered = normalizeFreeTextDraft(raw);
+    if (recovered !== null) {
+      return recovered;
+    }
     throw new Error('COPILOT_DRAFT_INVALID_JSON');
   }
 
@@ -86,35 +201,56 @@ export function parseCopilotDraftResult(raw: string): CopilotDraftResult {
   }
 
   const record = parsed as Record<string, unknown>;
-  const draftResponse = truncate(record.draft_response ?? record.draftResponse, 2_000);
+  if (!hasStructuredDraftFields(record) && typeof record.response === 'string') {
+    const nested = parseJsonCandidate(record.response);
+    if (nested !== undefined && nested !== parsed) {
+      return parseCopilotDraftResult(record.response);
+    }
+  }
+
+  const draftResponse = truncate(
+    record.draft_response
+      ?? record.draftResponse
+      ?? record.response
+      ?? record.resposta
+      ?? record.rascunho
+      ?? record.draft
+      ?? record.message
+      ?? record.suggestion,
+    2_000,
+  );
   if (draftResponse === '') {
     throw new Error('COPILOT_DRAFT_EMPTY');
   }
   assertSafeDraft(draftResponse);
 
-  if (!isTone(record.tone) || !isWindowNotice(record.window_notice ?? record.windowNotice)) {
-    throw new Error('COPILOT_DRAFT_INVALID_ENUM');
-  }
-  const windowNotice = (record.window_notice ?? record.windowNotice) as CopilotWindowNotice;
-  if (record.no_auto_send !== true && record.noAutoSend !== true) {
+  const explicitNoAutoSend = record.no_auto_send ?? record.noAutoSend;
+  if (explicitNoAutoSend === false) {
     throw new Error('COPILOT_DRAFT_NO_AUTO_SEND_REQUIRED');
   }
 
-  const technicianChecklist = normalizeList(record.technician_checklist ?? record.technicianChecklist, 8, 140);
-  if (technicianChecklist.length === 0) {
-    throw new Error('COPILOT_DRAFT_CHECKLIST_REQUIRED');
-  }
+  const technicianChecklist = normalizeList(
+    record.technician_checklist ?? record.technicianChecklist ?? record.checklist ?? record.check_list,
+    8,
+    140,
+  );
 
   const result: CopilotDraftResult = {
     draftResponse,
-    tone: record.tone,
+    tone: normalizeTone(record.tone),
     kbReferences: normalizeKbReferences(record.kb_references ?? record.kbReferences),
     assumptions: normalizeList(record.assumptions, 6, 140),
     missingInformation: normalizeList(record.missing_information ?? record.missingInformation, 6, 140),
     safetyWarnings: normalizeList(record.safety_warnings ?? record.safetyWarnings, 6, 160),
-    technicianChecklist,
+    technicianChecklist: technicianChecklist.length > 0
+      ? technicianChecklist
+      : [
+        'Conferir se o rascunho responde ao chamado atual.',
+        'Validar informações sensíveis antes de usar.',
+        'Enviar manualmente somente após revisão.',
+      ],
     confidenceScore: clampConfidence(record.confidence_score ?? record.confidenceScore),
-    windowNotice,
+    windowNotice: normalizeWindowNotice(record.window_notice ?? record.windowNotice),
     templateNotice: truncate(record.template_notice ?? record.templateNotice, 240),
     noAutoSend: true,
   };

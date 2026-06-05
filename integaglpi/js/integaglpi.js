@@ -524,9 +524,23 @@
     }
   }
 
+  function smartHelpEscape(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
   function smartHelpSummary(panel) {
     const summary = panel ? panel.querySelector('.js-smart-help-technical-summary') : null;
     return summary ? String(summary.value || '').trim() : '';
+  }
+
+  function smartHelpSanitizedPreview(panel) {
+    const preview = panel ? panel.querySelector('.js-smart-help-external-preview') : null;
+    return preview ? String(preview.value || '').trim() : '';
   }
 
   function smartHelpSetSummary(panel, text) {
@@ -651,7 +665,19 @@
       extra.technical_summary = smartHelpSummary(panel);
     }
     if (action === 'smart_external') {
-      extra.technical_summary = smartHelpSummary(panel);
+      const sanitizedContext = smartHelpSanitizedPreview(panel);
+      if (!sanitizedContext) {
+        smartHelpPanelMessage(panel, 'Gere e revise a pré-visualização sanitizada antes de enviar para ajuda externa.', 'warning');
+        smartHelpPanelStatus(panel, 'preview necessário', 'warning');
+        panel.dataset.smartHelpGlobalBusy = '0';
+        if (button) {
+          button.disabled = false;
+          if (originalText) button.textContent = originalText;
+        }
+        return;
+      }
+      extra.sanitized_context = sanitizedContext;
+      extra.technical_summary = sanitizedContext;
       extra.consent = '1';
     }
 
@@ -667,9 +693,28 @@
         const responseResult = body.result || {};
         if (action === 'prepare_external_context') {
           const cloudEl = panel.querySelector('.js-smart-help-cloud');
+          const sanitized = String(responseResult.cloud_safe_context || responseResult.sanitized_text || responseResult.sanitizedText || '');
+          const safe = responseResult.safe_for_cloud === true || responseResult.safeForCloud === true;
+          const kinds = Array.isArray(responseResult.removed_kinds)
+            ? responseResult.removed_kinds
+            : (Array.isArray(responseResult.detected_kinds) ? responseResult.detected_kinds : []);
+          const kindBadges = kinds.length
+            ? kinds.map((kind) => '<span class="badge bg-warning text-dark me-1">' + smartHelpEscape(kind) + '</span>').join('')
+            : '<span class="text-muted">nenhum</span>';
           if (cloudEl) {
-            cloudEl.innerHTML = '<div class="alert alert-warning py-2 mb-2">Contexto sanitizado preparado para validação humana.</div>'
-              + '<button type="button" class="btn btn-sm btn-warning js-smart-help-external-send">Enviar para ajuda externa</button>';
+            cloudEl.innerHTML = '<div class="border rounded p-2 mt-1">'
+              + '<div class="small text-muted mb-1">Contexto técnico para nuvem gerado a partir do resumo local</div>'
+              + (safe
+                ? '<div class="fw-bold text-success mb-1">Contexto técnico pronto para envio</div>'
+                : '<div class="fw-bold text-danger mb-1">Bloqueado por PII — não será enviado à nuvem</div>')
+              + '<div class="small text-muted mb-1">Tipos removidos: ' + kindBadges + '</div>'
+              + '<label class="form-label small mb-1">Pré-visualização (somente isto poderia ir à nuvem):</label>'
+              + '<textarea class="form-control form-control-sm js-smart-help-external-preview" rows="4" readonly>' + smartHelpEscape(sanitized) + '</textarea>'
+              + '<div class="d-flex gap-2 mt-2 flex-wrap">'
+              + (safe
+                ? '<button type="button" class="btn btn-sm btn-warning js-smart-help-external-send">Enviar para ajuda externa</button>'
+                : '<span class="text-danger small align-self-center">Há PII residual: revise o chamado. Envio bloqueado.</span>')
+              + '</div></div>';
           }
           smartHelpPanelMessage(panel, 'Revise o contexto sanitizado antes de ajuda externa.', 'warning');
           smartHelpPanelStatus(panel, 'validação humana', 'warning');
@@ -679,10 +724,14 @@
           const cloudEl = panel.querySelector('.js-smart-help-cloud');
           const message = responseResult.message || responseResult.summary || body.message || 'Resposta externa registrada para revisão humana.';
           if (cloudEl) {
-            cloudEl.innerHTML = '<div class="alert alert-info py-2 mb-0">' + String(message).replace(/[<>&]/g, '') + '</div>';
+            cloudEl.innerHTML = '<div class="border rounded p-2 mt-1">'
+              + '<div class="fw-bold text-primary mb-1">Ajuda externa por IA — sugestão, revise antes de aplicar</div>'
+              + '<div class="small text-muted mb-1">Retorno somente para revisão humana. Nada é enviado ao cliente nem altera o chamado automaticamente.</div>'
+              + '<div class="js-smart-help-external-answer">' + smartHelpEscape(message) + '</div>'
+              + '</div>';
           }
-          smartHelpPanelMessage(panel, 'Ajuda externa retornou apenas para revisão humana.', 'info');
-          smartHelpPanelStatus(panel, 'revisão humana', 'info');
+          smartHelpPanelMessage(panel, 'Ajuda externa retornou uma sugestão para revisão humana.', 'info');
+          smartHelpPanelStatus(panel, 'sugestão externa', 'success');
           return;
         }
         smartHelpRenderLocal(panel, responseResult);

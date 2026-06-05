@@ -91,9 +91,7 @@ function integaglpiSmartHelpTicketContext(int $ticketId): array
         exit;
     }
 
-    $name = (string) ($ticket->fields['name'] ?? '');
-    $content = trim(strip_tags((string) ($ticket->fields['content'] ?? '')));
-    $summary = mb_substr(trim($name . '. ' . $content), 0, 2000, 'UTF-8');
+    $summary = (new SmartHelpService())->buildTicketContextSummary($ticket);
 
     return [$ticketId, $summary];
 }
@@ -257,7 +255,7 @@ try {
         // Step 1: cloud-safe rewrite/preview. No cloud send, no consent here.
         // Base is the technician-edited LOCAL SUMMARY only — never the raw ticket
         // content/history. Node rewrites it into a generic technical context.
-        $currentSummary = trim((string) ($_POST['technical_summary'] ?? $_POST['summary'] ?? ''));
+        $currentSummary = trim((string) ($_POST['sanitized_context'] ?? $_POST['technical_summary'] ?? $_POST['summary'] ?? ''));
         if ($currentSummary === '') {
             integaglpiSmartHelpJsonResponse([
                 'ok' => false,
