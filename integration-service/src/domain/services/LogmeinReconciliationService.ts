@@ -51,7 +51,8 @@ export class ForbiddenEndpointError extends Error {
  * headers, tokens or response payloads.
  */
 export const REPORT_ERROR_CATEGORIES = {
-  HTTP_400: 'LOGMEIN_REPORT_HTTP_400',
+  HTTP_400: 'LOGMEIN_REPORT_INVALID_PERIOD',
+  HTTP_429: 'LOGMEIN_RATE_LIMITED',
   HTTP_401_403: 'LOGMEIN_REPORT_HTTP_401_403',
   HTTP_500: 'LOGMEIN_REPORT_HTTP_500',
   EMPTY: 'LOGMEIN_REPORT_EMPTY',
@@ -78,6 +79,9 @@ export class ReportApiError extends Error {
   public readonly reason: string;
   public readonly chunksRequested: number | null;
   public readonly retriesPerformed: number | null;
+  public readonly fallbackSkippedReason: string | null;
+  public readonly retryAfterSeconds: number | null;
+  public readonly rateLimitCooldownUntil: string | null;
 
   public constructor(category: string, statusCode: number, details: {
     primaryStatusCode?: number | null;
@@ -87,6 +91,9 @@ export class ReportApiError extends Error {
     reason?: string;
     chunksRequested?: number | null;
     retriesPerformed?: number | null;
+    fallbackSkippedReason?: string | null;
+    retryAfterSeconds?: number | null;
+    rateLimitCooldownUntil?: string | null;
   } = {}) {
     super(category); // message is the stable category id, safe to log
     this.name = 'ReportApiError';
@@ -99,12 +106,16 @@ export class ReportApiError extends Error {
     this.reason = details.reason ?? '';
     this.chunksRequested = details.chunksRequested ?? null;
     this.retriesPerformed = details.retriesPerformed ?? null;
+    this.fallbackSkippedReason = details.fallbackSkippedReason ?? null;
+    this.retryAfterSeconds = details.retryAfterSeconds ?? null;
+    this.rateLimitCooldownUntil = details.rateLimitCooldownUntil ?? null;
   }
 }
 
 /** Maps an HTTP status code from the report API to a sanitized category. */
 export function classifyReportHttpStatus(status: number): string {
   if (status === 400) return REPORT_ERROR_CATEGORIES.HTTP_400;
+  if (status === 429) return REPORT_ERROR_CATEGORIES.HTTP_429;
   if (status === 401 || status === 403) return REPORT_ERROR_CATEGORIES.HTTP_401_403;
   if (status >= 400 && status < 500) return REPORT_ERROR_CATEGORIES.HTTP_400;
   if (status >= 500) return REPORT_ERROR_CATEGORIES.HTTP_500;
@@ -116,6 +127,8 @@ export function reportErrorMessage(category: string): string {
   switch (category) {
     case REPORT_ERROR_CATEGORIES.HTTP_400:
       return 'A API de relatórios LogMeIn rejeitou os parâmetros do período (HTTP 400). Revise a janela de datas.';
+    case REPORT_ERROR_CATEGORIES.HTTP_429:
+      return 'A API LogMeIn limitou as requisições (HTTP 429 - Too Many Requests). Aguarde alguns minutos antes de tentar novamente.';
     case REPORT_ERROR_CATEGORIES.HTTP_401_403:
       return 'Credenciais da API de relatórios LogMeIn inválidas ou sem permissão (HTTP 401/403).';
     case REPORT_ERROR_CATEGORIES.HTTP_500:
@@ -224,6 +237,9 @@ export interface ReconciliationSyncResult {
   fallbackUsed: boolean;
   /** Bounded, sanitized diagnostic reason from the report error response (else null). */
   reportReason: string | null;
+  fallbackSkippedReason: string | null;
+  retryAfterSeconds: number | null;
+  rateLimitCooldownUntil: string | null;
   lookbackHours: number;
   lookbackDays: number | null;
   chunkMinutes: number;
@@ -288,6 +304,9 @@ export interface LogmeinReconciliationRepository {
     lookbackDays?: number | null;
     cooldownSeconds?: number | null;
     circuitOpenUntil?: string | null;
+    fallbackSkippedReason?: string | null;
+    retryAfterSeconds?: number | null;
+    rateLimitCooldownUntil?: string | null;
   }): Promise<void>;
 }
 
@@ -411,6 +430,20 @@ function delay(ms: number): Promise<void> {
 function retryDelayMs(attempt: number): number {
   const jitter = Math.floor(Math.random() * RETRY_BASE_DELAY_MS);
   return RETRY_BASE_DELAY_MS * (2 ** Math.max(0, attempt - 1)) + jitter;
+}
+
+function parseRetryAfterSeconds(value: string | null): number | null {
+  if (value === null || value.trim() === '') return null;
+  const trimmed = value.trim();
+  const seconds = Number.parseInt(trimmed, 10);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(seconds, 86_400);
+  }
+  const dateMs = Date.parse(trimmed);
+  if (!Number.isFinite(dateMs)) return null;
+  const diffSeconds = Math.ceil((dateMs - Date.now()) / 1_000);
+  if (diffSeconds < 0) return 0;
+  return Math.min(diffSeconds, 86_400);
 }
 
 function shouldRetryReportError(error: unknown): boolean {
@@ -538,6 +571,9 @@ export class LogmeinReconciliationService {
         fallbackUsed: true,
         reportPathLabel: 'fallback',
         reportReason: 'circuit_open',
+        fallbackSkippedReason: null,
+        retryAfterSeconds: null,
+        rateLimitCooldownUntil: null,
         chunksRequested: 0,
         chunkMinutes: this.timingConfig.chunkMinutes,
         overlapMinutes: this.timingConfig.overlapMinutes,
@@ -574,6 +610,9 @@ export class LogmeinReconciliationService {
         fallbackStatusCode: null,
         fallbackUsed: true,
         reportReason: 'circuit_open',
+        fallbackSkippedReason: null,
+        retryAfterSeconds: null,
+        rateLimitCooldownUntil: null,
         lookbackHours: this.timingConfig.lookbackHours,
         lookbackDays: this.timingConfig.lookbackDays,
         chunkMinutes: this.timingConfig.chunkMinutes,
@@ -625,6 +664,9 @@ export class LogmeinReconciliationService {
       fallbackUsed: false,
       reportPathLabel: null,
       reportReason: null,
+      fallbackSkippedReason: null,
+      retryAfterSeconds: null,
+      rateLimitCooldownUntil: null,
       chunksRequested: null,
       chunkMinutes: this.timingConfig.chunkMinutes,
       overlapMinutes: this.timingConfig.overlapMinutes,
@@ -692,6 +734,9 @@ export class LogmeinReconciliationService {
         fallbackUsed: reportFetch.fallbackUsed,
         reportPathLabel: reportFetch.reportPathLabel,
         reportReason: null,
+        fallbackSkippedReason: null,
+        retryAfterSeconds: null,
+        rateLimitCooldownUntil: null,
         chunksRequested: reportFetch.chunksRequested,
         chunkMinutes: reportFetch.chunkMinutes,
         overlapMinutes: reportFetch.overlapMinutes,
@@ -747,6 +792,9 @@ export class LogmeinReconciliationService {
         fallbackStatusCode: reportFetch.fallbackStatusCode,
         fallbackUsed: reportFetch.fallbackUsed,
         reportReason: null,
+        fallbackSkippedReason: null,
+        retryAfterSeconds: null,
+        rateLimitCooldownUntil: null,
         lookbackHours: this.timingConfig.lookbackHours,
         lookbackDays: this.timingConfig.lookbackDays,
         chunkMinutes: this.timingConfig.chunkMinutes,
@@ -770,6 +818,9 @@ export class LogmeinReconciliationService {
       const reportPathLabel = error instanceof ReportApiError ? error.reportPathLabel : 'primary';
       // Bounded, sanitized diagnostic reason (only present on ReportApiError).
       const reportReason = error instanceof ReportApiError && error.reason !== '' ? error.reason : null;
+      const fallbackSkippedReason = error instanceof ReportApiError ? error.fallbackSkippedReason : null;
+      const retryAfterSeconds = error instanceof ReportApiError ? error.retryAfterSeconds : null;
+      const rateLimitCooldownUntil = error instanceof ReportApiError ? error.rateLimitCooldownUntil : null;
       const chunksRequested = error instanceof ReportApiError ? error.chunksRequested : null;
       const retriesPerformed = error instanceof ReportApiError ? error.retriesPerformed : null;
       let circuitOpenUntilIso: string | null = null;
@@ -805,6 +856,9 @@ export class LogmeinReconciliationService {
         fallbackUsed,
         reportPathLabel,
         reportReason,
+        fallbackSkippedReason,
+        retryAfterSeconds,
+        rateLimitCooldownUntil,
         chunksRequested,
         chunkMinutes: this.timingConfig.chunkMinutes,
         overlapMinutes: this.timingConfig.overlapMinutes,
@@ -826,6 +880,9 @@ export class LogmeinReconciliationService {
         status_code: reportStatusCode,
         // Bounded sanitized reason for operator diagnosis (no body/token/headers).
         report_reason: reportReason,
+        fallback_skipped_reason: fallbackSkippedReason,
+        retry_after_seconds: retryAfterSeconds,
+        rate_limit_cooldown_until: rateLimitCooldownUntil,
         chunks_requested: chunksRequested,
         chunk_minutes: this.timingConfig.chunkMinutes,
         overlap_minutes: this.timingConfig.overlapMinutes,
@@ -855,6 +912,9 @@ export class LogmeinReconciliationService {
         fallbackStatusCode,
         fallbackUsed,
         reportReason,
+        fallbackSkippedReason,
+        retryAfterSeconds,
+        rateLimitCooldownUntil,
         lookbackHours: this.timingConfig.lookbackHours,
         lookbackDays: this.timingConfig.lookbackDays,
         chunkMinutes: this.timingConfig.chunkMinutes,
@@ -948,6 +1008,9 @@ export class LogmeinReconciliationService {
             fallbackUsed: error.fallbackUsed,
             reportPathLabel: error.reportPathLabel,
             reason: error.reason,
+            fallbackSkippedReason: error.fallbackSkippedReason,
+            retryAfterSeconds: error.retryAfterSeconds,
+            rateLimitCooldownUntil: error.rateLimitCooldownUntil,
             chunksRequested: chunks.length,
             retriesPerformed: retriesPerformed + (error.retriesPerformed ?? 0),
           });
@@ -1011,6 +1074,9 @@ export class LogmeinReconciliationService {
             fallbackUsed: true,
             reportPathLabel: 'fallback',
             reason: combinedReason,
+            fallbackSkippedReason: fallbackError.fallbackSkippedReason,
+            retryAfterSeconds: fallbackError.retryAfterSeconds,
+            rateLimitCooldownUntil: fallbackError.rateLimitCooldownUntil,
             chunksRequested: 1,
             retriesPerformed: (error.retriesPerformed ?? 0) + (fallbackError.retriesPerformed ?? 0),
           });
@@ -1029,8 +1095,8 @@ export class LogmeinReconciliationService {
     const allItems: Record<string, unknown>[] = [];
     const url = this.reportEndpoint(path);
     const authHeader = this.basicAuthHeader();
-    const startDate = from.toISOString();
-    const endDate = to.toISOString();
+    const startDate = isoDateString(from);
+    const endDate = isoDateString(to);
     const body = {
       startDate,
       endDate,
@@ -1095,10 +1161,21 @@ export class LogmeinReconciliationService {
         // only well-known top-level error fields, stripped of secrets — never the
         // full body, request, or auth header.
         const reason = await extractSanitizedErrorReason(response);
-        throw new ReportApiError(classifyReportHttpStatus(response.status), response.status, {
+        const category = classifyReportHttpStatus(response.status);
+        const retryAfterSeconds = category === REPORT_ERROR_CATEGORIES.HTTP_429
+          ? parseRetryAfterSeconds(response.headers?.get?.('retry-after') ?? null)
+            ?? this.timingConfig.cooldownSeconds
+          : null;
+        const rateLimitCooldownUntil = retryAfterSeconds !== null
+          ? new Date(Date.now() + retryAfterSeconds * 1_000).toISOString()
+          : null;
+        throw new ReportApiError(category, response.status, {
           reportPathLabel: label,
           reason,
           retriesPerformed,
+          fallbackSkippedReason: category === REPORT_ERROR_CATEGORIES.HTTP_429 ? 'rate_limited' : null,
+          retryAfterSeconds,
+          rateLimitCooldownUntil,
         });
       }
 
@@ -1336,6 +1413,9 @@ export class LogmeinReconciliationService {
       fallbackStatusCode: null,
       fallbackUsed: false,
       reportReason: null,
+      fallbackSkippedReason: null,
+      retryAfterSeconds: null,
+      rateLimitCooldownUntil: null,
       lookbackHours: this.timingConfig.lookbackHours,
       lookbackDays: this.timingConfig.lookbackDays,
       chunkMinutes: this.timingConfig.chunkMinutes,

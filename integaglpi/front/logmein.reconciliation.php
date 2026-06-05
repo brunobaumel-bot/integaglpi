@@ -246,6 +246,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $fallbackCode = isset($body['fallback_status_code']) && $body['fallback_status_code'] !== null
                         ? (int) $body['fallback_status_code'] : 0;
                     $fallbackUsed = !empty($body['fallback_used']);
+                    $fallbackSkippedReason = (string) ($body['fallback_skipped_reason'] ?? '');
+                    $retryAfterSeconds = isset($body['retry_after_seconds']) && $body['retry_after_seconds'] !== null
+                        ? (int) $body['retry_after_seconds'] : 0;
+                    $rateLimitCooldownUntil = (string) ($body['rate_limit_cooldown_until'] ?? '');
                     // Bounded, sanitized diagnostic reason from the LogMeIn 500 response.
                     $reportReason = (string) ($body['report_reason'] ?? '');
                     $errMsg = (string) ($body['message'] ?? __('Indisponível.', 'glpiintegaglpi'));
@@ -259,6 +263,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         } else {
                             $suffix .= __('fallback não executado.', 'glpiintegaglpi');
                         }
+                    }
+                    if ($fallbackSkippedReason !== '') {
+                        $suffix .= ' ' . sprintf(
+                            __('Fallback ignorado: %s.', 'glpiintegaglpi'),
+                            htmlspecialchars(mb_substr($fallbackSkippedReason, 0, 80), ENT_QUOTES, 'UTF-8')
+                        );
+                    }
+                    if ($retryAfterSeconds > 0) {
+                        $suffix .= ' ' . sprintf(__('Tente novamente em aproximadamente %d segundos.', 'glpiintegaglpi'), $retryAfterSeconds);
+                    }
+                    if ($rateLimitCooldownUntil !== '') {
+                        $suffix .= ' ' . sprintf(
+                            __('Cooldown até %s.', 'glpiintegaglpi'),
+                            htmlspecialchars(mb_substr($rateLimitCooldownUntil, 0, 40), ENT_QUOTES, 'UTF-8')
+                        );
                     }
                     if ($reportError !== '') {
                         $suffix .= ' [' . htmlspecialchars($reportError, ENT_QUOTES, 'UTF-8')

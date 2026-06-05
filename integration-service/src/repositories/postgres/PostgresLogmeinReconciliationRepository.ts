@@ -292,6 +292,9 @@ export class PostgresLogmeinReconciliationRepository implements LogmeinReconcili
     lookbackDays?: number | null;
     cooldownSeconds?: number | null;
     circuitOpenUntil?: string | null;
+    fallbackSkippedReason?: string | null;
+    retryAfterSeconds?: number | null;
+    rateLimitCooldownUntil?: string | null;
   }): Promise<void> {
     const eventType = input.status === 'started'
       ? 'LOGMEIN_SESSION_SYNC_STARTED'
@@ -334,6 +337,9 @@ export class PostgresLogmeinReconciliationRepository implements LogmeinReconcili
           lookback_days: input.lookbackDays ?? null,
           cooldown_seconds: input.cooldownSeconds ?? null,
           circuit_open_until: input.circuitOpenUntil ?? null,
+          fallback_skipped_reason: input.fallbackSkippedReason ?? null,
+          retry_after_seconds: input.retryAfterSeconds ?? null,
+          rate_limit_cooldown_until: input.rateLimitCooldownUntil ?? null,
           read_only: true,
           remote_execution: false,
           post_action_only_reports: true,

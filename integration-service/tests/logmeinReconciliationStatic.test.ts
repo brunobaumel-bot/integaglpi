@@ -28,6 +28,7 @@ import {
   RECONCILIATION_FALLBACK_PATH,
   RECONCILIATION_REPORT_PATH,
   REPORT_ERROR_CATEGORIES,
+  reportErrorMessage,
 } from '../src/domain/services/LogmeinReconciliationService.js';
 import { createLogmeinReconciliationSyncController } from '../src/controllers/createLogmeinReconciliationController.js';
 import { PostgresLogmeinReconciliationRepository } from '../src/repositories/postgres/PostgresLogmeinReconciliationRepository.js';
@@ -368,10 +369,10 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     expect(fetchCalls[0]?.opts.method).toBe('POST');
     const calledBody = JSON.parse(fetchCalls[0]?.opts.body ?? '{}');
     expect(calledBody).toMatchObject({
-      startDate: '2026-06-01T00:00:00.000Z',
-      endDate: '2026-06-01T00:30:00.000Z',
-      from: '2026-06-01T00:00:00.000Z',
-      to: '2026-06-01T00:30:00.000Z',
+      startDate: '2026-06-01',
+      endDate: '2026-06-01',
+      from: '2026-06-01',
+      to: '2026-06-01',
     });
 
     vi.unstubAllGlobals();
@@ -497,6 +498,9 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     // PHP: RBAC + CSRF.
     expect(phpFront).toContain('isCsrfValid($_POST)');
     expect(phpFront).toContain('RIGHT_MANAGE_LOGMEIN_RECONCILIATION');
+    expect(phpFront).toContain('fallback_skipped_reason');
+    expect(phpFront).toContain('retry_after_seconds');
+    expect(phpFront).toContain('rate_limit_cooldown_until');
     // PHP: Task is private note, no public follow-up.
     expect(phpFront).toContain("'is_private'");
     expect(phpFront).not.toContain('ITILFollowup');
@@ -530,9 +534,15 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     expect(classifyReportHttpStatus(400)).toBe(REPORT_ERROR_CATEGORIES.HTTP_400);
     expect(classifyReportHttpStatus(401)).toBe(REPORT_ERROR_CATEGORIES.HTTP_401_403);
     expect(classifyReportHttpStatus(403)).toBe(REPORT_ERROR_CATEGORIES.HTTP_401_403);
+    expect(classifyReportHttpStatus(429)).toBe(REPORT_ERROR_CATEGORIES.HTTP_429);
     expect(classifyReportHttpStatus(500)).toBe(REPORT_ERROR_CATEGORIES.HTTP_500);
     expect(classifyReportHttpStatus(502)).toBe(REPORT_ERROR_CATEGORIES.HTTP_500);
     expect(classifyReportHttpStatus(503)).toBe(REPORT_ERROR_CATEGORIES.HTTP_500);
+    expect(REPORT_ERROR_CATEGORIES.HTTP_400).toBe('LOGMEIN_REPORT_INVALID_PERIOD');
+    expect(REPORT_ERROR_CATEGORIES.HTTP_429).toBe('LOGMEIN_RATE_LIMITED');
+    expect(reportErrorMessage(REPORT_ERROR_CATEGORIES.HTTP_400)).toContain('HTTP 400');
+    expect(reportErrorMessage(REPORT_ERROR_CATEGORIES.HTTP_429)).toContain('HTTP 429');
+    expect(reportErrorMessage(REPORT_ERROR_CATEGORIES.HTTP_429)).not.toMatch(/período|periodo/i);
   });
 
   it('persists report fallback metadata in reconciliation audit payload_json', async () => {
@@ -549,6 +559,9 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
       'max_retries',
       'lookback_hours',
       'cooldown_seconds',
+      'fallback_skipped_reason',
+      'retry_after_seconds',
+      'rate_limit_cooldown_until',
     ]) {
       expect(repoSource).toContain(key);
     }
@@ -804,6 +817,9 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
         primaryStatusCode: 500,
         fallbackStatusCode: 500,
         fallbackUsed: true,
+        fallbackSkippedReason: null,
+        retryAfterSeconds: null,
+        rateLimitCooldownUntil: null,
         lookbackHours: 1,
         lookbackDays: null,
         chunkMinutes: 15,
@@ -838,6 +854,9 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     expect(responseBody[0]?.primary_status_code).toBe(500);
     expect(responseBody[0]?.fallback_status_code).toBe(500);
     expect(responseBody[0]?.fallback_used).toBe(true);
+    expect(responseBody[0]).toHaveProperty('fallback_skipped_reason');
+    expect(responseBody[0]).toHaveProperty('retry_after_seconds');
+    expect(responseBody[0]).toHaveProperty('rate_limit_cooldown_until');
     expect(responseBody[0]?.lookback_hours).toBe(1);
     expect(responseBody[0]?.chunk_minutes).toBe(15);
     expect(responseBody[0]?.overlap_minutes).toBe(5);
@@ -1133,6 +1152,63 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     expect(result.message).toContain('401/403');
     expect(result.fallbackUsed).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('classifies HTTP 429 as rate limited, skips fallback, and returns sanitized cooldown metadata', async () => {
+    const repository = makeRepoMock();
+    const auditEvents: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const auditService = {
+      recordAuditEventSafe: vi.fn(async (event: { eventType: string; payload: Record<string, unknown> }) => {
+        auditEvents.push({ type: event.eventType, payload: event.payload });
+      }),
+    };
+    const fetchMock = vi.fn(async () => ({
+      ok: false,
+      status: 429,
+      headers: { get: (name: string) => name.toLowerCase() === 'retry-after' ? '120' : null },
+      text: async () => JSON.stringify({
+        message: 'Too Many Requests',
+        bearer: 'bearer-token-leak',
+      }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const service = new LogmeinReconciliationService(
+      { enabled: true, reconciliationEnabled: true, companyId: 'c', psk: 'p', timeoutMs: 100 },
+      auditService as never,
+      repository as never,
+    );
+    const result = await service.syncRemoteAccessSessions();
+
+    expect(result.ok).toBe(false);
+    expect(result.reportError).toBe(REPORT_ERROR_CATEGORIES.HTTP_429);
+    expect(result.reportStatusCode).toBe(429);
+    expect(result.primaryStatusCode).toBe(429);
+    expect(result.fallbackStatusCode).toBeNull();
+    expect(result.fallbackUsed).toBe(false);
+    expect(result.fallbackSkippedReason).toBe('rate_limited');
+    expect(result.retryAfterSeconds).toBe(120);
+    expect(result.rateLimitCooldownUntil).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(result.message).toContain('HTTP 429');
+    expect(result.message).not.toMatch(/período|periodo/i);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const failedAudit = repository.insertReconciliationAudit.mock.calls
+      .map((call) => call[0] as Record<string, unknown>)
+      .find((payload) => payload.status === 'failed');
+    expect(failedAudit?.reportError).toBe(REPORT_ERROR_CATEGORIES.HTTP_429);
+    expect(failedAudit?.reportStatusCode).toBe(429);
+    expect(failedAudit?.fallbackSkippedReason).toBe('rate_limited');
+    expect(failedAudit?.retryAfterSeconds).toBe(120);
+    expect(failedAudit?.rateLimitCooldownUntil).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    const failed = auditEvents.find((e) => e.type === 'LOGMEIN_SESSION_SYNC_FAILED');
+    expect(failed?.payload.report_error).toBe(REPORT_ERROR_CATEGORIES.HTTP_429);
+    expect(failed?.payload.fallback_skipped_reason).toBe('rate_limited');
+    expect(JSON.stringify(result)).not.toContain('bearer-token-leak');
+    expect(JSON.stringify(failed?.payload ?? {})).not.toContain('bearer-token-leak');
 
     vi.unstubAllGlobals();
   });
