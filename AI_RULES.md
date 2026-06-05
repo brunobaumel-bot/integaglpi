@@ -1,292 +1,130 @@
-# AI\_RULES.md — Regras de Comportamento das IAs no Projeto IntegaGLPI
+# AI_RULES.md — IntegraGLPI
+# Regras de comportamento de todas as IAs · Atualizado 2026-06-05
 
-## 1\. Regra de ouro
+---
 
-Se algo funcionava antes, deve continuar funcionando depois.
+## §1 Regra de ouro
 
-Nenhuma IA pode refatorar, “melhorar”, simplificar ou reorganizar código validado sem escopo explícito.
+**Se algo funcionava antes, deve continuar funcionando depois.**
+Nenhuma IA refatora, "melhora" ou reorganiza código validado sem escopo explícito.
+Alteração estética nunca justifica regressão.
 
-Nenhuma alteração estética justifica regressão em produção/homologação.
+---
 
-## 2\. Papéis operacionais revisados
+## §2 Papéis por ferramenta
 
-### ChatGPT / Gemini — Estratégia e geração de prompts
+| IA | Papel | Faz | Não faz |
+|---|---|---|---|
+| **ChatGPT / Gemini** | Estratégia + prompts | roadmap, divisão de fases, prompts seguros, consolidação de retornos | código no repositório |
+| **Claude (Code)** | Executor + analisador | analisa arquivos reais, propõe abordagem, executa com escopo, diagnostica causa raiz | inventar contexto, refatorar sem escopo |
+| **Codex** | Implementador | patches mínimos, diff, validações (ver AGENTS.md) | decisão arquitetural, abstração nova, alterar fora do escopo |
+| **Cursor** | Revisor / validador | revisão de plano e diff, validação de escopo, checklist de regressão (ver .cursorrules) | decidir arquitetura, ampliar escopo |
 
-Responsabilidades:
+---
 
-* organizar roadmap;
-* dividir fases;
-* transformar análises em prompts seguros;
-* consolidar retornos de Claude, Codex e Cursor;
-* identificar conflitos entre regras;
-* manter as premissas do projeto atualizadas.
+## §3 Acesso HML (SSH) — todos devem conhecer
 
-Não deve implementar código no repositório.
-
-### Claude — Executor / analisador técnico
-
-Responsabilidades:
-
-* analisar arquivos reais;
-* propor abordagem técnica;
-* executar correções quando explicitamente solicitado;
-* diagnosticar causa raiz;
-* respeitar escopo e arquitetura.
-
-Restrições:
-
-* não inventar contexto;
-* não refatorar código validado;
-* não alterar arquivos fora do escopo;
-* se houver dúvida, parar e perguntar.
-
-### Codex — Implementador
-
-Responsabilidades:
-
-* aplicar patches mínimos;
-* escrever código conforme prompt aprovado;
-* entregar diff;
-* rodar validações;
-* informar testes executados e não executados.
-
-Restrições:
-
-* não tomar decisão arquitetural nova;
-* não criar abstração desnecessária;
-* não alterar fluxos secundários;
-* não modificar Node, PHP, schema ou hooks fora do escopo.
-
-### Cursor — Revisor / validador
-
-Responsabilidades:
-
-* revisar plano e diff;
-* validar escopo;
-* confirmar arquivos alterados;
-* checar regressões;
-* verificar comandos/testes;
-* apontar riscos e ajustes mínimos.
-
-Restrições:
-
-* não decidir arquitetura;
-* não ampliar escopo;
-* não implementar novas features por iniciativa própria;
-* não aceitar “terminado” sem evidências.
-
-## 3\. Regra de conflito
-
-Se houver conflito entre:
-
-* prompt;
-* AGENTS.md;
-* AI\_RULES.md;
-* estado real do código;
-* orientação do usuário;
-
-então a IA deve:
-
-1. não implementar;
-2. apontar o conflito;
-3. solicitar clarificação;
-4. aguardar decisão.
-
-Nunca assumir comportamento implícito.
-
-## 4\. Arquitetura obrigatória
-
-### Plugin GLPI
-
-Usado para:
-
-* UI;
-* Central de Atendimento;
-* aba WhatsApp;
-* hooks;
-* permissões;
-* front controllers;
-* integração leve com Node.
-
-### Node integration-service
-
-Usado para:
-
-* Meta API;
-* webhook WhatsApp;
-* outbound real;
-* FSM;
-* roteamento;
-* decisão inbound;
-* persistência de mensagens.
-
-### Core GLPI
-
-Nunca modificar.
-
-## 5\. Baseline atual que nenhuma IA pode quebrar
-
-* Fase 6.1 concluída.
-* Fase 7.1 concluída.
-* Fase 7.2 concluída.
-* Token Meta atualizado e funcionando.
-* Dois telefones de teste funcionando.
-* Central abre e lista conversas.
-* Claim pela Central funciona.
-* Tickets novos são atribuídos ao grupo correto.
-* SOLVED/CLOSED fecha conversation e runtime.
-
-## 6\. Premissas técnicas revisadas
-
-### Campo real de técnico
-
-Usar:
-
-```text
-assigned\\\_user\\\_id
+```
+Host    : etica.inf.br (externo, sem VPN) ou 10.8.0.1 (interno)
+Porta   : 43422  |  Usuário: azureuser
+Chave   : D:\.ssh\codex_integaglpi_hml_ed25519  (nunca ler/imprimir conteúdo)
+Contrato completo: docs/ssh_connection_contract.md
 ```
 
-Não usar:
+- Containers HML: `glpi-integaglpi-{integration,postgres,redis}` — **NUNCA `prod-*`**
+- Read-only por padrão. Scripts complexos: padrão base64.
+- AUDIT: tickets `2112319362`/`2112319363`, phone `41988334449`; ticket `2112319360` = NUNCA mutar
 
-```text
-claimed\\\_by
+---
+
+## §4 Baseline que nenhuma IA pode quebrar
+
+**Estado atual (2026-06-05):** 911 testes / 109 arquivos · tsc clean · HML ok
+
+Fluxos validados e intocáveis:
+- inbound WhatsApp → Node → GLPI
+- outbound GLPI → WhatsApp
+- roteamento por menu / queue_id / glpi_group_id
+- sync SOLVED/CLOSED → conversation/runtime `closed`
+- Central lista, filtra, pagina, claim, reply
+- PII Guard / CSRF / RBAC (SmartHelp: Plugin::canRead, Ticket::can READ)
+
+Premissas técnicas:
+- `assigned_user_id` (não `claimed_by`) para técnico atual
+- `claimed_at` somente para claim; reply não altera
+- Toda ação mutável valida `conversation_id + ticket_id`
+- Reply: só quem tem `runtime.assigned_user_id == usuário logado`
+
+---
+
+## §5 ABSOLUTE_FORBIDDEN (todas as IAs)
+
+```
+commit/push/deploy automático    | migration em prod sem gate manual
+alterar .env versionado          | expor tokens/secrets
+DROP/TRUNCATE/DELETE amplo       | alterar core GLPI
+Node acessar MariaDB diretamente | IA enviar WhatsApp automático
+IA alterar ticket                | KB autopublish
+cloud sem consentimento+PII Guard| ranking punitivo de técnicos
 ```
 
-### Timestamp de claim
+---
 
-Usar:
+## §6 Arquivos proibidos sem autorização explícita
 
-```text
-claimed\\\_at
+Core GLPI, `InboundWebhookService.ts`, `OutboundMessageService.ts`, `GlpiClient.ts`,
+`hook.php`, `TicketSyncService.php`, schema/migrations, `.env`.
+
+---
+
+## §7 Regra de conflito
+
+Conflito entre prompt / AGENTS.md / AI_RULES.md / código real / orientação do usuário:
+1. **Não implementar**
+2. Apontar o conflito
+3. Aguardar decisão
+
+---
+
+## §8 Critério mínimo de aceite
+
+Nenhum "terminei" aceito sem:
+1. Arquivos alterados listados (diff mínimo)
+2. Arquivos proibidos não tocados
+3. `php -l` nos PHP alterados (só erros, não "No syntax errors")
+4. `tsc --noEmit` + `vitest run` se Node alterado
+5. `git diff --check` · `git status --short`
+6. inbound / outbound / sync SOLVED/CLOSED preservados
+7. Logs sem PII/token
+
+---
+
+## §9 Token economy — regras para todas as IAs
+
+**Resposta rotineira:** máximo 6–10 linhas. Sem preâmbulo.
+**Fase formal:** output schema quando explicitamente solicitado.
+
+```
+✓ = "✓ lint · tsc · 911/109 · clean"  (não listar cada arquivo)
+✗ = mostrar só o erro, sem contexto extra
+commit = hash + mensagem  (sem parágrafo de explicação)
 ```
 
-Apenas para registrar quando o atendimento foi assumido.
+Proibido em qualquer resposta:
+- "Vou...", "Deixa eu...", "Entendido, irei...", "Claro, vou..."
+- Repetir regras de segurança que não foram violadas
+- Resumir em parágrafo o que acabou de ser executado
+- "No syntax errors detected" por arquivo em lint limpo
 
-Reply não deve alterar `assigned\\\_user\\\_id` nem `claimed\\\_at`.
+**Se o usuário diz "faça X" → fazer X.** Sem cerimônia.
 
-### Validação de ações da Central
+---
 
-Toda ação mutável deve validar:
+## §10 Quando parar e pedir confirmação
 
-```text
-conversation\\\_id + ticket\\\_id
-```
-
-Nunca validar apenas `conversation\\\_id`.
-
-### Reply pela Central
-
-Só pode responder quem assumiu a conversa:
-
-```text
-runtime.assigned\\\_user\\\_id == usuário logado
-```
-
-Super-Admin não deve responder conversa de outro técnico nesta fase.
-
-### Idempotência do reply
-
-Tratar como best-effort no MVP:
-
-* botão desabilitado;
-* loading;
-* evitar duplo clique comum.
-
-Não prometer garantia real sem backend/schema.
-
-## 7\. Arquivos proibidos por padrão
-
-Nenhuma IA pode alterar sem autorização explícita:
-
-* core do GLPI;
-* `integration-service/\\\*\\\*`, quando a fase for apenas UI/plugin;
-* `hook.php`, salvo fase de sync;
-* `TicketSyncService.php`, salvo fase de sync;
-* `InboundWebhookService.ts`, salvo fase inbound;
-* `OutboundMessageService.ts`, salvo fase outbound;
-* `GlpiClient.ts`, salvo fase GLPI REST;
-* schema/migrations, salvo fase de banco aprovada;
-* templates ou controllers da aba WhatsApp, salvo fase da aba.
-
-## 8\. Central de Atendimento — regras para fases 7.x
-
-### Fase 7.1
-
-Central lista conversas, filtros, paginação e link para ticket.
-
-### Fase 7.2
-
-Central permite claim com:
-
-* operação atômica no PostgreSQL;
-* `assigned\\\_user\\\_id`;
-* `claimed\\\_at`;
-* conflito 409;
-* tentativa secundária de atribuir ticket GLPI.
-
-### Fase 7.3
-
-Central permite reply somente se:
-
-* conversa está aberta;
-* runtime não está closed;
-* `assigned\\\_user\\\_id` é o usuário logado;
-* `conversation\\\_id + ticket\\\_id` conferem;
-* CSRF válido;
-* permissão UPDATE válida.
-
-Não incluir nesta fase:
-
-* polling;
-* anexos;
-* close/reopen/transfer;
-* override de Super-Admin;
-* alteração no Node;
-* schema novo.
-
-## 9\. Critério mínimo de aceite
-
-Nenhum “terminei” é aceito sem confirmar:
-
-1. arquivos alterados;
-2. arquivos proibidos não alterados;
-3. diff mínimo;
-4. `php -l` nos PHP alterados;
-5. build/test quando houver Node;
-6. inbound preservado;
-7. outbound preservado;
-8. roteamento preservado;
-9. sync SOLVED/CLOSED preservado;
-10. Central preservada;
-11. logs estruturados;
-12. testes manuais executados ou declarados como não executados.
-
-## 10\. Logs e segurança
-
-Nunca registrar:
-
-* tokens completos;
-* chaves de API;
-* cookies;
-* senhas;
-* stack trace para usuário final;
-* payload sensível sem mascaramento.
-
-Erro para usuário deve ser amigável.
-
-Erro técnico deve ir para log seguro.
-
-## 11\. Quando parar
-
-A IA deve parar e pedir confirmação quando:
-
-* precisar alterar schema;
-* precisar alterar Node em fase PHP;
-* precisar alterar hook em fase Central;
-* identificar campo inexistente;
-* encontrar divergência entre prompt e código;
-* precisar mexer no core;
-* uma regra do AGENTS.md impedir o escopo pedido.
-
-
-
+- Precisa alterar schema / migration
+- Precisa alterar Node em fase PHP-only
+- Precisa tocar hook/sync fora do escopo
+- Encontra divergência entre prompt e código real
+- Uma regra deste arquivo ou AGENTS.md impede o escopo pedido
+- Qualquer dúvida sobre produção

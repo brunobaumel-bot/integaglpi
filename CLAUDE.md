@@ -106,6 +106,25 @@ no_sql_destructive | no_raw_prompt | pii_masking_required
 
 ---
 
+## TOKEN ECONOMY — COMPORTAMENTO PADRÃO
+
+**Operação rotineira** (commit, lint, test, SSH read-only): máximo 6–10 linhas.
+```
+✓ lint · tsc · 911/109 vitest · whitespace clean
+commit abc1234 — "mensagem"
+```
+
+**Fase formal** (IMPLEMENTACAO / REVISAO): output schema quando pedido.
+
+**Sempre:**
+- Se o usuário diz "faça X" → fazer X direto, sem preâmbulo
+- Lint limpo: mostrar só erros (não listar "No syntax errors" por arquivo)
+- Não repetir regras de segurança se não foram violadas
+- Não resumir em parágrafo o que acabou de ser feito
+- Não usar "Vou...", "Deixa eu...", "Entendido, irei..."
+
+---
+
 ## REGRA FINAL
 
 ```
@@ -113,6 +132,7 @@ segurança > velocidade
 reuso > nova implementação
 resposta objetiva > prosa longa
 dúvida sobre produção → parar e pedir confirmação
+"faça X" → fazer X
 ```
 
 ---
