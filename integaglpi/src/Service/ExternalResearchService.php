@@ -35,6 +35,294 @@ final class ExternalResearchService
     }
 
     /**
+     * Normalize provider responses for human review surfaces. This accepts the
+     * JSON schema requested from the provider, legacy DynamicResearchAnswer
+     * objects, or free text. The returned array is safe to render as a card; raw
+     * JSON stays out of the primary view.
+     *
+     * @param mixed $payload
+     * @param array<string, mixed> $meta
+     * @return array<string, mixed>
+     */
+    public static function externalHelpViewModel($payload, array $meta = []): array
+    {
+        $decoded = self::decodeExternalPayload($payload);
+        $record = is_array($decoded) ? $decoded : [];
+        if ($record === [] && is_string($decoded)) {
+            $record = self::extractExternalFieldsFromText($decoded);
+        }
+        $freeText = is_string($decoded) ? self::safeViewText($decoded, 2200) : '';
+        if ($record !== []) {
+            $freeText = '';
+        }
+
+        $diagnostic = self::firstViewText($record, ['diagnostico_provavel', 'diagnostic_hypothesis', 'diagnosis', 'diagnostico']);
+        if ($diagnostic === '' && $freeText !== '') {
+            $diagnostic = $freeText;
+        }
+
+        $questions = self::firstViewList($record, ['perguntas_ao_cliente', 'customer_questions', 'confirmationQuestions', 'questions']);
+        $steps = self::firstViewList($record, ['passos_tecnicos', 'technical_steps', 'steps', 'procedimento']);
+        $commands = self::firstViewList($record, ['commands_or_checks', 'commands', 'comandos_verificacoes', 'verificacoes', 'checks']);
+        $cautions = self::firstViewList($record, ['riscos_cuidados', 'cautions', 'risks', 'cuidados']);
+        $references = self::firstViewList($record, ['fontes_links_sugeridas', 'references', 'fontes', 'sources']);
+        $nestedDecoded = self::decodeExternalPayload($diagnostic);
+        if (is_array($nestedDecoded)) {
+            $nestedDiagnostic = self::firstViewText($nestedDecoded, ['diagnostico_provavel', 'diagnostic_hypothesis', 'diagnosis', 'diagnostico']);
+            if ($nestedDiagnostic !== '') {
+                $diagnostic = $nestedDiagnostic;
+            }
+            if ($questions === []) {
+                $questions = self::firstViewList($nestedDecoded, ['perguntas_ao_cliente', 'customer_questions', 'confirmationQuestions', 'questions']);
+            }
+            if ($steps === []) {
+                $steps = self::firstViewList($nestedDecoded, ['passos_tecnicos', 'technical_steps', 'steps', 'procedimento']);
+            }
+            if ($commands === []) {
+                $commands = self::firstViewList($nestedDecoded, ['commands_or_checks', 'commands', 'comandos_verificacoes', 'verificacoes', 'checks']);
+            }
+            if ($cautions === []) {
+                $cautions = self::firstViewList($nestedDecoded, ['riscos_cuidados', 'cautions', 'risks', 'cuidados']);
+            }
+            if ($references === []) {
+                $references = self::firstViewList($nestedDecoded, ['fontes_links_sugeridas', 'references', 'fontes', 'sources']);
+            }
+        }
+
+        $confidence = self::safeViewText((string) ($meta['confidence_label'] ?? $record['confidence_label'] ?? ''), 40);
+        if ($confidence === '') {
+            $confidence = $references === [] ? 'baixa' : 'media';
+        }
+        if ($references === [] && mb_strtolower($confidence, 'UTF-8') === 'alta') {
+            $confidence = 'baixa';
+        }
+
+        $sourceType = self::safeViewText((string) ($meta['source_type'] ?? $record['source_type'] ?? ''), 80);
+        if ($sourceType === '') {
+            $sourceType = $references === [] ? 'external_ai_no_sources' : 'external_ai_with_sources';
+        }
+
+        return [
+            'status' => self::safeViewText((string) ($meta['status'] ?? $record['status'] ?? 'completed'), 80),
+            'title' => __('Ajuda externa por IA — sugestão, revise antes de aplicar', 'glpiintegaglpi'),
+            'diagnostic_hypothesis' => $diagnostic,
+            'customer_questions' => $questions,
+            'technical_steps' => $steps,
+            'commands_or_checks' => $commands,
+            'cautions' => $cautions,
+            'references' => $references,
+            'confidence_label' => $confidence,
+            'source_type' => $sourceType,
+            'source_warning' => $references === []
+                ? __('Sem fontes externas verificáveis; use como sugestão técnica.', 'glpiintegaglpi')
+                : __('Fonte informada; ainda exige revisão humana.', 'glpiintegaglpi'),
+            'human_review_required' => true,
+            'can_create_kb_candidate' => true,
+            'raw_payload_available' => is_array($decoded),
+            'no_auto_send' => true,
+            'no_auto_publish' => true,
+        ];
+    }
+
+    /**
+     * @param mixed $payload
+     * @return mixed
+     */
+    private static function decodeExternalPayload($payload)
+    {
+        if (is_array($payload)) {
+            return $payload;
+        }
+        $text = trim((string) $payload);
+        if ($text === '') {
+            return '';
+        }
+        $text = preg_replace('/^```(?:json)?\s*|\s*```$/i', '', $text) ?? $text;
+        $decoded = json_decode($text, true);
+        if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+            return $decoded;
+        }
+        if (preg_match('/\{[\s\S]*\}/u', $text, $match) === 1) {
+            $decoded = json_decode($match[0], true);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                return $decoded;
+            }
+        }
+
+        return $text;
+    }
+
+    /**
+     * Best-effort parser for provider answers that look like the expected JSON
+     * schema but are wrapped in prose, markdown, or malformed/truncated by an
+     * intermediary. It only extracts known view-model fields.
+     *
+     * @return array<string, mixed>
+     */
+    private static function extractExternalFieldsFromText(string $text): array
+    {
+        $out = [];
+        foreach (['diagnostico_provavel', 'diagnostic_hypothesis', 'diagnosis', 'diagnostico'] as $key) {
+            $value = self::extractJsonStringField($text, $key);
+            if ($value !== '') {
+                $out['diagnostico_provavel'] = $value;
+                break;
+            }
+        }
+
+        $fieldMap = [
+            'perguntas_ao_cliente' => ['perguntas_ao_cliente', 'customer_questions', 'confirmationQuestions', 'questions'],
+            'passos_tecnicos' => ['passos_tecnicos', 'technical_steps', 'steps', 'procedimento'],
+            'commands_or_checks' => ['commands_or_checks', 'commands', 'comandos_verificacoes', 'verificacoes', 'checks'],
+            'riscos_cuidados' => ['riscos_cuidados', 'cautions', 'risks', 'cuidados'],
+            'fontes_links_sugeridas' => ['fontes_links_sugeridas', 'references', 'fontes', 'sources'],
+        ];
+        foreach ($fieldMap as $target => $keys) {
+            foreach ($keys as $key) {
+                $values = self::extractJsonStringArrayField($text, $key);
+                if ($values !== []) {
+                    $out[$target] = $values;
+                    break;
+                }
+            }
+        }
+
+        return $out;
+    }
+
+    private static function extractJsonStringField(string $text, string $key): string
+    {
+        $pattern = '/"' . preg_quote($key, '/') . '"\s*:\s*"((?:\\\\.|[^"\\\\])*)"/u';
+        if (preg_match($pattern, $text, $match) !== 1) {
+            return '';
+        }
+        $decoded = json_decode('"' . $match[1] . '"', true);
+        return is_string($decoded) ? self::safeViewText($decoded, 1200) : '';
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function extractJsonStringArrayField(string $text, string $key): array
+    {
+        $pattern = '/"' . preg_quote($key, '/') . '"\s*:\s*\[([\s\S]*?)(?:\]\s*(?:,|\})|,\s*"[a-zA-Z0-9_]+\"\s*:)/u';
+        if (preg_match($pattern, $text, $match) !== 1) {
+            return [];
+        }
+        $body = $match[1];
+        $items = [];
+        if (preg_match_all('/"((?:\\\\.|[^"\\\\])*)"/u', $body, $matches) === false) {
+            return [];
+        }
+        foreach ($matches[1] as $raw) {
+            $decoded = json_decode('"' . $raw . '"', true);
+            if (is_string($decoded)) {
+                $value = self::safeViewText($decoded, 1000);
+                if ($value !== '') {
+                    $items[] = $value;
+                }
+            }
+        }
+
+        return array_values(array_slice(array_unique($items), 0, 8));
+    }
+
+    /**
+     * @param array<string, mixed> $record
+     * @param list<string> $keys
+     */
+    private static function firstViewText(array $record, array $keys): string
+    {
+        foreach ($keys as $key) {
+            if (array_key_exists($key, $record)) {
+                $text = self::viewValueToText($record[$key]);
+                if ($text !== '') {
+                    return self::safeViewText($text, 1200);
+                }
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * @param array<string, mixed> $record
+     * @param list<string> $keys
+     * @return list<string>
+     */
+    private static function firstViewList(array $record, array $keys): array
+    {
+        foreach ($keys as $key) {
+            if (array_key_exists($key, $record)) {
+                $items = self::viewValueToList($record[$key]);
+                if ($items !== []) {
+                    return $items;
+                }
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function viewValueToText($value): string
+    {
+        if (is_scalar($value) || $value === null) {
+            return trim((string) $value);
+        }
+        if (is_array($value)) {
+            $parts = [];
+            foreach ($value as $key => $item) {
+                $text = self::viewValueToText($item);
+                if ($text === '') {
+                    continue;
+                }
+                $parts[] = is_string($key) ? ($key . ': ' . $text) : $text;
+            }
+
+            return implode('; ', $parts);
+        }
+
+        return '';
+    }
+
+    /**
+     * @param mixed $value
+     * @return list<string>
+     */
+    private static function viewValueToList($value): array
+    {
+        if (is_array($value)) {
+            $items = [];
+            foreach ($value as $item) {
+                $text = self::viewValueToText($item);
+                if ($text !== '') {
+                    $items[] = self::safeViewText($text, 900);
+                }
+            }
+
+            return array_values(array_unique($items));
+        }
+
+        $text = self::safeViewText(self::viewValueToText($value), 900);
+        if ($text === '') {
+            return [];
+        }
+
+        return [$text];
+    }
+
+    private static function safeViewText(string $value, int $max): string
+    {
+        $text = html_entity_decode(strip_tags($value), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = preg_replace('/\s+/u', ' ', $text) ?? '';
+
+        return mb_substr(trim($text), 0, $max, 'UTF-8');
+    }
+
+    /**
      * @param array<string, mixed> $query
      * @param array<string, mixed>|null $flash
      * @return array<string, mixed>

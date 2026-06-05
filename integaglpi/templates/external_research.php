@@ -11,6 +11,16 @@ $flash = is_array($data['flash'] ?? null) ? $data['flash'] : null;
 $preview = is_array($flash['preview'] ?? null) ? $flash['preview'] : null;
 $candidate = is_array($flash['candidate'] ?? null) ? $flash['candidate'] : null;
 $researchResult = is_array($flash['research_result'] ?? null) ? $flash['research_result'] : null;
+$externalHelpViewModel = null;
+if ($researchResult !== null) {
+    $externalHelpViewModel = \GlpiPlugin\Integaglpi\Service\ExternalResearchService::externalHelpViewModel(
+        (string) ($researchResult['summary'] ?? ''),
+        [
+            'status' => (string) ($researchResult['status'] ?? ''),
+            'source_type' => trim((string) ($researchResult['summary'] ?? '')) !== '' ? 'external_ai_no_sources' : '',
+        ]
+    );
+}
 $catalog = is_array($data['catalog'] ?? null) ? $data['catalog'] : [];
 $recentRequests = is_array($data['recent_requests'] ?? null) ? $data['recent_requests'] : [];
 $recentCandidates = is_array($data['recent_candidates'] ?? null) ? $data['recent_candidates'] : [];
@@ -63,6 +73,65 @@ $hasTicketPrefill = trim((string) ($_GET['q'] ?? '')) !== '';
             <div class="alert alert-warning" role="alert">
                 <strong><?php echo $this->escape(__('Sem orientação técnica utilizável.', 'glpiintegaglpi')); ?></strong>
                 <?php echo $this->escape(__('A pesquisa não retornou diagnóstico ou procedimento aplicável, por isso não é possível gerar um candidato revisável. Refine o resumo técnico, consulte a base de conhecimento local ou registre um incidente para acompanhamento.', 'glpiintegaglpi')); ?>
+            </div>
+        <?php } ?>
+
+        <?php if (is_array($externalHelpViewModel) && trim((string) ($externalHelpViewModel['diagnostic_hypothesis'] ?? '')) !== '') { ?>
+            <?php
+            $vmQuestions = is_array($externalHelpViewModel['customer_questions'] ?? null) ? $externalHelpViewModel['customer_questions'] : [];
+            $vmSteps = is_array($externalHelpViewModel['technical_steps'] ?? null) ? $externalHelpViewModel['technical_steps'] : [];
+            $vmCommands = is_array($externalHelpViewModel['commands_or_checks'] ?? null) ? $externalHelpViewModel['commands_or_checks'] : [];
+            $vmCautions = is_array($externalHelpViewModel['cautions'] ?? null) ? $externalHelpViewModel['cautions'] : [];
+            $vmRefs = is_array($externalHelpViewModel['references'] ?? null) ? $externalHelpViewModel['references'] : [];
+            ?>
+            <div class="card border-primary mb-3">
+                <div class="card-header d-flex flex-wrap justify-content-between gap-2">
+              <span><?php echo $this->escape((string) ($externalHelpViewModel['title'] ?? __('Ajuda externa por IA — sugestão, revise antes de aplicar', 'glpiintegaglpi'))); ?></span>
+                    <span class="badge bg-warning text-dark">
+                        <?php echo $this->escape(__('confiança', 'glpiintegaglpi') . ': ' . (string) ($externalHelpViewModel['confidence_label'] ?? 'baixa')); ?>
+                    </span>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-warning py-2">
+              <?php echo $this->escape(__('Revisão humana obrigatória. Nada é enviado ao cliente nem altera o chamado automaticamente. Publicação KB continua manual.', 'glpiintegaglpi')); ?>
+                    </div>
+                    <h3 class="h6"><?php echo $this->escape(__('Diagnóstico provável', 'glpiintegaglpi')); ?></h3>
+                    <p><?php echo $this->escape((string) ($externalHelpViewModel['diagnostic_hypothesis'] ?? '')); ?></p>
+                    <?php foreach ([
+                        __('Perguntas ao cliente', 'glpiintegaglpi') => $vmQuestions,
+                        __('Passos técnicos', 'glpiintegaglpi') => $vmSteps,
+                        __('Comandos/verificações', 'glpiintegaglpi') => $vmCommands,
+                        __('Riscos e cuidados', 'glpiintegaglpi') => $vmCautions,
+                        __('Fontes', 'glpiintegaglpi') => $vmRefs,
+                    ] as $sectionTitle => $items) { ?>
+                        <?php if ($items !== []) { ?>
+                            <h3 class="h6 mt-3"><?php echo $this->escape((string) $sectionTitle); ?></h3>
+                            <ul>
+                                <?php foreach ($items as $item) { ?>
+                                    <li><?php echo $this->escape((string) $item); ?></li>
+                                <?php } ?>
+                            </ul>
+                        <?php } ?>
+                    <?php } ?>
+                    <div class="text-muted small">
+              <?php echo $this->escape((string) ($externalHelpViewModel['source_warning'] ?? __('Sem fontes externas verificáveis; use como sugestão técnica.', 'glpiintegaglpi'))); ?>
+                    </div>
+                    <?php if ($requestId !== '') { ?>
+                        <form method="post" action="<?php echo $this->escape($this->getExternalResearchUrl()); ?>" class="mt-3">
+                            <input type="hidden" name="_glpi_csrf_token" value="<?php echo $this->escape($csrf); ?>">
+                            <input type="hidden" name="preview_token" value="<?php echo $this->escape($previewToken); ?>">
+                            <input type="hidden" name="request_id" value="<?php echo $this->escape($requestId); ?>">
+                            <?php $vmPreviewSanitized = is_array($preview['sanitized'] ?? null) ? $preview['sanitized'] : []; ?>
+                            <input type="hidden" name="technical_summary" value="<?php echo $this->escape((string) ($vmPreviewSanitized['text'] ?? $prefillTechnicalSummary)); ?>">
+                            <input type="hidden" name="source_urls" value="<?php echo $this->escape((string) ($_POST['source_urls'] ?? '')); ?>">
+                            <input type="hidden" name="ai_provider" value="<?php echo $this->escape($selectedAiProvider); ?>">
+                            <input type="hidden" name="ai_model" value="<?php echo $this->escape($selectedAiModel); ?>">
+                            <button class="btn btn-outline-success btn-sm" type="submit" name="action" value="create_candidate">
+                                <?php echo $this->escape(__('Gerar candidato KB manual', 'glpiintegaglpi')); ?>
+                            </button>
+                        </form>
+                    <?php } ?>
+                </div>
             </div>
         <?php } ?>
 

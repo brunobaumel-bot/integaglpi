@@ -19,6 +19,32 @@
     try { console.error.apply(console, arguments); } catch (e) {}
   }
 
+  function safeSmartHelpText(value) {
+    if (value === undefined || value === null) return '';
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      const text = String(value).replace(/\s+/g, ' ').trim();
+      return text === '[object Object]' ? '' : text;
+    }
+    if (Array.isArray(value)) {
+      return value.map(safeSmartHelpText).filter(Boolean).join('; ');
+    }
+    if (typeof value === 'object') {
+      return Object.keys(value).map((key) => {
+        const text = safeSmartHelpText(value[key]);
+        return text ? key + ': ' + text : '';
+      }).filter(Boolean).join('; ');
+    }
+    return '';
+  }
+
+  function safeSmartHelpList(value) {
+    if (Array.isArray(value)) {
+      return value.map(safeSmartHelpText).filter(Boolean);
+    }
+    const text = safeSmartHelpText(value);
+    return text ? [text] : [];
+  }
+
   function postUrlEncoded(url, payloadObj) {
     const params = new URLSearchParams();
     Object.keys(payloadObj).forEach((key) => {
@@ -626,17 +652,24 @@
     }
     const checklistEl = panel.querySelector('.js-smart-help-checklist');
     if (checklistEl) {
-      const checklist = Array.isArray(r.checklist) ? r.checklist : [];
+      const checklist = safeSmartHelpList(r.checklist);
       checklistEl.innerHTML = checklist.map((item) => '<li>' + String(item || '').replace(/[<>&]/g, '') + '</li>').join('');
     }
     const questionsEl = panel.querySelector('.js-smart-help-questions');
     if (questionsEl) {
-      const questions = Array.isArray(r.questions) ? r.questions : [];
+      const questions = safeSmartHelpList(r.questions || r.suggestedQuestions || r.suggested_questions);
       questionsEl.innerHTML = questions.map((item) => '<li>' + String(item || '').replace(/[<>&]/g, '') + '</li>').join('');
     }
     const localSuggestionEl = panel.querySelector('.js-smart-help-local-suggestion');
     if (localSuggestionEl && r.localSuggestion) {
-      localSuggestionEl.innerHTML = '<div class="alert alert-warning py-2 mb-0">' + String(r.localSuggestion).replace(/[<>&]/g, '') + '</div>';
+      const suggestionText = safeSmartHelpText(
+        r.localSuggestion.content
+        || r.localSuggestion.summary
+        || r.localSuggestion.text
+        || r.localSuggestion.answer
+        || r.localSuggestion
+      ) || 'Valide a sugestão antes de responder ao cliente.';
+      localSuggestionEl.innerHTML = '<div class="alert alert-warning py-2 mb-0">' + suggestionText.replace(/[<>&]/g, '') + '</div>';
     }
     const localBtn = panel.querySelector('.js-smart-help-local-search');
     const externalBtn = panel.querySelector('.js-smart-help-external');

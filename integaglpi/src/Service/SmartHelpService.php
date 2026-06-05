@@ -808,12 +808,17 @@ final class SmartHelpService
             $status = (string) ($result['status'] ?? ($research['type'] ?? 'failed'));
             $message = (string) ($research['message'] ?? '');
             $summary = trim((string) ($result['summary'] ?? ''));
+            $viewModel = ExternalResearchService::externalHelpViewModel($summary !== '' ? $summary : $result, [
+                'status' => $status,
+                'source_type' => $summary !== '' ? 'external_ai_no_sources' : '',
+            ]);
 
             return [
                 'ok' => ($research['type'] ?? '') === 'success',
                 'status' => $status,
                 'message' => $summary !== '' ? $summary : $message,
                 'summary' => $summary,
+                'external_help_view_model' => $viewModel,
                 'provider' => (string) ($result['provider'] ?? ''),
                 'model' => (string) ($result['model'] ?? ''),
                 'source' => (string) ($result['source'] ?? 'external_research_controlled_php'),

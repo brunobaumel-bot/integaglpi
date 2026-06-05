@@ -13,6 +13,206 @@
     return d.innerHTML;
   }
 
+  function maybeDecodeJson(value) {
+    if (value && typeof value === 'object') { return value; }
+    var text = String(value == null ? '' : value).trim();
+    if (!text) { return ''; }
+    text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    try {
+      var parsed = JSON.parse(text);
+      if (parsed && typeof parsed === 'object') { return parsed; }
+    } catch (e) {
+      var match = text.match(/\{[\s\S]*\}/);
+      if (match) {
+        try {
+          var innerParsed = JSON.parse(match[0]);
+          if (innerParsed && typeof innerParsed === 'object') { return innerParsed; }
+        } catch (ignored) {
+          // Keep text fallback.
+        }
+      }
+    }
+    return text;
+  }
+
+  function viewText(value) {
+    if (value == null) { return ''; }
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      var scalarText = String(value).replace(/\s+/g, ' ').trim();
+      return scalarText === '[object Object]' ? '' : scalarText;
+    }
+    if (Array.isArray(value)) {
+      return value.map(viewText).filter(Boolean).join('; ');
+    }
+    if (typeof value === 'object') {
+      return Object.keys(value).map(function (key) {
+        var text = viewText(value[key]);
+        return text ? key + ': ' + text : '';
+      }).filter(Boolean).join('; ');
+    }
+    return '';
+  }
+
+  function viewList(value) {
+    if (Array.isArray(value)) {
+      return value.map(viewText).filter(Boolean);
+    }
+    var text = viewText(value);
+    return text ? [text] : [];
+  }
+
+  function firstText(record, keys) {
+    for (var i = 0; i < keys.length; i += 1) {
+      if (record && Object.prototype.hasOwnProperty.call(record, keys[i])) {
+        var text = viewText(record[keys[i]]);
+        if (text) { return text; }
+      }
+    }
+    return '';
+  }
+
+  function firstList(record, keys) {
+    for (var i = 0; i < keys.length; i += 1) {
+      if (record && Object.prototype.hasOwnProperty.call(record, keys[i])) {
+        var list = viewList(record[keys[i]]);
+        if (list.length) { return list; }
+      }
+    }
+    return [];
+  }
+
+  function normalizeExternalHelpViewModel(result) {
+    result = result || {};
+    var existing = result.external_help_view_model || result.externalHelpViewModel || null;
+    if (existing && typeof existing === 'object') {
+      var nested = maybeDecodeJson(existing.diagnostic_hypothesis || existing.diagnosticHypothesis || '');
+      var nestedRecord = nested && typeof nested === 'object' && !Array.isArray(nested) ? nested : {};
+      var referencesFromExisting = viewList(existing.references || []);
+      var referencesFromNested = firstList(nestedRecord, ['fontes_links_sugeridas', 'references', 'fontes', 'sources']);
+      var references = referencesFromExisting.length ? referencesFromExisting : referencesFromNested;
+      var questions = viewList(existing.customer_questions || existing.customerQuestions || []);
+      var steps = viewList(existing.technical_steps || existing.technicalSteps || []);
+      var commands = viewList(existing.commands_or_checks || existing.commandsOrChecks || []);
+      var cautions = viewList(existing.cautions || []);
+      if (!questions.length) { questions = firstList(nestedRecord, ['perguntas_ao_cliente', 'customer_questions', 'confirmationQuestions', 'questions']); }
+      if (!steps.length) { steps = firstList(nestedRecord, ['passos_tecnicos', 'technical_steps', 'steps', 'procedimento']); }
+      if (!commands.length) { commands = firstList(nestedRecord, ['commands_or_checks', 'commands', 'comandos_verificacoes', 'verificacoes', 'checks']); }
+      if (!cautions.length) { cautions = firstList(nestedRecord, ['riscos_cuidados', 'cautions', 'risks', 'cuidados']); }
+      var confidence = viewText(existing.confidence_label || existing.confidenceLabel || '');
+      if (!confidence) { confidence = references.length ? 'media' : 'baixa'; }
+      if (!references.length && confidence.toLowerCase() === 'alta') { confidence = 'baixa'; }
+      return {
+        status: viewText(existing.status || result.status || 'completed'),
+        title: viewText(existing.title || 'Ajuda externa por IA — sugestão, revise antes de aplicar'),
+        diagnostic_hypothesis: firstText(nestedRecord, ['diagnostico_provavel', 'diagnostic_hypothesis', 'diagnosis', 'diagnostico'])
+          || viewText(existing.diagnostic_hypothesis || existing.diagnosticHypothesis || ''),
+        customer_questions: questions,
+        technical_steps: steps,
+        commands_or_checks: commands,
+        cautions: cautions,
+        references: references,
+        confidence_label: confidence,
+        source_type: viewText(existing.source_type || existing.sourceType || 'external_ai_no_sources'),
+        source_warning: viewText(existing.source_warning || existing.sourceWarning || ''),
+        human_review_required: true,
+        can_create_kb_candidate: existing.can_create_kb_candidate !== false,
+        no_auto_send: true,
+        no_auto_publish: true
+      };
+    }
+
+    var raw = result.answer || result.summary || result.message || result;
+    var decoded = maybeDecodeJson(raw);
+    var record = decoded && typeof decoded === 'object' && !Array.isArray(decoded) ? decoded : {};
+    var freeText = typeof decoded === 'string' ? decoded : '';
+    var references = firstList(record, ['fontes_links_sugeridas', 'references', 'fontes', 'sources']);
+    var confidence = viewText(result.confidenceLabel || result.confidence_label || record.confidence_label || '');
+    if (!confidence) { confidence = references.length ? 'media' : 'baixa'; }
+    if (!references.length && confidence.toLowerCase() === 'alta') { confidence = 'baixa'; }
+
+    return {
+      status: viewText(result.status || record.status || 'completed'),
+      title: 'Ajuda externa por IA — sugestão, revise antes de aplicar',
+      diagnostic_hypothesis: firstText(record, ['diagnostico_provavel', 'diagnostic_hypothesis', 'diagnosis', 'diagnostico']) || freeText,
+      customer_questions: firstList(record, ['perguntas_ao_cliente', 'customer_questions', 'confirmationQuestions', 'questions']),
+      technical_steps: firstList(record, ['passos_tecnicos', 'technical_steps', 'steps', 'procedimento']),
+      commands_or_checks: firstList(record, ['commands_or_checks', 'commands', 'comandos_verificacoes', 'verificacoes', 'checks']),
+      cautions: firstList(record, ['riscos_cuidados', 'cautions', 'risks', 'cuidados']),
+      references: references,
+      confidence_label: confidence,
+      source_type: references.length ? 'external_ai_with_sources' : 'external_ai_no_sources',
+      source_warning: references.length
+        ? 'Fonte informada; ainda exige revisão humana.'
+        : 'Sem fontes externas verificáveis; use como sugestão técnica.',
+      human_review_required: true,
+      can_create_kb_candidate: true,
+      no_auto_send: true,
+      no_auto_publish: true
+    };
+  }
+
+  function sectionText(title, items) {
+    items = viewList(items);
+    return items.length ? (title + ':\n- ' + items.join('\n- ')) : '';
+  }
+
+  function renderExternalSection(title, items, code) {
+    items = viewList(items);
+    if (!items.length) { return ''; }
+    var body = '<ul class="mb-2">';
+    body += items.map(function (item) {
+      return '<li>' + (code ? '<code>' + esc(item) + '</code>' : esc(item)) + '</li>';
+    }).join('');
+    body += '</ul>';
+    return '<div class="mt-2"><div class="fw-bold small mb-1">' + esc(title) + '</div>' + body + '</div>';
+  }
+
+  function renderExternalHelpCard(panel, result) {
+    var vm = normalizeExternalHelpViewModel(result);
+    var cloudEl = panel.querySelector('.js-smart-help-cloud');
+    var noSources = !vm.references.length;
+    var questionsText = sectionText('Perguntas ao cliente', vm.customer_questions);
+    var stepsText = sectionText('Passos técnicos', vm.technical_steps);
+    var commandsText = sectionText('Comandos/verificações', vm.commands_or_checks);
+    var allText = [
+      'Diagnóstico provável: ' + (vm.diagnostic_hypothesis || ''),
+      questionsText,
+      stepsText,
+      commandsText,
+      sectionText('Riscos e cuidados', vm.cautions),
+      sectionText('Fontes', vm.references),
+      'Revisão humana obrigatória. Nada é enviado ao cliente nem altera o chamado automaticamente.'
+    ].filter(Boolean).join('\n\n');
+
+    var html = '<div class="border border-primary rounded p-2 mt-1 js-smart-help-external-card">';
+    html += '<div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-1">';
+    html += '<div class="fw-bold text-primary"><i class="ti ti-robot me-1"></i>' + esc(vm.title || 'Ajuda externa por IA — sugestão, revise antes de aplicar') + '</div>';
+    html += '<span class="badge ' + (noSources ? 'bg-warning text-dark' : 'bg-info text-dark') + '">' + esc('confiança: ' + (vm.confidence_label || 'baixa')) + '</span>';
+    html += '</div>';
+    html += '<div class="alert alert-warning py-2 mb-2 small">' + esc('Revisão humana obrigatória. Nada é enviado ao cliente nem altera o chamado automaticamente. A KB não é publicada automaticamente.') + '</div>';
+    html += '<div class="fw-bold small mb-1">' + esc('Diagnóstico provável') + '</div>';
+    html += '<p class="mb-2">' + esc(vm.diagnostic_hypothesis || 'Resposta externa recebida para revisão humana.') + '</p>';
+    html += renderExternalSection('Perguntas ao cliente', vm.customer_questions, false);
+    html += renderExternalSection('Passos técnicos', vm.technical_steps, false);
+    html += renderExternalSection('Comandos/verificações', vm.commands_or_checks, true);
+    html += renderExternalSection('Riscos e cuidados', vm.cautions, false);
+    html += renderExternalSection('Fontes', vm.references, false);
+    html += '<div class="text-muted small mt-1">' + esc(vm.source_warning || (noSources ? 'Sem fontes externas verificáveis; use como sugestão técnica.' : 'Fonte informada; ainda exige revisão humana.')) + '</div>';
+    html += '<div class="d-flex flex-wrap gap-2 mt-2">';
+    html += '<button type="button" class="btn btn-sm btn-outline-secondary js-smart-help-copy" data-text="' + esc(questionsText) + '">' + esc('Copiar perguntas') + '</button>';
+    html += '<button type="button" class="btn btn-sm btn-outline-secondary js-smart-help-copy" data-text="' + esc(stepsText) + '">' + esc('Copiar passos') + '</button>';
+    html += '<button type="button" class="btn btn-sm btn-outline-secondary js-smart-help-copy" data-text="' + esc(commandsText) + '">' + esc('Copiar comandos') + '</button>';
+    html += '<button type="button" class="btn btn-sm btn-outline-primary js-smart-help-copy" data-text="' + esc(allText) + '">' + esc('Copiar tudo') + '</button>';
+    if (vm.can_create_kb_candidate !== false) {
+      html += '<button type="button" class="btn btn-sm btn-outline-success js-smart-help-suggest-kb">' + esc('Gerar candidato KB manual') + '</button>';
+    }
+    html += '</div>';
+    html += '</div>';
+
+    if (cloudEl) { cloudEl.innerHTML = html; }
+    return vm;
+  }
+
   // Smart Help fetch timeout (ms). Without a timeout, a hung Node/PHP call leaves
   // the run button disabled indefinitely — browser never fires click on a disabled button.
   var SMART_HELP_TIMEOUT_MS = 25000;
@@ -334,10 +534,10 @@
     }
 
     if (checklistEl) {
-      checklistEl.innerHTML = (result.checklist || []).map(function (c) { return '<li>' + esc(c) + '</li>'; }).join('');
+      checklistEl.innerHTML = viewList(result.checklist || []).map(function (c) { return '<li>' + esc(c) + '</li>'; }).join('');
     }
     if (questionsEl) {
-      questionsEl.innerHTML = (result.suggestedQuestions || result.suggested_questions || []).map(function (q) {
+      questionsEl.innerHTML = viewList(result.suggestedQuestions || result.suggested_questions || []).map(function (q) {
         return '<li class="d-flex justify-content-between align-items-center gap-2 py-1">'
           + '<span>' + esc(q) + '</span>'
           + '<button type="button" class="btn btn-outline-secondary btn-sm js-smart-help-copy" data-text="' + esc(q) + '">' + esc('Copiar') + '</button></li>';
@@ -347,9 +547,18 @@
     var localSuggestion = result.localSuggestion || result.local_suggestion || null;
     if (localSuggestionEl) {
       if (localSuggestion && localSuggestion.unverified) {
+        var localSuggestionTitle = viewText(localSuggestion.title || 'Sugestão IA local — valide antes de aplicar')
+          || 'Sugestão IA local — valide antes de aplicar';
+        var localSuggestionContent = viewText(
+          localSuggestion.content
+          || localSuggestion.summary
+          || localSuggestion.text
+          || localSuggestion.answer
+          || 'Valide a sugestão antes de responder ao cliente.'
+        ) || 'Valide a sugestão antes de responder ao cliente.';
         localSuggestionEl.innerHTML = '<div class="alert alert-warning py-2 mb-0 small">'
-          + '<strong>' + esc(localSuggestion.title || 'Sugestão IA local — valide antes de aplicar') + '</strong><br>'
-          + esc(localSuggestion.content || 'Valide a sugestão antes de responder ao cliente.')
+          + '<strong>' + esc(localSuggestionTitle) + '</strong><br>'
+          + esc(localSuggestionContent)
           + '</div>';
       } else {
         localSuggestionEl.innerHTML = '';
@@ -467,8 +676,8 @@
         return;
       }
       var r = resp && resp.result ? resp.result : {};
-      var sanitized = r.cloud_safe_context || r.sanitized_text || r.sanitizedText || '';
-      var kinds = r.removed_kinds || r.detected_kinds || r.detectedKinds || [];
+      var sanitized = viewText(r.cloud_safe_context || r.sanitized_text || r.sanitizedText || '');
+      var kinds = viewList(r.removed_kinds || r.detected_kinds || r.detectedKinds || []);
       var safe = (r.safe_for_cloud === true) || (r.safeForCloud === true);
 
       var kindsBadges = kinds.length
@@ -533,40 +742,10 @@
       } else if (r.status === 'blocked_pii') {
         if (msgEl) { msgEl.textContent = 'Bloqueado: o contexto ainda contém dados sensíveis e não foi enviado.'; }
         setStatus(panel, 'PII bloqueado', 'danger');
-      } else if (r.ok && (r.summary || r.message) && !r.answer) {
-        var externalSummary = String(r.summary || r.message || '').trim();
-        if (cloudEl) {
-          cloudEl.innerHTML =
-            '<div class="border rounded p-2 mt-1">'
-            + '<div class="fw-bold text-primary mb-1"><i class="ti ti-robot me-1"></i>' + esc('Ajuda externa por IA — sugestão, revise antes de aplicar') + '</div>'
-            + '<div class="small text-muted mb-1">' + esc('Retorno somente para revisão humana. Nada é enviado ao cliente nem altera o chamado automaticamente.') + '</div>'
-            + '<div class="js-smart-help-external-answer">' + esc(externalSummary) + '</div>'
-            + '</div>';
-        }
+      } else if (r.ok && (r.external_help_view_model || r.externalHelpViewModel || r.summary || r.answer || r.message)) {
+        var vm = renderExternalHelpCard(panel, r);
         if (msgEl) { msgEl.textContent = 'Ajuda externa retornou uma sugestão para revisão humana.'; }
-        setStatus(panel, 'sugestão externa', 'success');
-      } else if (r.ok && r.answer) {
-        var a = r.answer;
-        var sourceType = r.sourceType || r.source_type || 'external_ai_no_sources';
-        var confidence = r.confidenceLabel || r.confidence_label || 'baixa';
-        var noSources = sourceType !== 'external_ai_with_sources';
-        if (cloudEl) {
-          var refs = (a.references || []).filter(function (x) { return String(x).trim() !== ''; });
-          var sourceNote = noSources
-            ? '<div class="text-muted small mt-1">' + esc('Sem fontes externas verificáveis; use como sugestão técnica.') + '</div>'
-            : '<div class="small mt-1"><strong>' + esc('Fontes:') + '</strong> ' + refs.map(function (x) { return esc(x); }).join('; ') + '</div>';
-          cloudEl.innerHTML =
-            '<div class="border rounded p-2 mt-1">'
-            + '<div class="fw-bold text-primary mb-1"><i class="ti ti-robot me-1"></i>' + esc('Ajuda externa por IA — sugestão, revise antes de aplicar') + '</div>'
-            + '<div class="small text-muted mb-1">' + esc('Confiança operacional:') + ' ' + esc(confidence) + ' · ' + esc('Nada é enviado ao cliente nem altera o chamado automaticamente.') + '</div>'
-            + '<strong>Hipótese de diagnóstico:</strong> ' + esc(a.diagnosis) + '<br>'
-            + '<strong>Passos sugeridos:</strong><ul>' + (a.steps || []).map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') + '</ul>'
-            + ((a.commands && a.commands.length) ? ('<strong>Comandos/verificações:</strong><ul>' + a.commands.map(function (c) { return '<li><code>' + esc(c) + '</code></li>'; }).join('') + '</ul>') : '')
-            + '<strong>Cuidados:</strong> ' + esc((a.risks || []).join('; '))
-            + sourceNote
-            + '</div>';
-        }
-        setStatus(panel, noSources ? 'sugestão IA externa' : 'sugestão IA + fontes', 'success');
+        setStatus(panel, vm.references.length ? 'sugestão IA + fontes' : 'sugestão IA externa', 'success');
       } else {
         if (msgEl) { msgEl.textContent = r.message || 'Pesquisa externa indisponível.'; }
         setStatus(panel, 'erro', 'danger');

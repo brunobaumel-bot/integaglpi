@@ -607,6 +607,58 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(js).toContain('return postOnce(panel, action, extra);');
   });
 
+  it('external AI result is normalized into a human-review view model, never raw JSON or object strings', async () => {
+    const js = await read('integaglpi/js/ticket_ai_panel.js');
+    const smart = await read('integaglpi/src/Service/SmartHelpService.php');
+    const external = await read('integaglpi/src/Service/ExternalResearchService.php');
+    const tpl = await read('integaglpi/templates/external_research.php');
+    const globalJs = await read('integaglpi/js/integaglpi.js');
+
+    expect(external).toContain('externalHelpViewModel');
+    expect(external).toContain('diagnostico_provavel');
+    expect(external).toContain('perguntas_ao_cliente');
+    expect(external).toContain('passos_tecnicos');
+    expect(external).toContain('riscos_cuidados');
+    expect(external).toContain('fontes_links_sugeridas');
+    expect(smart).toContain("'external_help_view_model' => $viewModel");
+
+    expect(js).toContain('function normalizeExternalHelpViewModel(result)');
+    expect(js).toContain('function renderExternalHelpCard(panel, result)');
+    expect(js).toContain('maybeDecodeJson');
+    expect(js).toContain('renderExternalSection');
+    expect(js).toContain('var nested = maybeDecodeJson(existing.diagnostic_hypothesis || existing.diagnosticHypothesis || \'\')');
+    expect(js).toContain('var nestedRecord = nested && typeof nested === \'object\' && !Array.isArray(nested) ? nested : {}');
+    expect(js).toContain("var sanitized = viewText(r.cloud_safe_context || r.sanitized_text || r.sanitizedText || '')");
+    expect(js).toContain('var kinds = viewList(r.removed_kinds || r.detected_kinds || r.detectedKinds || [])');
+    expect(js).toContain('checklistEl.innerHTML = viewList(result.checklist || [])');
+    expect(js).toContain('questionsEl.innerHTML = viewList(result.suggestedQuestions || result.suggested_questions || [])');
+    expect(js).toContain('var localSuggestionTitle = viewText(localSuggestion.title');
+    expect(js).toContain('var localSuggestionContent = viewText(');
+    expect(js).toContain("return scalarText === '[object Object]' ? '' : scalarText;");
+    expect(globalJs).toContain('function safeSmartHelpText(value)');
+    expect(globalJs).toContain("return text === '[object Object]' ? '' : text;");
+    expect(globalJs).toContain('const suggestionText = safeSmartHelpText(');
+    expect(globalJs).not.toContain("String(r.localSuggestion).replace");
+    expect(js).toContain('Copiar perguntas');
+    expect(js).toContain('Copiar passos');
+    expect(js).toContain('Copiar comandos');
+    expect(js).toContain('Copiar tudo');
+    expect(js).toContain('Gerar candidato KB manual');
+    expect(js).toContain('Sem fontes externas verificáveis; use como sugestão técnica.');
+    expect(js).toContain('Revisão humana obrigatória');
+    expect(js).not.toContain('String(r.answer)');
+    expect(js).not.toContain('textContent = r.answer');
+    expect(js).not.toContain('${object}');
+    expect(js).not.toContain('esc(localSuggestion.content ||');
+
+    expect(tpl).toContain('$externalHelpViewModel');
+    expect(tpl).toContain('Diagnóstico provável');
+    expect(tpl).toContain('Perguntas ao cliente');
+    expect(tpl).toContain('Passos técnicos');
+    expect(tpl).toContain('Riscos e cuidados');
+    expect(tpl).toContain('Gerar candidato KB manual');
+  });
+
   it('local summary prompt is evidence-bound and a deterministic guard scrubs fabricated context', async () => {
     const deps = await read('integration-service/src/buildDependencies.ts');
     const ctrl = await read('integration-service/src/controllers/ai.controller.ts');
