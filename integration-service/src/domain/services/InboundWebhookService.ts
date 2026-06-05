@@ -439,21 +439,16 @@ export class InboundWebhookService {
           knownExistingTicketStatus = await this.glpiClient.getTicketStatus(closedConversationTicketId);
           inboundGlpiStage = undefined;
 
-          const numericSolutionAction = await this.parseNumericSolutionAction({
+          const pendingSolutionActionHandled = await this.tryHandlePendingSolutionTextAction({
             inboundMessage,
             conversation: closedConversation,
             ticketId: closedConversationTicketId,
+            contact,
+            toMeta,
             correlationId,
           });
-          if (numericSolutionAction) {
-            await this.handleSolutionButtonAction({
-              action: numericSolutionAction,
-              contact,
-              inboundMessage,
-              toMeta,
-              correlationId,
-            });
-            conversationId = numericSolutionAction.conversationId;
+          if (pendingSolutionActionHandled) {
+            conversationId = closedConversation.id;
             return;
           }
 
@@ -2380,62 +2375,60 @@ export class InboundWebhookService {
     };
   }
 
-  private async parseNumericSolutionAction(input: {
+  private async tryHandlePendingSolutionTextAction(input: {
     inboundMessage: ParsedMetaInboundMessage;
     conversation: Conversation;
     ticketId: number;
+    contact: Contact;
+    toMeta: string;
     correlationId: string;
-  }): Promise<ParsedSolutionButtonAction | null> {
-    if (input.inboundMessage.messageType !== 'text') {
-      return null;
+  }): Promise<boolean> {
+    if (this.solutionActionRepository === null) {
+      return false;
     }
 
-    const numericChoice = parseMenuDigitChoice(input.inboundMessage.messageText, 3);
-    if (numericChoice === null) {
-      return null;
-    }
-
-    const pendingCsat = this.solutionActionRepository
-      ? await this.solutionActionRepository.findPendingCsatAction(input.ticketId, input.conversation.id)
-      : null;
+    const pendingCsat = await this.solutionActionRepository.findPendingCsatAction(
+      input.ticketId,
+      input.conversation.id,
+    );
     if (pendingCsat !== null) {
-      const csatRating = numericChoice === 1
-        ? 'very_satisfied'
-        : numericChoice === 2
-          ? 'satisfied'
-          : 'dissatisfied';
-      logger.info(
-        {
-          ticket_id: input.ticketId,
-          conversation_id: input.conversation.id,
-          correlation_id: input.correlationId,
-          numeric_choice: numericChoice,
-          csat_rating: csatRating,
-          event_type: 'csat_numeric_received',
-        },
-        '[integration-service][solution][CSAT_NUMERIC_RECEIVED]',
-      );
-      return {
-        action: 'approve',
-        ticketId: input.ticketId,
-        conversationId: input.conversation.id,
-        csatRating,
-        reopenReason: null,
-      };
-    }
+      const csatRating = this.parseCsatTextReply(input.inboundMessage.messageText);
+      if (csatRating === null) {
+        await this.sendInvalidPendingReplyMessage({
+          toMeta: input.toMeta,
+          conversation: input.conversation,
+          inboundMessage: input.inboundMessage,
+          ticketId: input.ticketId,
+          correlationId: input.correlationId,
+          kind: 'csat',
+        });
+        return true;
+      }
 
-    if (numericChoice > 2) {
       logger.info(
         {
           ticket_id: input.ticketId,
           conversation_id: input.conversation.id,
           correlation_id: input.correlationId,
-          numeric_choice: numericChoice,
-          event_type: 'numeric_menu_input_ignored_wrong_state',
+          csat_rating: csatRating,
+          event_type: 'csat_response_received',
         },
-        '[integration-service][solution][NUMERIC_INPUT_IGNORED_WRONG_STATE]',
+        '[integration-service][solution][CSAT_RESPONSE_RECEIVED]',
       );
-      return null;
+      await this.handleSolutionButtonAction({
+        action: {
+          action: 'approve',
+          ticketId: input.ticketId,
+          conversationId: input.conversation.id,
+          csatRating,
+          reopenReason: null,
+        },
+        contact: input.contact,
+        inboundMessage: input.inboundMessage,
+        toMeta: input.toMeta,
+        correlationId: input.correlationId,
+      });
+      return true;
     }
 
     const ticket = await this.glpiClient.getTicket(input.ticketId);
@@ -2445,34 +2438,152 @@ export class InboundWebhookService {
           ticket_id: input.ticketId,
           conversation_id: input.conversation.id,
           correlation_id: input.correlationId,
-          numeric_choice: numericChoice,
           ticket_status: ticket.status,
           event_type: 'numeric_menu_input_ignored_wrong_state',
         },
         '[integration-service][solution][NUMERIC_INPUT_IGNORED_WRONG_STATE]',
       );
-      return null;
+      return false;
     }
 
-    const action = numericChoice === 1 ? 'approve' : 'reopen';
+    const action = this.parseSolutionApprovalTextReply(input.inboundMessage.messageText);
+    if (action === null) {
+      await this.sendInvalidPendingReplyMessage({
+        toMeta: input.toMeta,
+        conversation: input.conversation,
+        inboundMessage: input.inboundMessage,
+        ticketId: input.ticketId,
+        correlationId: input.correlationId,
+        kind: 'solution',
+      });
+      return true;
+    }
+
     logger.info(
       {
         ticket_id: input.ticketId,
         conversation_id: input.conversation.id,
         correlation_id: input.correlationId,
-        numeric_choice: numericChoice,
         action,
-        event_type: action === 'approve' ? 'solution_numeric_approved' : 'solution_numeric_reopened',
+        event_type: action === 'approve' ? 'solution_response_approved' : 'solution_response_reopened',
       },
-      `[integration-service][solution][${action === 'approve' ? 'SOLUTION_NUMERIC_APPROVED' : 'SOLUTION_NUMERIC_REOPENED'}]`,
+      `[integration-service][solution][${action === 'approve' ? 'SOLUTION_RESPONSE_APPROVED' : 'SOLUTION_RESPONSE_REOPENED'}]`,
     );
-    return {
-      action,
+    await this.handleSolutionButtonAction({
+      action: {
+        action,
+        ticketId: input.ticketId,
+        conversationId: input.conversation.id,
+        csatRating: null,
+        reopenReason: null,
+      },
+      contact: input.contact,
+      inboundMessage: input.inboundMessage,
+      toMeta: input.toMeta,
+      correlationId: input.correlationId,
+    });
+    return true;
+  }
+
+  private parseCsatTextReply(messageText: string | null): CsatRating | null {
+    const numericChoice = parseMenuDigitChoice(messageText, 3);
+    if (numericChoice === 1) {
+      return 'very_satisfied';
+    }
+    if (numericChoice === 2) {
+      return 'satisfied';
+    }
+    if (numericChoice === 3) {
+      return 'dissatisfied';
+    }
+
+    const normalized = this.normalizePendingReplyText(messageText);
+    if (normalized === 'otimo' || normalized === 'otima') {
+      return 'very_satisfied';
+    }
+    if (normalized === 'bom' || normalized === 'boa') {
+      return 'satisfied';
+    }
+    if (normalized === 'ruim') {
+      return 'dissatisfied';
+    }
+
+    return null;
+  }
+
+  private parseSolutionApprovalTextReply(messageText: string | null): SolutionButtonAction | null {
+    const numericChoice = parseMenuDigitChoice(messageText, 2);
+    if (numericChoice === 1) {
+      return 'approve';
+    }
+    if (numericChoice === 2) {
+      return 'reopen';
+    }
+
+    const normalized = this.normalizePendingReplyText(messageText);
+    if (normalized === 'aprovar' || normalized === 'aprovado' || normalized === 'aprovada') {
+      return 'approve';
+    }
+    if (normalized === 'reabrir' || normalized === 'reabrir chamado') {
+      return 'reopen';
+    }
+
+    return null;
+  }
+
+  private normalizePendingReplyText(messageText: string | null): string {
+    return (messageText ?? '')
+      .trim()
+      .toLocaleLowerCase('pt-BR')
+      .normalize('NFD')
+      .replace(/\p{Diacritic}/gu, '')
+      .replace(/\s+/g, ' ');
+  }
+
+  private async sendInvalidPendingReplyMessage(input: {
+    toMeta: string;
+    conversation: Conversation;
+    inboundMessage: ParsedMetaInboundMessage;
+    ticketId: number;
+    correlationId: string;
+    kind: 'csat' | 'solution';
+  }): Promise<void> {
+    const body = input.kind === 'csat'
+      ? 'Não entendi sua avaliação. Responda 1 para Ótimo, 2 para Bom ou 3 para Ruim.'
+      : 'Não entendi sua resposta. Responda 1 para Aprovar ou 2 para Reabrir.';
+
+    await this.metaClient.sendTextMessage({
+      to: input.toMeta,
+      body,
+    });
+    await this.conversationRepository.touch(input.conversation.id, new Date());
+    await this.messageRepository.updateState({
+      messageId: input.inboundMessage.messageId,
+      conversationId: input.conversation.id,
+      processingStatus: 'processed',
+      glpiSyncStatus: 'synced',
+    });
+    logger.info(
+      {
+        ticket_id: input.ticketId,
+        conversation_id: input.conversation.id,
+        correlation_id: input.correlationId,
+        pending_reply_kind: input.kind,
+      },
+      '[integration-service][solution][PENDING_REPLY_INVALID]',
+    );
+    this.recordAudit({
+      correlationId: input.correlationId,
       ticketId: input.ticketId,
       conversationId: input.conversation.id,
-      csatRating: null,
-      reopenReason: null,
-    };
+      messageId: input.inboundMessage.messageId,
+      direction: 'inbound',
+      eventType: input.kind === 'csat' ? 'CSAT_RESPONSE_INVALID' : 'SOLUTION_RESPONSE_INVALID',
+      status: 'ignored',
+      severity: 'warning',
+      source: 'InboundWebhookService',
+      payload: { reason: 'invalid_pending_reply' },
+    });
   }
 
   private async handleSolutionButtonAction(input: {

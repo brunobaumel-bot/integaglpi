@@ -4072,6 +4072,225 @@ describe('InboundWebhookService', () => {
     );
   });
 
+  it('keeps invalid CSAT text in the pending rating step instead of starting routing', async () => {
+    const webhookEventRepository = new FakeWebhookEventRepository();
+    const messageRepository = new FakeMessageRepository();
+    const conversationRepository = new FakeConversationRepository();
+    const contactResolutionService = { resolve: vi.fn().mockResolvedValue(resolvedContact) };
+    conversationRepository.latestClosedConversation = {
+      id: 'conv-solved',
+      phoneE164: '+5511999999999',
+      contactId: 'contact-1',
+      glpiTicketId: 1234,
+      queueId: 5,
+      status: 'closed',
+      lastMessageAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const routing = new FakeRoutingRepository();
+    routing.options = sampleRoutingOptions;
+    const meta = { sendTextMessage: vi.fn().mockResolvedValue({}) };
+    const glpiClient = {
+      createTicket: vi.fn(),
+      addFollowUp: vi.fn(),
+      getTicketStatus: vi.fn().mockResolvedValue('closed'),
+      getTicket: vi.fn(),
+      approveTicketSolution: vi.fn(),
+      reopenTicketSolution: vi.fn(),
+    };
+    const solutionActions = new FakeSolutionActionRepository();
+    solutionActions.pendingCsatAction = {
+      id: 'approve-success-without-csat',
+      actionKey: 'solution:approve:1234:conv-solved',
+      whatsappMessageId: 'wamid.previous-approval',
+      ticketId: 1234,
+      conversationId: 'conv-solved',
+      phoneE164: '+5511999999999',
+      action: 'approve',
+      status: 'success',
+      previousTicketStatus: 5,
+      finalTicketStatus: 6,
+      errorCode: null,
+      errorMessage: null,
+      csatRating: null,
+      supervisorReviewRequired: false,
+      createdAt: new Date('2026-06-05T12:00:00.000Z'),
+      updatedAt: new Date('2026-06-05T12:00:00.000Z'),
+    };
+
+    const payload = structuredClone(basePayload) as typeof basePayload;
+    payload.entry[0].changes[0].value.messages[0] = {
+      id: 'wamid.solution-csat-invalid',
+      from: '5511999999999',
+      type: 'text',
+      text: { body: 'quero falar com tecnico' },
+    } as never;
+
+    const service = makeInboundService(
+      webhookEventRepository,
+      messageRepository,
+      conversationRepository,
+      contactResolutionService,
+      glpiClient,
+      { meta, routing, solutionActions },
+    );
+
+    const result = await service.process(payload, { correlationId: 'WA-20260605160000-csat-invalid' });
+
+    expect(result.results[0]?.outcome).toBe('processed');
+    expect(meta.sendTextMessage).toHaveBeenCalledWith({
+      to: '5511999999999',
+      body: 'Não entendi sua avaliação. Responda 1 para Ótimo, 2 para Bom ou 3 para Ruim.',
+    });
+    expect(solutionActions.reserveCalls).toHaveLength(0);
+    expect(glpiClient.addFollowUp).not.toHaveBeenCalled();
+    expect(glpiClient.createTicket).not.toHaveBeenCalled();
+    expect(meta.sendTextMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('Escolha uma') }),
+    );
+  });
+
+  it('accepts textual CSAT labels before closed-conversation routing', async () => {
+    const webhookEventRepository = new FakeWebhookEventRepository();
+    const messageRepository = new FakeMessageRepository();
+    const conversationRepository = new FakeConversationRepository();
+    const contactResolutionService = { resolve: vi.fn().mockResolvedValue(resolvedContact) };
+    conversationRepository.latestClosedConversation = {
+      id: 'conv-solved',
+      phoneE164: '+5511999999999',
+      contactId: 'contact-1',
+      glpiTicketId: 1234,
+      queueId: 5,
+      status: 'closed',
+      lastMessageAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const routing = new FakeRoutingRepository();
+    routing.options = sampleRoutingOptions;
+    const meta = { sendTextMessage: vi.fn().mockResolvedValue({}) };
+    const glpiClient = {
+      createTicket: vi.fn(),
+      addFollowUp: vi.fn().mockResolvedValue(993),
+      getTicketStatus: vi.fn().mockResolvedValue('closed'),
+      getTicket: vi.fn().mockResolvedValue({ id: 1234, status: 6 }),
+      approveTicketSolution: vi.fn(),
+      reopenTicketSolution: vi.fn(),
+    };
+    const solutionActions = new FakeSolutionActionRepository();
+    solutionActions.pendingCsatAction = {
+      id: 'approve-success-without-csat',
+      actionKey: 'solution:approve:1234:conv-solved',
+      whatsappMessageId: 'wamid.previous-approval',
+      ticketId: 1234,
+      conversationId: 'conv-solved',
+      phoneE164: '+5511999999999',
+      action: 'approve',
+      status: 'success',
+      previousTicketStatus: 5,
+      finalTicketStatus: 6,
+      errorCode: null,
+      errorMessage: null,
+      csatRating: null,
+      supervisorReviewRequired: false,
+      createdAt: new Date('2026-06-05T12:00:00.000Z'),
+      updatedAt: new Date('2026-06-05T12:00:00.000Z'),
+    };
+
+    const payload = structuredClone(basePayload) as typeof basePayload;
+    payload.entry[0].changes[0].value.messages[0] = {
+      id: 'wamid.solution-csat-label',
+      from: '5511999999999',
+      type: 'text',
+      text: { body: 'bom' },
+    } as never;
+
+    const service = makeInboundService(
+      webhookEventRepository,
+      messageRepository,
+      conversationRepository,
+      contactResolutionService,
+      glpiClient,
+      { meta, routing, solutionActions },
+    );
+
+    const result = await service.process(payload, { correlationId: 'WA-20260605160000-csat-label' });
+
+    expect(result.results[0]?.outcome).toBe('processed');
+    expect(solutionActions.reserveCalls[0]).toMatchObject({
+      actionKey: 'solution:approve:1234:conv-solved:csat:satisfied',
+      action: 'approve',
+      csatRating: 'satisfied',
+    });
+    expect(glpiClient.addFollowUp).toHaveBeenCalledWith({
+      ticketId: 1234,
+      content: expect.stringContaining('CSAT: satisfied'),
+    });
+    expect(glpiClient.createTicket).not.toHaveBeenCalled();
+  });
+
+  it('keeps invalid solution approval text in the pending approval step instead of routing', async () => {
+    const webhookEventRepository = new FakeWebhookEventRepository();
+    const messageRepository = new FakeMessageRepository();
+    const conversationRepository = new FakeConversationRepository();
+    const contactResolutionService = { resolve: vi.fn().mockResolvedValue(resolvedContact) };
+    conversationRepository.latestClosedConversation = {
+      id: 'conv-solved',
+      phoneE164: '+5511999999999',
+      contactId: 'contact-1',
+      glpiTicketId: 1234,
+      queueId: 5,
+      status: 'closed',
+      lastMessageAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const routing = new FakeRoutingRepository();
+    routing.options = sampleRoutingOptions;
+    const meta = { sendTextMessage: vi.fn().mockResolvedValue({}) };
+    const glpiClient = {
+      createTicket: vi.fn(),
+      addFollowUp: vi.fn(),
+      getTicketStatus: vi.fn().mockResolvedValue('closed'),
+      getTicket: vi.fn().mockResolvedValue({ id: 1234, status: 5 }),
+      approveTicketSolution: vi.fn(),
+      reopenTicketSolution: vi.fn(),
+    };
+    const solutionActions = new FakeSolutionActionRepository();
+
+    const payload = structuredClone(basePayload) as typeof basePayload;
+    payload.entry[0].changes[0].value.messages[0] = {
+      id: 'wamid.solution-approval-invalid',
+      from: '5511999999999',
+      type: 'text',
+      text: { body: '12' },
+    } as never;
+
+    const service = makeInboundService(
+      webhookEventRepository,
+      messageRepository,
+      conversationRepository,
+      contactResolutionService,
+      glpiClient,
+      { meta, routing, solutionActions },
+    );
+
+    const result = await service.process(payload, { correlationId: 'WA-20260605160000-solution-invalid' });
+
+    expect(result.results[0]?.outcome).toBe('processed');
+    expect(meta.sendTextMessage).toHaveBeenCalledWith({
+      to: '5511999999999',
+      body: 'Não entendi sua resposta. Responda 1 para Aprovar ou 2 para Reabrir.',
+    });
+    expect(solutionActions.reserveCalls).toHaveLength(0);
+    expect(glpiClient.approveTicketSolution).not.toHaveBeenCalled();
+    expect(glpiClient.createTicket).not.toHaveBeenCalled();
+    expect(meta.sendTextMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('Escolha uma') }),
+    );
+  });
+
   it('asks for a configured reopen reason before reopening from solution button', async () => {
     const webhookEventRepository = new FakeWebhookEventRepository();
     const messageRepository = new FakeMessageRepository();
