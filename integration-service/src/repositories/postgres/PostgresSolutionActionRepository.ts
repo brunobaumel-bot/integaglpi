@@ -149,6 +149,53 @@ export class PostgresSolutionActionRepository implements SolutionActionRepositor
     return result.rowCount ? mapSolutionActionRow(result.rows[0]) : null;
   }
 
+  public async findPendingCsatAction(ticketId: number, conversationId: string): Promise<SolutionAction | null> {
+    const result = await this.executor.query<SolutionActionRow>(
+      `
+        SELECT approve.*
+        FROM ${DATABASE_TABLES.solutionActions} approve
+        WHERE approve.ticket_id = $1
+          AND approve.conversation_id = $2
+          AND approve.action = 'approve'
+          AND approve.status = 'success'
+          AND approve.csat_rating IS NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM ${DATABASE_TABLES.solutionActions} csat
+            WHERE csat.ticket_id = approve.ticket_id
+              AND csat.conversation_id = approve.conversation_id
+              AND csat.action = 'approve'
+              AND csat.status = 'success'
+              AND csat.csat_rating IS NOT NULL
+              AND csat.created_at >= approve.created_at
+          )
+        ORDER BY approve.created_at DESC
+        LIMIT 1
+      `,
+      [ticketId, conversationId],
+    );
+
+    return result.rowCount ? mapSolutionActionRow(result.rows[0]) : null;
+  }
+
+  public async hasSuccessfulReopenAfter(ticketId: number, conversationId: string, after: Date): Promise<boolean> {
+    const result = await this.executor.query(
+      `
+        SELECT 1
+        FROM ${DATABASE_TABLES.solutionActions}
+        WHERE ticket_id = $1
+          AND conversation_id = $2
+          AND action = 'reopen'
+          AND status = 'success'
+          AND created_at > $3
+        LIMIT 1
+      `,
+      [ticketId, conversationId, after],
+    );
+
+    return (result.rowCount ?? 0) > 0;
+  }
+
   private async markTerminal(
     id: string,
     status: 'error' | 'ignored',

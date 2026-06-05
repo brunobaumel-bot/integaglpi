@@ -45,4 +45,6 @@ export interface SolutionActionRepository {
   markIgnored(id: string, errorCode: string, errorMessage: string): Promise<void>;
   findByWhatsappMessageId(messageId: string): Promise<SolutionAction | null>;
   findSuccessfulAction(actionKey: string): Promise<SolutionAction | null>;
+  findPendingCsatAction(ticketId: number, conversationId: string): Promise<SolutionAction | null>;
+  hasSuccessfulReopenAfter(ticketId: number, conversationId: string, after: Date): Promise<boolean>;
 }

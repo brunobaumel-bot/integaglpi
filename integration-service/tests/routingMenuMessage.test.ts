@@ -35,11 +35,16 @@ describe('routingMenuMessage', () => {
   it('parseMenuDigitChoice accepts valid indices', () => {
     expect(parseMenuDigitChoice('1', 2)).toBe(1);
     expect(parseMenuDigitChoice(' 2 ', 2)).toBe(2);
+    expect(parseMenuDigitChoice('1.', 2)).toBe(1);
+    expect(parseMenuDigitChoice('2 - Financeiro', 2)).toBe(2);
+    expect(parseMenuDigitChoice('1 sim', 2)).toBe(1);
   });
 
   it('parseMenuDigitChoice rejects out of range and non-digits', () => {
     expect(parseMenuDigitChoice('0', 2)).toBeNull();
     expect(parseMenuDigitChoice('3', 2)).toBeNull();
+    expect(parseMenuDigitChoice('12', 2)).toBeNull();
+    expect(parseMenuDigitChoice('1texto', 2)).toBeNull();
     expect(parseMenuDigitChoice('x', 2)).toBeNull();
     expect(parseMenuDigitChoice('', 2)).toBeNull();
     expect(parseMenuDigitChoice(null, 2)).toBeNull();

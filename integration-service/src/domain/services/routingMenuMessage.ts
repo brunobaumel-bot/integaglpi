@@ -14,11 +14,16 @@ export function parseMenuDigitChoice(messageText: string | null | undefined, opt
   }
 
   const raw = messageText?.trim();
-  if (!raw || !/^\d+$/.test(raw)) {
+  if (!raw) {
     return null;
   }
 
-  const n = Number.parseInt(raw, 10);
+  const match = /^([1-9])(?:\s*[.)-])?(?:\s+.*)?$/.exec(raw);
+  if (!match) {
+    return null;
+  }
+
+  const n = Number.parseInt(match[1], 10);
   if (!Number.isFinite(n) || n < 1 || n > optionCount) {
     return null;
   }

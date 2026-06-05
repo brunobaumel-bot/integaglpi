@@ -439,6 +439,24 @@ export class InboundWebhookService {
           knownExistingTicketStatus = await this.glpiClient.getTicketStatus(closedConversationTicketId);
           inboundGlpiStage = undefined;
 
+          const numericSolutionAction = await this.parseNumericSolutionAction({
+            inboundMessage,
+            conversation: closedConversation,
+            ticketId: closedConversationTicketId,
+            correlationId,
+          });
+          if (numericSolutionAction) {
+            await this.handleSolutionButtonAction({
+              action: numericSolutionAction,
+              contact,
+              inboundMessage,
+              toMeta,
+              correlationId,
+            });
+            conversationId = numericSolutionAction.conversationId;
+            return;
+          }
+
           if (knownExistingTicketStatus === 'closed') {
             await this.sendClosedConversationMessage(
               toMeta,
@@ -2362,6 +2380,101 @@ export class InboundWebhookService {
     };
   }
 
+  private async parseNumericSolutionAction(input: {
+    inboundMessage: ParsedMetaInboundMessage;
+    conversation: Conversation;
+    ticketId: number;
+    correlationId: string;
+  }): Promise<ParsedSolutionButtonAction | null> {
+    if (input.inboundMessage.messageType !== 'text') {
+      return null;
+    }
+
+    const numericChoice = parseMenuDigitChoice(input.inboundMessage.messageText, 3);
+    if (numericChoice === null) {
+      return null;
+    }
+
+    const pendingCsat = this.solutionActionRepository
+      ? await this.solutionActionRepository.findPendingCsatAction(input.ticketId, input.conversation.id)
+      : null;
+    if (pendingCsat !== null) {
+      const csatRating = numericChoice === 1
+        ? 'very_satisfied'
+        : numericChoice === 2
+          ? 'satisfied'
+          : 'dissatisfied';
+      logger.info(
+        {
+          ticket_id: input.ticketId,
+          conversation_id: input.conversation.id,
+          correlation_id: input.correlationId,
+          numeric_choice: numericChoice,
+          csat_rating: csatRating,
+          event_type: 'csat_numeric_received',
+        },
+        '[integration-service][solution][CSAT_NUMERIC_RECEIVED]',
+      );
+      return {
+        action: 'approve',
+        ticketId: input.ticketId,
+        conversationId: input.conversation.id,
+        csatRating,
+        reopenReason: null,
+      };
+    }
+
+    if (numericChoice > 2) {
+      logger.info(
+        {
+          ticket_id: input.ticketId,
+          conversation_id: input.conversation.id,
+          correlation_id: input.correlationId,
+          numeric_choice: numericChoice,
+          event_type: 'numeric_menu_input_ignored_wrong_state',
+        },
+        '[integration-service][solution][NUMERIC_INPUT_IGNORED_WRONG_STATE]',
+      );
+      return null;
+    }
+
+    const ticket = await this.glpiClient.getTicket(input.ticketId);
+    if (ticket.status !== GLPI_STATUS_SOLVED) {
+      logger.info(
+        {
+          ticket_id: input.ticketId,
+          conversation_id: input.conversation.id,
+          correlation_id: input.correlationId,
+          numeric_choice: numericChoice,
+          ticket_status: ticket.status,
+          event_type: 'numeric_menu_input_ignored_wrong_state',
+        },
+        '[integration-service][solution][NUMERIC_INPUT_IGNORED_WRONG_STATE]',
+      );
+      return null;
+    }
+
+    const action = numericChoice === 1 ? 'approve' : 'reopen';
+    logger.info(
+      {
+        ticket_id: input.ticketId,
+        conversation_id: input.conversation.id,
+        correlation_id: input.correlationId,
+        numeric_choice: numericChoice,
+        action,
+        event_type: action === 'approve' ? 'solution_numeric_approved' : 'solution_numeric_reopened',
+      },
+      `[integration-service][solution][${action === 'approve' ? 'SOLUTION_NUMERIC_APPROVED' : 'SOLUTION_NUMERIC_REOPENED'}]`,
+    );
+    return {
+      action,
+      ticketId: input.ticketId,
+      conversationId: input.conversation.id,
+      csatRating: null,
+      reopenReason: null,
+    };
+  }
+
   private async handleSolutionButtonAction(input: {
     action: ParsedSolutionButtonAction;
     contact: Contact;
@@ -2495,6 +2608,25 @@ export class InboundWebhookService {
 
       const successfulAction = await this.solutionActionRepository?.findSuccessfulAction(actionKey);
       if (successfulAction !== null && successfulAction !== undefined && successfulAction.id !== reserved.action.id) {
+        const hasNewCycleAfterReopen =
+          input.action.action === 'approve'
+          && csatRating === null
+          && await this.solutionActionRepository?.hasSuccessfulReopenAfter(
+            input.action.ticketId,
+            conversation.id,
+            successfulAction.createdAt,
+          ) === true;
+        if (hasNewCycleAfterReopen) {
+          logger.info(
+            {
+              ticket_id: input.action.ticketId,
+              conversation_id: conversation.id,
+              previous_action_id: successfulAction.id,
+              action_id: reserved.action.id,
+            },
+            '[integration-service][solution][NEW_CYCLE_AFTER_REOPEN]',
+          );
+        } else {
         await this.solutionActionRepository?.markIgnored(
           reserved.action.id,
           'SOLUTION_ACTION_DUPLICATE',
@@ -2512,6 +2644,7 @@ export class InboundWebhookService {
           '[integration-service][solution][DUPLICATE]',
         );
         return;
+        }
       }
 
       const expectedTicketStatus = csatRating !== null

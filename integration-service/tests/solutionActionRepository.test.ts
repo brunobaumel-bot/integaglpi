@@ -105,4 +105,36 @@ describe('PostgresSolutionActionRepository', () => {
     expect(executor.queries[0]?.params[2]).toBe('GLPI_TICKET_UPDATE_FAILED');
     expect(String(executor.queries[0]?.params[3])).toHaveLength(1000);
   });
+
+  it('finds only successful approval actions that still need CSAT', async () => {
+    const executor = new FakeSqlExecutor();
+    executor.enqueue({ rowCount: 1, rows: [solutionActionRow({ status: 'success' })] });
+    const repository = new PostgresSolutionActionRepository(executor);
+
+    const action = await repository.findPendingCsatAction(1234, 'conv-1');
+
+    expect(action?.id).toBe('action-1');
+    expect(executor.queries[0]?.text).toContain('approve.csat_rating IS NULL');
+    expect(executor.queries[0]?.text).toContain('NOT EXISTS');
+    expect(executor.queries[0]?.text).toContain('csat.csat_rating IS NOT NULL');
+    expect(executor.queries[0]?.params).toEqual([1234, 'conv-1']);
+  });
+
+  it('detects a successful reopen after a previous approval cycle', async () => {
+    const executor = new FakeSqlExecutor();
+    executor.enqueue({ rowCount: 1, rows: [{}] });
+    const repository = new PostgresSolutionActionRepository(executor);
+
+    const hasReopen = await repository.hasSuccessfulReopenAfter(
+      1234,
+      'conv-1',
+      new Date('2026-06-05T12:00:00Z'),
+    );
+
+    expect(hasReopen).toBe(true);
+    expect(executor.queries[0]?.text).toContain("action = 'reopen'");
+    expect(executor.queries[0]?.text).toContain("status = 'success'");
+    expect(executor.queries[0]?.text).toContain('created_at > $3');
+    expect(executor.queries[0]?.params).toEqual([1234, 'conv-1', new Date('2026-06-05T12:00:00Z')]);
+  });
 });

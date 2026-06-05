@@ -395,6 +395,8 @@ class FakeConversationRepository implements ConversationRepository {
 class FakeSolutionActionRepository implements SolutionActionRepository {
   public actions = new Map<string, SolutionAction>();
   public successfulAction: SolutionAction | null = null;
+  public pendingCsatAction: SolutionAction | null = null;
+  public successfulReopenAfter = false;
   public reserveCalls: ReserveSolutionActionInput[] = [];
   public markSuccessCalls: Array<{ id: string; finalTicketStatus: number }> = [];
   public markErrorCalls: Array<{ id: string; errorCode: string; errorMessage: string }> = [];
@@ -488,6 +490,44 @@ class FakeSolutionActionRepository implements SolutionActionRepository {
     return [...this.actions.values()].find((action) => (
       action.actionKey === actionKey && action.status === 'success'
     )) ?? null;
+  }
+
+  public async findPendingCsatAction(ticketId: number, conversationId: string): Promise<SolutionAction | null> {
+    if (
+      this.pendingCsatAction
+      && this.pendingCsatAction.ticketId === ticketId
+      && this.pendingCsatAction.conversationId === conversationId
+    ) {
+      return this.pendingCsatAction;
+    }
+
+    const actions = [...this.actions.values()];
+    const latestApproveWithoutCsat = actions
+      .filter((action) => (
+        action.ticketId === ticketId
+        && action.conversationId === conversationId
+        && action.action === 'approve'
+        && action.status === 'success'
+        && action.csatRating === null
+      ))
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] ?? null;
+    if (!latestApproveWithoutCsat) {
+      return null;
+    }
+
+    const hasLaterCsat = actions.some((action) => (
+      action.ticketId === ticketId
+      && action.conversationId === conversationId
+      && action.action === 'approve'
+      && action.status === 'success'
+      && action.csatRating !== null
+      && action.createdAt >= latestApproveWithoutCsat.createdAt
+    ));
+    return hasLaterCsat ? null : latestApproveWithoutCsat;
+  }
+
+  public async hasSuccessfulReopenAfter(_ticketId: number, _conversationId: string, _after: Date): Promise<boolean> {
+    return this.successfulReopenAfter;
   }
 }
 
@@ -3869,6 +3909,167 @@ describe('InboundWebhookService', () => {
     );
     expect(meta.sendTextMessage).not.toHaveBeenCalled();
     expect(glpiClient.createTicket).not.toHaveBeenCalled();
+  });
+
+  it('approves a solved ticket from numeric text and sends CSAT without opening a new menu', async () => {
+    const webhookEventRepository = new FakeWebhookEventRepository();
+    const messageRepository = new FakeMessageRepository();
+    const conversationRepository = new FakeConversationRepository();
+    const contactResolutionService = { resolve: vi.fn().mockResolvedValue(resolvedContact) };
+    conversationRepository.latestClosedConversation = {
+      id: 'conv-solved',
+      phoneE164: '+5511999999999',
+      contactId: 'contact-1',
+      glpiTicketId: 1234,
+      queueId: 5,
+      status: 'closed',
+      lastMessageAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const routing = new FakeRoutingRepository();
+    routing.options = sampleRoutingOptions;
+    const meta = {
+      sendTextMessage: vi.fn().mockResolvedValue({}),
+      sendReplyButtons: vi.fn().mockResolvedValue({}),
+    };
+    const glpiClient = {
+      createTicket: vi.fn(),
+      addFollowUp: vi.fn(),
+      getTicketStatus: vi.fn().mockResolvedValue('closed'),
+      getTicket: vi.fn().mockResolvedValue({ id: 1234, status: 5 }),
+      approveTicketSolution: vi.fn().mockResolvedValue(undefined),
+      reopenTicketSolution: vi.fn(),
+    };
+    const solutionActions = new FakeSolutionActionRepository();
+
+    const payload = structuredClone(basePayload) as typeof basePayload;
+    payload.entry[0].changes[0].value.messages[0] = {
+      id: 'wamid.solution-approve-number',
+      from: '5511999999999',
+      type: 'text',
+      text: { body: '1 - aprovar' },
+    } as never;
+
+    const service = makeInboundService(
+      webhookEventRepository,
+      messageRepository,
+      conversationRepository,
+      contactResolutionService,
+      glpiClient,
+      { meta, routing, solutionActions },
+    );
+
+    const result = await service.process(payload, { correlationId: 'WA-20260605160000-num1' });
+
+    expect(result.results[0]?.outcome).toBe('processed');
+    expect(glpiClient.approveTicketSolution).toHaveBeenCalledTimes(1);
+    expect(solutionActions.reserveCalls[0]).toMatchObject({
+      actionKey: 'solution:approve:1234:conv-solved',
+      whatsappMessageId: 'wamid.solution-approve-number',
+      action: 'approve',
+      csatRating: null,
+    });
+    expect(meta.sendReplyButtons).toHaveBeenCalledWith(
+      '5511999999999',
+      'Como você avalia este atendimento?',
+      [
+        { id: 'solution_csat:very_satisfied:1234:conv-solved', title: 'Ótimo' },
+        { id: 'solution_csat:satisfied:1234:conv-solved', title: 'Bom' },
+        { id: 'solution_csat:dissatisfied:1234:conv-solved', title: 'Ruim' },
+      ],
+    );
+    expect(glpiClient.createTicket).not.toHaveBeenCalled();
+    expect(meta.sendTextMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('Escolha') }),
+    );
+  });
+
+  it('captures numeric CSAT before closed-conversation routing can start a new attendance', async () => {
+    const webhookEventRepository = new FakeWebhookEventRepository();
+    const messageRepository = new FakeMessageRepository();
+    const conversationRepository = new FakeConversationRepository();
+    const contactResolutionService = { resolve: vi.fn().mockResolvedValue(resolvedContact) };
+    conversationRepository.latestClosedConversation = {
+      id: 'conv-solved',
+      phoneE164: '+5511999999999',
+      contactId: 'contact-1',
+      glpiTicketId: 1234,
+      queueId: 5,
+      status: 'closed',
+      lastMessageAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const routing = new FakeRoutingRepository();
+    routing.options = sampleRoutingOptions;
+    const meta = { sendTextMessage: vi.fn().mockResolvedValue({}) };
+    const glpiClient = {
+      createTicket: vi.fn(),
+      addFollowUp: vi.fn().mockResolvedValue(993),
+      getTicketStatus: vi.fn().mockResolvedValue('closed'),
+      getTicket: vi.fn().mockResolvedValue({ id: 1234, status: 6 }),
+      approveTicketSolution: vi.fn(),
+      reopenTicketSolution: vi.fn(),
+    };
+    const solutionActions = new FakeSolutionActionRepository();
+    solutionActions.pendingCsatAction = {
+      id: 'approve-success-without-csat',
+      actionKey: 'solution:approve:1234:conv-solved',
+      whatsappMessageId: 'wamid.previous-approval',
+      ticketId: 1234,
+      conversationId: 'conv-solved',
+      phoneE164: '+5511999999999',
+      action: 'approve',
+      status: 'success',
+      previousTicketStatus: 5,
+      finalTicketStatus: 6,
+      errorCode: null,
+      errorMessage: null,
+      csatRating: null,
+      supervisorReviewRequired: false,
+      createdAt: new Date('2026-06-05T12:00:00.000Z'),
+      updatedAt: new Date('2026-06-05T12:00:00.000Z'),
+    };
+
+    const payload = structuredClone(basePayload) as typeof basePayload;
+    payload.entry[0].changes[0].value.messages[0] = {
+      id: 'wamid.solution-csat-number',
+      from: '5511999999999',
+      type: 'text',
+      text: { body: '2' },
+    } as never;
+
+    const service = makeInboundService(
+      webhookEventRepository,
+      messageRepository,
+      conversationRepository,
+      contactResolutionService,
+      glpiClient,
+      { meta, routing, solutionActions },
+    );
+
+    const result = await service.process(payload, { correlationId: 'WA-20260605160000-csat2' });
+
+    expect(result.results[0]?.outcome).toBe('processed');
+    expect(solutionActions.reserveCalls[0]).toMatchObject({
+      actionKey: 'solution:approve:1234:conv-solved:csat:satisfied',
+      action: 'approve',
+      csatRating: 'satisfied',
+      supervisorReviewRequired: false,
+    });
+    expect(glpiClient.addFollowUp).toHaveBeenCalledWith({
+      ticketId: 1234,
+      content: expect.stringContaining('CSAT: satisfied'),
+    });
+    expect(glpiClient.createTicket).not.toHaveBeenCalled();
+    expect(meta.sendTextMessage).toHaveBeenCalledWith({
+      to: '5511999999999',
+      body: 'Seu chamado foi encerrado. Obrigado pela avaliação.',
+    });
+    expect(meta.sendTextMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('Escolha uma') }),
+    );
   });
 
   it('asks for a configured reopen reason before reopening from solution button', async () => {
