@@ -51,9 +51,10 @@ export class ForbiddenEndpointError extends Error {
  * headers, tokens or response payloads.
  */
 export const REPORT_ERROR_CATEGORIES = {
-  HTTP_400: 'LOGMEIN_REPORT_INVALID_PERIOD',
+  HTTP_400: 'LOGMEIN_REPORT_INVALID_PAYLOAD',
   HTTP_429: 'LOGMEIN_RATE_LIMITED',
-  HTTP_401_403: 'LOGMEIN_REPORT_HTTP_401_403',
+  HTTP_401_403: 'LOGMEIN_AUTH_FAILED',
+  HTTP_415: 'LOGMEIN_UNSUPPORTED_MEDIA_TYPE',
   HTTP_500: 'LOGMEIN_REPORT_HTTP_500',
   EMPTY: 'LOGMEIN_REPORT_EMPTY',
   PARSE_FAILED: 'LOGMEIN_REPORT_PARSE_FAILED',
@@ -116,7 +117,8 @@ export class ReportApiError extends Error {
 export function classifyReportHttpStatus(status: number): string {
   if (status === 400) return REPORT_ERROR_CATEGORIES.HTTP_400;
   if (status === 429) return REPORT_ERROR_CATEGORIES.HTTP_429;
-  if (status === 401 || status === 403) return REPORT_ERROR_CATEGORIES.HTTP_401_403;
+  if (status === 401 || status === 403 || status === 409) return REPORT_ERROR_CATEGORIES.HTTP_401_403;
+  if (status === 415) return REPORT_ERROR_CATEGORIES.HTTP_415;
   if (status >= 400 && status < 500) return REPORT_ERROR_CATEGORIES.HTTP_400;
   if (status >= 500) return REPORT_ERROR_CATEGORIES.HTTP_500;
   return REPORT_ERROR_CATEGORIES.HTTP_500;
@@ -126,11 +128,13 @@ export function classifyReportHttpStatus(status: number): string {
 export function reportErrorMessage(category: string): string {
   switch (category) {
     case REPORT_ERROR_CATEGORIES.HTTP_400:
-      return 'A API de relatórios LogMeIn rejeitou os parâmetros do período (HTTP 400). Revise a janela de datas.';
+      return 'A API LogMeIn rejeitou o payload do relatório. Revise startDate/endDate e parâmetros obrigatórios.';
     case REPORT_ERROR_CATEGORIES.HTTP_429:
-      return 'A API LogMeIn limitou as requisições (HTTP 429 - Too Many Requests). Aguarde alguns minutos antes de tentar novamente.';
+      return 'A API LogMeIn limitou as requisições (HTTP 429 - Too Many Requests). Aguarde o cooldown antes de tentar novamente. Nenhuma alteração foi aplicada.';
     case REPORT_ERROR_CATEGORIES.HTTP_401_403:
-      return 'Credenciais da API de relatórios LogMeIn inválidas ou sem permissão (HTTP 401/403).';
+      return 'Autorização LogMeIn ausente ou inválida.';
+    case REPORT_ERROR_CATEGORIES.HTTP_415:
+      return 'A API LogMeIn exige envio em JSON. Verifique Content-Type application/json.';
     case REPORT_ERROR_CATEGORIES.HTTP_500:
       return 'A API de relatórios LogMeIn retornou erro interno (HTTP 5xx). Tente novamente mais tarde.';
     case REPORT_ERROR_CATEGORIES.PARSE_FAILED:
@@ -362,7 +366,7 @@ function resolveTimingConfig(config: {
     chunkMinutes,
     overlapMinutes,
     maxRetries: clampInt(config.maxRetries, DEFAULT_MAX_REPORT_RETRIES, 0, 3),
-    cooldownSeconds: clampInt(config.circuitCooldownSeconds, DEFAULT_CIRCUIT_BREAKER_COOLDOWN_SECONDS, 60, 3_600),
+    cooldownSeconds: clampInt(config.circuitCooldownSeconds, DEFAULT_CIRCUIT_BREAKER_COOLDOWN_SECONDS, 60, 86_400),
   };
 }
 
@@ -519,6 +523,7 @@ export class LogmeinReconciliationService {
   private static syncInProgress = false;
   private static consecutiveProvider5xxFailures = 0;
   private static circuitOpenUntilMs = 0;
+  private static rateLimitCooldownUntilMs = 0;
   private readonly timingConfig: ReconciliationTimingConfig;
 
   public constructor(
@@ -551,6 +556,77 @@ export class LogmeinReconciliationService {
     }
     if (!this.repository || !await this.repository.isSchemaReady()) {
       return this.fallback('migration_required', 'MIGRATION_043_REQUIRED');
+    }
+
+    const rateLimitCooldownUntil = LogmeinReconciliationService.rateLimitCooldownUntilMs;
+    if (rateLimitCooldownUntil > Date.now()) {
+      const cooldownUntilIso = new Date(rateLimitCooldownUntil).toISOString();
+      await this.repository.insertReconciliationAudit({
+        status: 'failed',
+        sessionsFound: 0,
+        sessionsInserted: 0,
+        windowFrom: '',
+        windowTo: '',
+        errorMessageSanitized: 'LOGMEIN_RATE_LIMITED_COOLDOWN_ACTIVE',
+        durationMs: 0,
+        reportError: REPORT_ERROR_CATEGORIES.HTTP_429,
+        reportStatusCode: 429,
+        primaryStatusCode: null,
+        fallbackStatusCode: null,
+        fallbackUsed: false,
+        reportPathLabel: 'primary',
+        reportReason: 'cooldown_active',
+        fallbackSkippedReason: 'rate_limited',
+        retryAfterSeconds: Math.max(1, Math.ceil((rateLimitCooldownUntil - Date.now()) / 1_000)),
+        rateLimitCooldownUntil: cooldownUntilIso,
+        chunksRequested: 0,
+        chunkMinutes: this.timingConfig.chunkMinutes,
+        overlapMinutes: this.timingConfig.overlapMinutes,
+        retriesPerformed: 0,
+        maxRetries: this.timingConfig.maxRetries,
+        lookbackHours: this.timingConfig.lookbackHours,
+        lookbackDays: this.timingConfig.lookbackDays,
+        cooldownSeconds: this.timingConfig.cooldownSeconds,
+        circuitOpenUntil: null,
+      });
+      await this.audit('LOGMEIN_SESSION_SYNC_FAILED', 'failed', {
+        error_type: 'rate_limited_cooldown_active',
+        report_error: REPORT_ERROR_CATEGORIES.HTTP_429,
+        report_reason: 'cooldown_active',
+        status_code: 429,
+        fallback_used: false,
+        fallback_skipped_reason: 'rate_limited',
+        retry_after_seconds: Math.max(1, Math.ceil((rateLimitCooldownUntil - Date.now()) / 1_000)),
+        rate_limit_cooldown_until: cooldownUntilIso,
+        cooldown_seconds: this.timingConfig.cooldownSeconds,
+      });
+      return {
+        ok: false,
+        status: 'failed',
+        message: reportErrorMessage(REPORT_ERROR_CATEGORIES.HTTP_429),
+        sessionsFound: 0,
+        sessionsInserted: 0,
+        sessionsSkippedDuplicate: 0,
+        windowFrom: '',
+        windowTo: '',
+        durationMs: 0,
+        reportError: REPORT_ERROR_CATEGORIES.HTTP_429,
+        reportStatusCode: 429,
+        primaryStatusCode: null,
+        fallbackStatusCode: null,
+        fallbackUsed: false,
+        reportReason: 'cooldown_active',
+        fallbackSkippedReason: 'rate_limited',
+        retryAfterSeconds: Math.max(1, Math.ceil((rateLimitCooldownUntil - Date.now()) / 1_000)),
+        rateLimitCooldownUntil: cooldownUntilIso,
+        lookbackHours: this.timingConfig.lookbackHours,
+        lookbackDays: this.timingConfig.lookbackDays,
+        chunkMinutes: this.timingConfig.chunkMinutes,
+        overlapMinutes: this.timingConfig.overlapMinutes,
+        maxRetries: this.timingConfig.maxRetries,
+        cooldownSeconds: this.timingConfig.cooldownSeconds,
+        circuitOpenUntil: null,
+      };
     }
 
     const circuitOpenUntil = LogmeinReconciliationService.circuitOpenUntilMs;
@@ -824,6 +900,14 @@ export class LogmeinReconciliationService {
       const chunksRequested = error instanceof ReportApiError ? error.chunksRequested : null;
       const retriesPerformed = error instanceof ReportApiError ? error.retriesPerformed : null;
       let circuitOpenUntilIso: string | null = null;
+      if (reportCategory === REPORT_ERROR_CATEGORIES.HTTP_429) {
+        const cooldownUntilMs = rateLimitCooldownUntil !== null
+          ? Date.parse(rateLimitCooldownUntil)
+          : Date.now() + this.timingConfig.cooldownSeconds * 1_000;
+        if (Number.isFinite(cooldownUntilMs) && cooldownUntilMs > Date.now()) {
+          LogmeinReconciliationService.rateLimitCooldownUntilMs = cooldownUntilMs;
+        }
+      }
       if (
         error instanceof ReportApiError
         && reportCategory === REPORT_ERROR_CATEGORIES.HTTP_500
@@ -1100,11 +1184,6 @@ export class LogmeinReconciliationService {
     const body = {
       startDate,
       endDate,
-      // Keep legacy aliases for compatibility with already validated mocks/proxies.
-      // LogMeIn report endpoints require startDate/endDate; from/to are ignored by
-      // the provider when unsupported.
-      from: startDate,
-      to: endDate,
       count: PAGE_SIZE,
     };
     let retriesPerformed = 0;

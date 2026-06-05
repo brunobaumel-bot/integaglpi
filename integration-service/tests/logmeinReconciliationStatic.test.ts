@@ -371,9 +371,9 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     expect(calledBody).toMatchObject({
       startDate: '2026-06-01',
       endDate: '2026-06-01',
-      from: '2026-06-01',
-      to: '2026-06-01',
     });
+    expect(calledBody).not.toHaveProperty('from');
+    expect(calledBody).not.toHaveProperty('to');
 
     vi.unstubAllGlobals();
   });
@@ -534,15 +534,20 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     expect(classifyReportHttpStatus(400)).toBe(REPORT_ERROR_CATEGORIES.HTTP_400);
     expect(classifyReportHttpStatus(401)).toBe(REPORT_ERROR_CATEGORIES.HTTP_401_403);
     expect(classifyReportHttpStatus(403)).toBe(REPORT_ERROR_CATEGORIES.HTTP_401_403);
+    expect(classifyReportHttpStatus(409)).toBe(REPORT_ERROR_CATEGORIES.HTTP_401_403);
+    expect(classifyReportHttpStatus(415)).toBe(REPORT_ERROR_CATEGORIES.HTTP_415);
     expect(classifyReportHttpStatus(429)).toBe(REPORT_ERROR_CATEGORIES.HTTP_429);
     expect(classifyReportHttpStatus(500)).toBe(REPORT_ERROR_CATEGORIES.HTTP_500);
     expect(classifyReportHttpStatus(502)).toBe(REPORT_ERROR_CATEGORIES.HTTP_500);
     expect(classifyReportHttpStatus(503)).toBe(REPORT_ERROR_CATEGORIES.HTTP_500);
-    expect(REPORT_ERROR_CATEGORIES.HTTP_400).toBe('LOGMEIN_REPORT_INVALID_PERIOD');
+    expect(REPORT_ERROR_CATEGORIES.HTTP_400).toBe('LOGMEIN_REPORT_INVALID_PAYLOAD');
     expect(REPORT_ERROR_CATEGORIES.HTTP_429).toBe('LOGMEIN_RATE_LIMITED');
-    expect(reportErrorMessage(REPORT_ERROR_CATEGORIES.HTTP_400)).toContain('HTTP 400');
+    expect(REPORT_ERROR_CATEGORIES.HTTP_401_403).toBe('LOGMEIN_AUTH_FAILED');
+    expect(REPORT_ERROR_CATEGORIES.HTTP_415).toBe('LOGMEIN_UNSUPPORTED_MEDIA_TYPE');
+    expect(reportErrorMessage(REPORT_ERROR_CATEGORIES.HTTP_400)).toContain('startDate/endDate');
     expect(reportErrorMessage(REPORT_ERROR_CATEGORIES.HTTP_429)).toContain('HTTP 429');
     expect(reportErrorMessage(REPORT_ERROR_CATEGORIES.HTTP_429)).not.toMatch(/período|periodo/i);
+    expect(reportErrorMessage(REPORT_ERROR_CATEGORIES.HTTP_415)).toContain('Content-Type application/json');
   });
 
   it('persists report fallback metadata in reconciliation audit payload_json', async () => {
@@ -1149,7 +1154,7 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     expect(result.ok).toBe(false);
     expect(result.reportError).toBe(REPORT_ERROR_CATEGORIES.HTTP_401_403);
     expect(result.reportStatusCode).toBe(403);
-    expect(result.message).toContain('401/403');
+    expect(result.message).toContain('Autorização LogMeIn');
     expect(result.fallbackUsed).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
@@ -1210,10 +1215,23 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     expect(JSON.stringify(result)).not.toContain('bearer-token-leak');
     expect(JSON.stringify(failed?.payload ?? {})).not.toContain('bearer-token-leak');
 
+    const blockedByCooldown = await new LogmeinReconciliationService(
+      { enabled: true, reconciliationEnabled: true, companyId: 'c', psk: 'p', timeoutMs: 100 },
+      auditService as never,
+      makeRepoMock() as never,
+    ).syncRemoteAccessSessions();
+    expect(blockedByCooldown.reportError).toBe(REPORT_ERROR_CATEGORIES.HTTP_429);
+    expect(blockedByCooldown.reportReason).toBe('cooldown_active');
+    expect(blockedByCooldown.fallbackSkippedReason).toBe('rate_limited');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const serviceClass = LogmeinReconciliationService as unknown as { rateLimitCooldownUntilMs: number };
+    serviceClass.rateLimitCooldownUntilMs = 0;
+
     vi.unstubAllGlobals();
   });
 
-  it('does not retry or fallback aggressively on non-auth 4xx report responses', async () => {
+  it('classifies HTTP 409 as LogMeIn auth failure without retry or fallback', async () => {
     const repository = makeRepoMock();
     const fetchMock = vi.fn(async () => ({ ok: false, status: 409, text: async () => '{"message":"conflict"}' }));
     vi.stubGlobal('fetch', fetchMock);
@@ -1226,8 +1244,31 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     const result = await service.syncRemoteAccessSessions();
 
     expect(result.ok).toBe(false);
-    expect(result.reportError).toBe(REPORT_ERROR_CATEGORIES.HTTP_400);
+    expect(result.reportError).toBe(REPORT_ERROR_CATEGORIES.HTTP_401_403);
     expect(result.reportStatusCode).toBe(409);
+    expect(result.message).toContain('Autorização LogMeIn');
+    expect(result.fallbackUsed).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('classifies HTTP 415 as unsupported JSON media type without retry or fallback', async () => {
+    const repository = makeRepoMock();
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 415, text: async () => '{"message":"Unsupported Media Type"}' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const service = new LogmeinReconciliationService(
+      { enabled: true, reconciliationEnabled: true, companyId: 'c', psk: 'p', timeoutMs: 100 },
+      undefined,
+      repository as never,
+    );
+    const result = await service.syncRemoteAccessSessions();
+
+    expect(result.ok).toBe(false);
+    expect(result.reportError).toBe(REPORT_ERROR_CATEGORIES.HTTP_415);
+    expect(result.reportStatusCode).toBe(415);
+    expect(result.message).toContain('Content-Type application/json');
     expect(result.fallbackUsed).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
