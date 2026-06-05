@@ -3207,7 +3207,11 @@ export class InboundWebhookService {
         ...button,
         title: configuredTitles[index] ?? button.title,
       }));
-      await this.metaClient.sendReplyButtons(toMeta, plan?.text.trim() || 'Como você avalia este atendimento?', buttons);
+      await this.metaClient.sendReplyButtons(
+        toMeta,
+        plan?.text.trim() || 'Como você avalia este atendimento? Toque no botão ou digite: 1 - Ótimo, 2 - Bom, 3 - Ruim.',
+        buttons,
+      );
       logger.info(
         {
           ticket_id: action.ticketId,
@@ -3264,8 +3268,8 @@ export class InboundWebhookService {
       : input.menuBody;
 
     const interactiveBody = input.prefixText
-      ? `${input.prefixText.trim()}\n\n${input.menuHeading.trim()}`
-      : input.menuHeading.trim();
+      ? `${input.prefixText.trim()}\n\n${input.menuBody}`
+      : input.menuBody;
 
     const sendReplyButtons = (this.metaClient as unknown as {
       sendReplyButtons?: (

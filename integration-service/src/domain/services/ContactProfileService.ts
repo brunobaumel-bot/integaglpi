@@ -431,7 +431,7 @@ export class ContactProfileService {
 
       return {
         state,
-        reply: `${this.buildExistingProfileConfirmationPrompt(input.existingProfile ?? this.profileFromState(input.phoneE164, state))}\n\nResponda Sim ou Nao.`,
+        reply: `${this.buildExistingProfileConfirmationPrompt(input.existingProfile ?? this.profileFromState(input.phoneE164, state))}\n\nResponda tocando no botão ou digitando: 1 - Sim, 2 - Não.`,
         completed: false,
         profile: null,
       };
@@ -705,7 +705,7 @@ export class ContactProfileService {
       `Voce fala da empresa ${company} e ${equipment}.`,
       `E-mail cadastrado: ${this.cleanText(profile?.email_address) || 'nao informado'}.`,
       '',
-      'As informacoes estao corretas? Responda Sim ou Nao.',
+      'As informacoes estao corretas? Responda tocando no botão ou digitando: 1 - Sim, 2 - Não.',
     ].join('\n');
   }
 

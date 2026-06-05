@@ -148,7 +148,7 @@ export const MESSAGE_EVENT_DEFAULTS: Record<string, { group: string; description
   inactivity_autoclose_warning: { group: 'Avisos e Inatividade', description: 'Aviso antes do encerramento', text: 'Este atendimento poderá ser encerrado automaticamente se não houver resposta.' },
   inactivity_autoclose_message: { group: 'Avisos e Inatividade', description: 'Mensagem final de inatividade', text: 'Como não tivemos retorno, estamos encerrando este atendimento por falta de resposta. Se precisar, basta nos chamar novamente.' },
   solution_submitted_message: { group: 'Ticket e Solução', description: 'Solução enviada', text: 'Seu chamado foi solucionado.' },
-  solution_approve_reopen_prompt: { group: 'Ticket e Solução', description: 'Aprovação ou reabertura', text: 'Seu chamado foi solucionado. Você aprova a solução?' },
+  solution_approve_reopen_prompt: { group: 'Ticket e Solução', description: 'Aprovação ou reabertura', text: 'A solução atendeu sua necessidade? Toque no botão ou digite: 1 - Aprovar, 2 - Reabrir.' },
   solution_approved_message: { group: 'Ticket e Solução', description: 'Solução aprovada', text: 'Obrigado pela confirmação.' },
   solution_reopen_message: { group: 'Ticket e Solução', description: 'Solução reaberta', text: 'Vamos reabrir o atendimento para continuidade.' },
   solution_approved_confirmation: { group: 'Ticket e Solução', description: 'Confirmação de aprovação', text: 'Obrigado pela confirmação.' },
@@ -158,7 +158,7 @@ export const MESSAGE_EVENT_DEFAULTS: Record<string, { group: string; description
   reopen_reason_missing_work: { group: 'Ticket e Solução', description: 'Motivo de reabertura: ficou faltando algo', text: 'Ficou faltando algo', expectsResponse: true },
   reopen_reason_not_understood: { group: 'Ticket e Solução', description: 'Motivo de reabertura: solução não entendida', text: 'Não entendi a solução', expectsResponse: true },
   reopen_reason_other: { group: 'Ticket e Solução', description: 'Motivo de reabertura: outro motivo', text: 'Outro motivo', expectsResponse: true },
-  csat_prompt: { group: 'CSAT', description: 'Pesquisa de satisfação', text: 'Como você avalia este atendimento?', expectsResponse: true },
+  csat_prompt: { group: 'CSAT', description: 'Pesquisa de satisfação', text: 'Como você avalia este atendimento? Toque no botão ou digite: 1 - Ótimo, 2 - Bom, 3 - Ruim.', expectsResponse: true },
   csat_thanks_message: { group: 'CSAT', description: 'Agradecimento CSAT', text: 'Obrigado pela avaliação.' },
   csat_thank_you_closure: {
     group: 'CSAT',

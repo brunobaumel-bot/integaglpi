@@ -28,8 +28,25 @@ const opts: ActiveRoutingOption[] = [
 
 describe('routingMenuMessage', () => {
   it('buildMenuMessage formats numbered labels', () => {
-    expect(buildMenuMessage(opts)).toBe('Escolha uma opção:\n\n1 - Suporte\n2 - Financeiro');
+    expect(buildMenuMessage(opts)).toBe('Escolha uma opção tocando no botão ou digitando o número:\n\n1 - Suporte\n2 - Financeiro');
+    expect(buildMenuMessage(opts, 'Escolha uma opção:')).toBe('Escolha uma opção tocando no botão ou digitando o número:\n\n1 - Suporte\n2 - Financeiro');
     expect(buildMenuMessage(opts, 'Atendimento')).toBe('Atendimento\n\n1 - Suporte\n2 - Financeiro');
+  });
+
+  it('buildMenuMessage makes the production queue numeric choices explicit', () => {
+    const queueOptions = [
+      { ...opts[0], label: 'Suporte Técnico' },
+      { ...opts[1], label: 'Administrativo' },
+      { ...opts[1], id: 3, optionKey: 'c', label: 'Comercial', sortOrder: 2 },
+    ];
+
+    expect(buildMenuMessage(queueOptions)).toBe([
+      'Escolha uma opção tocando no botão ou digitando o número:',
+      '',
+      '1 - Suporte Técnico',
+      '2 - Administrativo',
+      '3 - Comercial',
+    ].join('\n'));
   });
 
   it('parseMenuDigitChoice accepts valid indices', () => {

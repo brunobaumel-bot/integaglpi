@@ -22,6 +22,7 @@ import type {
   SolutionActionRepository,
 } from '../src/repositories/contracts/SolutionActionRepository.js';
 import { InboundWebhookService } from '../src/domain/services/InboundWebhookService.js';
+import { buildMenuMessage } from '../src/domain/services/routingMenuMessage.js';
 import type { AuditService } from '../src/domain/services/AuditService.js';
 import type { KeyLock } from '../src/domain/contracts/KeyLock.js';
 import type { MessageSettingKey } from '../src/domain/services/SettingsService.js';
@@ -153,7 +154,7 @@ class FakeRoutingRepository implements RoutingRepository {
 
 class FakeSettingsService {
   private readonly fallbacks = new Map<MessageSettingKey, string>([
-    ['menu_message', 'Escolha uma opÃ§Ã£o:'],
+    ['menu_message', 'Escolha uma opção:'],
     ['invalid_option_message', 'Nao entendi sua opcao. Por favor, escolha uma das opcoes abaixo:'],
     ['invalid_media_message', 'Por favor, envie apenas texto para escolher uma opcao.'],
     ['error_fallback_message', 'Tivemos uma instabilidade. Tente novamente mais tarde.'],
@@ -3371,7 +3372,7 @@ describe('InboundWebhookService', () => {
     expect(meta.sendReplyButtons).toHaveBeenCalledTimes(1);
     expect(meta.sendReplyButtons).toHaveBeenCalledWith(
       '5511999999999',
-      'Escolha uma opÃ§Ã£o:',
+      buildMenuMessage(options),
       options.map((option) => ({ id: option.optionKey, title: option.label })),
     );
     expect(conversationRepository.lastCreateInput?.status).toBe('awaiting_queue_selection');
@@ -3972,7 +3973,7 @@ describe('InboundWebhookService', () => {
     });
     expect(meta.sendReplyButtons).toHaveBeenCalledWith(
       '5511999999999',
-      'Como você avalia este atendimento?',
+      'Como você avalia este atendimento? Toque no botão ou digite: 1 - Ótimo, 2 - Bom, 3 - Ruim.',
       [
         { id: 'solution_csat:very_satisfied:1234:conv-solved', title: 'Ótimo' },
         { id: 'solution_csat:satisfied:1234:conv-solved', title: 'Bom' },

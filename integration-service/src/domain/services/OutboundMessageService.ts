@@ -151,7 +151,7 @@ function sanitizeSolutionContent(content: string | undefined, limit = 1200): str
 function buildSolutionNotificationText(ticketId: number, solutionContent?: string): string {
   const sanitizedSolution = sanitizeSolutionContent(solutionContent);
   if (sanitizedSolution.length === 0) {
-    return `Seu chamado #${ticketId} foi solucionado. Como você avalia este atendimento?`;
+    return `Seu chamado #${ticketId} foi solucionado. Como você avalia este atendimento? Toque no botão ou digite: 1 - Ótimo, 2 - Bom, 3 - Ruim.`;
   }
 
   return [
@@ -160,7 +160,7 @@ function buildSolutionNotificationText(ticketId: number, solutionContent?: strin
     'Solução:',
     sanitizedSolution,
     '',
-    'Como você avalia este atendimento?',
+    'Como você avalia este atendimento? Toque no botão ou digite: 1 - Ótimo, 2 - Bom, 3 - Ruim.',
   ].join('\n');
 }
 
@@ -1100,7 +1100,10 @@ export class OutboundMessageService {
       { id: `solution_reopen:${input.ticketId}:${input.conversationId}`, title: 'Reabrir' },
     ];
     const fallbackText = buildSolutionNotificationText(input.ticketId, input.solutionContent)
-      .replace('Como você avalia este atendimento?', 'Você aprova a solução?');
+      .replace(
+        'Como você avalia este atendimento? Toque no botão ou digite: 1 - Ótimo, 2 - Bom, 3 - Ruim.',
+        'A solução atendeu sua necessidade? Toque no botão ou digite: 1 - Aprovar, 2 - Reabrir.',
+      );
 
     if (this.messageConfigurationService === null) {
       return {

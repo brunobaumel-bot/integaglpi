@@ -3,9 +3,17 @@ import type { ActiveRoutingOption } from '../../repositories/contracts/RoutingRe
 /**
  * Monta o texto do menu de roteamento (1-based, ordem de `options`).
  */
-export function buildMenuMessage(options: ActiveRoutingOption[], heading = 'Escolha uma opção:'): string {
+const NUMERIC_MENU_HEADING = 'Escolha uma opção tocando no botão ou digitando o número:';
+
+export function normalizeMenuHeading(heading = NUMERIC_MENU_HEADING): string {
+  const trimmedHeading = heading.trim();
+  return trimmedHeading === 'Escolha uma opção:' ? NUMERIC_MENU_HEADING : trimmedHeading;
+}
+
+export function buildMenuMessage(options: ActiveRoutingOption[], heading = NUMERIC_MENU_HEADING): string {
   const lines = options.map((opt, index) => `${index + 1} - ${opt.label}`);
-  return [heading.trim(), '', ...lines].join('\n');
+  const normalizedHeading = normalizeMenuHeading(heading);
+  return [normalizedHeading, '', ...lines].join('\n');
 }
 
 export function parseMenuDigitChoice(messageText: string | null | undefined, optionCount: number): number | null {

@@ -300,6 +300,7 @@ describe('ContactProfileService', () => {
       'Empresa: Etica; Nome: Bruno; Etiqueta: 2022; Problema: ultimo atendimento',
     );
     const state = service.startExistingProfileConfirmationState(profile, 'Suporte');
+    expect(service.getCollectionPrompt(state)).toContain('1 - Sim, 2 - Não');
 
     const yes = service.processCollectionResponse({
       phoneE164: '+5511999999999',

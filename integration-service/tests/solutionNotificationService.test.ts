@@ -78,7 +78,7 @@ describe('OutboundMessageService solution approval notification', () => {
         'Solução:',
         'Troca de senha realizada & acesso validado.',
         '',
-        'Você aprova a solução?',
+        'A solução atendeu sua necessidade? Toque no botão ou digite: 1 - Aprovar, 2 - Reabrir.',
       ].join('\n'),
       approveReopenButtons,
     );
@@ -91,7 +91,7 @@ describe('OutboundMessageService solution approval notification', () => {
           'Solução:',
           'Troca de senha realizada & acesso validado.',
           '',
-          'Você aprova a solução?',
+          'A solução atendeu sua necessidade? Toque no botão ou digite: 1 - Aprovar, 2 - Reabrir.',
         ].join('\n'),
         rawPayload: expect.objectContaining({
           ticket_id: 2112319051,
@@ -104,7 +104,7 @@ describe('OutboundMessageService solution approval notification', () => {
             'Solução:',
             'Troca de senha realizada & acesso validado.',
             '',
-            'Você aprova a solução?',
+            'A solução atendeu sua necessidade? Toque no botão ou digite: 1 - Aprovar, 2 - Reabrir.',
           ].join('\n'),
             has_solution_content: true,
           }),
@@ -163,7 +163,7 @@ describe('OutboundMessageService solution approval notification', () => {
         'Solução:',
         'Foi aplicado ajuste no cadastro.',
         '',
-        'Você aprova a solução?',
+        'A solução atendeu sua necessidade? Toque no botão ou digite: 1 - Aprovar, 2 - Reabrir.',
       ].join('\n'),
     });
   });
@@ -193,7 +193,7 @@ describe('OutboundMessageService solution approval notification', () => {
       'Primeira linha & validação',
       'Segunda <linha>',
       '',
-      'Você aprova a solução?',
+      'A solução atendeu sua necessidade? Toque no botão ou digite: 1 - Aprovar, 2 - Reabrir.',
     ].join('\n');
 
     expect(result.httpStatus).toBe(201);
@@ -256,7 +256,7 @@ describe('OutboundMessageService solution approval notification', () => {
     expect(result.httpStatus).toBe(201);
     expect(metaClient.sendReplyButtons).toHaveBeenCalledWith(
       '5511999999999',
-      'Seu chamado #2112319051 foi solucionado. Você aprova a solução?',
+      'Seu chamado #2112319051 foi solucionado. A solução atendeu sua necessidade? Toque no botão ou digite: 1 - Aprovar, 2 - Reabrir.',
       approveReopenButtons,
     );
     expect(messageRepository.insertOutbound).toHaveBeenCalledWith(
@@ -264,7 +264,7 @@ describe('OutboundMessageService solution approval notification', () => {
         idempotencyKey: 'notify_ticket_solved_2112319051',
         rawPayload: expect.objectContaining({
           request: expect.objectContaining({
-            body_text_preview: 'Seu chamado #2112319051 foi solucionado. Você aprova a solução?',
+            body_text_preview: 'Seu chamado #2112319051 foi solucionado. A solução atendeu sua necessidade? Toque no botão ou digite: 1 - Aprovar, 2 - Reabrir.',
             has_solution_content: false,
           }),
         }),
