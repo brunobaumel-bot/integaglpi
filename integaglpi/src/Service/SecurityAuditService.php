@@ -95,10 +95,10 @@ final class SecurityAuditService
         ]);
     }
 
-    public static function logEntityOverride(int $conversationId, int $previousEntityId, int $newEntityId, string $reason): void
+    public static function logEntityOverride(string $conversationId, int $previousEntityId, int $newEntityId, string $reason): void
     {
         self::log(self::EVENT_ENTITY_OVERRIDE, [
-            'conversation_id' => $conversationId,
+            'conversation_hash' => $conversationId !== '' ? hash('sha256', $conversationId) : '',
             'previous_entity_id' => $previousEntityId,
             'new_entity_id' => $newEntityId,
             'reason' => self::truncateReason($reason),

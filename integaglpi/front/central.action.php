@@ -203,7 +203,7 @@ try {
             ], 403);
         }
 
-        SecurityAuditService::logEntityOverride($conversationId !== '' ? crc32($conversationId) : 0, 0, $glpiEntityId, $reasonForOverride);
+        SecurityAuditService::logEntityOverride($conversationId, 0, $glpiEntityId, $reasonForOverride);
 
         $result = $service->updateConversationEntity(
             $conversationId,

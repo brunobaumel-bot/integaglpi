@@ -93,6 +93,13 @@ final class SecurityCenterStaticTest extends TestCase
         $action = $this->read('front/central.action.php');
         $audit = $this->read('src/Service/SecurityAuditService.php');
 
+        // crc32($conversationId) must not appear — it can return negatives and is
+        // inconsistent with the sha256-based hashing used by the other entity events.
+        self::assertStringNotContainsString('crc32($conversationId)', $action);
+        // logEntityOverride must accept string $conversationId (consistent with the
+        // other entity audit helpers that hash it with sha256 internally).
+        self::assertMatchesRegularExpression('/function logEntityOverride\(string \$conversationId/', $audit);
+
         self::assertStringContainsString("'confirm_entity' => SecurityPermissionService::RIGHT_SELECT_ENTITY", $action);
         self::assertStringContainsString("'update_entity' => SecurityPermissionService::RIGHT_OVERRIDE_ENTITY_MEMORY", $action);
         self::assertStringContainsString('logEntitySelectedFirstContact', $action);
