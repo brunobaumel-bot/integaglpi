@@ -94,6 +94,14 @@ if (!in_array($activeTab, ['monitor', 'ai_alerts'], true)) {
 }
 ?>
 
+<style>
+.integaglpi-ai-alert-modal-host > td {
+    border: 0 !important;
+    height: 0;
+    padding: 0 !important;
+}
+</style>
+
 <div class="d-flex flex-wrap align-items-start justify-content-between gap-3 mb-3">
     <div>
         <h2 class="mb-1"><?= $this->escape(__('Monitor Online WhatsApp', 'glpiintegaglpi')); ?></h2>
@@ -249,7 +257,7 @@ if (!in_array($activeTab, ['monitor', 'ai_alerts'], true)) {
                                         </button>
                                     </td>
                                 </tr>
-                                <tr class="d-none">
+                                <tr class="integaglpi-ai-alert-modal-host">
                                     <td colspan="6">
                                         <div class="modal fade" id="<?= $this->escape($modalId); ?>" tabindex="-1" aria-hidden="true">
                                             <div class="modal-dialog modal-lg modal-dialog-scrollable">

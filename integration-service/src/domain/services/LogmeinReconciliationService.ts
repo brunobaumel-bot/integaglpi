@@ -1029,9 +1029,16 @@ export class LogmeinReconciliationService {
     const allItems: Record<string, unknown>[] = [];
     const url = this.reportEndpoint(path);
     const authHeader = this.basicAuthHeader();
+    const startDate = from.toISOString();
+    const endDate = to.toISOString();
     const body = {
-      from: from.toISOString(),
-      to: to.toISOString(),
+      startDate,
+      endDate,
+      // Keep legacy aliases for compatibility with already validated mocks/proxies.
+      // LogMeIn report endpoints require startDate/endDate; from/to are ignored by
+      // the provider when unsupported.
+      from: startDate,
+      to: endDate,
       count: PAGE_SIZE,
     };
     let retriesPerformed = 0;

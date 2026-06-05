@@ -539,3 +539,56 @@ Validações locais:
 | `git diff --check` | PASS, apenas aviso CRLF esperado no Windows |
 
 Decisão: **PARTIAL**. T22, T23, Redis, dead-letter, schema e logs recentes estão corrigidos. T07/T11 continuam bloqueados pela permissão do usuário de smoke HML antes da mutação; os endpoints preservaram segurança e não alteraram runtime indevidamente. Para fechar GO, executar T07/T11 com perfil HML que possua `plugin_integaglpi` UPDATE/RBAC operacional ou ajustar explicitamente o perfil de teste.
+
+---
+
+## 16. Macrofase final operational blockers — HML — 2026-06-05
+
+Phase: `integaglpi_v8_final_operational_blockers_fix_001`.
+
+Resultado: **PARTIAL**.
+
+Ambiente:
+
+| Item | Resultado |
+|---|---|
+| Host | `GLPIv5` HML |
+| Produção | Containers `prod-*` listados como órfãos pelo compose, mas não operados |
+| Node HML | `/health` OK após rebuild do `glpi-integaglpi-integration` |
+| PostgreSQL HML | OK |
+| Redis HML | Locks `0` |
+| dead_letter | `0` em status ativo |
+
+Correções publicadas em HML:
+
+| Item | Arquivo | Resultado |
+|---|---|---|
+| I10 Alertas IA detalhes | `integaglpi/templates/online_monitor.php` | Modal deixou de ficar dentro de `tr.d-none`; `php8.3 -l` PASS |
+| I11 LogMeIn start/end date | `integration-service/src/domain/services/LogmeinReconciliationService.ts` | Payload agora inclui `startDate`/`endDate` e mantém `from`/`to` como aliases compatíveis |
+
+Evidência HML:
+
+| Teste | Status | Evidência |
+|---|---|---|
+| Monitor Online / Alertas IA | PASS | `online.monitor.php?tab=ai_alerts` HTTP 200; HTML contém `integaglpi-ai-alert-modal-host`; não contém `tr.d-none` envolvendo modal |
+| Reopen GET direto | PASS | `ticket.whatsapp.action.php?...whatsapp_action=reopen` retorna HTTP 405 sem `csrf_token` no body |
+| SmartHelp / PII | PASS | Smoke UI: painel presente; resumo/busca local OK; contexto externo pede revisão; `bodyHasPii=false` mesmo após texto com telefone/e-mail |
+| T07/T11 automatizado | CONFIG_PROFILE_REQUIRED | Usuário de smoke HML recebe 403 antes da mutação; runtime permaneceu `809|open|open` / `closed|closed` |
+| Logs recentes | PASS | `PII_HITS=0`, `SECRET_HITS=0` no `glpi-integaglpi-integration` desde a publicação |
+
+Validações locais:
+
+| Comando | Resultado |
+|---|---|
+| `php -l` nos PHPs alterados e plugin inteiro | PASS |
+| `cd integration-service && npx vitest run` | 109 arquivos / 911 testes PASS |
+| `cd integration-service && npx tsc --noEmit` | PASS |
+| `git diff --check` | PASS, apenas aviso CRLF esperado no Windows |
+
+Ressalvas:
+
+- I03 IA local: HML tem Ollama disponível, mas os modelos configurados no Node são `aya-expanse:8b`; `llama3:latest` existe, porém não `llama3:8b`/`qwen2.5:7b` com os nomes exatos do adendo. IA pode seguir como `GO_WITH_RESSALVA` se operação base estiver PASS.
+- I05/I06 são requisitos novos de UX. Não foram implementados nesta macro por exigirem feature flag default OFF e risco de FSM; classificados como `BACKLOG_V9`.
+- T07/T11 automatizados dependem de perfil HML autorizado. O teste manual do usuário validou transferência para técnico `803`; o perfil automatizado continua sem permissão para mutações.
+
+Decisão: **PARTIAL**. P0 não está totalmente fechável por automação enquanto T07/T11 dependerem de perfil HML autorizado para mutação. I10/I11 foram corrigidos e publicados em HML sem tocar produção.

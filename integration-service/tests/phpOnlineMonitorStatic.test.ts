@@ -82,6 +82,15 @@ describe('PHP Online Monitor static safety', () => {
     expect(template).not.toMatch(/Enviar WhatsApp|Assumir atendimento|Transferir atendimento|Publicar KB|Salvar solução/i);
   });
 
+  it('keeps AI alert detail modals outside display-none ancestors', async () => {
+    const template = await readProjectFile('integaglpi/templates/online_monitor.php');
+
+    expect(template).toContain('data-bs-toggle="modal"');
+    expect(template).toContain('data-bs-target="#<?= $this->escape($modalId); ?>"');
+    expect(template).toContain('integaglpi-ai-alert-modal-host');
+    expect(template).not.toContain('<tr class="d-none">\n                                    <td colspan="6">\n                                        <div class="modal fade"');
+  });
+
   it('does not touch AI, WhatsApp outbound, ticket mutation, KB publishing or PHP 8-only syntax', async () => {
     const files = await Promise.all([
       readProjectFile('integaglpi/front/online.monitor.php'),

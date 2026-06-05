@@ -334,7 +334,7 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
       insertReconciliationAudit: vi.fn(async () => undefined),
     };
     vi.stubGlobal('fetch', vi.fn(async (url: unknown, opts: unknown) => {
-      fetchCalls.push({ url: String(url), opts: opts as { method: string } });
+      fetchCalls.push({ url: String(url), opts: opts as { method: string; body?: string } });
       return { ok: true, json: async () => ({ items: [] }) };
     }));
 
@@ -366,6 +366,13 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
     expect(calledUrl).not.toContain('foo=bar');
     expect(calledUrl).not.toContain('frag');
     expect(fetchCalls[0]?.opts.method).toBe('POST');
+    const calledBody = JSON.parse(fetchCalls[0]?.opts.body ?? '{}');
+    expect(calledBody).toMatchObject({
+      startDate: '2026-06-01T00:00:00.000Z',
+      endDate: '2026-06-01T00:30:00.000Z',
+      from: '2026-06-01T00:00:00.000Z',
+      to: '2026-06-01T00:30:00.000Z',
+    });
 
     vi.unstubAllGlobals();
   });
