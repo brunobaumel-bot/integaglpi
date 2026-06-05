@@ -852,7 +852,8 @@ final class AttendanceCenterService
             (new NotificationService($this->pluginConfigService))->sendTechnicianAssigned(
                 $ticketId,
                 $userId,
-                $conversationId
+                $conversationId,
+                $previousAssignedUserId
             );
         }
 
@@ -2489,25 +2490,33 @@ final class AttendanceCenterService
         $maskedPhone = $this->maskPhone($rawPhone);
         $maskedEmail = $this->maskEmail($rawEmail);
 
-        if (!$canViewRawPii) {
-            $row['phone_e164'] = $maskedPhone;
-            $row['email_address'] = $maskedEmail;
-            if (is_array($row['contact_profile_snapshot'] ?? null)) {
-                $row['contact_profile_snapshot']['email_address'] = $maskedEmail;
+        $row['phone_e164'] = $maskedPhone;
+        $row['email_address'] = $maskedEmail;
+        if (is_array($row['contact_profile_snapshot'] ?? null)) {
+            foreach (['phone_e164', 'phone', 'contact_phone', 'phone_number', 'mobile_phone', 'whatsapp_phone', 'whatsapp_e164'] as $phoneKey) {
+                if (array_key_exists($phoneKey, $row['contact_profile_snapshot'])) {
+                    $row['contact_profile_snapshot'][$phoneKey] = $maskedPhone;
+                }
             }
-            if (is_array($row['profile_context'] ?? null)) {
-                $row['profile_context']['email'] = $maskedEmail;
-            }
-        } elseif ($rawPhone !== '' || $rawEmail !== '') {
-            SecurityAuditService::logPiiUnmaskedView(
-                'conversation',
-                hash('sha256', (string) ($row['conversation_id'] ?? '') . '|' . $currentUserId)
+            $row['contact_profile_snapshot']['email_address'] = $maskedEmail;
+            $row['profile_snapshot_json'] = json_encode(
+                $row['contact_profile_snapshot'],
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
             );
+        }
+        if (is_array($row['profile_context'] ?? null)) {
+            foreach (['phone_e164', 'phone', 'contact_phone', 'phone_number', 'mobile_phone', 'whatsapp_phone', 'whatsapp_e164'] as $phoneKey) {
+                if (array_key_exists($phoneKey, $row['profile_context'])) {
+                    $row['profile_context'][$phoneKey] = $maskedPhone;
+                }
+            }
+            $row['profile_context']['email'] = $maskedEmail;
         }
 
         $row['masked_phone'] = $maskedPhone;
         $row['masked_email'] = $maskedEmail;
-        $row['pii_unmasked'] = $canViewRawPii;
+        $row['pii_unmasked'] = false;
+        $row['pii_unmasked_available'] = $canViewRawPii;
 
         return $row;
     }

@@ -24,6 +24,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // RBAC gate for the panel.
     expect(svc).toContain('canViewPanel');
     expect(svc).toContain('Plugin::canRead()');
+    expect(svc).not.toContain('Session::getLoginUserID()');
 
     // Bearer is sent but never logged; error_log only carries sanitized text.
     expect(svc).toContain('Authorization: Bearer ');
@@ -93,6 +94,8 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // Panel + RBAC gate.
     expect(tab).toContain('integaglpi-smart-help');
     expect(tab).toContain('SmartHelpService::canViewPanel()');
+    expect(tab).toContain('$smartHelpReadGateVisible');
+    expect(tab).toContain('!$replyOwnedByCurrentUser');
     expect(tab).toContain('js-smart-help-summarize');
     expect(tab).toContain('js-smart-help-local-search');
     expect(tab).toContain('js-smart-help-external');
@@ -106,6 +109,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     // Read-only disclaimer + consent text.
     expect(tab).toContain('nada é enviado ao cliente nem altera o chamado');
     expect(tab).toContain('Processo guiado: gere o resumo, execute a busca local');
+    expect(tab).toContain('Processo guiado somente leitura');
     // Assets inlined only when the panel is visible.
     expect(tab).toContain('ticket_ai_panel.js');
     expect(tab).toContain('ticket_ai_panel.css');
@@ -163,6 +167,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
   it('analyze conversation uses the JSON ticket action endpoint and catches KB normalization failures', async () => {
     const action = await read('integaglpi/front/ticket.whatsapp.action.php');
     const tab = await read('integaglpi/templates/ticket_tab.php');
+    const globalJs = await read('integaglpi/js/integaglpi.js');
 
     expect(action).toContain("if ($action === 'analyze_conversation')");
     expect(action).toContain('Plugin::isAiSupervisorEnabled()');
@@ -180,17 +185,30 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(nonAjaxGateStart).toBeGreaterThanOrEqual(0);
     expect(csrfCheckStart).toBeGreaterThan(nonAjaxGateStart);
     expect(action.slice(nonAjaxGateStart, csrfCheckStart)).not.toContain('csrf_token');
+    expect(action).toContain('function plugin_integaglpi_ticket_action_json(array $payload, int $statusCode, bool $includeCsrfToken = true): never');
+    expect(action).toContain('if ($includeCsrfToken && !array_key_exists(\'csrf_token\', $payload))');
+    expect(action).toContain('], 405, false);');
 
     expect(tab).toContain('js-integaglpi-ai-quality-analyze-form');
     expect(tab).toContain('Plugin::getTicketActionUrl()');
     expect(tab).toContain('name="whatsapp_action" value="analyze_conversation"');
     expect(tab).toContain('type="button" class="btn btn-sm btn-outline-primary js-integaglpi-ai-quality-analyze-submit"');
-    expect(tab).toContain('event.preventDefault();');
-    expect(tab).toContain('event.stopPropagation();');
-    expect(tab).toContain("'X-Requested-With': 'XMLHttpRequest'");
-    expect(tab).toContain("fetch(form.action, {");
-    expect(tab).toContain('JSON.parse(text)');
-    expect(tab).toContain('result.body.error_type');
+    expect(globalJs).toContain('function handleAiQualityAnalyzeForm(form, event)');
+    expect(globalJs).toContain("document.addEventListener('click', onDocumentClick, false)");
+    expect(globalJs).toContain("document.addEventListener('submit', onDocumentSubmit, true)");
+    expect(globalJs).toContain("findClosest(target, '.js-integaglpi-ai-quality-analyze-submit')");
+    expect(globalJs).toContain("findClosest(target, '.js-integaglpi-ai-quality-analyze-form')");
+    expect(globalJs).toContain('event.preventDefault();');
+    expect(globalJs).toContain('event.stopPropagation();');
+    expect(globalJs).toContain('event.stopImmediatePropagation');
+    expect(globalJs).toContain("'X-Requested-With': 'XMLHttpRequest'");
+    expect(globalJs).toContain("'X-Glpi-Csrf-Token': csrfToken");
+    expect(globalJs).toContain("'Accept': 'application/json'");
+    expect(globalJs).toContain("fetch(form.action, {");
+    expect(globalJs).toContain('JSON.parse(text)');
+    expect(globalJs).toContain('result.body.error_type');
+    expect(globalJs).toContain('updateFormCsrfToken(form, result.body.csrf_token)');
+    expect(tab).not.toContain('function runIntegaglpiAiQualityAnalysis(form, event)');
     expect(tab).not.toContain('name="action" value="analyze"');
   });
 
@@ -230,6 +248,30 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(front).toContain("if ($action === 'local_search')");
     expect(front).toContain("if ($action === 'kb_feedback')");
     expect(front).toContain("if ($action === 'suggest_kb')");
+  });
+
+  it('ticket WhatsApp SmartHelp KB actions require GLPI ticket READ permission', async () => {
+    const action = await read('integaglpi/front/ticket.whatsapp.action.php');
+
+    const feedbackStart = action.indexOf("if ($action === 'kb_feedback')");
+    const externalStart = action.indexOf("if ($action === 'smart_external')");
+    const suggestStart = action.indexOf("if ($action === 'suggest_kb')");
+    const analyzeStart = action.indexOf("if ($action === 'analyze_conversation')");
+    expect(feedbackStart).toBeGreaterThanOrEqual(0);
+    expect(externalStart).toBeGreaterThan(feedbackStart);
+    expect(suggestStart).toBeGreaterThan(externalStart);
+    expect(analyzeStart).toBeGreaterThan(suggestStart);
+
+    const feedbackBlock = action.slice(feedbackStart, externalStart);
+    const suggestBlock = action.slice(suggestStart, analyzeStart);
+    for (const block of [feedbackBlock, suggestBlock]) {
+      expect(block).toContain('$ticket = new \\Ticket();');
+      expect(block).toContain('$ticket->getFromDB($ticketId)');
+      expect(block).toContain('$ticket->can($ticketId, READ)');
+      expect(block).toContain("'error' => 'permission_denied'");
+      expect(block).toContain("'error_type' => 'permission_denied'");
+      expect(block).toContain('], 403);');
+    }
   });
 
   it('cloud external research is a two-step sanitized-preview flow (prepare → confirm send)', async () => {
@@ -276,6 +318,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
 
   it("the smart help JS never auto-runs guided SmartHelp or cloud (manual click only)", async () => {
     const js = await read('integaglpi/js/ticket_ai_panel.js');
+    const globalJs = await read('integaglpi/js/integaglpi.js');
     // Page load only marks the panel ready. It must not POST guided actions automatically.
     expect(js).toContain("p.dataset.smartHelpJsReady = '1'");
     expect(js).toContain("post(panel, 'summarize_ticket', { ai_summary: '1' }");
@@ -307,6 +350,20 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(onLoad).not.toContain('handleSummarize(');
     expect(onLoad).not.toContain('handleLocalSearch(');
     expect(onLoad).not.toContain('smart_external');
+
+    // Global plugin JS also provides a delegated fallback for dynamically loaded
+    // GLPI ticket tabs where inline scripts may not execute.
+    expect(globalJs).toContain("'.integaglpi-smart-help .js-smart-help-summarize");
+    expect(globalJs).toContain("params.set('smart_action', action)");
+    expect(globalJs).toContain("params.set('_glpi_csrf_token', token)");
+    expect(globalJs).toContain("'X-Glpi-Csrf-Token': token");
+    expect(globalJs).toContain("'X-Requested-With': 'XMLHttpRequest'");
+    expect(globalJs).toContain("smartHelpPost(panel, action, extra)");
+    expect(globalJs).toContain("smartHelpRenderLocal(panel, responseResult)");
+    expect(globalJs).toContain("action === 'local_search'");
+    expect(globalJs).toContain("action === 'prepare_external_context'");
+    expect(globalJs).toContain("action === 'smart_external'");
+    expect(globalJs).not.toContain("alert('Clique capturado pelo integaglpi')");
   });
 
   it('smart help guided workflow uses session state and gates cloud until local search', async () => {

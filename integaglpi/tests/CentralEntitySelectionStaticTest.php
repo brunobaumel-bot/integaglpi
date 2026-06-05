@@ -167,10 +167,18 @@ final class CentralEntitySelectionStaticTest extends TestCase
 
         self::assertStringContainsString('applyPiiGuard', $service);
         self::assertStringContainsString('SecurityPermissionService::RIGHT_VIEW_UNMASKED_PII', $service);
-        self::assertStringContainsString('SecurityAuditService::logPiiUnmaskedView', $service);
         self::assertStringContainsString("\$row['phone_e164'] = \$maskedPhone", $service);
+        self::assertStringContainsString("\$row['email_address'] = \$maskedEmail", $service);
+        self::assertStringContainsString("\$row['contact_profile_snapshot'][\$phoneKey] = \$maskedPhone", $service);
+        self::assertStringContainsString("\$row['profile_snapshot_json'] = json_encode", $service);
+        self::assertStringContainsString("\$row['profile_context'][\$phoneKey] = \$maskedPhone", $service);
+        self::assertStringContainsString("'whatsapp_e164'", $service);
+        self::assertStringContainsString("\$row['pii_unmasked'] = false", $service);
+        self::assertStringContainsString("\$row['pii_unmasked_available'] = \$canViewRawPii", $service);
         self::assertStringContainsString("\$row['profile_context']['email'] = \$maskedEmail", $service);
         self::assertStringContainsString('SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_VIEW_UNMASKED_PII)', $service);
+        self::assertStringNotContainsString('SecurityAuditService::logPiiUnmaskedView', $service);
+        self::assertStringNotContainsString("if (!\$canViewRawPii) {\n            \$row['phone_e164'] = \$maskedPhone", $service);
         self::assertStringNotContainsString('$assignedUserId === $currentUserId', $service);
         self::assertStringContainsString('data-phone="<?= $this->escape($maskedPhone); ?>"', $template);
         self::assertStringNotContainsString("!empty(\$row['pii_unmasked']) ? \$phone : \$maskedPhone", $template);

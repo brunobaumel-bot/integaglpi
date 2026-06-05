@@ -10,7 +10,6 @@ import {
   createExternalResearchPreviewController,
   createSmartHelpController,
   createTechnicalSummaryController,
-  neutralizeResidualPii,
   scrubSummaryFabrications,
 } from '../src/controllers/ai.controller.js';
 
@@ -169,31 +168,26 @@ describe('AI controller endpoints', () => {
     expect(out.toLowerCase()).toContain('sincronização do ad');
   });
 
-  it('POST technical-summary neutralizes residual name/company/placeholders (smoke case)', async () => {
+  it('POST technical-summary neutralizes residual name/company/placeholders and keeps AD sync terms', async () => {
     const summarizer = {
       generate: vi.fn(async () => (
-        'O [nome removido], da empresa Etica Informatica, relata um problema de sync do AD '
-        + 'com urgência. [nome: [nome]] Ainda faltam detalhes técnicos.'
+        'O [nome removido], representante da empresa Ethica Informática, realizou um teste do sistema via WhatsApp, '
+        + 'relatando que está recebendo a mensagem de erro "sync do AD falhou".'
       )),
     };
     const res = await request(app('/ts', 'post', createTechnicalSummaryController(summarizer as never)))
-      .post('/ts').send({ ticket_id: 7, context: 'bruno baumel etica informatica problemas de sync do ad urgencia' });
+      .post('/ts').send({
+        ticket_id: 7,
+        context: 'erro de sync do AD falhou; validar Active Directory, DNS, NTP e replicacao',
+      });
     expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
     const out = String(res.body.technical_summary);
-    expect(out).not.toMatch(/Etica/i);
-    expect(out).not.toMatch(/Inform[aá]tica/i);
-    expect(out).not.toContain('[nome');
-    expect(out).not.toMatch(/\[nome removido\]/i);
-    expect(out).not.toMatch(/da empresa/i);
-    // Technical signal preserved.
-    expect(out.toLowerCase()).toContain('sync do ad');
-    expect(out.toLowerCase()).toContain('urgência');
-  });
-
-  it('neutralizeResidualPii strips company + labeled placeholders, keeps technical text', () => {
-    const out = neutralizeResidualPii('O [nome removido], da empresa Etica Informatica, problema de sync do AD. [nome: [nome]]');
-    expect(out).not.toMatch(/Etica|Inform[aá]tica|\[nome|da empresa/i);
-    expect(out.toLowerCase()).toContain('sync do ad');
+    expect(out).not.toMatch(/Ethica|Inform[aá]tica/i);
+    expect(out).not.toMatch(/\[nome|nome removido/i);
+    expect(out).not.toMatch(/representante da empresa|cliente da empresa/i);
+    expect(out).toMatch(/Foi relatado|Foi informado|O solicitante relatou/i);
+    expect(out).toMatch(/sync do AD|Active Directory/i);
   });
 
   it('scrubSummaryFabrications keeps GLPI when it IS in the conversation', async () => {

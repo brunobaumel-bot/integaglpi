@@ -12,13 +12,13 @@ error_log('[integaglpi][action][REQUEST] method=' . ($_SERVER['REQUEST_METHOD'] 
 
 Session::checkLoginUser();
 
-function plugin_integaglpi_ticket_action_json(array $payload, int $statusCode): never
+function plugin_integaglpi_ticket_action_json(array $payload, int $statusCode, bool $includeCsrfToken = true): never
 {
     // Always hand the caller a FRESH, unconsumed CSRF token. GLPI CSRF tokens are
     // one-time use: the SmartHelp JS now performs a read-only GET preflight before
     // the manual POST, and also refreshes panel.dataset.csrf after every response.
     // CSRF is NOT weakened: validation still runs on every POST below.
-    if (!array_key_exists('csrf_token', $payload)) {
+    if ($includeCsrfToken && !array_key_exists('csrf_token', $payload)) {
         try {
             $payload['csrf_token'] = Plugin::getCsrfToken();
         } catch (\Throwable $e) {
@@ -122,7 +122,7 @@ if (strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET')) !== 'POST') {
         'ok' => false,
         'error' => 'method_not_allowed',
         'message' => __('Only POST requests are allowed.', 'glpiintegaglpi'),
-    ], 405);
+    ], 405, false);
 }
 
 $ticketId = (int) ($_POST['ticket_id'] ?? 0);
@@ -218,6 +218,15 @@ if (in_array($action, $aiAssistActions, true)) {
     }
     if ($action === 'kb_feedback') {
         try {
+            $ticket = new \Ticket();
+            if (!$ticket->getFromDB($ticketId) || !$ticket->can($ticketId, READ)) {
+                plugin_integaglpi_ticket_action_json([
+                    'ok' => false,
+                    'error' => 'permission_denied',
+                    'error_type' => 'permission_denied',
+                    'message' => __('Chamado não encontrado ou sem permissão.', 'glpiintegaglpi'),
+                ], 403);
+            }
             $kbCandidateId = (int) ($_POST['kb_candidate_id'] ?? 0);
             $glpiKnowbaseitemId = (int) ($_POST['glpi_knowbaseitem_id'] ?? 0);
             $helpful = ($_POST['helpful'] ?? '') === '1' || ($_POST['helpful'] ?? '') === 'true';
@@ -255,6 +264,15 @@ if (in_array($action, $aiAssistActions, true)) {
     }
     if ($action === 'suggest_kb') {
         try {
+            $ticket = new \Ticket();
+            if (!$ticket->getFromDB($ticketId) || !$ticket->can($ticketId, READ)) {
+                plugin_integaglpi_ticket_action_json([
+                    'ok' => false,
+                    'error' => 'permission_denied',
+                    'error_type' => 'permission_denied',
+                    'message' => __('Chamado não encontrado ou sem permissão.', 'glpiintegaglpi'),
+                ], 403);
+            }
             plugin_integaglpi_ticket_action_json(['ok' => true, 'result' => $smartHelp->suggestKb($ticketId)], 200);
         } catch (\Throwable $e) {
             plugin_integaglpi_ticket_ai_error_json($action, $e);

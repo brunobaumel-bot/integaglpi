@@ -309,9 +309,14 @@ final class NotificationService
         }, 'ticket_pending', $ticketId);
     }
 
-    public function sendTechnicianAssigned(int $ticketId, int $technicianId, string $conversationId): void
+    public function sendTechnicianAssigned(
+        int $ticketId,
+        int $technicianId,
+        string $conversationId,
+        ?int $previousTechnicianId = null
+    ): void
     {
-        $this->safeNotify(function () use ($ticketId, $technicianId, $conversationId): void {
+        $this->safeNotify(function () use ($ticketId, $technicianId, $conversationId, $previousTechnicianId): void {
             $conversationId = trim($conversationId);
             if ($ticketId <= 0 || $technicianId <= 0 || $conversationId === '') {
                 return;
@@ -336,16 +341,19 @@ final class NotificationService
                 'technician_id' => $technicianId,
             ]);
 
+            $previousKeyPart = $previousTechnicianId !== null && $previousTechnicianId > 0
+                ? (string) $previousTechnicianId
+                : 'none';
+
             $this->sendOnce(
                 $ticketId,
                 $conversation,
                 self::EVENT_TECHNICIAN_ASSIGNED,
                 (string) $technicianId,
-                // Product rule: send at most one assignment notification per
-                // technician for the same conversation. A reopen + same
-                // technician intentionally reuses this key and is skipped by
-                // idempotency; a different technician gets a different key.
-                'notify_ticket_assigned_' . $ticketId . '_' . $conversationId . '_' . $technicianId,
+                // Idempotent per ownership transition. Duplicate clicks for the
+                // same transition are skipped, but assigning back to a previous
+                // technician after a transfer still notifies the customer.
+                'notify_ticket_assigned_' . $ticketId . '_' . $conversationId . '_' . $previousKeyPart . '_' . $technicianId,
                 sprintf('O técnico %s assumiu seu atendimento no chamado #%d.', $technicianName, $ticketId)
             );
         }, 'technician_assigned', $ticketId);

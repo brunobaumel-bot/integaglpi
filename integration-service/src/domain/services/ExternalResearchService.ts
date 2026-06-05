@@ -1,6 +1,7 @@
 import { buildExternalResearchCandidate } from '../../externalResearch/candidateBuilder.js';
 import { sanitizeExternalResearchPrompt } from '../../externalResearch/sanitizer.js';
 import { validateExternalResearchSource } from '../../externalResearch/sourceValidator.js';
+import { neutralizeSmartHelpPiiText } from './PiiNeutralizationService.js';
 import type {
   ExternalResearchCandidate,
   ExternalResearchSourceInput,
@@ -107,31 +108,6 @@ export class ExternalResearchService {
     return ExternalResearchService.RESIDUAL_PII.test(text);
   }
 
-  /** Company phrases the upstream sanitizer (no societary suffix) may miss. */
-  private static readonly COMPANY_PHRASES: RegExp[] = [
-    /\bd[ao]\s+empresa\s+[^,.;:]+/giu,
-    /\bempresa\s+informada\s*[:\-]?\s*[^,.;:]+/giu,
-    /\bempresa\s+[A-ZÀ-Ý][\p{L}\p{N}.&\- ]{1,40}/gu,
-    /\b[A-ZÀ-Ý][\p{L}\p{N}]+\s+inform[aá]tica\b/giu,
-  ];
-
-  /**
-   * Neutralize residual company phrases + labeled placeholders that survive the
-   * sanitizer, so the cloud-safe text reads as neutral technical prose ("O solicitante",
-   * "em ambiente corporativo") and never carries a name/company/placeholder token.
-   */
-  private neutralizeResidual(text: string): string {
-    let t = String(text ?? '');
-    for (const re of ExternalResearchService.COMPANY_PHRASES) {
-      t = t.replace(re, 'em ambiente corporativo');
-    }
-    t = t.replace(/\[[^[\]]*\]/g, '').replace(/\[[^[\]]*\]/g, '');
-    t = t.replace(/\bO\s+,/g, 'O solicitante,').replace(/\bA\s+,/g, 'O solicitante,');
-    t = t.replace(/\b[Cc]liente\s+(?=[,.;:]|$)/g, 'o solicitante ');
-    t = t.replace(/\s{2,}/g, ' ').replace(/\s+([,.;:])/g, '$1').replace(/([,;:])\1+/g, '$1');
-    return t.replace(/^[\s,;:.]+/, '').trim();
-  }
-
   /**
    * Build a CLOUD-SAFE technical context from the technician's local summary.
    *
@@ -158,10 +134,11 @@ export class ExternalResearchService {
   } {
     const pass1 = sanitizeExternalResearchPrompt(String(summary ?? ''));
     const pass2 = sanitizeExternalResearchPrompt(pass1.sanitizedText);
-    // Neutralize residual company/placeholder text the sanitizer leaves behind.
-    const neutral = this.neutralizeResidual(pass2.sanitizedText);
-    const finalText = neutral.slice(0, ExternalResearchService.CLOUD_SAFE_MAX_CHARS).trim();
-    const detectedKinds = [...new Set([...pass1.detectedKinds, ...pass2.detectedKinds])].sort();
+    const neutral = neutralizeSmartHelpPiiText(pass2.sanitizedText);
+    const pass3 = sanitizeExternalResearchPrompt(neutral);
+    const finalText = pass3.sanitizedText.slice(0, ExternalResearchService.CLOUD_SAFE_MAX_CHARS).trim();
+    const removedKinds = [...new Set([...pass1.detectedKinds, ...pass2.detectedKinds, ...pass3.detectedKinds])].sort();
+    const detectedKinds = [...new Set(pass3.detectedKinds)].sort();
     const residual = this.residualPiiPresent(finalText);
     return {
       cloudSafeContext: finalText,
@@ -170,9 +147,9 @@ export class ExternalResearchService {
       // block-on-detected: strict legacy mode (any detected kind blocks).
       safeForCloudStrict: detectedKinds.length === 0 && finalText !== '',
       detectedKinds,
-      removedKinds: detectedKinds,
+      removedKinds,
       blockedReason: residual ? 'RESIDUAL_PII_AFTER_REWRITE' : (finalText === '' ? 'EMPTY_AFTER_REWRITE' : null),
-      payloadHash: pass2.anonymizedPayloadHash,
+      payloadHash: pass3.anonymizedPayloadHash,
       charCount: finalText.length,
       source: 'summary_rewrite',
     };

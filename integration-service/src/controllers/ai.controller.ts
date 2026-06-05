@@ -22,6 +22,7 @@ import type { CoachingService } from '../domain/services/CoachingService.js';
 import type { FeedbackService } from '../domain/services/FeedbackService.js';
 import type { CloudAuditRepository } from '../repositories/postgres/PostgresCloudAuditRepository.js';
 import { logger } from '../infra/logger/logger.js';
+import { neutralizeSmartHelpPiiText } from '../domain/services/PiiNeutralizationService.js';
 
 function intOrNull(value: unknown): number | null {
   const n = parseInt(String(value ?? ''), 10);
@@ -56,36 +57,6 @@ const SUMMARY_FABRICATION_GUARD: Array<{ phrase: RegExp; needs: RegExp }> = [
   { phrase: /\bregistro\s+ou\s+atualiza[çc][ãa]o\s+de\s+informa[çc][õo]es\b/gi, needs: /\bregistro|atualiza[çc]/i },
   { phrase: /\bprocessamento\s+dos\s+registros\b/gi, needs: /\bprocessamento|registro/i },
 ];
-
-/**
- * Neutralizes RESIDUAL person/company constructions and labeled placeholders that the
- * upstream sanitizer leaves behind (e.g. "O [nome removido], da empresa Etica
- * Informatica", "[nome: [nome]]"). These still read as PII to the cloud guard. We strip
- * the company phrase, drop labeled bracket placeholders entirely and restore a neutral
- * grammatical subject — producing cloud-ready technical prose.
- */
-const COMPANY_PHRASES: RegExp[] = [
-  /\bd[ao]\s+empresa\s+[^,.;:]+/giu,
-  /\bempresa\s+informada\s*[:\-]?\s*[^,.;:]+/giu,
-  /\bempresa\s+[A-ZÀ-Ý][\p{L}\p{N}.&\- ]{1,40}/gu,
-  /\b[A-ZÀ-Ý][\p{L}\p{N}]+\s+inform[aá]tica\b/giu,
-];
-
-export function neutralizeResidualPii(text: string): string {
-  let t = String(text ?? '');
-  for (const re of COMPANY_PHRASES) {
-    t = t.replace(re, 'em ambiente corporativo');
-  }
-  // Remove labeled bracket placeholders, twice to catch nested "[nome: [nome]]".
-  t = t.replace(/\[[^[\]]*\]/g, '');
-  t = t.replace(/\[[^[\]]*\]/g, '');
-  // Restore a neutral subject where a placeholder left a dangling article.
-  t = t.replace(/\bO\s+,/g, 'O solicitante,').replace(/\bA\s+,/g, 'O solicitante,');
-  t = t.replace(/\b[Cc]liente\s+(?=[,.;:]|$)/g, 'o solicitante ');
-  // Whitespace / dangling-punctuation cleanup.
-  t = t.replace(/\s{2,}/g, ' ').replace(/\s+([,.;:])/g, '$1').replace(/([,;:])\1+/g, '$1');
-  return t.replace(/^[\s,;:.]+/, '').trim();
-}
 
 export function scrubSummaryFabrications(summary: string, context: string): string {
   const ctx = String(context ?? '').toLowerCase();
@@ -129,8 +100,8 @@ export function createTechnicalSummaryController(summarizer: TechnicalSummarizer
     }
     try {
       const raw = (await summarizer.generate({ ticketId, context })).trim();
-      // Strip fabricated context, then neutralize residual person/company/placeholders.
-      const summary = neutralizeResidualPii(scrubSummaryFabrications(raw, context));
+      // Strip fabricated context and neutralize residual person/company prose.
+      const summary = neutralizeSmartHelpPiiText(scrubSummaryFabrications(raw, context));
       if (summary === '') {
         return response.status(200).json({
           ok: false,

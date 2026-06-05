@@ -275,7 +275,9 @@ describe('ExternalResearchService.rewriteCloudSafe (cloud-safe summary rewrite)'
     expect(out.cloudSafeContext).not.toContain('123.456.789');
     expect(out.cloudSafeContext).not.toContain('99999-8888');
     expect(out.cloudSafeContext).not.toContain('João da Silva');
-    expect(out.detectedKinds.length).toBeGreaterThan(0);
+    expect(out.cloudSafeContext).not.toContain('2112319359');
+    expect(out.detectedKinds).toEqual([]);
+    expect(out.removedKinds.length).toBeGreaterThan(0);
     expect(out.source).toBe('summary_rewrite');
     // The cloud-safe text keeps the technical signal.
     expect(out.cloudSafeContext.toLowerCase()).toContain('office');
@@ -292,14 +294,23 @@ describe('ExternalResearchService.rewriteCloudSafe (cloud-safe summary rewrite)'
     expect(dirty.cloudSafeContext).not.toMatch(/alguem@dominio\.com\.br/i);
   });
 
-  it('rewriteCloudSafe neutralizes residual company/placeholders so a clean summary is cloud-safe', async () => {
-    const out = svc.rewriteCloudSafe(
-      'O [nome removido], da empresa Etica Informatica, relata problema de sync do AD com urgência.',
-    );
-    expect(out.cloudSafeContext).not.toMatch(/Etica|Inform[aá]tica|\[nome|da empresa/i);
-    expect(out.cloudSafeContext.toLowerCase()).toContain('sync do ad');
-    // Neutral technical text must NOT be blocked as residual PII.
-    expect(out.safeForCloudResidual).toBe(true);
+  it('rewriteCloudSafe neutralizes company/name placeholder variants before the residual PII guard', async () => {
+    const cases = [
+      'O [nome removido], representante da empresa Ethica Informática, realizou um teste do sistema via WhatsApp, relatando que está recebendo a mensagem de erro "sync do AD falhou".',
+      'O [nome: [nome]], representante da empresa Ethica Informática, está com erro de sync do AD.',
+      'O cliente da Ethica Informática está recebendo erro "sync do AD falhou". Empresa informada: Ethica Informática. Nome informado: Bruno.',
+    ];
+
+    for (const input of cases) {
+      const out = svc.rewriteCloudSafe(input);
+      expect(out.cloudSafeContext).not.toMatch(/Ethica|Inform[aá]tica/i);
+      expect(out.cloudSafeContext).not.toMatch(/\[nome|nome removido|\[empresa\]|\[telefone\]|\[email\]/i);
+      expect(out.cloudSafeContext).not.toMatch(/representante da empresa|cliente da empresa/i);
+      expect(out.cloudSafeContext).toMatch(/sync do AD|Active Directory/i);
+      expect(out.safeForCloudResidual).toBe(true);
+      expect(out.detectedKinds).toEqual([]);
+      expect(out.blockedReason).toBeNull();
+    }
   });
 
   it('caps the cloud-safe context length and never returns raw beyond the cap', async () => {

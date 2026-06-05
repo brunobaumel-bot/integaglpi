@@ -445,8 +445,13 @@ describe('PHP Attendance Center pre-ticket conversations', () => {
     expect(hook).not.toContain('itilcategories_id');
     expect(hook).not.toContain('$ticket->input =');
     expect(hook).not.toContain('return false');
-    expect(ticketTab).toContain('js-integaglpi-ticket-transfer-get');
-    expect(ticketTab).not.toContain('<form method="get" action="<?= $this->escape($actionBaseUrl); ?>">');
+    expect(ticketTab).not.toContain('js-integaglpi-ticket-transfer-get');
+    expect(ticketTab).not.toContain("params.set('debug_get', '1')");
+    expect(ticketTab).not.toContain('$buildDebugUrl');
+    expect(ticketTab).toContain('method="post" action="<?= $this->escape($actionBaseUrl); ?>"');
+    expect(ticketTab).toContain('name="whatsapp_action" value="transfer"');
+    expect(ticketTab).toContain('name="whatsapp_action" value="close"');
+    expect(ticketTab).toContain('name="whatsapp_action" value="reopen"');
   });
 
   it('renders WhatsApp 24h window guidance and delivery status without Meta token storage', async () => {

@@ -223,3 +223,319 @@ Arquivos alterados nesta fase:
 - `docs/production_reports_regression_audit_execution_report.md`
 
 Decisão: **não fechar GO_READY** até aplicar a parte PHP no plugin HML publicado e repetir T03–T23 com massa `AUDIT-*`.
+
+---
+
+## 10. Rerun após publicação PHP HML — 2026-06-04
+
+Phase: `integaglpi_v8_hml_log_hygiene_and_ui_audit_fix_001_rerun`.
+
+Resultado: **PARTIAL**.
+
+O GLPI HML autenticou normalmente e a Central viva passou a não expor o telefone autorizado no HTML/DOM,
+incluindo `data-phone`. Os logs novos do `integration-service` continuam redigidos. Ainda não há massa `AUDIT-*`
+no PostgreSQL HML para executar mutações reais de UI sem tocar dados não sintéticos, e o endpoint JSON
+`central.refresh.php` ainda retornou o telefone bruto no payload XHR, embora o DOM renderizado use máscara.
+
+Evidências:
+
+| Item | Resultado |
+|---|---|
+| Ambiente | `GLPIv5`; HML `integration/postgres/redis` UP; `prod-*` ignorados |
+| `/health` | `ok=true`, postgres `true`, redis `ready` |
+| GLPI UI | Login HML PASS; Central HTTP 200 sem redirect para login |
+| Central DOM | `raw_e164_in_html=false`, `raw_plain_in_html=false`, `raw_e164_visible=false`, `raw_plain_visible=false` |
+| Central markers | JS live contém `element.setAttribute('data-phone', maskedPhone);` e não contém `data-phone`, `phone` bruto |
+| Central refresh | HTTP 200 JSON `ok=true`, 1 row; **ressalva**: payload XHR ainda contém telefone bruto |
+| Logs novos | `raw_test_phone_occurrences=0`, `raw_test_e164_occurrences=0`, `authorization_value_occurrences=0`, `app_token_prefix_occurrences=0` |
+| Redis/dead letter | locks `0`, dead_letter `0` |
+| Massa AUDIT-* | inexistente no PostgreSQL HML |
+| IA local | `glpi-integaglpi-ai` ausente |
+| AI pilot | `/internal/glpi/ai-pilot/status` HTTP 200, cloud disabled, provider disabled, budget blocked |
+
+Matriz UI/IA:
+
+| Teste | Status | Evidência |
+|---|---|---|
+| T03 Central | **PASS parcial** | Central HTTP 200, refresh `ok=true`, locks Redis 0 |
+| T04 Categoria/tempo | INCONCLUSIVE | requer conversa/ticket `AUDIT-*` selecionável |
+| T05 Salvar/403 | **PASS parcial** | POST `central.action.php` com CSRF inválido retornou 403 |
+| T06 Técnico exibido | **PASS parcial** | Central contém rótulos de técnico/responsável; sem validação em `AUDIT-*` |
+| T07 Transferência | INCONCLUSIVE | técnicos endpoint `ok=true` com 50 usuários; transferência real não executada sem `AUDIT-*` |
+| T08 Notificação atribuição | INCONCLUSIVE | requer claim/transfer sintético |
+| T09 Telefone mascarado | **PASS DOM / RESSALVA XHR** | HTML/DOM sem telefone bruto; refresh JSON ainda traz telefone bruto |
+| T11 Reabertura | INCONCLUSIVE | requer ticket/conversa `AUDIT-*` fechado |
+| T12 Histórico ao responder | **PASS guard/parcial** | `central.messages.php` sem contexto retorna 400 `invalid_request`; resposta real não enviada |
+| T15 Abas Conversas vs Chamados | **PASS parcial** | Central renderiza jornadas/abas |
+| T19 Abertura manual | INCONCLUSIVE | requer massa sintética dedicada |
+| T21 Sessão/CSRF | **PASS** | login OK e CSRF inválido bloqueado |
+| T22 SmartHelp/IA | **PARTIAL** | SmartHelp token OK e contexto inválido bloqueado; IA local container ausente/provider disabled |
+| T23 Menus/drilldowns | **PASS parcial** | Technical Health, Supervisor, Security e Audit HTTP 200; supervisor com SLA/Inatividade/drilldowns |
+
+Decisão: **não promover para GO_READY**. O blocker de logs novos foi fechado, mas ainda restam:
+
+1. remover telefone bruto do payload JSON `central.refresh.php` para técnico comum;
+2. criar massa `AUDIT-*` dedicada para concluir mutações reais de UI;
+3. habilitar/validar IA local ou aceitar formalmente T22 como partial com provider disabled.
+
+---
+
+## 11. Correção preparada para PII no refresh da Central — 2026-06-04
+
+Phase: `integaglpi_v8_central_refresh_pii_audit_mass_ai_smoke_fix_001`.
+
+Resultado: **PARTIAL / publish bloqueado por permissão HML**.
+
+O endpoint publicado `central.refresh.php` foi autenticado em HML com credencial segura e confirmou o vazamento
+residual no JSON (`raw_e164_test=true`, `raw_plain_test=true`). A correção local altera o contrato do
+`AttendanceCenterService::applyPiiGuard()` para mascarar `phone_e164` e `email_address` em todos os payloads da
+Central, inclusive quando o perfil possui direito de PII. O campo `pii_unmasked_available` passa a indicar apenas
+que o perfil teria direito para uma futura visualização explícita, sem entregar PII crua no refresh.
+
+Evidências:
+
+| Item | Resultado |
+|---|---|
+| HML auth | PASS; login em `/front/central.php` sem imprimir usuário/senha/cookie |
+| Refresh publicado | HTTP 200; ainda contém telefone cru antes do publish do patch |
+| Patch local | `phone_e164`, `email_address`, snapshot e profile_context sempre mascarados na Central |
+| Identificadores de ação | Preservados por `conversation_id`/`ticket_id`; nenhuma ação passa a depender de telefone |
+| Sync para projeto remoto | `AttendanceCenterService.php` e teste copiados para `/home/azureuser/projeto` |
+| Publicação plugin HML | Bloqueada: `/home/glpi.eticainformatica.com.br/public_html/plugins/integaglpi` sem leitura/escrita para `azureuser`; `sudo -n` exige senha |
+| Redis | locks `0` |
+| Logs novos | Sem ocorrência do telefone autorizado, E.164 autorizado ou valor de Authorization em logs novos |
+
+Validações:
+
+- `php -l integaglpi/src/Service/AttendanceCenterService.php`: PASS local.
+- `php -l integaglpi/tests/CentralEntitySelectionStaticTest.php`: PASS local.
+- `php8.3 -l /home/azureuser/projeto/integaglpi/src/Service/AttendanceCenterService.php`: PASS remoto.
+- `php8.3 -l /home/azureuser/projeto/integaglpi/tests/CentralEntitySelectionStaticTest.php`: PASS remoto.
+- `cd integration-service && npx tsc --noEmit`: PASS.
+- `cd integration-service && npx vitest run tests/logHygieneSanitizer.test.ts tests/sanitizeUrlForLog.test.ts`: 16 PASS.
+- `cd integration-service && npx vitest run`: 109 arquivos / 909 testes PASS.
+- `git diff --check`: PASS, com aviso esperado de CRLF no Windows.
+
+Decisão: **não fechar GO_READY** até publicar o patch PHP no plugin HML, limpar cache GLPI e repetir o check
+autenticado de `central.refresh.php` confirmando `raw_e164_test=false` e `raw_plain_test=false`.
+
+---
+
+## 12. Publicação HML e revalidação do refresh da Central — 2026-06-04
+
+Phase: `integaglpi_v8_central_refresh_pii_audit_mass_ai_smoke_fix_001`.
+
+Resultado: **PARTIAL**.
+
+Após liberação de `sudo` sem senha para `azureuser`, o patch PHP foi publicado no plugin HML com backup,
+lint e limpeza de cache GLPI. A validação autenticada do `central.refresh.php` passou: o JSON não contém o telefone
+autorizado em formato E.164, compacto ou sem máscara, incluindo campos derivados como `contact_profile_snapshot`
+e `profile_snapshot_json`.
+
+Evidências:
+
+| Item | Resultado |
+|---|---|
+| Backup HML | `/home/azureuser/backups/integaglpi_central_refresh_pii_snapshot_20260604_133911` |
+| Arquivo publicado | `plugins/integaglpi/src/Service/AttendanceCenterService.php` |
+| Lint publicado | `php8.3 -l`: PASS |
+| Cache GLPI | `/home/glpi.eticainformatica.com.br/public_html/files/_cache` limpo |
+| Refresh autenticado | HTTP 200, `rows=1`, `masked_phone=true`, `conversation_id=true`, `ticket_id=true` |
+| PII no refresh | `raw_e164=false`, `raw_plain=false`, `raw_compact=false`, `contaminated_field_count=0` |
+| Massa sintética | Ticket `AUDIT-UI-*` criado via API GLPI HML; conversa `AUDIT-CONV-*` vinculada no PostgreSQL |
+| Busca Central | `search=2112319361` retorna 1 row e encontra a conversa sintética sem telefone cru |
+| Logs novos | Sem telefone autorizado, E.164 autorizado, compact phone, bearer ou Authorization em logs novos |
+| Redis/dead letter | locks `0`, dead_letter `0` |
+
+Matriz UI/IA após publicação:
+
+| Teste | Status | Evidência |
+|---|---|---|
+| T03 Central | PASS | Central HTTP 200; refresh por ticket retorna conversa `AUDIT-*` sem PII |
+| T04 Categoria/tempo | PARTIAL | Massa `AUDIT-*` tem entidade/fila; validação visual detalhada não executada |
+| T05 Salvar/403 | PASS | POST com CSRF inválido em `central.action.php` retornou 403 |
+| T06 Técnico exibido | PARTIAL | Endpoint Central e runtime OK; claim não executado por falta de direito do usuário de teste |
+| T07 Transferência | PARTIAL | `central.technicians.php` HTTP 200 com 50 técnicos; transferência real não executada por RBAC/gate |
+| T08 Notificação atribuição | INCONCLUSIVE | Claim/transfer real não executado; evita envio WhatsApp fora do necessário |
+| T09 Telefone mascarado | PASS | HTML anterior sem PII; JSON atual sem telefone cru e sem campos contaminados |
+| T11 Reabertura | INCONCLUSIVE | Requer fechar/reabrir ticket sintético; não executado nesta rodada |
+| T12 Histórico ao responder | INCONCLUSIVE | Resposta real não enviada para evitar outbound desnecessário |
+| T15 Abas Conversas vs Chamados | PARTIAL | Central e refresh OK; inspeção visual completa não executada |
+| T19 Abertura manual | PARTIAL | Ticket sintético criado via GLPI API e conversa vinculada; abertura manual UI não executada |
+| T21 Sessão/CSRF | PASS | Login HML OK; CSRF inválido bloqueado |
+| T22 SmartHelp/IA | PARTIAL | `smart.help.php?csrf_token=1` HTTP 200; `summarize_ticket` no ticket sintético retornou OK; AI runtime segue provider disabled/hard budget block conforme health |
+| T23 Menus/drilldowns | PASS parcial | Technical Health, Supervisor, Audit e Security HTTP 200 |
+
+Validações:
+
+- `php -l integaglpi/src/Service/AttendanceCenterService.php`: PASS.
+- `php -l integaglpi/tests/CentralEntitySelectionStaticTest.php`: PASS.
+- `php -l integaglpi/front/central.refresh.php`: PASS.
+- `php -l integaglpi/templates/central.php`: PASS.
+- `php8.3 -l` no arquivo publicado: PASS.
+- `cd integration-service && npx tsc --noEmit`: PASS.
+- `cd integration-service && npx vitest run tests/logHygieneSanitizer.test.ts tests/sanitizeUrlForLog.test.ts`: 16 PASS.
+- `cd integration-service && npx vitest run`: 109 arquivos / 909 testes PASS.
+- `git diff --check`: PASS, com aviso esperado de CRLF no Windows.
+
+Decisão: **não promover para GO_READY ainda**. O blocker de PII no refresh foi fechado. Restam apenas ressalvas de
+smoke operacional dependentes de perfil com permissões suficientes para claim/transfer/reopen/reply e da decisão
+formal sobre T22 com provider IA desabilitado.
+
+---
+
+## 13. SmartHelp neutralização PII residual — 2026-06-04
+
+Phase: `integaglpi_v8_smarthelp_neutral_summary_cloud_preview_fix_001`.
+
+Resultado: **PARTIAL**.
+
+Correção local implementada para neutralizar sujeito identificado, empresa real, placeholders de nome, ticket id e
+patrimônio/etiqueta antes do resumo técnico, busca/sugestão local e preview cloud-safe do SmartHelp. Os exemplos de
+regressão com `representante da empresa`, `cliente da empresa` e `[nome: [nome]]` foram cobertos por testes. O
+PII Guard continua ativo e o preview limpo não fica bloqueado por `name`.
+
+Evidências locais:
+
+| Item | Resultado |
+|---|---|
+| Resumo técnico Node | `neutralizeSmartHelpPiiText(scrubSummaryFabrications(...))` aplicado no controller |
+| Preview cloud-safe | `rewriteCloudSafe()` neutraliza depois da sanitização dupla e roda PII Guard residual no texto final |
+| SmartHelp PHP | `sanitizeContext()` aplica neutralização determinística antes de retornar contexto visível |
+| Termos técnicos | `sync do AD` e `Active Directory` preservados |
+| Produção | Não tocada |
+
+Validações:
+
+- `php -l integaglpi/front/smart.help.php`: PASS.
+- `php -l integaglpi/src/Service/SmartHelpService.php`: PASS.
+- `php -l integaglpi/templates/ticket_tab.php`: PASS.
+- `cd integration-service && npx tsc --noEmit`: PASS.
+- `cd integration-service && npx vitest run tests/aiControllerEndpoints.test.ts tests/externalResearchDynamic.test.ts tests/phpSmartHelpStatic.test.ts`: 66 PASS.
+- `cd integration-service && npx vitest run`: 109 arquivos / 908 testes PASS.
+- `git diff --check`: PASS, com aviso esperado de CRLF no Windows.
+
+HML smoke: **BLOCKED por conectividade**. Em 2026-06-04, `ssh -p 43422 azureuser@10.8.0.1` e
+`Test-NetConnection 10.8.0.1:43422` expiraram antes de autenticação. Nenhum rsync/rebuild/restart foi executado.
+
+Decisão: **não fechar GO_READY** até restabelecer VPN/SSH, publicar somente em HML, limpar cache GLPI e repetir:
+Resumo do chamado, Busca local, Pedir ajuda externa/preview e PII residual com o caso de regressão.
+
+---
+
+## 14. Smoke final UI mutável com fixture AUDIT dedicada — 2026-06-04
+
+Phase: `integaglpi_v8_final_ui_mutation_audit_fixture_smoke_001`.
+
+Resultado: **NO_GO**.
+
+Ambiente:
+
+| Item | Resultado |
+|---|---|
+| Host | `GLPIv5` HML |
+| Produção | Containers `prod-*` ignorados |
+| Node | `/health` OK |
+| PostgreSQL | `pg_isready` OK |
+| Redis | `PONG`; locks `0` |
+| dead_letter | `0` |
+| Chrome headless | Google Chrome `149.0.7827.53` |
+
+Fixture:
+
+| Objeto | Resultado |
+|---|---|
+| Entidade AUDIT | Criada, id `237` |
+| Grupo/fila AUDIT | Criado, id `9` |
+| Categoria AUDIT | Criada, id `454` |
+| Técnico A | Criado, id `809` |
+| Técnico B | Criado, id `810` |
+| Ticket AUDIT | Criado, id `2112319362` |
+| Ticket manual AUDIT | Criado, id `2112319363` |
+| Conversa AUDIT vinculada | Não criada por caminho seguro de runtime nesta rodada |
+| Telefone autorizado | Somente `41988334449` / `+5541988334449` |
+
+Resultados T04-T23:
+
+| Teste | Status | Evidência |
+|---|---|---|
+| T04 Categoria/tempo | PARTIAL | Categoria `454` persistida; update de `actiontime` via GLPI API retornou 403 |
+| T05 Salvar/403 | PARTIAL | Bloqueios 403 observados; fluxo UI válido completo não fechado por permissões da fixture |
+| T06 Técnico exibido | PARTIAL | Ticket_User A criado (`103411`, user `809`); validação visual Central não concluída |
+| T07 Transferência | FAIL | PUT Ticket_User A→B retornou 403; responsável permaneceu `809` |
+| T08 Notificação atribuição | PASS_CONTRACT_NO_OUTBOUND | Sem outbound WhatsApp executado; sem claim/transfer válido para notificar |
+| T11 Reabertura | FAIL | Reabertura plugin em conversa AUDIT real retornou sem atualizar runtime; update status via API retornou 403 |
+| T12 Histórico ao responder | PASS | Follow-up AUDIT criado no ticket `2112319362`, id `4209` |
+| T15 Abas Conversas vs Chamados | PARTIAL | Abas plugin carregam via GLPI AJAX; validação completa depende de conversa runtime segura |
+| T19 Abertura manual | PASS | Ticket manual `AUDIT-MANUAL-*` criado, id `2112319363` |
+| T21 Sessão/CSRF | PARTIAL | Login OK; 403 observado em ações não autorizadas; cenário sessão expirada não executado |
+| T22 SmartHelp/IA | PARTIAL | HTML da aba contém SmartHelp; Chrome headless não localizou painel após carregamento dinâmico |
+| T23 Menus/drilldowns | PARTIAL | Central, Technical Health, Events e Supervisor HTTP 200; SLA indica 404 no conteúdo |
+
+Rollback readiness:
+
+| Item | Resultado |
+|---|---|
+| Backup SQL atual | Existe: `.runtime/audit/backups/hml_integration_20260604_180956.sql` |
+| Tar plugin | Existe e lista `integaglpi/`, `hook.php`, CSS e `composer.json` |
+| `pg_restore --list` | Falhou em dump antigo: versão `1.15` não suportada pelo cliente local |
+| Restore real | Não executado; requer janela/ambiente isolado |
+
+Segurança:
+
+- Sem produção, sem `prod-*`, sem SQL destrutivo, sem commit e sem deploy.
+- Não houve envio WhatsApp por IA, mutação automática de ticket por IA ou KB autopublish.
+- Scan de logs recentes encontrou ocorrências do telefone autorizado sem redaction; `logs_without_pii=false`.
+
+Decisão: **NO_GO** até tratar os bloqueios de permissão/fluxo em T07/T11, concluir T22 visual e corrigir log redaction.
+
+---
+
+## 15. Pós-fix NO_GO blockers — HML — 2026-06-04
+
+Phase: `integaglpi_v8_final_no_go_blockers_fix_001`.
+
+Resultado: **PARTIAL**.
+
+Ambiente:
+
+| Item | Resultado |
+|---|---|
+| Host | `GLPIv5` HML |
+| Produção | Containers `prod-*` listados, mas ignorados |
+| Node HML | `/health` OK após rebuild/recreate do `glpi-integaglpi-integration` |
+| PostgreSQL HML | OK; fixture `AUDIT-RUNTIME-20260604162545` localizada |
+| Redis HML | Locks `0` |
+| dead_letter | `0` em status ativo |
+
+Correções publicadas em HML:
+
+| Arquivo | Resultado |
+|---|---|
+| `integaglpi/templates/ticket_tab.php` | SmartHelp read-only renderizado na aba `Contexto WhatsApp`; `php8.3 -l` PASS |
+| `integaglpi/src/Service/SmartHelpService.php` | Gate read-only aceita sessão GLPI autenticada; endpoint ainda valida CSRF e `Ticket::can(..., READ)`; `php8.3 -l` PASS |
+| `integaglpi/js/integaglpi.js` | Fallback global para SmartHelp em abas dinâmicas e remoção de alerts debug; publicado em HML |
+
+Resultados revalidados:
+
+| Teste | Status | Evidência |
+|---|---|---|
+| T07 Transferência | BLOCKED_PROFILE | `central.action.php` POST `transfer` retornou 403 `Acesso negado`; runtime permaneceu `809\|open` |
+| T11 Reabertura | BLOCKED_PROFILE | `ticket.whatsapp.action.php` POST `reopen` em `AUDIT-CONV-*` retornou 403; status permaneceu `closed\|closed` |
+| T22 SmartHelp/IA | PASS_ENDPOINT_AND_RENDER | Aba autenticada contém painel SmartHelp; `summarize_ticket`, `local_search`, `prepare_external_context` e `smart_external` retornaram 200/ok sem PII |
+| T23 Menus/drilldowns | PASS | `technical.health.php`, `audit.php`, `audit.php?view=events`, `supervisor.command.php`, `quality.dashboard.php?sla=risk` e `quality.dashboard.php?inactivity=autoclose_done` retornaram 200 sem 404 |
+| Logs sem PII | PASS_RECENT | Logs do `glpi-integaglpi-integration` desde a publicação: `PII_HITS=0`, `SECRET_HITS=0` |
+| Schema 044/045 | PASS | `glpi_plugin_integaglpi_kb_article_helpfulness` possui colunas esperadas; índices de messages/inactivity/helpfulness presentes |
+
+Validações locais:
+
+| Comando | Resultado |
+|---|---|
+| `php -l integaglpi/templates/ticket_tab.php` | PASS |
+| `php -l integaglpi/src/Service/SmartHelpService.php` | PASS |
+| `php -l integaglpi/js/integaglpi.js` | PASS |
+| `cd integration-service && npx tsc --noEmit` | PASS |
+| `cd integration-service && npx vitest run tests/phpSmartHelpStatic.test.ts tests/logHygieneSanitizer.test.ts` | 33 PASS |
+| `git diff --check` | PASS, apenas aviso CRLF esperado no Windows |
+
+Decisão: **PARTIAL**. T22, T23, Redis, dead-letter, schema e logs recentes estão corrigidos. T07/T11 continuam bloqueados pela permissão do usuário de smoke HML antes da mutação; os endpoints preservaram segurança e não alteraram runtime indevidamente. Para fechar GO, executar T07/T11 com perfil HML que possua `plugin_integaglpi` UPDATE/RBAC operacional ou ajustar explicitamente o perfil de teste.

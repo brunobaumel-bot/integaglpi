@@ -364,6 +364,58 @@ $renderManualWhatsappStart = function () use ($ticket, $manualWhatsapp): void {
                 <?php } ?>
             </div>
 
+            <?php if (\GlpiPlugin\Integaglpi\Service\SmartHelpService::canViewPanel()) { ?>
+                <div class="border rounded p-3 mt-3 mb-0 integaglpi-smart-help"
+                     data-ticket-id="<?= (int) $ticket->getID(); ?>"
+                     data-action-url="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/front/smart.help.php'); ?>"
+                     data-csrf="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getCsrfToken()); ?>">
+                    <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap mb-2">
+                        <strong><i class="ti ti-bulb me-1"></i><?= $this->escape(__('Ajuda Inteligente', 'glpiintegaglpi')); ?></strong>
+                        <div class="d-flex gap-2 flex-wrap">
+                            <button type="button" class="btn btn-sm btn-primary js-smart-help-summarize">
+                                <i class="ti ti-list-details me-1"></i><?= $this->escape(__('Resumo do chamado', 'glpiintegaglpi')); ?>
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-primary js-smart-help-local-search" disabled>
+                                <i class="ti ti-search me-1"></i><?= $this->escape(__('Busca local', 'glpiintegaglpi')); ?>
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-warning js-smart-help-external" disabled>
+                                <i class="ti ti-cloud-search me-1"></i><?= $this->escape(__('Pedir ajuda externa (nuvem)', 'glpiintegaglpi')); ?>
+                            </button>
+                            <span class="badge bg-secondary js-smart-help-status"><?= $this->escape(__('pronto', 'glpiintegaglpi')); ?></span>
+                        </div>
+                    </div>
+                    <div class="text-muted small mb-2">
+                        <?= $this->escape(__('Processo guiado somente leitura: gere o resumo, execute a busca local e só depois peça ajuda externa se necessário. Nada é enviado ao cliente nem altera o chamado automaticamente.', 'glpiintegaglpi')); ?>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label small mb-1" for="smart-help-context-summary-<?= (int) $ticket->getID(); ?>">
+                            <?= $this->escape(__('Resumo técnico sem dados pessoais', 'glpiintegaglpi')); ?>
+                        </label>
+                        <textarea class="form-control form-control-sm js-smart-help-technical-summary" id="smart-help-context-summary-<?= (int) $ticket->getID(); ?>" rows="2"></textarea>
+                        <div class="form-text js-smart-help-schema-status">
+                            <?= $this->escape(__('Aguardando validação local da KB e schema 044.', 'glpiintegaglpi')); ?>
+                        </div>
+                    </div>
+                    <div class="js-smart-help-articles small"></div>
+                    <div class="row g-2 mt-1">
+                        <div class="col-md-6">
+                            <div class="fw-bold small"><?= $this->escape(__('Checklist de diagnóstico', 'glpiintegaglpi')); ?></div>
+                            <ul class="small mb-0 js-smart-help-checklist"></ul>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="fw-bold small"><?= $this->escape(__('Perguntas sugeridas ao cliente', 'glpiintegaglpi')); ?></div>
+                            <ul class="small mb-0 list-unstyled js-smart-help-questions"></ul>
+                        </div>
+                    </div>
+                    <div class="mt-2 js-smart-help-local-suggestion"></div>
+                    <div class="mt-2 js-smart-help-cloud"></div>
+                    <div class="mt-2 small js-smart-help-message text-muted"></div>
+                    <div class="form-text mt-1">
+                        <?= $this->escape(__('Somente leitura: nada é enviado ao cliente nem altera o chamado automaticamente. Publicação na KB é manual.', 'glpiintegaglpi')); ?>
+                    </div>
+                </div>
+            <?php } ?>
+
             <?php if (!empty($whatsappWindow) && empty($whatsappWindow['is_open']) && trim((string) ($whatsappWindow['alert'] ?? '')) !== '') { ?>
                 <div class="alert alert-warning mt-3 mb-0">
                     <?= $this->escape((string) $whatsappWindow['alert']); ?>
@@ -878,14 +930,6 @@ if ($auditPanelOk) {
         $actionBaseUrl = \GlpiPlugin\Integaglpi\Plugin::getTicketActionUrl();
         $ticketIdForDebug = (int) $ticket->getID();
         $conversationIdForDebug = (string) ($runtime['conversation_id'] ?? '');
-        $debugBaseParams = [
-            'debug_get' => '1',
-            'ticket_id' => (string) $ticketIdForDebug,
-            'conversation_id' => $conversationIdForDebug,
-        ];
-        $buildDebugUrl = static function (array $params) use ($actionBaseUrl): string {
-            return $actionBaseUrl . '?' . http_build_query($params, '', '&', PHP_QUERY_RFC3986);
-        };
         ?>
         <?php if ($canClaim) { ?>
             <div class="col-md-4">
@@ -920,12 +964,11 @@ if ($auditPanelOk) {
                 <div class="card h-100">
                     <div class="card-header"><?= $this->escape(__('Transfer queue', 'glpiintegaglpi')); ?></div>
                     <div class="card-body">
-                        <div
-                            class="js-integaglpi-ticket-transfer-get"
-                            data-action-url="<?= $this->escape($actionBaseUrl); ?>"
-                            data-ticket-id="<?= (int) $ticketIdForDebug; ?>"
-                            data-conversation-id="<?= $this->escape((string) $conversationIdForDebug); ?>"
-                        >
+                        <form method="post" action="<?= $this->escape($actionBaseUrl); ?>" class="mb-0 js-integaglpi-critical-action-form">
+                            <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken(); ?>
+                            <input type="hidden" name="ticket_id" value="<?= (int) $ticketIdForDebug; ?>">
+                            <input type="hidden" name="conversation_id" value="<?= $this->escape((string) $conversationIdForDebug); ?>">
+                            <input type="hidden" name="whatsapp_action" value="transfer">
                             <select name="queue_id" class="form-select mb-2 js-integaglpi-wa-queue">
                                 <option value=""><?= $this->escape(__('Select a queue', 'glpiintegaglpi')); ?></option>
                                 <?php foreach ($queues as $queue) { ?>
@@ -937,54 +980,8 @@ if ($auditPanelOk) {
                                     </option>
                                 <?php } ?>
                             </select>
-                            <button type="button" class="btn btn-outline-primary js-integaglpi-ticket-transfer-get-submit"><?= $this->escape(__('Transferir', 'glpiintegaglpi')); ?></button>
-                        </div>
-                        <script>
-                            (function () {
-                                var box = document.currentScript ? document.currentScript.previousElementSibling : null;
-                                if (!box || !box.classList || !box.classList.contains('js-integaglpi-ticket-transfer-get')) {
-                                    return;
-                                }
-                                var button = box.querySelector('.js-integaglpi-ticket-transfer-get-submit');
-                                var select = box.querySelector('.js-integaglpi-wa-queue');
-                                if (!button || !select) {
-                                    return;
-                                }
-                                button.addEventListener('click', function () {
-                                    var queueId = select.value || '';
-                                    if (queueId === '') {
-                                        return;
-                                    }
-                                    var params = new URLSearchParams();
-                                    params.set('debug_get', '1');
-                                    params.set('ticket_id', box.dataset.ticketId || '');
-                                    params.set('conversation_id', box.dataset.conversationId || '');
-                                    params.set('whatsapp_action', 'transfer');
-                                    params.set('queue_id', queueId);
-                                    window.location.href = (box.dataset.actionUrl || '') + '?' + params.toString();
-                                });
-                            })();
-                        </script>
-
-                        <details class="mt-3">
-                            <summary class="small text-muted"><?= $this->escape(__('Outras opções de transferência', 'glpiintegaglpi')); ?></summary>
-                            <div class="d-flex flex-wrap gap-2 mt-2">
-                                <?php foreach ($queues as $queue) { ?>
-                                    <a
-                                        class="btn btn-sm btn-outline-primary"
-                                        href="<?= $this->escape($buildDebugUrl($debugBaseParams + [
-                                            'whatsapp_action' => 'transfer',
-                                            'queue_id' => (string) (int) ($queue['id'] ?? 0),
-                                        ])); ?>"
-                                    >
-                                        <?= $this->escape(sprintf(
-                                            __('Transferir para %s', 'glpiintegaglpi'),
-                                            (string) ($queue['name'] ?? (string) ($queue['id'] ?? ''))
-                                        )); ?>
-                                    </a>
-                                <?php } ?>
-                            </div>
-                        </details>
+                            <button type="submit" class="btn btn-outline-primary" data-loading-text="<?= $this->escape(__('Processando...', 'glpiintegaglpi')); ?>"><?= $this->escape(__('Transferir', 'glpiintegaglpi')); ?></button>
+                        </form>
                     </div>
                 </div>
             </div>
@@ -995,10 +992,13 @@ if ($auditPanelOk) {
                 <div class="card h-100">
                     <div class="card-header"><?= $this->escape(__('Close conversation', 'glpiintegaglpi')); ?></div>
                     <div class="card-body">
-                        <a
-                            class="btn btn-outline-danger"
-                            href="<?= $this->escape($buildDebugUrl($debugBaseParams + ['whatsapp_action' => 'close'])); ?>"
-                        ><?= $this->escape(__('Encerrar conversa', 'glpiintegaglpi')); ?></a>
+                        <form method="post" action="<?= $this->escape($actionBaseUrl); ?>" class="mb-0 js-integaglpi-critical-action-form">
+                            <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken(); ?>
+                            <input type="hidden" name="ticket_id" value="<?= (int) $ticketIdForDebug; ?>">
+                            <input type="hidden" name="conversation_id" value="<?= $this->escape((string) $conversationIdForDebug); ?>">
+                            <input type="hidden" name="whatsapp_action" value="close">
+                            <button type="submit" class="btn btn-outline-danger" data-loading-text="<?= $this->escape(__('Processando...', 'glpiintegaglpi')); ?>"><?= $this->escape(__('Encerrar conversa', 'glpiintegaglpi')); ?></button>
+                        </form>
                     </div>
                 </div>
             </div>
@@ -1010,10 +1010,13 @@ if ($auditPanelOk) {
                     <div class="card-header"><?= $this->escape(__('Reabrir atendimento', 'glpiintegaglpi')); ?></div>
                     <div class="card-body">
                         <p class="small text-muted mb-2"><?= $this->escape(__('A conversa está encerrada. Reabra para continuar respondendo o cliente.', 'glpiintegaglpi')); ?></p>
-                        <a
-                            class="btn btn-outline-primary"
-                            href="<?= $this->escape($buildDebugUrl($debugBaseParams + ['whatsapp_action' => 'reopen'])); ?>"
-                        ><?= $this->escape(__('Reabrir atendimento', 'glpiintegaglpi')); ?></a>
+                        <form method="post" action="<?= $this->escape($actionBaseUrl); ?>" class="mb-0 js-integaglpi-critical-action-form">
+                            <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken(); ?>
+                            <input type="hidden" name="ticket_id" value="<?= (int) $ticketIdForDebug; ?>">
+                            <input type="hidden" name="conversation_id" value="<?= $this->escape((string) $conversationIdForDebug); ?>">
+                            <input type="hidden" name="whatsapp_action" value="reopen">
+                            <button type="submit" class="btn btn-outline-primary" data-loading-text="<?= $this->escape(__('Processando...', 'glpiintegaglpi')); ?>"><?= $this->escape(__('Reabrir atendimento', 'glpiintegaglpi')); ?></button>
+                        </form>
                     </div>
                 </div>
             </div>
@@ -1313,6 +1316,70 @@ if ($isExternalConfigured && $runtime !== null && !$isClosed) {
     <div class="alert alert-warning mt-3 mb-0 js-integaglpi-ticket-reply-owner-gate">
         <strong><?= $this->escape(__('Resposta bloqueada', 'glpiintegaglpi')); ?></strong><br>
         <?= $this->escape($replyBlockedReason); ?>
+    </div>
+<?php } ?>
+
+<?php
+$smartHelpReadGateTicketId = (int) $ticket->getID();
+$smartHelpReadGateCsrf     = \GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
+$smartHelpReadGateVisible  = $isExternalConfigured
+    && $runtime !== null
+    && \GlpiPlugin\Integaglpi\Service\SmartHelpService::canViewPanel()
+    && (!\GlpiPlugin\Integaglpi\Plugin::canUpdate() || !$replyOwnedByCurrentUser);
+?>
+<?php if ($smartHelpReadGateVisible) { ?>
+    <div class="border rounded p-3 mt-3 mb-3 integaglpi-smart-help"
+         data-ticket-id="<?= (int) $smartHelpReadGateTicketId; ?>"
+         data-action-url="<?= $this->escape(\GlpiPlugin\Integaglpi\Plugin::getWebBasePath() . '/front/smart.help.php'); ?>"
+         data-csrf="<?= $this->escape($smartHelpReadGateCsrf); ?>">
+        <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap mb-2">
+            <strong><i class="ti ti-bulb me-1"></i><?= $this->escape(__('Ajuda Inteligente', 'glpiintegaglpi')); ?></strong>
+            <div class="d-flex gap-2 flex-wrap">
+                <button type="button" class="btn btn-sm btn-primary js-smart-help-summarize">
+                    <i class="ti ti-list-details me-1"></i><?= $this->escape(__('Resumo do chamado', 'glpiintegaglpi')); ?>
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-primary js-smart-help-local-search" disabled>
+                    <i class="ti ti-search me-1"></i><?= $this->escape(__('Busca local', 'glpiintegaglpi')); ?>
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-warning js-smart-help-external" disabled>
+                    <i class="ti ti-cloud-search me-1"></i><?= $this->escape(__('Pedir ajuda externa (nuvem)', 'glpiintegaglpi')); ?>
+                </button>
+                <span class="badge bg-secondary js-smart-help-status"><?= $this->escape(__('pronto', 'glpiintegaglpi')); ?></span>
+            </div>
+        </div>
+        <div class="text-muted small mb-2">
+            <?= $this->escape(__('Processo guiado somente leitura: gere o resumo, execute a busca local e só depois peça ajuda externa se necessário. Nada é enviado ao cliente nem altera o chamado automaticamente.', 'glpiintegaglpi')); ?>
+        </div>
+        <div class="mb-2">
+            <label class="form-label small mb-1" for="smart-help-summary-ro-<?= (int) $smartHelpReadGateTicketId; ?>">
+                <?= $this->escape(__('Resumo técnico sem dados pessoais', 'glpiintegaglpi')); ?>
+            </label>
+            <textarea
+                class="form-control form-control-sm js-smart-help-technical-summary"
+                id="smart-help-summary-ro-<?= (int) $smartHelpReadGateTicketId; ?>"
+                rows="2"
+            ></textarea>
+            <div class="form-text js-smart-help-schema-status">
+                <?= $this->escape(__('Aguardando validação local da KB e schema 044.', 'glpiintegaglpi')); ?>
+            </div>
+        </div>
+        <div class="js-smart-help-articles small"></div>
+        <div class="row g-2 mt-1">
+            <div class="col-md-6">
+                <div class="fw-bold small"><?= $this->escape(__('Checklist de diagnóstico', 'glpiintegaglpi')); ?></div>
+                <ul class="small mb-0 js-smart-help-checklist"></ul>
+            </div>
+            <div class="col-md-6">
+                <div class="fw-bold small"><?= $this->escape(__('Perguntas sugeridas ao cliente', 'glpiintegaglpi')); ?></div>
+                <ul class="small mb-0 list-unstyled js-smart-help-questions"></ul>
+            </div>
+        </div>
+        <div class="mt-2 js-smart-help-local-suggestion"></div>
+        <div class="mt-2 js-smart-help-cloud"></div>
+        <div class="mt-2 small js-smart-help-message text-muted"></div>
+        <div class="form-text mt-1">
+            <?= $this->escape(__('Somente leitura: nada é enviado ao cliente nem altera o chamado automaticamente. Publicação na KB é manual.', 'glpiintegaglpi')); ?>
+        </div>
     </div>
 <?php } ?>
 
@@ -2140,109 +2207,6 @@ document.addEventListener('submit', function (event) {
         button.textContent = button.dataset.loadingText || 'Processando...';
     }
 }, true);
-</script>
-<script>
-(function () {
-function runIntegaglpiAiQualityAnalysis(form, event) {
-    if (!form) {
-        return;
-    }
-    if (event) {
-        event.preventDefault();
-        event.stopPropagation();
-    }
-    if (form.dataset.submitted === '1') {
-        return;
-    }
-    form.dataset.submitted = '1';
-    var button = form.querySelector('.js-integaglpi-ai-quality-analyze-submit');
-    var status = form.querySelector('.js-integaglpi-ai-quality-analyze-status');
-    var originalText = button ? button.textContent : '';
-    if (button) {
-        button.disabled = true;
-        button.textContent = <?= json_encode(__('Analisando...', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
-    }
-    if (status) {
-        status.textContent = <?= json_encode(__('Enviando análise para revisão humana...', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
-        status.className = 'small text-muted ms-2 js-integaglpi-ai-quality-analyze-status';
-    }
-
-    fetch(form.action, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-            'Accept': 'application/json',
-            'X-Requested-With': 'XMLHttpRequest'
-        },
-        body: new FormData(form)
-    })
-        .then(function (response) {
-            return response.text().then(function (text) {
-                var body = null;
-                if (text) {
-                    try { body = JSON.parse(text); } catch (e) { body = null; }
-                }
-                return { status: response.status, body: body };
-            });
-        })
-        .then(function (result) {
-            if (result.body && result.body.ok === true) {
-                if (status) {
-                    status.textContent = result.body.message || <?= json_encode(__('Análise IA registrada. Atualizando...', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
-                    status.className = 'small text-success ms-2 js-integaglpi-ai-quality-analyze-status';
-                }
-                window.setTimeout(function () { window.location.reload(); }, 700);
-                return;
-            }
-            var message = result.body && result.body.message
-                ? result.body.message
-                : <?= json_encode(__('Não foi possível concluir a análise IA agora.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
-            if (result.body && result.body.error_type) {
-                message += ' [' + result.body.error_type + ']';
-            }
-            if (status) {
-                status.textContent = message;
-                status.className = 'small text-danger ms-2 js-integaglpi-ai-quality-analyze-status';
-            }
-            form.dataset.submitted = '0';
-            if (button) {
-                button.disabled = false;
-                button.textContent = originalText;
-            }
-        })
-        .catch(function () {
-            if (status) {
-                status.textContent = <?= json_encode(__('Erro de rede ao solicitar análise IA.', 'glpiintegaglpi'), JSON_UNESCAPED_UNICODE); ?>;
-                status.className = 'small text-danger ms-2 js-integaglpi-ai-quality-analyze-status';
-            }
-            form.dataset.submitted = '0';
-            if (button) {
-                button.disabled = false;
-                button.textContent = originalText;
-            }
-        });
-}
-
-document.addEventListener('click', function (event) {
-    var button = event.target && event.target.closest
-        ? event.target.closest('.js-integaglpi-ai-quality-analyze-submit')
-        : null;
-    if (!button) {
-        return;
-    }
-    runIntegaglpiAiQualityAnalysis(button.closest('.js-integaglpi-ai-quality-analyze-form'), event);
-}, true);
-
-document.addEventListener('submit', function (event) {
-    var form = event.target && event.target.closest
-        ? event.target.closest('.js-integaglpi-ai-quality-analyze-form')
-        : null;
-    if (!form) {
-        return;
-    }
-    runIntegaglpiAiQualityAnalysis(form, event);
-}, true);
-})();
 </script>
 <?php } ?>
 

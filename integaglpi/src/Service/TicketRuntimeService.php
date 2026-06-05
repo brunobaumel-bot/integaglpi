@@ -123,7 +123,8 @@ final class TicketRuntimeService
             (new NotificationService($this->pluginConfigService))->sendTechnicianAssigned(
                 $ticketId,
                 $userId,
-                $conversationId
+                $conversationId,
+                $previousAssignedUserId
             );
         }
     }
@@ -169,7 +170,8 @@ final class TicketRuntimeService
             (new NotificationService($this->pluginConfigService))->sendTechnicianAssigned(
                 $ticketId,
                 $userId,
-                $conversationId
+                $conversationId,
+                $previousAssignedUserId
             );
         }
 

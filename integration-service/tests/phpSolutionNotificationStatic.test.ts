@@ -12,6 +12,18 @@ async function readNotificationService(): Promise<string> {
 }
 
 describe('PHP solved-ticket notification source', () => {
+  it('keys technician assignment notification by ownership transition', async () => {
+    const notification = await readNotificationService();
+    const runtime = await readFile(join(repoRoot, 'integaglpi', 'src', 'Service', 'TicketRuntimeService.php'), 'utf8');
+    const central = await readFile(join(repoRoot, 'integaglpi', 'src', 'Service', 'AttendanceCenterService.php'), 'utf8');
+
+    expect(notification).toContain('?int $previousTechnicianId = null');
+    expect(notification).toContain('$previousKeyPart');
+    expect(notification).toContain("'notify_ticket_assigned_' . $ticketId . '_' . $conversationId . '_' . $previousKeyPart . '_' . $technicianId");
+    expect(runtime).toContain('$conversationId,\n                $previousAssignedUserId');
+    expect(central).toContain('$conversationId,\n                $previousAssignedUserId');
+  });
+
   it('selects the latest pending ticket solution instead of an older processed solution', async () => {
     const source = await readNotificationService();
 
