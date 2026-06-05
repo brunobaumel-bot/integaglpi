@@ -116,6 +116,7 @@ final class SecurityCenterStaticTest extends TestCase
         ] as $eventName) {
             self::assertStringContainsString($eventName, $audit);
         }
+        self::assertStringContainsString('bootstrap_first_direcao', $audit);
     }
 
     public function testSecurityAuditDoesNotRunRuntimeDdl(): void
@@ -186,10 +187,12 @@ final class SecurityCenterStaticTest extends TestCase
         $svc = $this->read('src/Service/SecurityPermissionService.php');
         // isSecurityAdmin() is a first-class method.
         self::assertStringContainsString('public static function isSecurityAdmin', $svc);
-        // canManageSecurityCenter() is now role-mapping driven, with only the
-        // first Direção mapping allowed through GLPI bootstrap.
+        // canManageSecurityCenter() is role-mapping driven; bootstrap is only
+        // handled explicitly by security.center.php for save_profile_roles.
         self::assertStringContainsString('canBootstrapFirstDirecaoMapping', $svc);
-        self::assertMatchesRegularExpression('/canManageSecurityCenter[\s\S]+RIGHT_MANAGE_SECURITY_CENTER/s', $svc);
+        self::assertMatchesRegularExpression('/canManageSecurityCenter[\s\S]+return self::hasRight\(self::RIGHT_MANAGE_SECURITY_CENTER\);/s', $svc);
+        self::assertMatchesRegularExpression('/canManageProfileRoleMappings[\s\S]+return self::hasRight\(self::RIGHT_MANAGE_SECURITY_CENTER\);/s', $svc);
+        self::assertDoesNotMatchRegularExpression('/requirePermissionOrDeny[\s\S]+canManageSecurityCenter\(\)/s', $svc);
     }
 
     public function testIsSecurityAdminAcceptsNativeGlpiAdminSignals(): void
@@ -288,10 +291,15 @@ final class SecurityCenterStaticTest extends TestCase
     public function testSecurityCenterTemplateRendersEditableForm(): void
     {
         $template = $this->read('templates/security_center.php');
+        self::assertStringContainsString('Mapeamento de perfis GLPI para papéis do plugin', $template);
         self::assertStringContainsString('js-integaglpi-security-matrix-form', $template);
         self::assertStringContainsString('js-integaglpi-security-matrix-table', $template);
         self::assertStringContainsString('js-integaglpi-profile-role-mapping-form', $template);
         self::assertStringContainsString('name="profile_roles[', $template);
+        self::assertStringContainsString('value="save_profile_roles"', $template);
+        self::assertStringContainsString('<button type="submit" name="action" value="save_profile_roles"', $template);
+        self::assertStringContainsString('Nenhum perfil Direção foi configurado. Como Super-Admin GLPI, você pode definir o primeiro perfil Direção.', $template);
+        self::assertStringContainsString('A matriz granular fica bloqueada até existir pelo menos um perfil Direção configurado.', $template);
         self::assertStringContainsString('js-integaglpi-perm-checkbox', $template);
         self::assertStringContainsString("name=\"matrix[", $template);
         self::assertStringContainsString('Plugin::renderCsrfToken()', $template);
@@ -316,6 +324,15 @@ final class SecurityCenterStaticTest extends TestCase
         self::assertStringContainsString('saveProfileRoleMappings', $controller);
         self::assertStringContainsString('canManageProfileRoleMappings', $controller);
         self::assertStringContainsString('canBootstrapFirstDirecaoMapping', $controller);
+        self::assertStringContainsString('$canManageProfileRoles = SecurityPermissionService::canManageProfileRoleMappings()', $controller);
+        self::assertStringContainsString('$bootstrapAllowed = SecurityPermissionService::canBootstrapFirstDirecaoMapping()', $controller);
+        self::assertStringContainsString('!$canManageProfileRoles && !$bootstrapAllowed', $controller);
+        self::assertStringContainsString('$bootstrapAllowed && !$canManageProfileRoles', $controller);
+        self::assertStringContainsString('$wasBootstrapFirstDirecao = $bootstrapAllowed && !$canManageProfileRoles', $controller);
+        self::assertStringContainsString('bootstrap_requires_direcao_only', $controller);
+        self::assertStringContainsString('No bootstrap inicial, selecione pelo menos um perfil GLPI como Direção.', $controller);
+        self::assertStringContainsString('Somente Direção pode gerenciar permissões do plugin.', $controller);
+        self::assertStringContainsString('Apenas o papel Direção pode alterar a matriz granular.', $controller);
         self::assertStringContainsString('logPermissionChanged', $controller);
         self::assertStringContainsString('logProfileRoleMappingChanged', $controller);
         self::assertStringContainsString("logMatrixSaveAttempted('saved'", $controller);

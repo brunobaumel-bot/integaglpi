@@ -105,7 +105,7 @@ final class SecurityAuditService
         ]);
     }
 
-    public static function logProfileRoleMappingChanged(string $change, int $profileId, string $previousRole, string $newRole): void
+    public static function logProfileRoleMappingChanged(string $change, int $profileId, string $previousRole, string $newRole, bool $bootstrapFirstDirecao = false): void
     {
         $eventType = self::EVENT_PROFILE_ROLE_MAPPING_UPDATED;
         if ($change === 'created') {
@@ -118,7 +118,10 @@ final class SecurityAuditService
             'profile_id' => $profileId,
             'previous_role' => $previousRole,
             'new_role' => $newRole,
-            'context' => self::sanitize(['source' => 'security.center.php']),
+            'context' => self::sanitize([
+                'source' => 'security.center.php',
+                'bootstrap_first_direcao' => $bootstrapFirstDirecao,
+            ]),
         ]);
     }
 

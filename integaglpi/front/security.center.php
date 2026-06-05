@@ -76,12 +76,6 @@ if ($method === 'POST') {
 
     $postedAction = trim((string) ($_POST['action'] ?? ''));
     if ($postedAction === 'save_profile_roles') {
-        if (!SecurityPermissionService::canManageProfileRoleMappings()) {
-            SecurityAuditService::logMatrixSaveAttempted('forbidden_profile_mapping', ['endpoint' => 'security.center.php']);
-            http_response_code(403);
-            Html::displayErrorAndDie(__('Você não tem permissão para mapear perfis do GLPI.', 'glpiintegaglpi'));
-        }
-
         $rawProfileRoles = $_POST['profile_roles'] ?? [];
         $proposedProfileRoles = [];
         if (is_array($rawProfileRoles)) {
@@ -92,7 +86,16 @@ if ($method === 'POST') {
             }
         }
 
-        if (SecurityPermissionService::canBootstrapFirstDirecaoMapping()) {
+        $canManageProfileRoles = SecurityPermissionService::canManageProfileRoleMappings();
+        $bootstrapAllowed = SecurityPermissionService::canBootstrapFirstDirecaoMapping();
+
+        if (!$canManageProfileRoles && !$bootstrapAllowed) {
+            SecurityAuditService::logMatrixSaveAttempted('forbidden_profile_mapping', ['endpoint' => 'security.center.php']);
+            http_response_code(403);
+            Html::displayErrorAndDie(__('Somente Direção pode gerenciar permissões do plugin.', 'glpiintegaglpi'));
+        }
+
+        if ($bootstrapAllowed && !$canManageProfileRoles) {
             $enabledRoles = array_values(array_filter(
                 $proposedProfileRoles,
                 static fn (string $role): bool => $role !== '' && $role !== 'disabled'
@@ -104,18 +107,20 @@ if ($method === 'POST') {
             if ($direcaoCount < 1 || $direcaoCount !== count($enabledRoles)) {
                 SecurityAuditService::logMatrixSaveAttempted('bootstrap_requires_direcao_only', ['endpoint' => 'security.center.php']);
                 http_response_code(403);
-                Html::displayErrorAndDie(__('Bootstrap inicial permite apenas mapear o primeiro perfil Direção.', 'glpiintegaglpi'));
+                Html::displayErrorAndDie(__('No bootstrap inicial, selecione pelo menos um perfil GLPI como Direção.', 'glpiintegaglpi'));
             }
         }
 
         try {
+            $wasBootstrapFirstDirecao = $bootstrapAllowed && !$canManageProfileRoles;
             $diff = SecurityPermissionService::saveProfileRoleMappings($proposedProfileRoles);
             foreach ($diff as $profileId => $change) {
                 SecurityAuditService::logProfileRoleMappingChanged(
                     (string) ($change['change'] ?? 'updated'),
                     (int) $profileId,
                     (string) ($change['before'] ?? ''),
-                    (string) ($change['after'] ?? '')
+                    (string) ($change['after'] ?? ''),
+                    $wasBootstrapFirstDirecao
                 );
             }
             SecurityAuditService::logMatrixSaveAttempted('profile_mapping_saved', [
@@ -142,7 +147,7 @@ if ($method === 'POST') {
         );
         SecurityAuditService::logMatrixSaveAttempted('forbidden', ['endpoint' => 'security.center.php']);
         http_response_code(403);
-        Html::displayErrorAndDie(__('Você não tem permissão para executar esta ação.', 'glpiintegaglpi'));
+        Html::displayErrorAndDie(__('Apenas o papel Direção pode alterar a matriz granular.', 'glpiintegaglpi'));
     }
 
     if ($postedAction === 'save_matrix') {
@@ -234,7 +239,7 @@ $isSecurityAdmin = SecurityPermissionService::isSecurityAdmin();
 $canManage       = SecurityPermissionService::canManageSecurityCenter();
 $canManageMatrix = SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_MANAGE_SECURITY_CENTER);
 $canBootstrapFirstDirecao = SecurityPermissionService::canBootstrapFirstDirecaoMapping();
-$canManageProfileMappings = SecurityPermissionService::canManageProfileRoleMappings();
+$canManageProfileMappings = SecurityPermissionService::canManageProfileRoleMappings() || $canBootstrapFirstDirecao;
 $matrix          = SecurityPermissionService::getEffectiveMatrix();
 $denied          = SecurityPermissionService::getRoleDenied();
 $allRights       = SecurityPermissionService::getAllRights();

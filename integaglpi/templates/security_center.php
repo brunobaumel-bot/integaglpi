@@ -212,7 +212,7 @@ $selfUrl = htmlspecialchars($_SERVER['PHP_SELF'] ?? '', ENT_QUOTES, 'UTF-8');
             <div class="card-header">
                 <h3 class="card-title mb-0">
                     <i class="ti ti-users-group me-1"></i>
-                    <?= __('Mapeamento GLPI → papéis IntegraGLPI', 'glpiintegaglpi') ?>
+                    <?= __('Mapeamento de perfis GLPI para papéis do plugin', 'glpiintegaglpi') ?>
                 </h3>
             </div>
             <div class="card-body">
@@ -222,7 +222,8 @@ $selfUrl = htmlspecialchars($_SERVER['PHP_SELF'] ?? '', ENT_QUOTES, 'UTF-8');
                 <?php if ($canBootstrapFirstDirecao): ?>
                     <div class="alert alert-warning">
                         <i class="ti ti-alert-triangle me-1"></i>
-                        <?= __('Bootstrap inicial ativo: como ainda não existe perfil Direção mapeado, Super-Admin GLPI pode mapear apenas o primeiro perfil Direção. Depois disso, somente Direção gerencia permissões.', 'glpiintegaglpi') ?>
+                        <?= __('Nenhum perfil Direção foi configurado. Como Super-Admin GLPI, você pode definir o primeiro perfil Direção.', 'glpiintegaglpi') ?>
+                        <?= __('Durante este bootstrap, a matriz granular permanece somente leitura; só o mapeamento inicial de Direção pode ser salvo.', 'glpiintegaglpi') ?>
                     </div>
                 <?php endif; ?>
                 <form method="post" action="<?= $selfUrl ?>" class="js-integaglpi-profile-role-mapping-form">
@@ -270,7 +271,7 @@ $selfUrl = htmlspecialchars($_SERVER['PHP_SELF'] ?? '', ENT_QUOTES, 'UTF-8');
                     </div>
                     <div class="d-flex gap-2 align-items-center flex-wrap">
                         <?php if ($canManageProfileMappings): ?>
-                            <button type="submit" class="btn btn-primary">
+                            <button type="submit" name="action" value="save_profile_roles" class="btn btn-primary">
                                 <i class="ti ti-device-floppy me-1"></i>
                                 <?= __('Salvar mapeamento de perfis', 'glpiintegaglpi') ?>
                             </button>
@@ -316,6 +317,12 @@ $selfUrl = htmlspecialchars($_SERVER['PHP_SELF'] ?? '', ENT_QUOTES, 'UTF-8');
             <p class="text-muted small">
                 <?= __('Marque para conceder ou desmarque para revogar. Direitos em ROLE_DENIED não podem ser concedidos por aqui (separação de deveres).', 'glpiintegaglpi') ?>
             </p>
+            <?php if ($canBootstrapFirstDirecao): ?>
+                <div class="alert alert-warning">
+                    <i class="ti ti-lock me-1"></i>
+                    <?= __('A matriz granular fica bloqueada até existir pelo menos um perfil Direção configurado.', 'glpiintegaglpi') ?>
+                </div>
+            <?php endif; ?>
             <div class="table-responsive">
                 <table class="table table-sm table-striped align-middle js-integaglpi-security-matrix-table">
                     <thead>

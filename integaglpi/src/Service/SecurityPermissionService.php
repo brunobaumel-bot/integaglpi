@@ -414,8 +414,7 @@ final class SecurityPermissionService
 
     public static function canManageProfileRoleMappings(): bool
     {
-        return self::hasRight(self::RIGHT_MANAGE_SECURITY_CENTER)
-            || self::canBootstrapFirstDirecaoMapping();
+        return self::hasRight(self::RIGHT_MANAGE_SECURITY_CENTER);
     }
 
     /**
@@ -513,8 +512,7 @@ final class SecurityPermissionService
      */
     public static function canManageSecurityCenter(): bool
     {
-        return self::hasRight(self::RIGHT_MANAGE_SECURITY_CENTER)
-            || self::canBootstrapFirstDirecaoMapping();
+        return self::hasRight(self::RIGHT_MANAGE_SECURITY_CENTER);
     }
 
     public static function isSecurityAdmin(): bool
@@ -748,7 +746,7 @@ final class SecurityPermissionService
      */
     public static function requirePermissionOrDeny(string $right, array $context = []): array
     {
-        if (self::hasRight($right) || ($right === self::RIGHT_MANAGE_SECURITY_CENTER && self::canManageSecurityCenter())) {
+        if (self::hasRight($right)) {
             return [
                 'ok' => true,
                 'http_status' => 200,
