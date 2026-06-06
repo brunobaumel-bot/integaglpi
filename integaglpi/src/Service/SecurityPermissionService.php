@@ -69,6 +69,86 @@ final class SecurityPermissionService
     public const RIGHT_MANAGE_LOGMEIN_MAPPING        = 'manage_logmein_mapping';
     // V7 — remote-access reconciliation.
     public const RIGHT_MANAGE_LOGMEIN_RECONCILIATION = 'manage_logmein_reconciliation';
+    public const RIGHT_VIEW_MONITORING_OPERATIONAL   = 'view_monitoring_operational';
+    public const RIGHT_VIEW_TECHNICAL_HEALTH         = 'view_technical_health';
+    public const RIGHT_VIEW_OPERATIONAL_DIAGNOSTICS  = 'view_operational_diagnostics';
+    public const RIGHT_VIEW_OBSERVABILITY            = 'view_observability';
+    public const RIGHT_VIEW_QUALITY_DASHBOARD        = 'view_quality_dashboard';
+    public const RIGHT_VIEW_SUPERVISOR_CENTER        = 'view_supervisor_center';
+    public const RIGHT_VIEW_COACHING                 = 'view_coaching';
+    public const RIGHT_VIEW_NATIVE_KB                = 'view_native_kb';
+    public const RIGHT_VIEW_SERVICE_CATALOG          = 'view_service_catalog';
+    public const RIGHT_MANAGE_SERVICE_CATALOG        = 'manage_service_catalog';
+    public const RIGHT_VIEW_CONTACT_AGENDA_IMPORT    = 'view_contact_agenda_import';
+    public const RIGHT_MANAGE_CONTACT_AGENDA_IMPORT  = 'manage_contact_agenda_import';
+    public const RIGHT_VIEW_GENERAL_CONFIG           = 'view_general_config';
+    public const RIGHT_MANAGE_GENERAL_CONFIG         = 'manage_general_config';
+
+    /**
+     * Canonical registry of configurable plugin rights.
+     *
+     * Rights in this registry appear in Central de Segurança even when no
+     * role grants them by default yet. This keeps new modules configurable
+     * without silently elevating existing profiles.
+     *
+     * @var list<string>
+     */
+    private const RIGHT_REGISTRY = [
+        self::RIGHT_ENFORCE_ENTITY_ISOLATION,
+        self::RIGHT_VIEW_CENTRAL,
+        self::RIGHT_VIEW_OWN_QUEUE,
+        self::RIGHT_VIEW_ALL_QUEUES,
+        self::RIGHT_CLAIM_TICKET,
+        self::RIGHT_REPLY_OWNED_TICKET,
+        self::RIGHT_REPLY_ANY_TICKET,
+        self::RIGHT_TRANSFER_TICKET,
+        self::RIGHT_SOLVE_OWNED_TICKET,
+        self::RIGHT_SOLVE_TICKET,
+        self::RIGHT_ADMINISTRATIVE_CLOSE,
+        self::RIGHT_SELECT_ENTITY,
+        self::RIGHT_OVERRIDE_ENTITY_MEMORY,
+        self::RIGHT_MANAGE_MESSAGE_SETTINGS,
+        self::RIGHT_MANAGE_TEMPLATES,
+        self::RIGHT_VIEW_AI_CONSOLE,
+        self::RIGHT_USE_COPILOT_AS_DRAFT,
+        self::RIGHT_MANAGE_AI_SETTINGS,
+        self::RIGHT_MANAGE_AI_SECRETS,
+        self::RIGHT_VIEW_AI_ALERTS,
+        self::RIGHT_REVIEW_AI_ALERTS,
+        self::RIGHT_VIEW_KB_REFERENCE,
+        self::RIGHT_REVIEW_KB_CANDIDATES,
+        self::RIGHT_VIEW_EXTERNAL_RESEARCH,
+        self::RIGHT_RUN_EXTERNAL_RESEARCH,
+        self::RIGHT_VIEW_AUDIT_OPERATIONAL,
+        self::RIGHT_VIEW_AUDIT_READONLY_SANITIZED,
+        self::RIGHT_EXPORT_OPERATIONAL_REPORTS,
+        self::RIGHT_EXPORT_EXECUTIVE_REPORTS,
+        self::RIGHT_VIEW_CONTRACTS_READONLY,
+        self::RIGHT_MANAGE_CONTRACTS,
+        self::RIGHT_VIEW_EXECUTIVE_DASHBOARD,
+        self::RIGHT_VIEW_SLA_AGGREGATED,
+        self::RIGHT_VIEW_SECURITY_CENTER,
+        self::RIGHT_MANAGE_SECURITY_CENTER,
+        self::RIGHT_VIEW_MASKED_PII,
+        self::RIGHT_VIEW_UNMASKED_PII,
+        self::RIGHT_VIEW_LOGMEIN_CONTEXT,
+        self::RIGHT_MANAGE_LOGMEIN_MAPPING,
+        self::RIGHT_MANAGE_LOGMEIN_RECONCILIATION,
+        self::RIGHT_VIEW_MONITORING_OPERATIONAL,
+        self::RIGHT_VIEW_TECHNICAL_HEALTH,
+        self::RIGHT_VIEW_OPERATIONAL_DIAGNOSTICS,
+        self::RIGHT_VIEW_OBSERVABILITY,
+        self::RIGHT_VIEW_QUALITY_DASHBOARD,
+        self::RIGHT_VIEW_SUPERVISOR_CENTER,
+        self::RIGHT_VIEW_COACHING,
+        self::RIGHT_VIEW_NATIVE_KB,
+        self::RIGHT_VIEW_SERVICE_CATALOG,
+        self::RIGHT_MANAGE_SERVICE_CATALOG,
+        self::RIGHT_VIEW_CONTACT_AGENDA_IMPORT,
+        self::RIGHT_MANAGE_CONTACT_AGENDA_IMPORT,
+        self::RIGHT_VIEW_GENERAL_CONFIG,
+        self::RIGHT_MANAGE_GENERAL_CONFIG,
+    ];
 
     /**
      * @var array<string, list<string>>
@@ -275,7 +355,7 @@ final class SecurityPermissionService
      */
     public static function getAllRights(): array
     {
-        $all = [];
+        $all = array_fill_keys(self::RIGHT_REGISTRY, true);
         foreach (self::ROLE_MATRIX + self::ROLE_DENIED as $rights) {
             foreach ($rights as $right) {
                 $all[$right] = true;

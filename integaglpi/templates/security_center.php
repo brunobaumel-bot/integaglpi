@@ -80,6 +80,20 @@ $rightLabels = [
     SecurityPermissionService::RIGHT_VIEW_LOGMEIN_CONTEXT          => __('Ver contexto LogMeIn read-only', 'glpiintegaglpi'),
     SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_MAPPING        => __('Gerenciar mapeamento LogMeIn -> entidade', 'glpiintegaglpi'),
     SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_RECONCILIATION => __('Gerenciar conciliação LogMeIn', 'glpiintegaglpi'),
+    SecurityPermissionService::RIGHT_VIEW_MONITORING_OPERATIONAL   => __('Ver Monitoramento Operacional', 'glpiintegaglpi'),
+    SecurityPermissionService::RIGHT_VIEW_TECHNICAL_HEALTH         => __('Ver Health / Status de Serviços', 'glpiintegaglpi'),
+    SecurityPermissionService::RIGHT_VIEW_OPERATIONAL_DIAGNOSTICS  => __('Ver Diagnóstico Operacional', 'glpiintegaglpi'),
+    SecurityPermissionService::RIGHT_VIEW_OBSERVABILITY            => __('Ver Observabilidade WhatsApp', 'glpiintegaglpi'),
+    SecurityPermissionService::RIGHT_VIEW_QUALITY_DASHBOARD        => __('Ver Dashboard de Qualidade', 'glpiintegaglpi'),
+    SecurityPermissionService::RIGHT_VIEW_SUPERVISOR_CENTER        => __('Ver Central do Supervisor', 'glpiintegaglpi'),
+    SecurityPermissionService::RIGHT_VIEW_COACHING                 => __('Ver Coaching e Onboarding IA', 'glpiintegaglpi'),
+    SecurityPermissionService::RIGHT_VIEW_NATIVE_KB                => __('Ver Base de Conhecimento GLPI', 'glpiintegaglpi'),
+    SecurityPermissionService::RIGHT_VIEW_SERVICE_CATALOG          => __('Ver Catálogo de Serviços', 'glpiintegaglpi'),
+    SecurityPermissionService::RIGHT_MANAGE_SERVICE_CATALOG        => __('Gerenciar Catálogo de Serviços', 'glpiintegaglpi'),
+    SecurityPermissionService::RIGHT_VIEW_CONTACT_AGENDA_IMPORT    => __('Ver Importação de Agenda/Contatos', 'glpiintegaglpi'),
+    SecurityPermissionService::RIGHT_MANAGE_CONTACT_AGENDA_IMPORT  => __('Gerenciar Importação de Agenda/Contatos', 'glpiintegaglpi'),
+    SecurityPermissionService::RIGHT_VIEW_GENERAL_CONFIG           => __('Ver Configurações Gerais do Plugin', 'glpiintegaglpi'),
+    SecurityPermissionService::RIGHT_MANAGE_GENERAL_CONFIG         => __('Gerenciar Configurações Gerais do Plugin', 'glpiintegaglpi'),
 ];
 
 $flagBadges = static function (string $right): string {

@@ -321,6 +321,59 @@ final class SecurityCenterStaticTest extends TestCase
         }
     }
 
+    public function testSecurityMatrixRegistryListsModuleRightsWithoutDefaultGrant(): void
+    {
+        $svc = $this->read('src/Service/SecurityPermissionService.php');
+        $template = $this->read('templates/security_center.php');
+
+        $expectedModuleRights = [
+            'RIGHT_VIEW_LOGMEIN_CONTEXT',
+            'RIGHT_MANAGE_LOGMEIN_MAPPING',
+            'RIGHT_MANAGE_LOGMEIN_RECONCILIATION',
+            'RIGHT_VIEW_MONITORING_OPERATIONAL',
+            'RIGHT_VIEW_TECHNICAL_HEALTH',
+            'RIGHT_VIEW_OPERATIONAL_DIAGNOSTICS',
+            'RIGHT_VIEW_OBSERVABILITY',
+            'RIGHT_VIEW_QUALITY_DASHBOARD',
+            'RIGHT_VIEW_SUPERVISOR_CENTER',
+            'RIGHT_VIEW_COACHING',
+            'RIGHT_VIEW_NATIVE_KB',
+            'RIGHT_VIEW_SERVICE_CATALOG',
+            'RIGHT_MANAGE_SERVICE_CATALOG',
+            'RIGHT_VIEW_CONTACT_AGENDA_IMPORT',
+            'RIGHT_MANAGE_CONTACT_AGENDA_IMPORT',
+            'RIGHT_VIEW_GENERAL_CONFIG',
+            'RIGHT_MANAGE_GENERAL_CONFIG',
+        ];
+
+        self::assertStringContainsString('private const RIGHT_REGISTRY', $svc);
+        self::assertStringContainsString('$all = array_fill_keys(self::RIGHT_REGISTRY, true)', $svc);
+
+        foreach ($expectedModuleRights as $right) {
+            self::assertMatchesRegularExpression(
+                '/private const RIGHT_REGISTRY[\s\S]+' . $right . '/s',
+                $svc,
+                $right . ' must be configurable in Central de Segurança'
+            );
+            self::assertStringContainsString('SecurityPermissionService::' . $right, $template);
+        }
+
+        foreach ([
+            'RIGHT_VIEW_MONITORING_OPERATIONAL',
+            'RIGHT_VIEW_TECHNICAL_HEALTH',
+            'RIGHT_VIEW_SERVICE_CATALOG',
+            'RIGHT_MANAGE_SERVICE_CATALOG',
+            'RIGHT_VIEW_GENERAL_CONFIG',
+            'RIGHT_MANAGE_GENERAL_CONFIG',
+        ] as $right) {
+            self::assertDoesNotMatchRegularExpression(
+                '/ROLE_MATRIX\s*=\s*\[[\s\S]+' . $right . '/s',
+                $svc,
+                $right . ' must not be granted by default'
+            );
+        }
+    }
+
     // ── FIX1: editable matrix UI ────────────────────────────────────────────
 
     public function testSecurityCenterTemplateRendersEditableForm(): void
