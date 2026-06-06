@@ -211,7 +211,7 @@ final class SecurityPermissionService
 
         $mappings = self::loadProfileRoleMappings();
         if ($mappings === []) {
-            return self::ROLE_UNKNOWN;
+            return self::isSecurityAdmin() ? self::ROLE_DIRECAO : self::ROLE_UNKNOWN;
         }
 
         $bestRole = self::ROLE_UNKNOWN;
@@ -230,6 +230,10 @@ final class SecurityPermissionService
                 $bestRole = $role;
                 $bestPriority = $priority;
             }
+        }
+
+        if ($bestRole === self::ROLE_UNKNOWN && self::isSecurityAdmin()) {
+            return self::ROLE_DIRECAO;
         }
 
         return $bestRole;

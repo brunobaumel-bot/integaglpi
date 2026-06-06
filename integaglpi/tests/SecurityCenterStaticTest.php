@@ -187,9 +187,11 @@ final class SecurityCenterStaticTest extends TestCase
         $svc = $this->read('src/Service/SecurityPermissionService.php');
         // isSecurityAdmin() is a first-class method.
         self::assertStringContainsString('public static function isSecurityAdmin', $svc);
-        // canManageSecurityCenter() is role-mapping driven; bootstrap is only
-        // handled explicitly by security.center.php for save_profile_roles.
+        // canManageSecurityCenter() remains RBAC-driven; native GLPI security
+        // admins resolve to Direção by default when no granular mapping exists.
         self::assertStringContainsString('canBootstrapFirstDirecaoMapping', $svc);
+        self::assertMatchesRegularExpression('/resolveCurrentRole[\s\S]+isSecurityAdmin\(\) \? self::ROLE_DIRECAO : self::ROLE_UNKNOWN/s', $svc);
+        self::assertMatchesRegularExpression('/resolveCurrentRole[\s\S]+if \(\$bestRole === self::ROLE_UNKNOWN && self::isSecurityAdmin\(\)\)/s', $svc);
         self::assertMatchesRegularExpression('/canManageSecurityCenter[\s\S]+return self::hasRight\(self::RIGHT_MANAGE_SECURITY_CENTER\);/s', $svc);
         self::assertMatchesRegularExpression('/canManageProfileRoleMappings[\s\S]+return self::hasRight\(self::RIGHT_MANAGE_SECURITY_CENTER\);/s', $svc);
         self::assertDoesNotMatchRegularExpression('/requirePermissionOrDeny[\s\S]+canManageSecurityCenter\(\)/s', $svc);
