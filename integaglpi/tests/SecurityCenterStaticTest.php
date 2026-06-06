@@ -247,7 +247,9 @@ final class SecurityCenterStaticTest extends TestCase
         self::assertStringContainsString("PROFILE_ROLE_MAPPING_CONFIG_KEY = 'security_profile_role_mapping'", $svc);
         self::assertStringContainsString('Config::getConfigurationValues', $svc);
         self::assertStringContainsString('use GlpiPlugin\\Integaglpi\\Support\\Db;', $svc);
+        self::assertStringContainsString('loadConfigValue', $svc);
         self::assertStringContainsString('persistConfigValue', $svc);
+        self::assertStringContainsString("'SELECT' => ['value']", $svc);
         self::assertStringContainsString("'FROM' => 'glpi_configs'", $svc);
         self::assertStringContainsString("Db::update('glpi_configs'", $svc);
         self::assertStringContainsString("Db::insert('glpi_configs'", $svc);

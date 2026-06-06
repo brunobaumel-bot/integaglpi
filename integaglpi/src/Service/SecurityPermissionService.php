@@ -354,14 +354,11 @@ final class SecurityPermissionService
     public static function loadProfileRoleMappings(): array
     {
         try {
-            if (!class_exists('Config') || !method_exists('Config', 'getConfigurationValues')) {
+            $rawValue = self::loadConfigValue(self::PROFILE_ROLE_MAPPING_CONFIG_KEY);
+            if ($rawValue === null || $rawValue === '') {
                 return [];
             }
-            $values = Config::getConfigurationValues(self::CONFIG_CONTEXT);
-            if (!is_array($values) || !isset($values[self::PROFILE_ROLE_MAPPING_CONFIG_KEY])) {
-                return [];
-            }
-            $decoded = json_decode((string) $values[self::PROFILE_ROLE_MAPPING_CONFIG_KEY], true);
+            $decoded = json_decode($rawValue, true);
             if (!is_array($decoded)) {
                 return [];
             }
@@ -601,14 +598,11 @@ final class SecurityPermissionService
     public static function loadMatrixOverrides(): array
     {
         try {
-            if (!class_exists('Config') || !method_exists('Config', 'getConfigurationValues')) {
+            $rawValue = self::loadConfigValue(self::CONFIG_KEY);
+            if ($rawValue === null || $rawValue === '') {
                 return [];
             }
-            $values = Config::getConfigurationValues(self::CONFIG_CONTEXT);
-            if (!is_array($values) || !isset($values[self::CONFIG_KEY])) {
-                return [];
-            }
-            $decoded = json_decode((string) $values[self::CONFIG_KEY], true);
+            $decoded = json_decode($rawValue, true);
             if (!is_array($decoded)) {
                 return [];
             }
@@ -678,6 +672,42 @@ final class SecurityPermissionService
         );
 
         return $diff;
+    }
+
+    private static function loadConfigValue(string $name): ?string
+    {
+        try {
+            $row = Db::fetchOne([
+                'SELECT' => ['value'],
+                'FROM' => 'glpi_configs',
+                'WHERE' => [
+                    'context' => self::CONFIG_CONTEXT,
+                    'name' => $name,
+                ],
+            ]);
+
+            if (is_array($row) && array_key_exists('value', $row)) {
+                return is_scalar($row['value']) ? (string) $row['value'] : null;
+            }
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][security_config][direct_load_failed] ' . $exception->getMessage());
+        }
+
+        try {
+            if (!class_exists('Config') || !method_exists('Config', 'getConfigurationValues')) {
+                return null;
+            }
+
+            $values = Config::getConfigurationValues(self::CONFIG_CONTEXT);
+            if (!is_array($values) || !array_key_exists($name, $values)) {
+                return null;
+            }
+
+            return is_scalar($values[$name]) ? (string) $values[$name] : null;
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][security_config][config_api_load_failed] ' . $exception->getMessage());
+            return null;
+        }
     }
 
     private static function persistConfigValue(string $name, string $value): void
