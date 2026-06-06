@@ -323,6 +323,13 @@ const DEFAULT_MAX_REPORT_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 25;
 const CIRCUIT_BREAKER_FAILURE_THRESHOLD = 2;
 const DEFAULT_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 900;
+// LogMeIn Central enforces a strict 1-call-per-minute limit across all API
+// endpoints. When the window is split into multiple chunks each chunk requires
+// its own POST to the reports API, so we must wait at least 62 seconds between
+// consecutive chunk calls to stay within the documented rate limit.
+// Reference: https://support.logmein.com/central/help/logmein-central-developer-center
+// "Due to security restrictions, APIs can only be called once every minute."
+const DEFAULT_INTER_CHUNK_DELAY_MS = 62_000;
 const MAX_PAGES = 5;                 // max 5 pages × 500 items = 2500 sessions/run
 const PAGE_SIZE = 500;
 const LOCK_KEY = 'logmein_reconciliation_sync';
@@ -334,6 +341,8 @@ interface ReconciliationTimingConfig {
   overlapMinutes: number;
   maxRetries: number;
   cooldownSeconds: number;
+  /** Minimum delay between consecutive chunk API calls (ms). Defaults to 62 000. */
+  interChunkDelayMs: number;
 }
 
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {
@@ -349,6 +358,7 @@ function resolveTimingConfig(config: {
   overlapMinutes?: number;
   maxRetries?: number;
   circuitCooldownSeconds?: number;
+  interChunkDelayMs?: number;
 }): ReconciliationTimingConfig {
   const fallbackLookbackDays = clampInt(config.lookbackDays, DEFAULT_LOOKBACK_DAYS, 1, 90);
   const lookbackHours = config.lookbackHours !== undefined
@@ -367,6 +377,12 @@ function resolveTimingConfig(config: {
     overlapMinutes,
     maxRetries: clampInt(config.maxRetries, DEFAULT_MAX_REPORT_RETRIES, 0, 3),
     cooldownSeconds: clampInt(config.circuitCooldownSeconds, DEFAULT_CIRCUIT_BREAKER_COOLDOWN_SECONDS, 60, 86_400),
+    // Production callers (buildDependencies) must always pass interChunkDelayMs=62000
+    // to respect the 1-call/min LogMeIn rate limit. Tests create the service directly
+    // without this field and get 0 (no delay), keeping the test suite fast.
+    interChunkDelayMs: typeof config.interChunkDelayMs === 'number' && config.interChunkDelayMs >= 0
+      ? Math.min(config.interChunkDelayMs, 300_000)
+      : 0,
   };
 }
 
@@ -1071,8 +1087,16 @@ export class LogmeinReconciliationService {
     let fallbackUsed = false;
     let reportPathLabel: 'primary' | 'fallback' = 'primary';
     let retriesPerformed = 0;
+    let isFirstChunk = true;
 
     for (const chunk of chunks) {
+      // LogMeIn enforces 1 API call per minute. Add the required inter-chunk
+      // delay before every call except the very first one.
+      if (isFirstChunk) {
+        isFirstChunk = false;
+      } else {
+        await new Promise<void>((resolve) => setTimeout(resolve, this.timingConfig.interChunkDelayMs));
+      }
       try {
         const result = await this.fetchSessionWindowWithFallback(chunk.from, chunk.to);
         primaryStatusCode = result.primaryStatusCode ?? primaryStatusCode;
