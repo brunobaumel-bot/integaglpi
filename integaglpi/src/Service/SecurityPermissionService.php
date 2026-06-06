@@ -590,7 +590,13 @@ final class SecurityPermissionService
         }
         $effective[self::ROLE_DIRECAO] = array_values(array_unique(array_merge(
             $effective[self::ROLE_DIRECAO] ?? [],
-            [self::RIGHT_VIEW_SECURITY_CENTER, self::RIGHT_MANAGE_SECURITY_CENTER]
+            [
+                self::RIGHT_VIEW_SECURITY_CENTER,
+                self::RIGHT_MANAGE_SECURITY_CENTER,
+                self::RIGHT_VIEW_LOGMEIN_CONTEXT,
+                self::RIGHT_MANAGE_LOGMEIN_MAPPING,
+                self::RIGHT_MANAGE_LOGMEIN_RECONCILIATION,
+            ]
         )));
 
         return $effective;
@@ -655,6 +661,9 @@ final class SecurityPermissionService
             if ($role === self::ROLE_DIRECAO) {
                 $filtered[] = self::RIGHT_VIEW_SECURITY_CENTER;
                 $filtered[] = self::RIGHT_MANAGE_SECURITY_CENTER;
+                $filtered[] = self::RIGHT_VIEW_LOGMEIN_CONTEXT;
+                $filtered[] = self::RIGHT_MANAGE_LOGMEIN_MAPPING;
+                $filtered[] = self::RIGHT_MANAGE_LOGMEIN_RECONCILIATION;
             }
             $clean[$role] = array_values(array_unique($filtered));
         }

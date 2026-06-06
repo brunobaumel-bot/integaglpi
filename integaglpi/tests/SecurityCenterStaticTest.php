@@ -299,6 +299,28 @@ final class SecurityCenterStaticTest extends TestCase
         );
     }
 
+    public function testDirecaoKeepsLogmeinGovernanceRightsWithSavedMatrix(): void
+    {
+        $svc = $this->read('src/Service/SecurityPermissionService.php');
+
+        foreach ([
+            'RIGHT_VIEW_LOGMEIN_CONTEXT',
+            'RIGHT_MANAGE_LOGMEIN_MAPPING',
+            'RIGHT_MANAGE_LOGMEIN_RECONCILIATION',
+        ] as $right) {
+            self::assertMatchesRegularExpression(
+                '/getEffectiveMatrix[\s\S]+\$effective\[self::ROLE_DIRECAO\][\s\S]+' . $right . '/s',
+                $svc,
+                $right . ' must survive persisted matrix overrides for Direção'
+            );
+            self::assertMatchesRegularExpression(
+                '/saveMatrixOverrides[\s\S]+if \(\$role === self::ROLE_DIRECAO\)[\s\S]+' . $right . '/s',
+                $svc,
+                $right . ' must be persisted back when Direção matrix is saved'
+            );
+        }
+    }
+
     // ── FIX1: editable matrix UI ────────────────────────────────────────────
 
     public function testSecurityCenterTemplateRendersEditableForm(): void
