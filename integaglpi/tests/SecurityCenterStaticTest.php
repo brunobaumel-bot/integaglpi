@@ -245,8 +245,13 @@ final class SecurityCenterStaticTest extends TestCase
         self::assertStringContainsString("CONFIG_CONTEXT  = 'plugin:integaglpi'", $svc);
         self::assertStringContainsString("CONFIG_KEY      = 'security_matrix_overrides'", $svc);
         self::assertStringContainsString("PROFILE_ROLE_MAPPING_CONFIG_KEY = 'security_profile_role_mapping'", $svc);
-        self::assertStringContainsString('Config::setConfigurationValues', $svc);
         self::assertStringContainsString('Config::getConfigurationValues', $svc);
+        self::assertStringContainsString('use GlpiPlugin\\Integaglpi\\Support\\Db;', $svc);
+        self::assertStringContainsString('persistConfigValue', $svc);
+        self::assertStringContainsString("'FROM' => 'glpi_configs'", $svc);
+        self::assertStringContainsString("Db::update('glpi_configs'", $svc);
+        self::assertStringContainsString("Db::insert('glpi_configs'", $svc);
+        self::assertStringNotContainsString('Config::setConfigurationValues', $svc);
         self::assertStringContainsString('getEffectiveMatrix', $svc);
         self::assertStringContainsString('saveMatrixOverrides', $svc);
         self::assertStringContainsString('loadMatrixOverrides', $svc);

@@ -6,6 +6,7 @@ namespace GlpiPlugin\Integaglpi\Service;
 
 use Config;
 use GlpiPlugin\Integaglpi\Plugin;
+use GlpiPlugin\Integaglpi\Support\Db;
 use Session;
 use Throwable;
 
@@ -471,16 +472,10 @@ final class SecurityPermissionService
             ];
         }
 
-        try {
-            if (class_exists('Config') && method_exists('Config', 'setConfigurationValues')) {
-                Config::setConfigurationValues(self::CONFIG_CONTEXT, [
-                    self::PROFILE_ROLE_MAPPING_CONFIG_KEY => json_encode($clean, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-                ]);
-            }
-        } catch (Throwable $exception) {
-            error_log('[integaglpi][security_profile_role_mapping][save_failed] ' . $exception->getMessage());
-            throw $exception;
-        }
+        self::persistConfigValue(
+            self::PROFILE_ROLE_MAPPING_CONFIG_KEY,
+            json_encode($clean, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}'
+        );
 
         return $diff;
     }
@@ -549,9 +544,8 @@ final class SecurityPermissionService
     // Matrix persistence — FIX1.
     //
     // Defaults come from ROLE_MATRIX (declared in code). Overrides are stored
-    // through GLPI's Config::setConfigurationValues('plugin:integaglpi', …),
-    // which writes to the GLPI-managed `glpi_configs` table. We do NOT touch
-    // GLPI core, we do NOT create a new table, we do NOT run DDL at runtime.
+    // in GLPI's managed `glpi_configs` table. We do NOT touch GLPI core, we do
+    // NOT create a new table, we do NOT run DDL at runtime.
     // ─────────────────────────────────────────────────────────────────────
 
     public const CONFIG_CONTEXT  = 'plugin:integaglpi';
@@ -678,18 +672,42 @@ final class SecurityPermissionService
             ];
         }
 
-        try {
-            if (class_exists('Config') && method_exists('Config', 'setConfigurationValues')) {
-                Config::setConfigurationValues(self::CONFIG_CONTEXT, [
-                    self::CONFIG_KEY => json_encode($clean, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-                ]);
-            }
-        } catch (Throwable $exception) {
-            error_log('[integaglpi][security_matrix][save_failed] ' . $exception->getMessage());
-            throw $exception;
-        }
+        self::persistConfigValue(
+            self::CONFIG_KEY,
+            json_encode($clean, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '{}'
+        );
 
         return $diff;
+    }
+
+    private static function persistConfigValue(string $name, string $value): void
+    {
+        try {
+            $existing = Db::fetchOne([
+                'FROM' => 'glpi_configs',
+                'WHERE' => [
+                    'context' => self::CONFIG_CONTEXT,
+                    'name' => $name,
+                ],
+            ]);
+
+            $payload = [
+                'context' => self::CONFIG_CONTEXT,
+                'name' => $name,
+                'value' => $value,
+            ];
+
+            $ok = $existing
+                ? Db::update('glpi_configs', $payload, ['id' => (int) ($existing['id'] ?? 0)])
+                : Db::insert('glpi_configs', $payload);
+
+            if (!$ok) {
+                throw new \RuntimeException('glpi_configs_write_failed');
+            }
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][security_config][save_failed] ' . $exception->getMessage());
+            throw $exception;
+        }
     }
 
     public static function enforceEntityScope(int $entityId): bool
