@@ -4,6 +4,7 @@ import type {
   CreateGlpiTicketInput,
   FindGlpiTicketForEntitySelectionInput,
   GlpiContactLookupResult,
+  GlpiItilCategory,
   GlpiTicket,
   GlpiUserLookupResult,
   UploadGlpiDocumentInput,
@@ -184,6 +185,10 @@ function buildTicketCreatePayload(input: CreateGlpiTicketInput): JsonObject {
 
   if (input.requesterUserId != null && input.requesterUserId > 0) {
     ticketInput._users_id_requester = input.requesterUserId;
+  }
+
+  if (input.itilcategoriesId != null && input.itilcategoriesId > 0) {
+    ticketInput.itilcategories_id = Math.trunc(input.itilcategoriesId);
   }
 
   return {
@@ -508,6 +513,98 @@ export class GlpiClient {
     }
 
     return matches;
+  }
+
+  /**
+   * Busca categorias ITIL visíveis no service desk via REST.
+   * Pagina automaticamente até `MAX_ITEMS` resultados. Timeout de 5 s por request.
+   * Retorna lista vazia em caso de falha para não bloquear o webhook.
+   * Nunca executa POST/PUT/PATCH/DELETE — somente GET.
+   */
+  public async fetchItilCategories(entityId?: number | null): Promise<GlpiItilCategory[]> {
+    const MAX_ITEMS = 500;
+    const PAGE_SIZE = 50;
+    const FETCH_TIMEOUT_MS = 5_000;
+    const all: GlpiItilCategory[] = [];
+    let offset = 0;
+
+    while (all.length < MAX_ITEMS) {
+      const query = new URLSearchParams();
+      query.set('range', `${offset}-${offset + PAGE_SIZE - 1}`);
+      query.set('expand_dropdowns', 'true');
+      if (typeof entityId === 'number' && Number.isFinite(entityId) && entityId > 0) {
+        query.set('entities_id', String(Math.trunc(entityId)));
+      }
+
+      const path = `/ITILCategory?${query.toString()}`;
+      let response: Response;
+      try {
+        response = await this.send(path, { method: 'GET' }, {
+          logStage: 'glpi_itilcategory_list',
+          timeoutMs: FETCH_TIMEOUT_MS,
+        });
+      } catch (error: unknown) {
+        logger.warn(
+          {
+            stage: 'glpi_itilcategory_list',
+            offset,
+            errorMessage: error instanceof Error ? error.message : String(error),
+          },
+          '[GLPI PoC] ITILCategory fetch transport error; stopping pagination.',
+        );
+        break;
+      }
+
+      if (response.status === 206 || response.status === 200) {
+        const body = await safeJson(response);
+        const rows = normalizeEntityCollection(body);
+        if (rows.length === 0) {
+          break;
+        }
+
+        for (const row of rows) {
+          const id = typeof row.id === 'number' && Number.isFinite(row.id)
+            ? row.id
+            : typeof row.id === 'string' && /^\d+$/.test(row.id)
+              ? Number.parseInt(row.id, 10)
+              : null;
+          if (id === null || id <= 0) {
+            continue;
+          }
+
+          const name = typeof row.name === 'string' ? row.name : '';
+          const completename = typeof row.completename === 'string' ? row.completename : name;
+          const visible = row.is_helpdeskvisible !== undefined && row.is_helpdeskvisible !== null
+            ? readBooleanLike(row.is_helpdeskvisible, true)
+            : true;
+
+          all.push({ id, name, completename, is_helpdeskvisible: visible });
+        }
+
+        if (rows.length < PAGE_SIZE) {
+          break; // última página
+        }
+
+        offset += PAGE_SIZE;
+      } else {
+        logger.warn(
+          {
+            stage: 'glpi_itilcategory_list',
+            httpStatus: response.status,
+            offset,
+          },
+          '[GLPI PoC] ITILCategory fetch returned non-success status; stopping pagination.',
+        );
+        break;
+      }
+    }
+
+    logger.info(
+      { stage: 'glpi_itilcategory_list', total: all.length, entityId: entityId ?? null },
+      '[GLPI PoC] ITILCategory fetch completed.',
+    );
+
+    return all;
   }
 
   public async checkApiHealth(): Promise<{ ok: boolean; latencyMs: number | null; errorStage: string | null }> {

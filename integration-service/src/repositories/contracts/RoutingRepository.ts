@@ -7,6 +7,8 @@ export interface ActiveRoutingOption {
   glpiUserId: number | null;
   confirmationMessage: string | null;
   sortOrder: number;
+  /** ID nativo da categoria ITIL do GLPI — preenchido apenas quando a triagem nativa está ativa. */
+  glpiItilCategoryId?: number | null;
 }
 
 /** Primeira opção de roteamento ativa vinculada à fila informada. */

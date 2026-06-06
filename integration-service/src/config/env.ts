@@ -114,6 +114,10 @@ const envSchema = z.object({
   AI_PILOT_ENVIRONMENT: z.enum(['test', 'homologation', 'production']).default('test'),
   AI_PILOT_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(45),
   AI_PILOT_RETRY_COUNT: z.coerce.number().int().min(0).max(1).default(1),
+  NATIVE_GLPI_TRIAGE_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;

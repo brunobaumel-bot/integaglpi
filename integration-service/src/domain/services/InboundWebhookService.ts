@@ -19,6 +19,9 @@ import type { ScheduleService } from './ScheduleService.js';
 import type { GlpiFailureStage } from '../../errors/GlpiRequestError.js';
 import type { KeyLock } from '../contracts/KeyLock.js';
 import { buildMenuMessage, parseMenuDigitChoice } from './routingMenuMessage.js';
+import { env } from '../../config/env.js';
+import { GlpiItilCategoryNormalizer } from '../../adapters/glpi/GlpiItilCategoryNormalizer.js';
+import { GlpiTriageCacheRepository } from '../../cache/GlpiTriageCacheRepository.js';
 import type { SettingsService } from './SettingsService.js';
 import type { AuditService } from './AuditService.js';
 import type { ContactEntityResolutionService } from './ContactEntityResolutionService.js';
@@ -148,6 +151,31 @@ export class InboundWebhookService {
     private readonly businessHoursService: BusinessHoursService | null = null,
     private readonly aiOnlineAlertTrigger: AiOnlineAlertInboundTrigger | null = null,
   ) {}
+
+  /**
+   * Normalizer de triagem nativa — inicializado lazily na primeira chamada.
+   * `undefined` = ainda não verificado. `null` = flag desativada.
+   * Instância isolada por service para não compartilhar estado entre requests.
+   * PHASE: integaglpi_v8_native_catalog_dynamic_triage_001
+   */
+  private _nativeTriageNormalizer: GlpiItilCategoryNormalizer | null | undefined = undefined;
+
+  private getNativeTriageNormalizer(): GlpiItilCategoryNormalizer | null {
+    if (this._nativeTriageNormalizer === undefined) {
+      this._nativeTriageNormalizer = env.NATIVE_GLPI_TRIAGE_ENABLED
+        ? new GlpiItilCategoryNormalizer(this.glpiClient, new GlpiTriageCacheRepository())
+        : null;
+    }
+    return this._nativeTriageNormalizer;
+  }
+
+  private async resolveRoutingOptions(): Promise<ActiveRoutingOption[]> {
+    const normalizer = this.getNativeTriageNormalizer();
+    if (normalizer) {
+      return normalizer.getOptions();
+    }
+    return this.routingRepository.getActiveOptions();
+  }
 
   /**
    * Fire-and-forget near-real-time supervisory analysis for a conversation that just
@@ -410,7 +438,7 @@ export class InboundWebhookService {
         conversationId = existingConversation?.id ?? null;
 
         const toMeta = InboundWebhookService.digitsOnlyForMeta(contact.phoneE164);
-        const routingOptions = await this.routingRepository.getActiveOptions();
+        const routingOptions = await this.resolveRoutingOptions();
         const menuHeading = await this.settingsService.getMessage('menu_message');
         const menuBody = buildMenuMessage(routingOptions, menuHeading);
         let closedConversationNoticeSent = false;
@@ -1470,6 +1498,7 @@ export class InboundWebhookService {
                     assignedUserId: selectedOption.glpiUserId,
                     assignedGroupId: selectedOption.glpiGroupId,
                     requesterUserId,
+                    itilcategoriesId: selectedOption.glpiItilCategoryId ?? null,
                   },
                   { timeoutMs: ROUTING_GLPI_CREATE_TIMEOUT_MS },
                 );

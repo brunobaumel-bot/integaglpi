@@ -4,6 +4,13 @@ export interface GlpiContactLookupResult {
   name: string | null;
 }
 
+export interface GlpiItilCategory {
+  id: number;
+  name: string;
+  completename: string;
+  is_helpdeskvisible: boolean;
+}
+
 export interface CreateGlpiTicketInput {
   title: string;
   content: string;
@@ -17,6 +24,8 @@ export interface CreateGlpiTicketInput {
   assignedGroupId?: number | null;
   /** GLPI `_users_id_requester` quando o contato foi vinculado/criado de forma segura. */
   requesterUserId?: number | null;
+  /** GLPI `itilcategories_id` — preenchido quando a triagem nativa GLPI está ativa. */
+  itilcategoriesId?: number | null;
 }
 
 export interface FindGlpiTicketForEntitySelectionInput {
