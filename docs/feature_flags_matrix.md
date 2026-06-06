@@ -125,6 +125,24 @@ Regras:
 
 Safe default rule: if owner or gate evidence is missing, keep the flag OFF or read-only.
 
+## V8 — Triagem Nativa GLPI (fase 3: Forms integrados)
+
+PHASE: `integaglpi_v8_forms_native_triage_integration_001` — Updated: 2026-06-06
+
+| Flag | Default seguro | Valores válidos | Domínio | Efeito | Gate mínimo |
+| --- | --- | --- | --- | --- | --- |
+| `NATIVE_GLPI_TRIAGE_ENABLED` | `false` | `true` / `false` | Triagem WhatsApp | `false`: catálogo paralelo (legado). `true`: triagem nativa GLPI ativa conforme `NATIVE_GLPI_TRIAGE_SOURCES`. | Smoke em TESTE + Cursor review + aprovação operacional |
+| `NATIVE_GLPI_TRIAGE_SOURCES` | `itilcategory` | `itilcategory` / `form` / `both` | Triagem WhatsApp | `itilcategory`: apenas ITILCategory via GLPI REST API (comportamento pré-fase 3). `form`: apenas Forms nativos via endpoint PHP `form.catalog.php`. `both`: mescla categorias + forms, ordenados A-Z, máximo 10 opções. | Smoke em TESTE com cada fonte + verificação do cache Redis |
+
+Regras:
+- `NATIVE_GLPI_TRIAGE_SOURCES` só é lida quando `NATIVE_GLPI_TRIAGE_ENABLED=true`. Com flag off, o catálogo paralelo (legado) é usado e esta var é ignorada.
+- Trocar `NATIVE_GLPI_TRIAGE_SOURCES` em runtime requer reinicialização do serviço Node; o cache Redis (TTL 15 min) pode servir dados da configuração anterior até expirar — flush manual se necessário.
+- A fonte `form` chama o endpoint PHP `integaglpi/front/form.catalog.php` com bearer token (`integration_auth_key`); se o endpoint estiver indisponível, a triagem retorna lista vazia e o FSM exibe `error_fallback_message`.
+- A fonte `itilcategory` chama diretamente a GLPI REST API (`GET /ITILCategory`); Node nunca acessa MariaDB do GLPI.
+- Cache Redis dois níveis: TTL primário 900 s; TTL stale 3600 s (fallback se GLPI indisponível).
+- Catálogo paralelo (legado) **não é alterado** e permanece como fallback quando flag off.
+- Nenhuma mutation de ticket, KB ou WhatsApp é disparada automaticamente por esta flag.
+
 ## V8 Final — Copilot e comportamentos operacionais
 
 | Flag / controle | Default produção | Efeito | Gate |

@@ -21,6 +21,7 @@ import type { KeyLock } from '../contracts/KeyLock.js';
 import { buildMenuMessage, parseMenuDigitChoice } from './routingMenuMessage.js';
 import { env } from '../../config/env.js';
 import { GlpiItilCategoryNormalizer } from '../../adapters/glpi/GlpiItilCategoryNormalizer.js';
+import { GlpiFormCatalogAdapter } from '../../adapters/glpi/GlpiFormCatalogAdapter.js';
 import { GlpiTriageCacheRepository } from '../../cache/GlpiTriageCacheRepository.js';
 import type { SettingsService } from './SettingsService.js';
 import type { AuditService } from './AuditService.js';
@@ -163,7 +164,12 @@ export class InboundWebhookService {
   private getNativeTriageNormalizer(): GlpiItilCategoryNormalizer | null {
     if (this._nativeTriageNormalizer === undefined) {
       this._nativeTriageNormalizer = env.NATIVE_GLPI_TRIAGE_ENABLED
-        ? new GlpiItilCategoryNormalizer(this.glpiClient, new GlpiTriageCacheRepository())
+        ? new GlpiItilCategoryNormalizer(
+            this.glpiClient,
+            new GlpiTriageCacheRepository(),
+            new GlpiFormCatalogAdapter(),
+            env.NATIVE_GLPI_TRIAGE_SOURCES,
+          )
         : null;
     }
     return this._nativeTriageNormalizer;
@@ -865,7 +871,18 @@ export class InboundWebhookService {
             text: profileText,
             existingProfile: reliableExistingProfile,
           });
-          await this.conversationRepository.updateProfileCollectionState(activeConversation.id, stepResult.state);
+          // PARTE A: ContactProfileService.normalizeCollectionState() strips unknown keys.
+          // Re-inject glpi_itil_category_id and glpi_form_id so they survive across multi-step collection.
+          const stateToSave: Record<string, unknown> = { ...stepResult.state };
+          const preservedCatId = typeof rawState?.glpi_itil_category_id === 'number' ? rawState.glpi_itil_category_id : undefined;
+          if (preservedCatId !== undefined) {
+            stateToSave.glpi_itil_category_id = preservedCatId;
+          }
+          const preservedFormId = typeof rawState?.glpi_form_id === 'number' ? rawState.glpi_form_id : undefined;
+          if (preservedFormId !== undefined) {
+            stateToSave.glpi_form_id = preservedFormId;
+          }
+          await this.conversationRepository.updateProfileCollectionState(activeConversation.id, stateToSave);
           logger.info(
             {
               conversation_id: activeConversation.id,
@@ -976,6 +993,9 @@ export class InboundWebhookService {
             rememberedEntity.glpiEntityId,
             activeConversation.id,
           );
+          // PARTE A: recover native GLPI IDs stored at queue-selection time.
+          const nativeItilCategoryIdActive = typeof rawState?.glpi_itil_category_id === 'number' ? rawState.glpi_itil_category_id : null;
+          const nativeFormIdActive = typeof rawState?.glpi_form_id === 'number' ? rawState.glpi_form_id : null;
           const ticketId = await this.glpiClient.createTicket(
             {
               title: ticketPayload.title,
@@ -986,6 +1006,8 @@ export class InboundWebhookService {
               assignedUserId: assignment?.glpiUserId ?? null,
               assignedGroupId: assignment?.glpiGroupId ?? null,
               requesterUserId,
+              itilcategoriesId: nativeItilCategoryIdActive,
+              glpiFormId: nativeFormIdActive,
             },
             { timeoutMs: ROUTING_GLPI_CREATE_TIMEOUT_MS },
           );
@@ -1341,6 +1363,13 @@ export class InboundWebhookService {
                   rememberedEntity.glpiEntityId,
                   lockedConversation.id,
                 );
+                // PARTE A: recover native GLPI IDs stored at queue-selection time.
+                const nativeItilCategoryIdLocked = typeof lockedConversation.profileCollectionState?.glpi_itil_category_id === 'number'
+                  ? lockedConversation.profileCollectionState.glpi_itil_category_id
+                  : null;
+                const nativeFormIdLocked = typeof lockedConversation.profileCollectionState?.glpi_form_id === 'number'
+                  ? lockedConversation.profileCollectionState.glpi_form_id
+                  : null;
                 const ticketId = await this.glpiClient.createTicket(
                   {
                     title: profileTicketPayload.title,
@@ -1351,6 +1380,8 @@ export class InboundWebhookService {
                     assignedUserId: assignment?.glpiUserId ?? null,
                     assignedGroupId: assignment?.glpiGroupId ?? null,
                     requesterUserId,
+                    itilcategoriesId: nativeItilCategoryIdLocked,
+                    glpiFormId: nativeFormIdLocked,
                   },
                   { timeoutMs: ROUTING_GLPI_CREATE_TIMEOUT_MS },
                 );
@@ -1416,6 +1447,15 @@ export class InboundWebhookService {
                 const profileState = reliableExistingProfile
                   ? this.contactProfileService.startExistingProfileConfirmationState(reliableExistingProfile, selectedOption.label)
                   : this.contactProfileService.startNewCollectionState(selectedOption.label);
+                // PARTE A: persist native GLPI category ID so it survives profile-collection steps.
+                // ContactProfileCollectionState has [key: string]: unknown — extra fields are allowed.
+                if (selectedOption.glpiItilCategoryId != null) {
+                  profileState.glpi_itil_category_id = selectedOption.glpiItilCategoryId;
+                }
+                // PARTE A (Forms): persist native GLPI form ID so it survives profile-collection steps.
+                if (selectedOption.glpiFormId != null) {
+                  profileState.glpi_form_id = selectedOption.glpiFormId;
+                }
                 await this.conversationRepository.updateQueueAndStatus(
                   lockedConversation.id,
                   normalizedQueueId,
@@ -1499,6 +1539,7 @@ export class InboundWebhookService {
                     assignedGroupId: selectedOption.glpiGroupId,
                     requesterUserId,
                     itilcategoriesId: selectedOption.glpiItilCategoryId ?? null,
+                    glpiFormId: selectedOption.glpiFormId ?? null,
                   },
                   { timeoutMs: ROUTING_GLPI_CREATE_TIMEOUT_MS },
                 );

@@ -11,6 +11,18 @@ export interface GlpiItilCategory {
   is_helpdeskvisible: boolean;
 }
 
+/**
+ * Formulário nativo do GLPI (glpi_forms_forms).
+ * Retornado pelo endpoint PHP integaglpi/front/form.catalog.php.
+ *
+ * PHASE: integaglpi_v8_service_catalog_gap_fix_and_bridge_001
+ */
+export interface GlpiForm {
+  id: number;
+  name: string;
+  entitiesId: number;
+}
+
 export interface CreateGlpiTicketInput {
   title: string;
   content: string;
@@ -26,6 +38,8 @@ export interface CreateGlpiTicketInput {
   requesterUserId?: number | null;
   /** GLPI `itilcategories_id` — preenchido quando a triagem nativa GLPI está ativa. */
   itilcategoriesId?: number | null;
+  /** ID nativo do Form do GLPI selecionado na triagem — armazenado para rastreabilidade. */
+  glpiFormId?: number | null;
 }
 
 export interface FindGlpiTicketForEntitySelectionInput {

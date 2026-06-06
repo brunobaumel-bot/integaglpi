@@ -9,6 +9,8 @@ export interface ActiveRoutingOption {
   sortOrder: number;
   /** ID nativo da categoria ITIL do GLPI — preenchido apenas quando a triagem nativa está ativa. */
   glpiItilCategoryId?: number | null;
+  /** ID nativo do Form do GLPI — preenchido quando NATIVE_GLPI_TRIAGE_SOURCES inclui "form". */
+  glpiFormId?: number | null;
 }
 
 /** Primeira opção de roteamento ativa vinculada à fila informada. */

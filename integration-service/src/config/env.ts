@@ -118,6 +118,16 @@ const envSchema = z.object({
     .union([z.literal('true'), z.literal('false')])
     .default('false')
     .transform((value) => value === 'true'),
+  /**
+   * Fontes de triagem nativa do GLPI usadas quando NATIVE_GLPI_TRIAGE_ENABLED=true.
+   *   itilcategory (default) — apenas ITILCategory via REST API do GLPI.
+   *   form                   — apenas Forms nativos via endpoint PHP form.catalog.php.
+   *   both                   — mescla categorias + forms (máximo 10 opções, A-Z).
+   * PHASE: integaglpi_v8_forms_native_triage_integration_001
+   */
+  NATIVE_GLPI_TRIAGE_SOURCES: z
+    .enum(['itilcategory', 'form', 'both'])
+    .default('itilcategory'),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
