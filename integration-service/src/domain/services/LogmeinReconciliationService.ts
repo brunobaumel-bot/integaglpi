@@ -1081,6 +1081,20 @@ export class LogmeinReconciliationService {
       this.timingConfig.chunkMinutes,
       this.timingConfig.overlapMinutes,
     );
+
+    // De-duplicate chunks that collapse to the same (startDate, endDate) pair.
+    // The LogMeIn Reports API uses date-only granularity (YYYY-MM-DD), so multiple
+    // time-based sub-day chunks within the same calendar day would send identical
+    // requests and waste the strict 1-call/min quota. We keep only the first chunk
+    // per unique date pair, which is enough to retrieve all sessions for that day.
+    const seenDatePairs = new Set<string>();
+    const dedupedChunks = chunks.filter((chunk) => {
+      const key = `${isoDateString(chunk.from)}|${isoDateString(chunk.to)}`;
+      if (seenDatePairs.has(key)) return false;
+      seenDatePairs.add(key);
+      return true;
+    });
+
     const itemsBySessionId = new Map<string, Record<string, unknown>>();
     let primaryStatusCode: number | null = null;
     let fallbackStatusCode: number | null = null;
@@ -1089,7 +1103,7 @@ export class LogmeinReconciliationService {
     let retriesPerformed = 0;
     let isFirstChunk = true;
 
-    for (const chunk of chunks) {
+    for (const chunk of dedupedChunks) {
       // LogMeIn enforces 1 API call per minute. Add the required inter-chunk
       // delay before every call except the very first one.
       if (isFirstChunk) {
@@ -1119,7 +1133,7 @@ export class LogmeinReconciliationService {
             fallbackSkippedReason: error.fallbackSkippedReason,
             retryAfterSeconds: error.retryAfterSeconds,
             rateLimitCooldownUntil: error.rateLimitCooldownUntil,
-            chunksRequested: chunks.length,
+            chunksRequested: dedupedChunks.length,
             retriesPerformed: retriesPerformed + (error.retriesPerformed ?? 0),
           });
         }
@@ -1133,7 +1147,7 @@ export class LogmeinReconciliationService {
       fallbackStatusCode,
       fallbackUsed,
       reportPathLabel,
-      chunksRequested: chunks.length,
+      chunksRequested: dedupedChunks.length,
       chunkMinutes: this.timingConfig.chunkMinutes,
       overlapMinutes: this.timingConfig.overlapMinutes,
       retriesPerformed,
