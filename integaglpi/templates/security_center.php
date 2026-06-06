@@ -11,6 +11,7 @@ use GlpiPlugin\Integaglpi\Service\SecurityPermissionService;
 /** @var bool $isSecurityAdmin */
 /** @var bool $canBootstrapFirstDirecao */
 /** @var bool $canManageProfileMappings */
+/** @var string $securityCenterUrl */
 /** @var array<string, list<string>> $matrix */
 /** @var array<string, list<string>> $denied */
 /** @var list<string> $allRights */
@@ -119,7 +120,7 @@ $flagBadges = static function (string $right): string {
     return implode(' ', $flags);
 };
 
-$selfUrl = htmlspecialchars($_SERVER['PHP_SELF'] ?? '', ENT_QUOTES, 'UTF-8');
+$selfUrl = htmlspecialchars($securityCenterUrl, ENT_QUOTES, 'UTF-8');
 ?>
 <div class="card mt-3">
     <div class="card-header d-flex align-items-center justify-content-between">

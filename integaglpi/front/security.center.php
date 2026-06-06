@@ -28,6 +28,7 @@ Session::checkLoginUser();
  *                                may only bootstrap the first Direção mapping.
  */
 $method = strtoupper(trim((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET')));
+$securityCenterUrl = Plugin::getSecurityCenterUrl();
 
 /**
  * @return array<int, string>
@@ -137,7 +138,7 @@ if ($method === 'POST') {
             Session::addMessageAfterRedirect(__('Falha ao salvar o mapeamento de perfis.', 'glpiintegaglpi'), false, ERROR);
         }
 
-        Html::redirect($_SERVER['PHP_SELF']);
+        Html::redirect($securityCenterUrl);
     }
 
     if (!SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_MANAGE_SECURITY_CENTER)) {
@@ -205,7 +206,7 @@ if ($method === 'POST') {
             );
         }
 
-        Html::redirect($_SERVER['PHP_SELF']);
+        Html::redirect($securityCenterUrl);
     }
 
     if ($postedAction === 'review_matrix') {
@@ -213,7 +214,7 @@ if ($method === 'POST') {
         Session::addMessageAfterRedirect(
             __('Revisão da matriz registrada para auditoria (sem alteração de permissões).', 'glpiintegaglpi')
         );
-        Html::redirect($_SERVER['PHP_SELF']);
+        Html::redirect($securityCenterUrl);
     }
 
     SecurityAuditService::logMatrixSaveAttempted('invalid_action', [
@@ -227,7 +228,7 @@ if ($method === 'POST') {
 // ── GET render ──
 Html::header(
     __('Central de Segurança', 'glpiintegaglpi'),
-    $_SERVER['PHP_SELF'],
+    $securityCenterUrl,
     'plugins',
     \GlpiPlugin\Integaglpi\SecurityCenterMenu::class
 );

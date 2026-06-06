@@ -125,6 +125,11 @@ final class Plugin
         return self::getWebBasePath() . '/front/ticket.whatsapp.action.php';
     }
 
+    public static function getSecurityCenterUrl(): string
+    {
+        return self::getWebBasePath() . '/front/security.center.php';
+    }
+
     public static function getManualTicketWhatsappUrl(): string
     {
         return self::getWebBasePath() . '/front/ticket.whatsapp.manual.php';

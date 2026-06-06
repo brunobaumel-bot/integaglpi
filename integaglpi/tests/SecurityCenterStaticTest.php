@@ -25,6 +25,10 @@ final class SecurityCenterStaticTest extends TestCase
         self::assertFileExists($this->pluginPath('src/SecurityCenterMenu.php'));
         self::assertFileExists($this->pluginPath('front/security.center.php'));
         self::assertFileExists($this->pluginPath('templates/security_center.php'));
+
+        $plugin = $this->read('src/Plugin.php');
+        self::assertStringContainsString('getSecurityCenterUrl', $plugin);
+        self::assertStringContainsString("return self::getWebBasePath() . '/front/security.center.php';", $plugin);
     }
 
     public function testDirecaoHasPluginGovernanceRights(): void
@@ -307,6 +311,9 @@ final class SecurityCenterStaticTest extends TestCase
         self::assertStringContainsString('name="profile_roles[', $template);
         self::assertStringContainsString('value="save_profile_roles"', $template);
         self::assertStringContainsString('<button type="submit" name="action" value="save_profile_roles"', $template);
+        self::assertStringContainsString('$securityCenterUrl', $template);
+        self::assertStringContainsString('$selfUrl = htmlspecialchars($securityCenterUrl', $template);
+        self::assertStringNotContainsString("\$_SERVER['PHP_SELF']", $template);
         self::assertStringContainsString('Nenhum perfil Direção foi configurado. Como Super-Admin GLPI, você pode definir o primeiro perfil Direção.', $template);
         self::assertStringContainsString('A matriz granular fica bloqueada até existir pelo menos um perfil Direção configurado.', $template);
         self::assertStringContainsString('js-integaglpi-perm-checkbox', $template);
@@ -326,6 +333,7 @@ final class SecurityCenterStaticTest extends TestCase
     public function testSecurityCenterControllerHandlesSaveAndReview(): void
     {
         $controller = $this->read('front/security.center.php');
+        self::assertStringContainsString('$securityCenterUrl = Plugin::getSecurityCenterUrl()', $controller);
         self::assertStringContainsString("\$postedAction === 'save_matrix'", $controller);
         self::assertStringContainsString("\$postedAction === 'review_matrix'", $controller);
         self::assertStringContainsString("\$postedAction === 'save_profile_roles'", $controller);
@@ -348,6 +356,8 @@ final class SecurityCenterStaticTest extends TestCase
         self::assertStringContainsString("logMatrixSaveAttempted('noop_v1'", $controller);
         self::assertStringContainsString('isCsrfValid', $controller);
         self::assertStringContainsString('RIGHT_MANAGE_SECURITY_CENTER', $controller);
+        self::assertStringContainsString('Html::redirect($securityCenterUrl)', $controller);
+        self::assertStringNotContainsString('Html::redirect($_SERVER[\'PHP_SELF\'])', $controller);
         // The controller uses the effective matrix (defaults + overrides), not raw ROLE_MATRIX.
         self::assertStringContainsString('getEffectiveMatrix', $controller);
     }
