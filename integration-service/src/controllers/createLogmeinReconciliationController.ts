@@ -40,43 +40,46 @@ export function createLogmeinReconciliationSyncController(service: LogmeinReconc
       const windowFrom = windowFromRaw && Number.isFinite(windowFromRaw.getTime()) ? windowFromRaw : undefined;
       const windowTo = windowToRaw && Number.isFinite(windowToRaw.getTime()) ? windowToRaw : undefined;
 
-      const result = await service.syncRemoteAccessSessions(windowFrom, windowTo);
-      const httpStatus = result.ok ? 200
-        : result.status === 'migration_required' || result.status === 'unconfigured' || result.status === 'sync_in_progress'
-          ? 409
-          : 503;
-
-      return response.status(httpStatus).json({
-        ok: result.ok,
-        status: result.status,
-        message: result.message,
-        sessions_found: result.sessionsFound,
-        sessions_inserted: result.sessionsInserted,
-        sessions_skipped_duplicate: result.sessionsSkippedDuplicate,
-        window_from: result.windowFrom,
-        window_to: result.windowTo,
-        duration_ms: result.durationMs,
-        // Sanitized report-error context for the plugin (category + status only).
-        report_error: result.reportError,
-        report_status_code: result.reportStatusCode,
-        report_reason: result.reportReason,
-        primary_status_code: result.primaryStatusCode,
-        fallback_status_code: result.fallbackStatusCode,
-        fallback_used: result.fallbackUsed,
-        fallback_skipped_reason: result.fallbackSkippedReason,
-        retry_after_seconds: result.retryAfterSeconds,
-        rate_limit_cooldown_until: result.rateLimitCooldownUntil,
-        lookback_hours: result.lookbackHours,
-        lookback_days: result.lookbackDays,
-        chunk_minutes: result.chunkMinutes,
-        overlap_minutes: result.overlapMinutes,
-        max_retries: result.maxRetries,
-        cooldown_seconds: result.cooldownSeconds,
-        circuit_open_until: result.circuitOpenUntil,
+      // Respond 202 immediately so the PHP caller does not time out while the sync
+      // (which may take several minutes due to the 1-call/min LogMeIn rate limit) runs
+      // in the background. The result is persisted to the ledger; the operator can
+      // refresh the queue page to see newly inserted sessions.
+      response.status(202).json({
+        ok: true,
+        status: 'accepted',
+        message: 'Sync de conciliação iniciado em segundo plano. Aguarde alguns minutos e recarregue a fila.',
         read_only: true,
         remote_execution: false,
         post_action_only_reports: true,
       });
+
+      // Fire-and-forget: run the sync after the HTTP response is flushed.
+      setImmediate(async () => {
+        try {
+          const result = await service.syncRemoteAccessSessions(windowFrom, windowTo);
+          logger.info(
+            {
+              ok: result.ok,
+              status: result.status,
+              sessions_found: result.sessionsFound,
+              sessions_inserted: result.sessionsInserted,
+              duration_ms: result.durationMs,
+              read_only: true,
+            },
+            '[integration-service][logmein-reconciliation][BACKGROUND_SYNC_COMPLETED]',
+          );
+        } catch (bgError: unknown) {
+          logger.error(
+            {
+              error_message: bgError instanceof Error ? bgError.message : String(bgError),
+              read_only: true,
+            },
+            '[integration-service][logmein-reconciliation][BACKGROUND_SYNC_ERROR]',
+          );
+        }
+      });
+
+      return response;
     } catch (error: unknown) {
       logger.error(
         {

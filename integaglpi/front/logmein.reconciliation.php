@@ -221,6 +221,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $sessionsInserted
                         ),
                     ];
+                } elseif ($httpCode === 202) {
+                    // Background sync accepted — Node responds immediately to avoid
+                    // PHP curl timeout while the multi-minute sync runs in the background.
+                    $flash = [
+                        'type'    => 'info',
+                        'message' => __('Sync de conciliação iniciado em segundo plano (aguarde ~2 minutos e recarregue a fila para ver as sessões inseridas).', 'glpiintegaglpi'),
+                    ];
                 } elseif ($httpCode === 404) {
                     $flash = [
                         'type'    => 'warning',

@@ -853,20 +853,13 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
       response as never,
     );
 
-    expect(response.status).toHaveBeenCalledWith(503);
-    expect(responseBody[0]?.report_error).toBe(REPORT_ERROR_CATEGORIES.HTTP_500);
-    expect(responseBody[0]?.report_status_code).toBe(500);
-    expect(responseBody[0]?.primary_status_code).toBe(500);
-    expect(responseBody[0]?.fallback_status_code).toBe(500);
-    expect(responseBody[0]?.fallback_used).toBe(true);
-    expect(responseBody[0]).toHaveProperty('fallback_skipped_reason');
-    expect(responseBody[0]).toHaveProperty('retry_after_seconds');
-    expect(responseBody[0]).toHaveProperty('rate_limit_cooldown_until');
-    expect(responseBody[0]?.lookback_hours).toBe(1);
-    expect(responseBody[0]?.chunk_minutes).toBe(15);
-    expect(responseBody[0]?.overlap_minutes).toBe(5);
-    expect(responseBody[0]?.max_retries).toBe(1);
-    expect(responseBody[0]?.cooldown_seconds).toBe(60);
+    // Controller now responds 202 immediately (fire-and-forget) to avoid PHP
+    // curl timeout during the multi-minute background sync.
+    expect(response.status).toHaveBeenCalledWith(202);
+    expect(responseBody[0]?.ok).toBe(true);
+    expect(responseBody[0]?.status).toBe('accepted');
+    expect(responseBody[0]?.read_only).toBe(true);
+    expect(responseBody[0]?.remote_execution).toBe(false);
     expect(JSON.stringify(responseBody[0])).not.toMatch(/token|bearer|psk-secret/i);
   });
 
