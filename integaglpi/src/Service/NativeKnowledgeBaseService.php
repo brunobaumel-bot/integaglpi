@@ -149,7 +149,7 @@ final class NativeKnowledgeBaseService
 
         global $DB;
         $fields = ['id'];
-        foreach (['name', 'answer', 'knowbaseitemcategories_id', 'entities_id', 'is_recursive'] as $field) {
+        foreach (['name', 'answer', 'knowbaseitemcategories_id', 'entities_id', 'is_recursive', 'begin_date', 'end_date'] as $field) {
             if ($this->fieldExists('glpi_knowbaseitems', $field)) {
                 $fields[] = $field;
             }
@@ -181,7 +181,7 @@ final class NativeKnowledgeBaseService
     private function buildVisibleArticle(array $row, string $query): ?array
     {
         $id = (int) ($row['id'] ?? 0);
-        if ($id <= 0 || !$this->canViewArticle($id, $row)) {
+        if ($id <= 0 || !$this->isWithinPublicationWindow($row) || !$this->canViewArticle($id, $row)) {
             return null;
         }
 
@@ -436,6 +436,34 @@ final class NativeKnowledgeBaseService
         }
 
         return rtrim(mb_substr($value, 0, max(0, $limit - 1), 'UTF-8')) . '…';
+    }
+
+    /**
+     * Respects GLPI 11 publication window (begin_date / end_date).
+     * Only filters when the field was included in the SELECT (array_key_exists guard).
+     * NULL is treated as "no restriction". Compatible with older GLPI schemas.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function isWithinPublicationWindow(array $row): bool
+    {
+        $now = time();
+
+        if (array_key_exists('begin_date', $row) && $row['begin_date'] !== null && $row['begin_date'] !== '') {
+            $ts = strtotime((string) $row['begin_date']);
+            if ($ts !== false && $ts > $now) {
+                return false;
+            }
+        }
+
+        if (array_key_exists('end_date', $row) && $row['end_date'] !== null && $row['end_date'] !== '') {
+            $ts = strtotime((string) $row['end_date']);
+            if ($ts !== false && $ts < $now) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function tableExists(string $table): bool
