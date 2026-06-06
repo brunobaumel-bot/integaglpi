@@ -30,7 +30,8 @@ describe('routingMenuMessage', () => {
   it('buildMenuMessage formats numbered labels', () => {
     expect(buildMenuMessage(opts)).toBe('Escolha uma opção tocando no botão ou digitando o número:\n\n1 - Suporte\n2 - Financeiro');
     expect(buildMenuMessage(opts, 'Escolha uma opção:')).toBe('Escolha uma opção tocando no botão ou digitando o número:\n\n1 - Suporte\n2 - Financeiro');
-    expect(buildMenuMessage(opts, 'Atendimento')).toBe('Atendimento\n\n1 - Suporte\n2 - Financeiro');
+    expect(buildMenuMessage(opts, 'Atendimento')).toBe('Atendimento\nVocê também pode responder digitando o número da opção.\n\n1 - Suporte\n2 - Financeiro');
+    expect(buildMenuMessage(opts, 'Atendimento: digite o número')).toBe('Atendimento: digite o número\n\n1 - Suporte\n2 - Financeiro');
   });
 
   it('buildMenuMessage makes the production queue numeric choices explicit', () => {

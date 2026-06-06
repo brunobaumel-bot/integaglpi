@@ -4,10 +4,19 @@ import type { ActiveRoutingOption } from '../../repositories/contracts/RoutingRe
  * Monta o texto do menu de roteamento (1-based, ordem de `options`).
  */
 const NUMERIC_MENU_HEADING = 'Escolha uma opção tocando no botão ou digitando o número:';
+const NUMERIC_MENU_HINT = 'Você também pode responder digitando o número da opção.';
 
 export function normalizeMenuHeading(heading = NUMERIC_MENU_HEADING): string {
   const trimmedHeading = heading.trim();
-  return trimmedHeading === 'Escolha uma opção:' ? NUMERIC_MENU_HEADING : trimmedHeading;
+  if (trimmedHeading === '' || trimmedHeading === 'Escolha uma opção:') {
+    return NUMERIC_MENU_HEADING;
+  }
+
+  if (/(digit(e|ando)|n[uú]mero|op[cç][aã]o\s*\d)/iu.test(trimmedHeading)) {
+    return trimmedHeading;
+  }
+
+  return `${trimmedHeading}\n${NUMERIC_MENU_HINT}`;
 }
 
 export function buildMenuMessage(options: ActiveRoutingOption[], heading = NUMERIC_MENU_HEADING): string {
