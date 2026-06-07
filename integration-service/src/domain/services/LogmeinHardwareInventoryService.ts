@@ -21,8 +21,10 @@
 
 import type { GlpiClient } from '../../adapters/glpi/GlpiClient.js';
 import type { GlpiComputerHardwarePayload } from '../../adapters/glpi/glpiTypes.js';
+import type { LogmeinHardwareDryRun } from '../../adapters/glpi/glpiTypes.js';
 import { logger } from '../../infra/logger/logger.js';
 import type { LogmeinReadonlyConfig } from './LogmeinReadonlyContextService.js';
+import type { LogmeinFieldMappingService } from './LogmeinFieldMappingService.js';
 
 const BASE_V1 = 'https://secure.logmein.com/public-api/v1';
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -150,7 +152,10 @@ export class LogmeinHardwareInventoryService {
   private readonly config: LogmeinReadonlyConfig;
   private readonly timeoutMs: number;
 
-  public constructor(config: LogmeinReadonlyConfig) {
+  public constructor(
+    config: LogmeinReadonlyConfig,
+    private readonly fieldMappingService?: LogmeinFieldMappingService,
+  ) {
     this.config = config;
     this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
@@ -175,7 +180,7 @@ export class LogmeinHardwareInventoryService {
         return { ok: false, status: 'no_hardware_data' };
       }
 
-      const payload: GlpiComputerHardwarePayload = {
+      let payload: GlpiComputerHardwarePayload = {
         service_tag: hw.serviceTag ?? undefined,
         manufacturer: hw.manufacturer ?? undefined,
         model: hw.model ?? undefined,
@@ -199,6 +204,11 @@ export class LogmeinHardwareInventoryService {
         })),
       };
 
+      // Apply field mapping governance if available.
+      if (this.fieldMappingService) {
+        payload = await this.fieldMappingService.filterPayloadByMappings(payload, input.syncLocalIp === true);
+      }
+
       const result = await input.glpiClient.syncComputerHardware(
         input.glpiComputerId,
         payload,
@@ -217,6 +227,47 @@ export class LogmeinHardwareInventoryService {
       );
       return { ok: false, status: 'unexpected_error' };
     }
+  }
+
+  /**
+   * Dry-run preview: returns what would be synced for this host/computer pair
+   * without modifying GLPI. Requires fieldMappingService to be provided.
+   * Graceful: returns a report with all fields 'would_skip' when not configured.
+   */
+  public async dryRunHardwareSync(input: {
+    logmeinHostId: number;
+    glpiComputerId: number;
+    syncLocalIp: boolean;
+    currentGlpiValues?: Record<string, string | null>;
+  }): Promise<LogmeinHardwareDryRun> {
+    const inventory = await this.fetchHardwareInventoryForHosts([input.logmeinHostId]);
+    const hw = inventory.get(input.logmeinHostId);
+
+    const emptyResult: LogmeinHardwareDryRun = {
+      logmeinHostId: input.logmeinHostId,
+      glpiComputerId: input.glpiComputerId,
+      fields: [],
+      wouldUpdate: 0,
+      wouldSkip: 0,
+      blockedByPolicy: 0,
+      fieldUnavailable: 1,
+      blockedForbidden: 0,
+      dryRunOnly: true,
+    };
+
+    if (!hw) return emptyResult;
+    if (!this.fieldMappingService) {
+      logger.warn('[logmein][hw_dry_run] No fieldMappingService — dry-run returns empty result');
+      return emptyResult;
+    }
+
+    return this.fieldMappingService.dryRun({
+      logmeinHostId: input.logmeinHostId,
+      glpiComputerId: input.glpiComputerId,
+      inventory: hw,
+      syncLocalIp: input.syncLocalIp,
+      currentGlpiValues: input.currentGlpiValues,
+    });
   }
 
   /** Lists all available hardware inventory fields from the API. */
