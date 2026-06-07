@@ -137,7 +137,7 @@ PHASE: `integaglpi_v8_forms_native_triage_integration_001` — Updated: 2026-06-
 Regras:
 - `NATIVE_GLPI_TRIAGE_SOURCES` só é lida quando `NATIVE_GLPI_TRIAGE_ENABLED=true`. Com flag off, o catálogo paralelo (legado) é usado e esta var é ignorada.
 - Trocar `NATIVE_GLPI_TRIAGE_SOURCES` em runtime requer reinicialização do serviço Node; o cache Redis (TTL 15 min) pode servir dados da configuração anterior até expirar — flush manual se necessário.
-- A fonte `form` chama o endpoint PHP `integaglpi/front/form.catalog.php` com bearer token (`integration_auth_key`); se o endpoint estiver indisponível, a triagem retorna lista vazia e o FSM exibe `error_fallback_message`.
+- A fonte `form` chama o endpoint PHP `integaglpi/front/form.catalog.php` com header interno `X-Integaglpi-Key: {integration_auth_key}` (não usa `Authorization: Bearer` — o GLPI 11 / LiteSpeed intercepta esse header antes do script PHP executar); se o endpoint estiver indisponível, a triagem retorna lista vazia e o FSM exibe `error_fallback_message`.
 - A fonte `itilcategory` chama diretamente a GLPI REST API (`GET /ITILCategory`); Node nunca acessa MariaDB do GLPI.
 - Cache Redis dois níveis: TTL primário 900 s; TTL stale 3600 s (fallback se GLPI indisponível).
 - Catálogo paralelo (legado) **não é alterado** e permanece como fallback quando flag off.

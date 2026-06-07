@@ -179,10 +179,14 @@ describe('PARTE B — PHP form.catalog.php static invariants', () => {
     expect(fs.existsSync(serviceFile)).toBe(true);
   });
 
-  it('form.catalog.php uses bearer token authentication', () => {
+  it('form.catalog.php uses X-Integaglpi-Key authentication (GLPI 11 compat)', () => {
     const content = fs.readFileSync(endpointFile, 'utf-8');
     expect(content).toContain('getIntegrationAuthKey');
     expect(content).toContain('hash_equals');
+    // Primary header: avoids GLPI 11 / LiteSpeed Authorization interceptor
+    expect(content).toContain('X-Integaglpi-Key');
+    expect(content).toContain('HTTP_X_INTEGAGLPI_KEY');
+    // Fallback: Authorization: Bearer still present for backward-compat
     expect(content).toContain('Bearer');
   });
 
@@ -337,7 +341,7 @@ describe('PARTE C — GlpiFormCatalogAdapter', () => {
       vi.unstubAllGlobals();
     });
 
-    it('sends Authorization: Bearer <token> header', async () => {
+    it('sends X-Integaglpi-Key header (avoids GLPI 11 Authorization interceptor)', async () => {
       const mockFetch = makeMockFetch({ ok: true, forms: [] });
       vi.stubGlobal('fetch', mockFetch);
 
@@ -346,7 +350,10 @@ describe('PARTE C — GlpiFormCatalogAdapter', () => {
       await adapter.fetchForms();
 
       const calledOptions = (mockFetch as ReturnType<typeof vi.fn>).mock.calls[0][1] as RequestInit;
-      expect((calledOptions.headers as Record<string, string>)['Authorization']).toBe('Bearer my-secret-token');
+      const headers = calledOptions.headers as Record<string, string>;
+      expect(headers['X-Integaglpi-Key']).toBe('my-secret-token');
+      // Must NOT send Authorization header — GLPI 11 / LiteSpeed intercepts it
+      expect(headers['Authorization']).toBeUndefined();
 
       vi.unstubAllGlobals();
     });

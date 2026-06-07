@@ -1,9 +1,12 @@
 import type { KbSearchHit, KbSearchPort } from '../../domain/services/SmartHelpService.js';
 
 /**
- * HttpKbSearchPort — Node-side adapter that queries the NATIVE GLPI KB through a
- * bearer-gated PHP endpoint (front/kb.search.php). The Node service never touches
+ * HttpKbSearchPort — Node-side adapter that queries the NATIVE GLPI KB through an
+ * internally-gated PHP endpoint (front/kb.search.php). The Node service never touches
  * GLPI's MariaDB directly; PHP owns that access and returns sanitized article rows.
+ *
+ * Auth: X-Integaglpi-Key header (same integration_auth_key, avoids GLPI 11 / LiteSpeed
+ * Authorization interceptor that returns HTTP 401/403 before the PHP script runs).
  *
  * Safe by construction: read-only search, bounded timeout, returns [] on any error
  * so SmartHelp degrades gracefully (still serves checklist + questions + cloud offer).
@@ -11,7 +14,7 @@ import type { KbSearchHit, KbSearchPort } from '../../domain/services/SmartHelpS
 export interface HttpKbSearchConfig {
   /** Absolute URL of the PHP kb.search endpoint, e.g. https://glpi.host/plugins/integaglpi/front/kb.search.php */
   endpointUrl: string;
-  /** Bearer token shared with the PHP endpoint (same internal key pattern). */
+  /** Shared internal key for the PHP endpoint (integration_auth_key). Sent via X-Integaglpi-Key. */
   apiKey: string;
   timeoutMs?: number;
 }
@@ -54,7 +57,8 @@ export class HttpKbSearchPort implements KbSearchPort {
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
-          Authorization: `Bearer ${this.config.apiKey}`,
+          // X-Integaglpi-Key bypasses GLPI 11 / LiteSpeed Authorization interceptor.
+          'X-Integaglpi-Key': this.config.apiKey,
         },
         body: JSON.stringify({ query: cleanQuery, limit: Math.max(1, Math.min(limit, 20)) }),
       });

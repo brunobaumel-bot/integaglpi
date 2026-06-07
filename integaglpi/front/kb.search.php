@@ -27,18 +27,39 @@ function integaglpiKbSearchRespond(array $payload, int $status = 200): void
     exit;
 }
 
-// ── Bearer authentication (same shared key as the Node→PHP internal calls) ──
-$authHeader = '';
-if (isset($_SERVER['HTTP_AUTHORIZATION'])) {
-    $authHeader = (string) $_SERVER['HTTP_AUTHORIZATION'];
-} elseif (function_exists('apache_request_headers')) {
-    $headers = apache_request_headers();
-    $authHeader = (string) ($headers['Authorization'] ?? $headers['authorization'] ?? '');
+// ── Internal key authentication ──────────────────────────────────────────────
+// GLPI 11 / LiteSpeed intercepts the standard Authorization header before the
+// plugin script executes, causing spurious 401/403 responses.
+// Primary:  X-Integaglpi-Key (avoids the GLPI session interceptor).
+// Fallback: Authorization: Bearer (backward-compat; may be blocked by GLPI 11).
+$presentedToken = '';
+
+if (isset($_SERVER['HTTP_X_INTEGAGLPI_KEY']) && $_SERVER['HTTP_X_INTEGAGLPI_KEY'] !== '') {
+    // LiteSpeed / Apache normalise X-Integaglpi-Key → HTTP_X_INTEGAGLPI_KEY.
+    $presentedToken = trim((string) $_SERVER['HTTP_X_INTEGAGLPI_KEY']);
+} else {
+    // getallheaders() case-insensitive scan (covers non-standard header normalisation).
+    $allHeaders = function_exists('getallheaders') ? (array) getallheaders() : [];
+    foreach ($allHeaders as $hName => $hValue) {
+        if (strcasecmp((string) $hName, 'X-Integaglpi-Key') === 0) {
+            $presentedToken = trim((string) $hValue);
+            break;
+        }
+    }
 }
 
-$presentedToken = '';
-if (preg_match('/^Bearer\s+(.+)$/i', trim($authHeader), $m) === 1) {
-    $presentedToken = trim($m[1]);
+// Fallback: Authorization: Bearer (backward-compat — GLPI 11 may intercept this).
+if ($presentedToken === '') {
+    $legacyAuth = '';
+    if (isset($_SERVER['HTTP_AUTHORIZATION'])) {
+        $legacyAuth = (string) $_SERVER['HTTP_AUTHORIZATION'];
+    } elseif (function_exists('apache_request_headers')) {
+        $legacyHeaders = apache_request_headers();
+        $legacyAuth = (string) ($legacyHeaders['Authorization'] ?? $legacyHeaders['authorization'] ?? '');
+    }
+    if (preg_match('/^Bearer\s+(.+)$/i', trim($legacyAuth), $m) === 1) {
+        $presentedToken = trim($m[1]);
+    }
 }
 
 $expectedToken = (new PluginConfigService())->getIntegrationAuthKey();

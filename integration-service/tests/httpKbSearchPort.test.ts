@@ -5,13 +5,15 @@ import { HttpKbSearchPort } from '../src/infra/http/HttpKbSearchPort.js';
 const cfg = { endpointUrl: 'https://glpi.host/plugins/integaglpi/front/kb.search.php', apiKey: 'k', timeoutMs: 100 };
 
 describe('HttpKbSearchPort (Node → PHP native KB search)', () => {
-  it('POSTs the query with a bearer token and maps PHP article rows to hits', async () => {
+  it('POSTs the query with X-Integaglpi-Key header and maps PHP article rows to hits', async () => {
     let sentBody = '';
-    let sentAuth = '';
+    let sentKey = '';
+    let sentAuthorizationHeader: string | undefined;
     const fetchMock = vi.fn(async (_url: unknown, opts: unknown) => {
       const o = opts as { body: string; headers: Record<string, string> };
       sentBody = o.body;
-      sentAuth = o.headers.Authorization;
+      sentKey = o.headers['X-Integaglpi-Key'];
+      sentAuthorizationHeader = o.headers['Authorization'];
       return {
         ok: true,
         json: async () => ({
@@ -32,7 +34,10 @@ describe('HttpKbSearchPort (Node → PHP native KB search)', () => {
     expect(hits[0]).toMatchObject({ glpiKnowbaseitemId: 42, title: 'Ativar Office', category: 'Office', score: 0.9 });
     expect(hits[0].sourceLabel).toBe('Base de Conhecimento GLPI via endpoint PHP');
     expect(hits[0].kbCandidateId).toBeNull();
-    expect(sentAuth).toBe('Bearer k');
+    // Must send X-Integaglpi-Key — avoids GLPI 11 / LiteSpeed Authorization interceptor
+    expect(sentKey).toBe('k');
+    // Must NOT send Authorization header
+    expect(sentAuthorizationHeader).toBeUndefined();
     expect(JSON.parse(sentBody)).toMatchObject({ query: 'office nao ativa', limit: 5 });
 
     vi.unstubAllGlobals();

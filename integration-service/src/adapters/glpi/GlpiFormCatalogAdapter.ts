@@ -11,8 +11,9 @@ const PLUGIN_ENDPOINT_PATH = '/plugins/integaglpi/front/form.catalog.php';
  * Chama o endpoint PHP integaglpi/front/form.catalog.php via HTTP — nunca
  * acessa o MariaDB do GLPI diretamente.
  *
- * Autenticação: bearer token igual ao integration_auth_key configurado no
- * plugin GLPI (mesmo padrão do kb.search.php).
+ * Autenticação: header interno `X-Integaglpi-Key` com a mesma integration_auth_key
+ * configurada no plugin GLPI. Não usa Authorization: Bearer — o GLPI 11 / LiteSpeed
+ * intercepta esse header antes que o script PHP execute (HTTP 401/403).
  *
  * NÃO integrado na FSM — use apenas em jobs/diagnósticos/futuras integrações.
  *
@@ -54,7 +55,8 @@ export class GlpiFormCatalogAdapter {
           method: 'GET',
           headers: {
             Accept: 'application/json',
-            Authorization: `Bearer ${this.bearerToken}`,
+            // X-Integaglpi-Key bypasses GLPI 11 / LiteSpeed Authorization interceptor.
+            'X-Integaglpi-Key': this.bearerToken,
           },
           signal: controller.signal,
         });
