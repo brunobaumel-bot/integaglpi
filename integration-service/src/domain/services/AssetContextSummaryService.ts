@@ -147,7 +147,7 @@ export class AssetContextSummaryService {
 
     if (input.ticketId !== null && input.ticketId > 0) {
       noteId = await this.glpiClient.addInternalNote(input.ticketId, summaryText).catch(() => null);
-      status = 'generated_and_injected';
+      status = noteId === null ? 'generated_not_injected' : 'generated_and_injected';
     }
 
     // 6. Auditoria (sem dados sensíveis)

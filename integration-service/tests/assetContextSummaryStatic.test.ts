@@ -7,13 +7,15 @@
  *  3. Falha do GLPI → degradação graciosa, sem lançar exceção
  *  4. Sem ticketId → gera resumo mas não injeta nota (generated_not_injected)
  *  5. Caminho feliz → resumo determinístico + nota interna injetada
- *  6. PII guard: serial ausente do contexto
- *  7. PII guard: MAC ausente do contexto (interface GlpiComputerContext)
- *  8. AI local: fallback determinístico quando IA retorna string vazia
- *  9. AI local: fallback determinístico quando IA retorna texto > 600 chars
- * 10. Wiring: AssetContextSummaryService importável sem erro
- * 11. InboundWebhookService aceita assetContextSummaryService como param opcional
- * 12. GlpiComputerContext não expõe campos proibidos (serial, mac, ip, users)
+ *  6. Falha ao criar nota interna não registra falso sucesso
+ *  7. PII guard: serial ausente do contexto
+ *  8. PII guard: MAC ausente do contexto (interface GlpiComputerContext)
+ *  9. AI local: fallback determinístico quando IA retorna string vazia
+ * 10. AI local: fallback determinístico quando IA retorna texto > 600 chars
+ * 11. Wiring: AssetContextSummaryService importável sem erro
+ * 12. InboundWebhookService aceita assetContextSummaryService como param opcional
+ * 13. buildDependencies injeta AssetContextSummaryService
+ * 14. GlpiComputerContext não expõe campos proibidos (serial, mac, ip, users)
  *
  * PHASE: integaglpi_asset_context_summary_001
  */
@@ -183,7 +185,30 @@ describe('AssetContextSummaryService — invariantes de segurança e design', ()
     });
   });
 
-  it('6. PII guard: GlpiComputerContext não tem campo serial', async () => {
+  it('6. falha na nota interna → resumo gerado, mas status não indica injeção', async () => {
+    const { AssetContextSummaryService } = await import('../src/domain/services/AssetContextSummaryService.js');
+    const client = makeGlpiClient({
+      findComputersByOtherserial: vi.fn().mockResolvedValue([{ id: 43, name: 'PC-NOTE-FAIL', serial: null, otherserial: 'NF1', entitiesId: 7 }]),
+      addInternalNote: vi.fn().mockResolvedValue(null),
+    });
+    const svc = new AssetContextSummaryService(client);
+
+    await withFlag(true, async () => {
+      const result = await svc.generate({
+        equipmentTag: 'NF1',
+        entityId: 7,
+        conversationId: 'conv-006',
+        ticketId: 56,
+      });
+
+      expect(result.status).toBe('generated_not_injected');
+      expect(result.summaryText).not.toBeNull();
+      expect(result.noteId).toBeNull();
+      expect(client.addInternalNote).toHaveBeenCalledWith(56, expect.any(String));
+    });
+  });
+
+  it('7. PII guard: GlpiComputerContext não tem campo serial', async () => {
     // Verifica no tipo TypeScript via inspecção do arquivo de tipos
     const typesPath = path.resolve(__dirname, '../src/adapters/glpi/glpiTypes.ts');
     const source = readFileSync(typesPath, 'utf-8');
@@ -197,7 +222,7 @@ describe('AssetContextSummaryService — invariantes de segurança e design', ()
     expect(fields).not.toMatch(/\bserial\b/);
   });
 
-  it('7. PII guard: GlpiComputerContext não tem campos mac, ip ou users', async () => {
+  it('8. PII guard: GlpiComputerContext não tem campos mac, ip ou users', async () => {
     const typesPath = path.resolve(__dirname, '../src/adapters/glpi/glpiTypes.ts');
     const source = readFileSync(typesPath, 'utf-8');
 
@@ -210,7 +235,7 @@ describe('AssetContextSummaryService — invariantes de segurança e design', ()
     expect(fields).not.toMatch(/\busers?\b/i);
   });
 
-  it('8. AI local: fallback determinístico quando IA retorna string vazia', async () => {
+  it('9. AI local: fallback determinístico quando IA retorna string vazia', async () => {
     const { AssetContextSummaryService } = await import('../src/domain/services/AssetContextSummaryService.js');
     const client = makeGlpiClient({
       findComputersByOtherserial: vi.fn().mockResolvedValue([{ id: 77, name: 'PC-AI', serial: null, otherserial: 'X1', entitiesId: 3 }]),
@@ -231,7 +256,7 @@ describe('AssetContextSummaryService — invariantes de segurança e design', ()
     });
   });
 
-  it('9. AI local: fallback determinístico quando IA retorna texto > 600 chars', async () => {
+  it('10. AI local: fallback determinístico quando IA retorna texto > 600 chars', async () => {
     const { AssetContextSummaryService } = await import('../src/domain/services/AssetContextSummaryService.js');
     const client = makeGlpiClient({
       findComputersByOtherserial: vi.fn().mockResolvedValue([{ id: 88, name: 'PC-LONG', serial: null, otherserial: 'Y2', entitiesId: 3 }]),
@@ -252,13 +277,13 @@ describe('AssetContextSummaryService — invariantes de segurança e design', ()
     });
   });
 
-  it('10. wiring: AssetContextSummaryService é importável sem erro', async () => {
+  it('11. wiring: AssetContextSummaryService é importável sem erro', async () => {
     const mod = await import('../src/domain/services/AssetContextSummaryService.js');
     expect(mod.AssetContextSummaryService).toBeDefined();
     expect(typeof mod.AssetContextSummaryService).toBe('function');
   });
 
-  it('11. InboundWebhookService aceita assetContextSummaryService como parâmetro opcional', async () => {
+  it('12. InboundWebhookService aceita assetContextSummaryService como parâmetro opcional', async () => {
     const iws = readFileSync(
       path.resolve(__dirname, '../src/domain/services/InboundWebhookService.ts'),
       'utf-8',
@@ -271,7 +296,20 @@ describe('AssetContextSummaryService — invariantes de segurança e design', ()
     expect(iws).toMatch(/triggerAssetContextSummary/);
   });
 
-  it('12. resumo determinístico inclui hostname, entidade e hardware — SEM serial/mac/ip', async () => {
+  it('13. buildDependencies injeta AssetContextSummaryService no InboundWebhookService', () => {
+    const source = readFileSync(
+      path.resolve(__dirname, '../src/buildDependencies.ts'),
+      'utf-8',
+    );
+
+    expect(source).toMatch(/import \{ AssetContextSummaryService \}/);
+    expect(source).toMatch(/function buildAssetContextSummaryService/);
+    expect(source).toMatch(/ASSET_CONTEXT_SUMMARY_ENABLED/);
+    expect(source).toMatch(/new AssetContextSummaryService\(client\)/);
+    expect(source).toMatch(/buildAssetContextSummaryService\(env, glpiClient\)/);
+  });
+
+  it('14. resumo determinístico inclui hostname, entidade e hardware — SEM serial/mac/ip', async () => {
     const { AssetContextSummaryService } = await import('../src/domain/services/AssetContextSummaryService.js');
     const client = makeGlpiClient({
       findComputersByOtherserial: vi.fn().mockResolvedValue([{ id: 99, name: 'PC-FULL', serial: null, otherserial: 'T99', entitiesId: 5 }]),
