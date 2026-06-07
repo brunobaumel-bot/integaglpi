@@ -116,6 +116,20 @@ export interface GlpiComputerAssetCandidate {
 }
 
 /**
+ * Contexto seguro de um Computer GLPI para resumo técnico ao atendente.
+ * Não inclui serial, MAC, IP, usuários locais ou outros dados sensíveis.
+ * PHASE: integaglpi_asset_context_summary_001
+ */
+export interface GlpiComputerContext {
+  computerId: number;
+  hostname: string | null;
+  entityId: number | null;
+  entityName: string | null;
+  manufacturer: string | null;
+  model: string | null;
+}
+
+/**
  * Formulário nativo do GLPI (glpi_forms_forms).
  * Retornado pelo endpoint PHP integaglpi/front/form.catalog.php.
  *

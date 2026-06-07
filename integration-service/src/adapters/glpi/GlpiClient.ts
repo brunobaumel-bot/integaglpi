@@ -1085,6 +1085,112 @@ export class GlpiClient {
   }
 
   /**
+   * Busca contexto seguro de um Computer GLPI para o resumo técnico ao atendente.
+   * Usa ?expand_dropdowns=1 para resolver IDs de fabricante e modelo em uma única chamada.
+   * Não retorna serial, MAC, IP, usuários locais nem dados sensíveis.
+   * Nunca lança exceção — retorna contexto parcial em caso de falha.
+   * PHASE: integaglpi_asset_context_summary_001
+   */
+  public async fetchComputerContext(computerId: number): Promise<import('./glpiTypes.js').GlpiComputerContext> {
+    const emptyCtx: import('./glpiTypes.js').GlpiComputerContext = {
+      computerId,
+      hostname: null,
+      entityId: null,
+      entityName: null,
+      manufacturer: null,
+      model: null,
+    };
+
+    try {
+      const payload = await this.requestJson<JsonObject>(
+        `/Computer/${computerId}?expand_dropdowns=1`,
+        { method: 'GET' },
+        'glpi_contact_lookup',
+        { timeoutMs: 6_000 },
+      );
+
+      const hostname = readStringField(payload, 'name');
+
+      // expand_dropdowns=1 returns {id, name} objects for FK fields
+      const mfg = payload['manufacturers_id'];
+      const manufacturer = typeof mfg === 'object' && mfg !== null && typeof (mfg as Record<string, unknown>)['name'] === 'string'
+        ? ((mfg as Record<string, unknown>)['name'] as string).trim() || null
+        : readStringField(payload, 'manufacturer') ?? null;
+
+      const mdl = payload['computermodels_id'];
+      const model = typeof mdl === 'object' && mdl !== null && typeof (mdl as Record<string, unknown>)['name'] === 'string'
+        ? ((mdl as Record<string, unknown>)['name'] as string).trim() || null
+        : null;
+
+      const entRaw = payload['entities_id'];
+      let entityId: number | null = null;
+      let entityName: string | null = null;
+      if (typeof entRaw === 'object' && entRaw !== null) {
+        const entObj = entRaw as Record<string, unknown>;
+        entityId = typeof entObj['id'] === 'number' ? entObj['id'] : null;
+        entityName = typeof entObj['name'] === 'string' ? entObj['name'].trim() || null : null;
+      } else if (typeof entRaw === 'number') {
+        entityId = entRaw;
+      }
+
+      return { computerId, hostname, entityId, entityName, manufacturer, model };
+    } catch (error: unknown) {
+      logger.warn(
+        {
+          stage: 'glpi_computer_context',
+          computerId,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        },
+        '[integaglpi][asset_context] Falha ao buscar contexto do Computer; retornando vazio.',
+      );
+      return emptyCtx;
+    }
+  }
+
+  /**
+   * Adiciona nota interna privada (is_private=1) ao chamado GLPI.
+   * Visível apenas para técnicos no portal — nunca enviada ao usuário final.
+   * Retorna o ID da nota ou null em caso de falha (nunca lança exceção).
+   * PHASE: integaglpi_asset_context_summary_001
+   */
+  public async addInternalNote(ticketId: number, content: string): Promise<number | null> {
+    const path = `/Ticket/${ticketId}/ITILFollowup`;
+    const body = JSON.stringify({
+      input: [{
+        items_id: ticketId,
+        itemtype: 'Ticket',
+        content,
+        is_private: 1,
+      }],
+    });
+
+    try {
+      const payload = await this.requestJson<JsonObject>(
+        path,
+        { method: 'POST', body },
+        'glpi_followup_create',
+        { timeoutMs: 8_000 },
+      );
+      const noteId = readIdFromTicketAddResponse(payload);
+      logger.info(
+        { stage: 'glpi_internal_note_create', ticketId, noteId },
+        '[integaglpi][asset_context] Nota interna criada no chamado.',
+      );
+      return noteId;
+    } catch (error: unknown) {
+      logger.warn(
+        {
+          stage: 'glpi_internal_note_create',
+          ticketId,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        },
+        '[integaglpi][asset_context] Falha ao criar nota interna; chamado não afetado.',
+      );
+      return null;
+    }
+  }
+
+  /**
    * Upload de arquivo para GLPI via multipart/form-data.
    * Nota: não usa send() para não sobrescrever Content-Type necessário para boundary multipart.
    * Retry de sessão em 401 não está implementado neste método; sessão é garantida por ensureSession().

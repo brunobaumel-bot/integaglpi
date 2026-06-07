@@ -173,6 +173,17 @@ const envSchema = z.object({
       const n = Number(v);
       return Number.isFinite(n) && n > 0 && n <= 1 ? n : 0.55;
     }),
+  /**
+   * Habilita consulta de contexto do ativo e geração de resumo técnico para o atendente.
+   * O resumo é injetado como nota interna (is_private=1) no chamado GLPI.
+   * Nunca enviado ao cliente WhatsApp.
+   * Falha no resumo nunca bloqueia a abertura do chamado.
+   * PHASE: integaglpi_asset_context_summary_001
+   */
+  ASSET_CONTEXT_SUMMARY_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
