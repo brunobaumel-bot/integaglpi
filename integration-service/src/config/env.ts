@@ -142,6 +142,37 @@ const envSchema = z.object({
   NATIVE_GLPI_TRIAGE_SOURCES: z
     .enum(['itilcategory', 'form', 'both'])
     .default('itilcategory'),
+  /**
+   * Habilita classificação assistida de categoria GLPI.
+   * Quando true e NATIVE_GLPI_TRIAGE_ENABLED=true:
+   *   - Usuário descreve o problema em linguagem natural.
+   *   - Heurística local (+ IA local opcional) sugere uma categoria.
+   *   - confidence >= AI_CATEGORY_CLASSIFICATION_AUTO_THRESHOLD: aplica automaticamente.
+   *   - AI_CATEGORY_CLASSIFICATION_CONFIRM_THRESHOLD <= confidence < auto: pede confirmação.
+   *   - confidence < AI_CATEGORY_CLASSIFICATION_CONFIRM_THRESHOLD: exibe menu manual numerado.
+   * Quando false, fluxo anterior (menu manual) permanece intacto.
+   * PHASE: integaglpi_ai_category_classification_001
+   */
+  AI_CATEGORY_CLASSIFICATION_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** confidence mínima para aplicar categoria automaticamente (default 0.85). */
+  AI_CATEGORY_CLASSIFICATION_AUTO_THRESHOLD: z
+    .string()
+    .default('0.85')
+    .transform((v) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0 && n <= 1 ? n : 0.85;
+    }),
+  /** confidence mínima para pedir confirmação (abaixo = menu manual) (default 0.55). */
+  AI_CATEGORY_CLASSIFICATION_CONFIRM_THRESHOLD: z
+    .string()
+    .default('0.55')
+    .transform((v) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0 && n <= 1 ? n : 0.55;
+    }),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;

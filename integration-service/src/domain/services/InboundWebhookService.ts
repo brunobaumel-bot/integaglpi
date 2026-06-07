@@ -33,6 +33,7 @@ import type { MessageConfigurationService, MessageSendPlan } from './MessageConf
 import type { BusinessHoursService } from './BusinessHoursService.js';
 import { hasValidGlpiTicketId } from './EntitySelectionService.js';
 import { createCorrelationId } from './correlationId.js';
+import type { GlpiCategoryClassifierService } from './GlpiCategoryClassifierService.js';
 
 export interface InboundWebhookProcessingResult {
   messageId: string;
@@ -152,6 +153,7 @@ export class InboundWebhookService {
     private readonly messageConfigurationService: MessageConfigurationService | null = null,
     private readonly businessHoursService: BusinessHoursService | null = null,
     private readonly aiOnlineAlertTrigger: AiOnlineAlertInboundTrigger | null = null,
+    private readonly categoryClassifier: GlpiCategoryClassifierService | null = null,
   ) {}
 
   /**
@@ -801,6 +803,143 @@ export class InboundWebhookService {
             });
             return;
           }
+        }
+
+        // ── AI Category Classification: awaiting_problem_description ──────────────
+        // PHASE: integaglpi_ai_category_classification_001
+        // Flag off: this block is completely skipped, existing flow is untouched.
+        if (activeConversation?.status === 'awaiting_problem_description') {
+          const descriptionText = inboundMessage.messageText?.trim() ?? '';
+          if (!descriptionText) {
+            // Empty/media — ask again
+            await this.metaClient.sendTextMessage({
+              to: toMeta,
+              body: 'Por favor, descreva o problema em texto para que eu possa te ajudar melhor.',
+            });
+            await this.messageRepository.updateState({
+              messageId: inboundMessage.messageId,
+              conversationId: activeConversation.id,
+              processingStatus: 'processed',
+              glpiSyncStatus: 'synced',
+            });
+            return;
+          }
+
+          const classifierEntityId = activeConversation.glpiEntityId ?? knownEntityForTriage;
+          if (!classifierEntityId || classifierEntityId <= 0 || !this.categoryClassifier) {
+            // No entity or classifier not wired — fall back to menu
+            await this.conversationRepository.updateStatus(activeConversation.id, 'awaiting_queue_selection');
+            await this.sendRoutingMenu({ toMeta, routingOptions, menuHeading, menuBody, context: 'ai_fallback_no_entity', conversationId: activeConversation.id });
+            await this.messageRepository.updateState({ messageId: inboundMessage.messageId, conversationId: activeConversation.id, processingStatus: 'processed', glpiSyncStatus: 'synced' });
+            return;
+          }
+
+          let classResult;
+          try {
+            classResult = await this.categoryClassifier.classify(descriptionText, routingOptions, classifierEntityId);
+          } catch {
+            classResult = null;
+          }
+
+          this.recordAudit({
+            eventType: 'CATEGORY_CLASSIFICATION_DECISION',
+            conversationId: activeConversation.id,
+            status: 'success',
+            severity: 'info',
+            source: 'InboundWebhookService',
+            payload: {
+              entity_id: classifierEntityId,
+              category_id: classResult?.categoryId ?? null,
+              category_name: classResult?.categoryName ?? null,
+              confidence: classResult?.confidence ?? 0,
+              classification_source: classResult?.source ?? 'fallback',
+              reason: classResult?.reason ?? 'classifier_error',
+              requires_confirmation: classResult?.requiresConfirmation ?? false,
+              fallback_required: classResult?.fallbackRequired ?? true,
+              description_hash: descriptionText.slice(0, 60).replace(/./g, '#'),
+              ai_cloud: false,
+            },
+          });
+
+          // High confidence: apply directly.
+          if (classResult && !classResult.fallbackRequired && !classResult.requiresConfirmation && classResult.categoryId) {
+            const selectedCat = routingOptions.find((o) => o.glpiItilCategoryId === classResult.categoryId);
+            if (selectedCat) {
+              await this.conversationRepository.updateStatus(activeConversation.id, 'awaiting_queue_selection');
+              await this.handleCategoryAutoApplied({ option: selectedCat, conversation: activeConversation, toMeta, inboundMessage, contact, correlationId, entityId: classifierEntityId, routingOptions, menuHeading, menuBody });
+              return;
+            }
+          }
+
+          // Medium confidence: ask confirmation.
+          if (classResult && classResult.requiresConfirmation && classResult.categoryId && classResult.categoryName) {
+            const confirmMsg = `Parece ser: *${classResult.categoryName}*.\nPosso seguir com essa categoria? Responda:\n1 - Sim\n2 - Não`;
+            await this.metaClient.sendTextMessage({ to: toMeta, body: confirmMsg });
+            // Persist candidate in profileCollectionState (flexible JSONB).
+            const existingState = (activeConversation.profileCollectionState ?? {}) as Record<string, unknown>;
+            await this.conversationRepository.updateProfileCollectionState(activeConversation.id, {
+              ...existingState,
+              ai_category_candidate_id: classResult.categoryId,
+              ai_category_candidate_name: classResult.categoryName,
+              ai_category_confidence: classResult.confidence,
+              ai_category_source: classResult.source,
+            });
+            await this.conversationRepository.updateStatus(activeConversation.id, 'awaiting_category_confirmation');
+            await this.messageRepository.updateState({ messageId: inboundMessage.messageId, conversationId: activeConversation.id, processingStatus: 'processed', glpiSyncStatus: 'synced' });
+            return;
+          }
+
+          // Low confidence / fallback: show menu.
+          await this.conversationRepository.updateStatus(activeConversation.id, 'awaiting_queue_selection');
+          await this.sendRoutingMenu({ toMeta, routingOptions, menuHeading, menuBody, context: 'ai_low_confidence', conversationId: activeConversation.id });
+          await this.messageRepository.updateState({ messageId: inboundMessage.messageId, conversationId: activeConversation.id, processingStatus: 'processed', glpiSyncStatus: 'synced' });
+          return;
+        }
+
+        // ── AI Category Classification: awaiting_category_confirmation ────────────
+        if (activeConversation?.status === 'awaiting_category_confirmation') {
+          const rawChoice = inboundMessage.messageText?.trim() ?? '';
+          const parsed = parseMenuDigitChoice(rawChoice, 2);
+          if (parsed === 1) {
+            // User confirmed — apply the candidate category.
+            const rawState = (activeConversation.profileCollectionState ?? {}) as Record<string, unknown>;
+            const candidateId = typeof rawState.ai_category_candidate_id === 'number' ? rawState.ai_category_candidate_id : null;
+            const candidateName = typeof rawState.ai_category_candidate_name === 'string' ? rawState.ai_category_candidate_name : null;
+            const confirmedOption = candidateId ? routingOptions.find((o) => o.glpiItilCategoryId === candidateId) : null;
+
+            this.recordAudit({
+              eventType: 'CATEGORY_CLASSIFICATION_CONFIRMED',
+              conversationId: activeConversation.id,
+              status: 'success',
+              severity: 'info',
+              source: 'InboundWebhookService',
+              payload: { category_id: candidateId, category_name: candidateName, user_response: 1, ai_cloud: false },
+            });
+
+            if (confirmedOption) {
+              await this.conversationRepository.updateStatus(activeConversation.id, 'awaiting_queue_selection');
+              await this.handleCategoryAutoApplied({ option: confirmedOption, conversation: activeConversation, toMeta, inboundMessage, contact, correlationId, entityId: activeConversation.glpiEntityId ?? knownEntityForTriage ?? 0, routingOptions, menuHeading, menuBody });
+              return;
+            }
+            // Category no longer valid — fall through to menu.
+          }
+
+          if (parsed === 2 || !parsed) {
+            this.recordAudit({
+              eventType: 'CATEGORY_CLASSIFICATION_REJECTED',
+              conversationId: activeConversation.id,
+              status: 'success',
+              severity: 'info',
+              source: 'InboundWebhookService',
+              payload: { user_response: parsed ?? rawChoice.slice(0, 20), ai_cloud: false },
+            });
+          }
+
+          // Reject or invalid input: show manual menu.
+          await this.conversationRepository.updateStatus(activeConversation.id, 'awaiting_queue_selection');
+          await this.sendRoutingMenu({ toMeta, routingOptions, menuHeading, menuBody, context: 'ai_category_rejected', conversationId: activeConversation.id });
+          await this.messageRepository.updateState({ messageId: inboundMessage.messageId, conversationId: activeConversation.id, processingStatus: 'processed', glpiSyncStatus: 'synced' });
+          return;
         }
 
         if (activeConversation?.status === 'collecting_contact_profile') {
@@ -1696,18 +1835,34 @@ export class InboundWebhookService {
             phoneE164: contact.phoneE164,
             contactId: contact.id,
             glpiTicketId: null,
-            status: 'awaiting_queue_selection',
+            // When AI classification is enabled and we have a valid entity: start
+            // in awaiting_problem_description — user describes problem before menu.
+            // Flag off: falls back to awaiting_queue_selection (unchanged legacy).
+            status: (env.AI_CATEGORY_CLASSIFICATION_ENABLED && this.categoryClassifier && knownEntityForTriage && knownEntityForTriage > 0)
+              ? 'awaiting_problem_description'
+              : 'awaiting_queue_selection',
             lastMessageAt: new Date(),
           });
           conversationId = awaitingConversation.id;
-          await this.sendRoutingMenu({
-            toMeta,
-            routingOptions,
-            menuHeading,
-            menuBody,
-            context: 'initial_menu',
-            conversationId: awaitingConversation.id,
-          });
+
+          if (awaitingConversation.status === 'awaiting_problem_description') {
+            // AI flow: ask user to describe the problem.
+            const descPrompt = 'Olá! Para abrir um chamado, descreva o problema em poucas palavras.';
+            await this.metaClient.sendTextMessage({ to: toMeta, body: descPrompt });
+            logger.info(
+              { conversation_id: awaitingConversation.id, ai_category_enabled: true },
+              '[integration-service][routing][AI_CATEGORY_DESCRIPTION_PROMPT_SENT]',
+            );
+          } else {
+            await this.sendRoutingMenu({
+              toMeta,
+              routingOptions,
+              menuHeading,
+              menuBody,
+              context: 'initial_menu',
+              conversationId: awaitingConversation.id,
+            });
+          }
           logger.info(
             {
               conversation_id: awaitingConversation.id,
@@ -3354,6 +3509,67 @@ export class InboundWebhookService {
       selectedOption: routingOptions[choice - 1],
       choice,
     };
+  }
+
+  /**
+   * Called when AI classification auto-applies a category (high confidence)
+   * or when the user confirms the category (pressed 1).
+   * Converts the candidate category into the same downstream flow as a manual menu pick.
+   * PHASE: integaglpi_ai_category_classification_001
+   */
+  private async handleCategoryAutoApplied(input: {
+    option: import('../../repositories/contracts/RoutingRepository.js').ActiveRoutingOption;
+    conversation: { id: string; glpiEntityId?: number | null; profileCollectionState?: unknown };
+    toMeta: string;
+    inboundMessage: { messageId: string; messageText?: string | null; messageType?: string };
+    contact: { phoneE164: string; id: string; name: string | null };
+    correlationId: string;
+    entityId: number;
+    routingOptions: import('../../repositories/contracts/RoutingRepository.js').ActiveRoutingOption[];
+    menuHeading: string;
+    menuBody: string;
+  }): Promise<void> {
+    const { option, conversation, toMeta, inboundMessage, contact, correlationId, entityId, routingOptions, menuHeading, menuBody } = input;
+
+    // Validate: category must belong to a valid option from this entity.
+    if (!option.glpiItilCategoryId || option.glpiItilCategoryId <= 0) {
+      logger.warn(
+        { conversation_id: conversation.id, option_key: option.optionKey },
+        '[integration-service][routing][AI_CATEGORY_INVALID_FALLBACK_TO_MENU]',
+      );
+      await this.sendRoutingMenu({ toMeta, routingOptions, menuHeading, menuBody, context: 'ai_invalid_category', conversationId: conversation.id });
+      await this.messageRepository.updateState({ messageId: inboundMessage.messageId, conversationId: conversation.id, processingStatus: 'processed', glpiSyncStatus: 'synced' });
+      return;
+    }
+
+    // Confirm to user.
+    const confirmText = `✓ Categoria aplicada: *${option.label}*. Aguarde, vou registrar seu chamado.`;
+    await this.metaClient.sendTextMessage({ to: toMeta, body: confirmText });
+
+    logger.info(
+      {
+        conversation_id: conversation.id,
+        category_id: option.glpiItilCategoryId,
+        category_name: option.label,
+        entity_id: entityId,
+        ai_cloud: false,
+      },
+      '[integration-service][routing][AI_CATEGORY_APPLIED]',
+    );
+
+    // Persist the category in profileCollectionState so ticket creation picks it up.
+    const existingState = (conversation.profileCollectionState ?? {}) as Record<string, unknown>;
+    await this.conversationRepository.updateProfileCollectionState(conversation.id, {
+      ...existingState,
+      glpi_itil_category_id: option.glpiItilCategoryId,
+    });
+
+    await this.messageRepository.updateState({
+      messageId: inboundMessage.messageId,
+      conversationId: conversation.id,
+      processingStatus: 'processed',
+      glpiSyncStatus: 'synced',
+    });
   }
 
   private async sendRoutingMenu(input: RoutingMenuSendInput): Promise<void> {
