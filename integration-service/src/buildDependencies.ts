@@ -13,6 +13,8 @@ import { MediaProcessingService } from './domain/services/MediaProcessingService
 import { OutboundMessageService } from './domain/services/OutboundMessageService.js';
 import { InactivityAutomationService, parseReminderMinutes } from './domain/services/InactivityAutomationService.js';
 import { AuditService } from './domain/services/AuditService.js';
+import { GlpiCategoryClassifierService } from './domain/services/GlpiCategoryClassifierService.js';
+import { AssetContextSummaryService } from './domain/services/AssetContextSummaryService.js';
 import { OperationalIntegrityAuditService } from './domain/services/OperationalIntegrityAuditService.js';
 import { ScheduleService } from './domain/services/ScheduleService.js';
 import { SettingsService } from './domain/services/SettingsService.js';
@@ -188,6 +190,53 @@ async function loadAiSettingsFromDatabase(): Promise<Map<string, unknown>> {
   }
 
   return settings;
+}
+
+/**
+ * Instantiates GlpiCategoryClassifierService for runtime injection.
+ *
+ * Rules:
+ *  - Flag off: returns null — InboundWebhookService uses legacy menu flow, untouched.
+ *  - Flag on, local AI configured: classifier with Ollama (heuristic + AI, local only).
+ *  - Flag on, no local AI: classifier heuristic-only (localAi=null).
+ *  - Cloud AI: NEVER used.
+ *  - Boot failure of local AI config: falls back to heuristic-only (never throws).
+ *
+ * PHASE: integaglpi_ai_category_classification_fix_001
+ */
+function buildCategoryClassifier(cfg: typeof env): GlpiCategoryClassifierService | null {
+  if (!cfg.AI_CATEGORY_CLASSIFICATION_ENABLED) return null;
+
+  const localAiConfig =
+    cfg.AI_SUPERVISOR_PROVIDER === 'ollama' &&
+    cfg.AI_SUPERVISOR_BASE_URL &&
+    cfg.AI_SUPERVISOR_MODEL
+      ? {
+          baseUrl: cfg.AI_SUPERVISOR_BASE_URL,
+          model: cfg.AI_SUPERVISOR_MODEL,
+          timeoutMs: Math.min((cfg.AI_SUPERVISOR_TIMEOUT_SECONDS ?? 30) * 1_000, 10_000),
+        }
+      : null;
+
+  return new GlpiCategoryClassifierService({
+    autoThreshold: cfg.AI_CATEGORY_CLASSIFICATION_AUTO_THRESHOLD,
+    confirmThreshold: cfg.AI_CATEGORY_CLASSIFICATION_CONFIRM_THRESHOLD,
+    localAi: localAiConfig,
+  });
+}
+
+/**
+ * Instantiates the safe asset context summarizer only when enabled.
+ * It uses GLPI REST data through GlpiClient and injects an internal private note.
+ * No cloud AI and no WhatsApp outbound path are wired here.
+ *
+ * PHASE: integaglpi_asset_context_summary_001
+ */
+function buildAssetContextSummaryService(cfg: typeof env, client: GlpiClient): AssetContextSummaryService | null {
+  if (!cfg.ASSET_CONTEXT_SUMMARY_ENABLED) {
+    return null;
+  }
+  return new AssetContextSummaryService(client);
 }
 
 export function buildDependencies() {
@@ -650,6 +699,14 @@ export function buildDependencies() {
     messageConfigurationService,
     businessHoursService,
     aiOnlineAlertInboundTrigger,
+    // AI category classifier — only instantiated when flag is on.
+    // Uses heuristic-only when AI_SUPERVISOR_PROVIDER=disabled (safe default).
+    // Never uses cloud AI. Failure never blocks webhook (classifier is optional param).
+    // PHASE: integaglpi_ai_category_classification_fix_001
+    buildCategoryClassifier(env),
+    // Asset context summary — feature-flagged, internal-note only.
+    // PHASE: integaglpi_asset_context_summary_001
+    buildAssetContextSummaryService(env, glpiClient),
   );
   return {
     inboundWebhookService,

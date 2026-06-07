@@ -971,7 +971,13 @@ export class InboundWebhookService {
               status: 'success',
               severity: 'info',
               source: 'InboundWebhookService',
-              payload: { user_response: parsed ?? rawChoice.slice(0, 20), ai_cloud: false },
+              payload: {
+                // Never log rawChoice text — may contain PII.
+                user_response: parsed === 2 ? 2 : null,
+                choice_type: parsed === 2 ? 'numeric_no' : (!rawChoice ? 'empty' : 'non_numeric_or_out_of_range'),
+                reason: 'invalid_confirmation_input',
+                ai_cloud: false,
+              },
             });
           }
 
