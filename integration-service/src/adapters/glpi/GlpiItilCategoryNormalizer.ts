@@ -98,6 +98,18 @@ export class GlpiItilCategoryNormalizer {
     queueId: number | null = null,
     lang = 'pt',
   ): Promise<ActiveRoutingOption[]> {
+    // Flow B strict: categories are always entity-scoped — never expose cross-entity catalog.
+    // InboundWebhookService.resolveRoutingOptions() enforces this at the call site too,
+    // but this guard is a defense-in-depth layer: any caller that bypasses the FSM guard
+    // will still get an empty list instead of a leaking global result.
+    if (entityId === null || entityId <= 0) {
+      logger.warn(
+        { entityId, sources: this.triageSources },
+        '[integaglpi][native_triage] getOptions() chamado sem entityId válido (Flow B strict: entidade deve ser conhecida). Retornando lista vazia.',
+      );
+      return [];
+    }
+
     // 1. Tentar cache primário
     let cached = await this.cacheRepository.get(entityId, queueId, lang).catch(() => null);
 

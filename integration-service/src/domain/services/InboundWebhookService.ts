@@ -179,6 +179,13 @@ export class InboundWebhookService {
   private async resolveRoutingOptions(entityId: number | null = null): Promise<ActiveRoutingOption[]> {
     const normalizer = this.getNativeTriageNormalizer();
     if (normalizer) {
+      // Flow B strict: categories are always entity-scoped — entity must be known first.
+      // When entityId is unknown (null or 0), fall back to legacy parallel catalog so the
+      // user can still be routed while entity is being determined via profile/asset-tag flow.
+      // This guarantees getOptions() is never called with null (cross-entity contamination).
+      if (entityId === null || entityId <= 0) {
+        return this.routingRepository.getActiveOptions();
+      }
       return normalizer.getOptions(entityId);
     }
     return this.routingRepository.getActiveOptions();

@@ -96,7 +96,7 @@ describe('GlpiItilCategoryNormalizer — feature flag off', () => {
     glpiClient.fetchItilCategories.mockResolvedValueOnce([]);
     cacheRepo.get.mockResolvedValueOnce(null);
 
-    const result = await normalizer.getOptions(null, null, 'pt');
+    const result = await normalizer.getOptions(1, null, 'pt');
     expect(result).toEqual([]);
   });
 });
@@ -156,7 +156,7 @@ describe('GlpiItilCategoryNormalizer — cache miss', () => {
       cacheRepo as never,
     );
 
-    const result = await normalizer.getOptions(null, null, 'pt');
+    const result = await normalizer.getOptions(1, null, 'pt');
     expect(result).toHaveLength(2);
     expect(result[0].optionKey).toMatch(/^glpic_/);
     expect(result[0].glpiItilCategoryId).toBe(result[0].id);
@@ -185,7 +185,7 @@ describe('GlpiItilCategoryNormalizer — cache miss', () => {
       cacheRepo as never,
     );
 
-    const result = await normalizer.getOptions();
+    const result = await normalizer.getOptions(1);
     expect(result).toHaveLength(2);
     expect(result.map((o) => o.id)).not.toContain(2);
   });
@@ -210,7 +210,7 @@ describe('GlpiItilCategoryNormalizer — cache miss', () => {
       cacheRepo as never,
     );
 
-    const result = await normalizer.getOptions();
+    const result = await normalizer.getOptions(1);
     expect(result.length).toBeLessThanOrEqual(10);
   });
 
@@ -233,7 +233,7 @@ describe('GlpiItilCategoryNormalizer — cache miss', () => {
       cacheRepo as never,
     );
 
-    const result = await normalizer.getOptions();
+    const result = await normalizer.getOptions(1);
     expect(result[0].label.length).toBeLessThanOrEqual(20);
     expect(result[0].label).toMatch(/…$/);
   });
@@ -260,7 +260,7 @@ describe('GlpiItilCategoryNormalizer — cache miss', () => {
       cacheRepo as never,
     );
 
-    const result = await normalizer.getOptions();
+    const result = await normalizer.getOptions(1);
     expect(result[0].sortOrder).toBe(0);
     expect(result[1].sortOrder).toBe(1);
     expect(result[2].sortOrder).toBe(2);
@@ -294,7 +294,7 @@ describe('GlpiItilCategoryNormalizer — GLPI failure scenarios', () => {
       cacheRepo as never,
     );
 
-    const result = await normalizer.getOptions();
+    const result = await normalizer.getOptions(1);
     expect(result).toEqual(staleOptions);
     expect(glpiClient.fetchItilCategories).toHaveBeenCalledOnce();
   });
@@ -315,7 +315,7 @@ describe('GlpiItilCategoryNormalizer — GLPI failure scenarios', () => {
       cacheRepo as never,
     );
 
-    const result = await normalizer.getOptions();
+    const result = await normalizer.getOptions(1);
     expect(result).toEqual([]);
     expect(cacheRepo.set).not.toHaveBeenCalled();
   });
@@ -338,7 +338,7 @@ describe('GlpiItilCategoryNormalizer — GLPI failure scenarios', () => {
       cacheRepo as never,
     );
 
-    await expect(normalizer.getOptions()).resolves.toHaveLength(1);
+    await expect(normalizer.getOptions(1)).resolves.toHaveLength(1);
   });
 });
 
@@ -363,7 +363,7 @@ describe('GlpiItilCategoryNormalizer — safety invariants', () => {
       cacheRepo as never,
     );
 
-    await normalizer.getOptions();
+    await normalizer.getOptions(1);
 
     expect(glpiClient.createTicket).not.toHaveBeenCalled();
     expect(glpiClient.updateTicketStatus).not.toHaveBeenCalled();
@@ -391,7 +391,7 @@ describe('GlpiItilCategoryNormalizer — safety invariants', () => {
       cacheRepo as never,
     );
 
-    const result = await normalizer.getOptions();
+    const result = await normalizer.getOptions(1);
     for (const option of result) {
       expect(option.glpiItilCategoryId).toBe(option.id);
     }

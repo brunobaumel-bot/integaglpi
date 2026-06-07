@@ -123,7 +123,7 @@ describe('GlpiItilCategoryNormalizer — sources="itilcategory" (default)', () =
       formAdapter as never,
       'itilcategory',
     );
-    const options = await normalizer.getOptions();
+    const options = await normalizer.getOptions(1);
 
     expect(options).toHaveLength(2);
     expect(options.every((o) => o.optionKey.startsWith('glpic_'))).toBe(true);
@@ -136,7 +136,7 @@ describe('GlpiItilCategoryNormalizer — sources="itilcategory" (default)', () =
     const cacheRepo = makeMockCacheRepo();
 
     const normalizer = new GlpiItilCategoryNormalizer(glpiClient as never, cacheRepo as never);
-    const options = await normalizer.getOptions();
+    const options = await normalizer.getOptions(1);
 
     expect(options[0]?.optionKey).toBe('glpic_42');
     expect(options[0]?.glpiItilCategoryId).toBe(42);
@@ -149,7 +149,7 @@ describe('GlpiItilCategoryNormalizer — sources="itilcategory" (default)', () =
 
     // Constructor with only 2 args (pre-Phase-3 usage) still works
     const normalizer = new GlpiItilCategoryNormalizer(glpiClient as never, cacheRepo as never);
-    const options = await normalizer.getOptions();
+    const options = await normalizer.getOptions(1);
 
     expect(options).toHaveLength(1);
     expect(options[0]?.optionKey).toBe('glpic_1');
@@ -171,7 +171,7 @@ describe('GlpiItilCategoryNormalizer — sources="form"', () => {
       formAdapter as never,
       'form',
     );
-    const options = await normalizer.getOptions();
+    const options = await normalizer.getOptions(1);
 
     expect(options).toHaveLength(2);
     expect(options.every((o) => o.optionKey.startsWith('glpif_'))).toBe(true);
@@ -189,7 +189,7 @@ describe('GlpiItilCategoryNormalizer — sources="form"', () => {
       formAdapter as never,
       'form',
     );
-    const options = await normalizer.getOptions();
+    const options = await normalizer.getOptions(1);
 
     expect(options[0]?.optionKey).toBe('glpif_99');
     expect(options[0]?.glpiFormId).toBe(99);
@@ -207,7 +207,7 @@ describe('GlpiItilCategoryNormalizer — sources="form"', () => {
       formAdapter as never,
       'form',
     );
-    const options = await normalizer.getOptions();
+    const options = await normalizer.getOptions(1);
     expect(options[0]?.label.length).toBeLessThanOrEqual(20);
     expect(options[0]?.label.endsWith('…')).toBe(true);
   });
@@ -222,7 +222,7 @@ describe('GlpiItilCategoryNormalizer — sources="form"', () => {
       null,  // no adapter
       'form',
     );
-    const options = await normalizer.getOptions();
+    const options = await normalizer.getOptions(1);
 
     expect(options).toEqual([]);
   });
@@ -238,7 +238,7 @@ describe('GlpiItilCategoryNormalizer — sources="form"', () => {
       formAdapter as never,
       'form',
     );
-    const options = await normalizer.getOptions();
+    const options = await normalizer.getOptions(1);
 
     expect(options).toEqual([]);
   });
@@ -255,7 +255,7 @@ describe('GlpiItilCategoryNormalizer — sources="form"', () => {
       formAdapter as never,
       'form',
     );
-    const options = await normalizer.getOptions();
+    const options = await normalizer.getOptions(1);
 
     expect(options).toHaveLength(10);
   });
@@ -276,7 +276,7 @@ describe('GlpiItilCategoryNormalizer — sources="both"', () => {
       formAdapter as never,
       'both',
     );
-    const options = await normalizer.getOptions();
+    const options = await normalizer.getOptions(1);
 
     expect(options).toHaveLength(2);
     const keys = options.map((o) => o.optionKey);
@@ -296,7 +296,7 @@ describe('GlpiItilCategoryNormalizer — sources="both"', () => {
       formAdapter as never,
       'both',
     );
-    const options = await normalizer.getOptions();
+    const options = await normalizer.getOptions(1);
 
     expect(options[0]?.label).toBe('Acesso');   // Form first (A < R)
     expect(options[1]?.label).toBe('Redes');    // ITIL second
@@ -316,7 +316,7 @@ describe('GlpiItilCategoryNormalizer — sources="both"', () => {
       formAdapter as never,
       'both',
     );
-    const options = await normalizer.getOptions();
+    const options = await normalizer.getOptions(1);
 
     expect(options).toHaveLength(10);
   });
@@ -333,7 +333,7 @@ describe('GlpiItilCategoryNormalizer — sources="both"', () => {
       formAdapter as never,
       'both',
     );
-    const options = await normalizer.getOptions();
+    const options = await normalizer.getOptions(1);
 
     options.forEach((opt, idx) => {
       expect(opt.sortOrder).toBe(idx);
@@ -352,7 +352,7 @@ describe('GlpiItilCategoryNormalizer — sources="both"', () => {
       formAdapter as never,
       'both',
     );
-    const options = await normalizer.getOptions();
+    const options = await normalizer.getOptions(1);
 
     expect(options).toHaveLength(1);
     expect(options[0]?.optionKey).toBe('glpic_1');
@@ -378,7 +378,7 @@ describe('Cache — Forms source', () => {
       formAdapter as never,
       'form',
     );
-    const options = await normalizer.getOptions();
+    const options = await normalizer.getOptions(1);
 
     expect(options).toEqual(cachedData);
     expect(formAdapter.fetchForms).not.toHaveBeenCalled();
@@ -466,10 +466,104 @@ describe('glpiFormId propagation', () => {
       formAdapter as never,
       'form',
     );
-    const options = await normalizer.getOptions();
+    const options = await normalizer.getOptions(1);
 
     expect(options[0]?.glpiFormId).toBe(33);
     expect(options[0]?.glpiItilCategoryId).toBeUndefined();
+  });
+});
+
+// ── Flow B strict — entity-first invariant ────────────────────────────────────
+
+describe('Flow B strict — entity-first invariant (no getOptions(null))', () => {
+  it('getOptions(null) returns [] — entity must be known before categories are shown', async () => {
+    const { GlpiItilCategoryNormalizer } = await import('../src/adapters/glpi/GlpiItilCategoryNormalizer.js');
+    const glpiClient = makeMockGlpiClient([makeCategory(1, 'TI')]);
+    const cacheRepo = makeMockCacheRepo();
+
+    const normalizer = new GlpiItilCategoryNormalizer(glpiClient as never, cacheRepo as never);
+    const options = await normalizer.getOptions(null);
+
+    expect(options).toEqual([]);
+    // Guard must short-circuit before Redis or GLPI are touched
+    expect(glpiClient.fetchItilCategories).not.toHaveBeenCalled();
+    expect(cacheRepo.get).not.toHaveBeenCalled();
+  });
+
+  it('getOptions(0) returns [] — entityId=0 is not a valid entity scope', async () => {
+    const { GlpiItilCategoryNormalizer } = await import('../src/adapters/glpi/GlpiItilCategoryNormalizer.js');
+    const glpiClient = makeMockGlpiClient([makeCategory(1, 'TI')]);
+    const cacheRepo = makeMockCacheRepo();
+
+    const normalizer = new GlpiItilCategoryNormalizer(glpiClient as never, cacheRepo as never);
+    const options = await normalizer.getOptions(0);
+
+    expect(options).toEqual([]);
+    expect(glpiClient.fetchItilCategories).not.toHaveBeenCalled();
+    expect(cacheRepo.get).not.toHaveBeenCalled();
+  });
+
+  it('getOptions(-1) returns [] — negative entityId is invalid', async () => {
+    const { GlpiItilCategoryNormalizer } = await import('../src/adapters/glpi/GlpiItilCategoryNormalizer.js');
+    const glpiClient = makeMockGlpiClient([makeCategory(1, 'TI')]);
+    const cacheRepo = makeMockCacheRepo();
+
+    const normalizer = new GlpiItilCategoryNormalizer(glpiClient as never, cacheRepo as never);
+    const options = await normalizer.getOptions(-1);
+
+    expect(options).toEqual([]);
+    expect(glpiClient.fetchItilCategories).not.toHaveBeenCalled();
+  });
+
+  it('getOptions(5) with valid entityId returns entity-scoped categories', async () => {
+    const { GlpiItilCategoryNormalizer } = await import('../src/adapters/glpi/GlpiItilCategoryNormalizer.js');
+    const glpiClient = makeMockGlpiClient([makeCategory(10, 'Suporte')]);
+    const cacheRepo = makeMockCacheRepo();
+
+    const normalizer = new GlpiItilCategoryNormalizer(glpiClient as never, cacheRepo as never);
+    const options = await normalizer.getOptions(5);
+
+    expect(options).toHaveLength(1);
+    expect(options[0]?.optionKey).toBe('glpic_10');
+    expect(glpiClient.fetchItilCategories).toHaveBeenCalledWith(5);
+  });
+
+  it('getOptions(null) with sources="form" also returns [] (guard is source-agnostic)', async () => {
+    const { GlpiItilCategoryNormalizer } = await import('../src/adapters/glpi/GlpiItilCategoryNormalizer.js');
+    const formAdapter = makeMockFormAdapter([makeForm(10, 'Form A')]);
+    const cacheRepo = makeMockCacheRepo();
+
+    const normalizer = new GlpiItilCategoryNormalizer(
+      makeMockGlpiClient([]) as never,
+      cacheRepo as never,
+      formAdapter as never,
+      'form',
+    );
+    const options = await normalizer.getOptions(null);
+
+    expect(options).toEqual([]);
+    expect(formAdapter.fetchForms).not.toHaveBeenCalled();
+    expect(cacheRepo.get).not.toHaveBeenCalled();
+  });
+
+  it('getOptions(null) with sources="both" also returns [] (guard is source-agnostic)', async () => {
+    const { GlpiItilCategoryNormalizer } = await import('../src/adapters/glpi/GlpiItilCategoryNormalizer.js');
+    const glpiClient = makeMockGlpiClient([makeCategory(1, 'TI')]);
+    const formAdapter = makeMockFormAdapter([makeForm(10, 'Form A')]);
+    const cacheRepo = makeMockCacheRepo();
+
+    const normalizer = new GlpiItilCategoryNormalizer(
+      glpiClient as never,
+      cacheRepo as never,
+      formAdapter as never,
+      'both',
+    );
+    const options = await normalizer.getOptions(null);
+
+    expect(options).toEqual([]);
+    expect(glpiClient.fetchItilCategories).not.toHaveBeenCalled();
+    expect(formAdapter.fetchForms).not.toHaveBeenCalled();
+    expect(cacheRepo.get).not.toHaveBeenCalled();
   });
 });
 
