@@ -184,6 +184,35 @@ const envSchema = z.object({
     .union([z.literal('true'), z.literal('false')])
     .default('false')
     .transform((value) => value === 'true'),
+  /**
+   * Habilita o motor de avaliação de regras de alarme LogMeIn.
+   * Quando true, o worker avalia regras ativas e dispara alertas internos.
+   * Nunca envia WhatsApp. Nunca cria ticket automaticamente (ver LOGMEIN_AUTO_TICKET_ENABLED).
+   * Worker separado do webhook WhatsApp — não altera InboundWebhookService.
+   * PHASE: integaglpi_logmein_alarm_rules_and_auto_ticket_implementation_001
+   */
+  LOGMEIN_ALARM_ENGINE_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /**
+   * Habilita criação automática de chamados GLPI quando uma regra de alarme dispara.
+   * Só tem efeito quando LOGMEIN_ALARM_ENGINE_ENABLED=true E a regra tem create_ticket=true.
+   * Default false — criação controlada por gate duplo (flag global + flag por regra).
+   * Nunca cria ticket sem entidade válida (glpi_entities_id > 0).
+   * Nunca fecha chamado. Nunca atribui técnico automaticamente.
+   * PHASE: integaglpi_logmein_alarm_rules_and_auto_ticket_implementation_001
+   */
+  LOGMEIN_AUTO_TICKET_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /**
+   * Intervalo (segundos) entre execuções do worker de alarme LogMeIn.
+   * Mínimo 30s, máximo 3600s (1h). Default 60s.
+   * PHASE: integaglpi_logmein_alarm_rules_and_auto_ticket_implementation_001
+   */
+  LOGMEIN_ALARM_WORKER_INTERVAL_SECONDS: z.coerce.number().int().min(30).max(3600).default(60),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
