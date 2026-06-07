@@ -119,6 +119,20 @@ const envSchema = z.object({
     .default('false')
     .transform((value) => value === 'true'),
   /**
+   * Enables LogMeIn Hardware Inventory enrichment (default false).
+   * When true, the service fetches CPU/RAM/disk/MAC/OS/serial/model from
+   * GET /public-api/v1/inventory/hardware/reports. Rate limit respected.
+   */
+  LOGMEIN_HARDWARE_INVENTORY_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** When true the network_connections[].ip_address is included in hardware sync payloads. Default false (IP = sensitive). */
+  LOGMEIN_SYNC_LOCAL_IP: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /**
    * Fontes de triagem nativa do GLPI usadas quando NATIVE_GLPI_TRIAGE_ENABLED=true.
    *   itilcategory (default) — apenas ITILCategory via REST API do GLPI.
    *   form                   — apenas Forms nativos via endpoint PHP form.catalog.php.

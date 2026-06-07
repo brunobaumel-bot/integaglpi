@@ -4,6 +4,8 @@ import type {
   CreateGlpiTicketInput,
   FindGlpiTicketForEntitySelectionInput,
   GlpiComputerAssetCandidate,
+  GlpiComputerHardwarePayload,
+  GlpiComputerHardwareUpdate,
   GlpiContactLookupResult,
   GlpiItilCategory,
   GlpiTicket,
@@ -646,6 +648,71 @@ export class GlpiClient {
     }
 
     return assets;
+  }
+
+  /**
+   * Sends hardware inventory data to the internal PHP bridge (integaglpi-hw-bridge.php).
+   *
+   * The bridge lives in the LiteSpeed docroot (public/) so LiteSpeed serves it as a standalone
+   * PHP file, bypassing GLPI 11's Symfony router which applies CSRF protection to POST requests
+   * on plugin paths (/plugins/*). Files that exist in the docroot are NOT rewritten to index.php
+   * by the .htaccess RewriteCond %{REQUEST_FILENAME} !-f rule.
+   *
+   * The bridge uses X-Integaglpi-Key auth and writes to GLPI via native PHP/GLPI classes.
+   * Never includes PII: no localUsers, no windowsProfiles, no lastLogonUserName.
+   * IP is omitted unless explicitly passed (controlled by LOGMEIN_SYNC_LOCAL_IP flag).
+   */
+  public async syncComputerHardware(
+    computerId: number,
+    payload: GlpiComputerHardwarePayload,
+    options: { pluginBaseUrl: string; apiKey: string; timeoutMs?: number },
+  ): Promise<{ ok: boolean; result?: Record<string, unknown>; error?: string }> {
+    // Bridge is at the GLPI public/ docroot root, NOT under /plugins/ (to bypass GLPI CSRF router).
+    const glpiBaseUrl = options.pluginBaseUrl.replace(/\/apirest\.php.*$/, '').replace(/\/$/, '');
+    const url = `${glpiBaseUrl}/integaglpi-hw-bridge.php`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 15_000);
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          // X-Integaglpi-Key bypasses GLPI 11 / LiteSpeed Authorization interceptor.
+          'X-Integaglpi-Key': options.apiKey,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify({ computer_id: computerId, ...payload }),
+      });
+      const data = await response.json() as Record<string, unknown>;
+      return { ok: response.ok && data.ok === true, result: data };
+    } catch (error: unknown) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Updates a Computer record in GLPI with hardware inventory data.
+   * Only sends fields that are non-null. Uses PUT /Computer/{id}.
+   * Caller must ensure entitiesId is correct. No ticket/entity/user mutations.
+   */
+  public async updateComputerHardware(computerId: number, fields: GlpiComputerHardwareUpdate): Promise<boolean> {
+    const input: Record<string, unknown> = {};
+    if (fields.serial != null) input.serial = fields.serial.slice(0, 255);
+    if (fields.manufacturers_id != null) input.manufacturers_id = fields.manufacturers_id;
+    if (fields.computermodels_id != null) input.computermodels_id = fields.computermodels_id;
+    if (fields.comment != null) input.comment = fields.comment.slice(0, 1000);
+
+    if (Object.keys(input).length === 0) return true;
+
+    const response = await this.requestJson<JsonObject>(
+      `/Computer/${computerId}`,
+      { method: 'PUT', body: JSON.stringify({ input }) },
+      'glpi_computer_hw_update',
+    );
+    return Boolean(response);
   }
 
   public async checkApiHealth(): Promise<{ ok: boolean; latencyMs: number | null; errorStage: string | null }> {

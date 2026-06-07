@@ -11,6 +11,38 @@ export interface GlpiItilCategory {
   is_helpdeskvisible: boolean;
 }
 
+export interface GlpiComputerHardwareUpdate {
+  serial?: string | null;
+  manufacturers_id?: number | null;
+  computermodels_id?: number | null;
+  comment?: string | null;
+}
+
+/** Payload sent to the PHP bridge computer.hardware.sync.php. No PII fields. */
+export interface GlpiComputerHardwarePayload {
+  service_tag?: string | null;
+  manufacturer?: string | null;
+  model?: string | null;
+  memory_mb?: number | null;
+  processors?: Array<{
+    type: string | null;
+    number_of_cores: number | null;
+    number_of_processors: number | null;
+    speed_mhz: number | null;
+  }>;
+  drives?: Array<{
+    name: string | null;
+    capacity_mb: number | null;
+    serial_number: string | null;
+  }>;
+  /** Only included when LOGMEIN_SYNC_LOCAL_IP=true. */
+  network_connections?: Array<{
+    name: string | null;
+    mac_address: string | null;
+    ip_address?: string | null;
+  }>;
+}
+
 export interface GlpiComputerAssetCandidate {
   id: number;
   name: string | null;

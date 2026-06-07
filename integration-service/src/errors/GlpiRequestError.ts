@@ -13,6 +13,8 @@ export type GlpiFailureStage =
   | 'glpi_followup_create'
   | 'glpi_document_upload'
   | 'glpi_document_item_link'
+  | 'glpi_computer_lookup'
+  | 'glpi_computer_hw_update'
   | 'ai_analysis';
 
 export class GlpiRequestError extends Error {
