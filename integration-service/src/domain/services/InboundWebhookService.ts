@@ -2,6 +2,7 @@ import type { MetaWebhookPayload, ParsedMetaInboundMessage } from '../../adapter
 import type { MediaProcessingService } from './MediaProcessingService.js';
 import type { MetaClient } from '../../adapters/meta/MetaClient.js';
 import type { GlpiClient } from '../../adapters/glpi/GlpiClient.js';
+import type { CreateGlpiTicketInput } from '../../adapters/glpi/glpiTypes.js';
 import type { Contact } from '../entities/Contact.js';
 import type { Conversation } from '../entities/Conversation.js';
 import type { ConversationRepository } from '../../repositories/contracts/ConversationRepository.js';
@@ -26,7 +27,7 @@ import { GlpiTriageCacheRepository } from '../../cache/GlpiTriageCacheRepository
 import type { SettingsService } from './SettingsService.js';
 import type { AuditService } from './AuditService.js';
 import type { ContactEntityResolutionService } from './ContactEntityResolutionService.js';
-import type { ContactProfileCollectionState, ContactProfileService } from './ContactProfileService.js';
+import type { ContactProfileCollectionState, ContactProfileData, ContactProfileService } from './ContactProfileService.js';
 import type { CustomerExperienceService } from './CustomerExperienceService.js';
 import type { MessageConfigurationService, MessageSendPlan } from './MessageConfigurationService.js';
 import type { BusinessHoursService } from './BusinessHoursService.js';
@@ -175,10 +176,10 @@ export class InboundWebhookService {
     return this._nativeTriageNormalizer;
   }
 
-  private async resolveRoutingOptions(): Promise<ActiveRoutingOption[]> {
+  private async resolveRoutingOptions(entityId: number | null = null): Promise<ActiveRoutingOption[]> {
     const normalizer = this.getNativeTriageNormalizer();
     if (normalizer) {
-      return normalizer.getOptions();
+      return normalizer.getOptions(entityId);
     }
     return this.routingRepository.getActiveOptions();
   }
@@ -443,8 +444,11 @@ export class InboundWebhookService {
 
         conversationId = existingConversation?.id ?? null;
 
+        const knownEntityForTriage = typeof activeConversation?.glpiEntityId === 'number' && activeConversation.glpiEntityId > 0
+          ? activeConversation.glpiEntityId
+          : (await this.findRememberedEntity(contact.phoneE164))?.glpiEntityId ?? null;
         const toMeta = InboundWebhookService.digitsOnlyForMeta(contact.phoneE164);
-        const routingOptions = await this.resolveRoutingOptions();
+        const routingOptions = await this.resolveRoutingOptions(knownEntityForTriage);
         const menuHeading = await this.settingsService.getMessage('menu_message');
         const menuBody = buildMenuMessage(routingOptions, menuHeading);
         let closedConversationNoticeSent = false;
@@ -932,11 +936,16 @@ export class InboundWebhookService {
             '[integration-service][contact_profile][CONTACT_PROFILE_SNAPSHOT_CREATED]',
           );
 
-          const rememberedEntity = await this.findRememberedEntity(contact.phoneE164);
+          const resolvedEntity = await this.resolveEntityFromEquipmentTagOrMemory({
+            phoneE164: contact.phoneE164,
+            contactId: contact.id,
+            profile,
+            conversationId: activeConversation.id,
+          });
           const entityMode = this.contactEntityResolutionService
             ? await this.contactEntityResolutionService.getMode()
             : 'defer_until_known';
-          if (!rememberedEntity) {
+          if (!resolvedEntity) {
             await this.conversationRepository.updateQueueAndStatus(
               activeConversation.id,
               activeConversation.queueId ?? null,
@@ -990,19 +999,19 @@ export class InboundWebhookService {
           const requesterUserId = await this.resolveRequesterUserId(
             contact.phoneE164,
             profile,
-            rememberedEntity.glpiEntityId,
+            resolvedEntity.glpiEntityId,
             activeConversation.id,
           );
           // PARTE A: recover native GLPI IDs stored at queue-selection time.
           const nativeItilCategoryIdActive = typeof rawState?.glpi_itil_category_id === 'number' ? rawState.glpi_itil_category_id : null;
           const nativeFormIdActive = typeof rawState?.glpi_form_id === 'number' ? rawState.glpi_form_id : null;
-          const ticketId = await this.glpiClient.createTicket(
+          const ticketId = await this.createTicketWithNativeCategoryFallback(
             {
               title: ticketPayload.title,
               content: ticketPayload.content,
               requesterPhone: contact.phoneE164,
               requesterName: contact.name,
-              entitiesId: rememberedEntity.glpiEntityId,
+              entitiesId: resolvedEntity.glpiEntityId,
               assignedUserId: assignment?.glpiUserId ?? null,
               assignedGroupId: assignment?.glpiGroupId ?? null,
               requesterUserId,
@@ -1010,14 +1019,15 @@ export class InboundWebhookService {
               glpiFormId: nativeFormIdActive,
             },
             { timeoutMs: ROUTING_GLPI_CREATE_TIMEOUT_MS },
+            { conversationId: activeConversation.id, stage: 'profile_completed_active' },
           );
 
           const linked = await this.conversationRepository.linkGlpiTicket(
             activeConversation.id,
             ticketId,
             activeConversation.queueId,
-            rememberedEntity.glpiEntityId,
-            rememberedEntity.glpiEntityName,
+            resolvedEntity.glpiEntityId,
+            resolvedEntity.glpiEntityName,
           );
           if (linked) {
             await this.metaClient.sendTextMessage({
@@ -1323,11 +1333,16 @@ export class InboundWebhookService {
                   return;
                 }
 
-                const rememberedEntity = await this.findRememberedEntity(contact.phoneE164);
+                const resolvedEntity = await this.resolveEntityFromEquipmentTagOrMemory({
+                  phoneE164: contact.phoneE164,
+                  contactId: contact.id,
+                  profile,
+                  conversationId: lockedConversation.id,
+                });
                 const entityMode = this.contactEntityResolutionService
                   ? await this.contactEntityResolutionService.getMode()
                   : 'defer_until_known';
-                if (!rememberedEntity) {
+                if (!resolvedEntity) {
                   await this.conversationRepository.updateQueueAndStatus(
                     lockedConversation.id,
                     lockedConversation.queueId ?? null,
@@ -1360,7 +1375,7 @@ export class InboundWebhookService {
                 const requesterUserId = await this.resolveRequesterUserId(
                   contact.phoneE164,
                   profile,
-                  rememberedEntity.glpiEntityId,
+                  resolvedEntity.glpiEntityId,
                   lockedConversation.id,
                 );
                 // PARTE A: recover native GLPI IDs stored at queue-selection time.
@@ -1370,13 +1385,13 @@ export class InboundWebhookService {
                 const nativeFormIdLocked = typeof lockedConversation.profileCollectionState?.glpi_form_id === 'number'
                   ? lockedConversation.profileCollectionState.glpi_form_id
                   : null;
-                const ticketId = await this.glpiClient.createTicket(
+                const ticketId = await this.createTicketWithNativeCategoryFallback(
                   {
                     title: profileTicketPayload.title,
                     content: profileTicketPayload.content,
                     requesterPhone: contact.phoneE164,
                     requesterName: contact.name,
-                    entitiesId: rememberedEntity.glpiEntityId,
+                    entitiesId: resolvedEntity.glpiEntityId,
                     assignedUserId: assignment?.glpiUserId ?? null,
                     assignedGroupId: assignment?.glpiGroupId ?? null,
                     requesterUserId,
@@ -1384,13 +1399,14 @@ export class InboundWebhookService {
                     glpiFormId: nativeFormIdLocked,
                   },
                   { timeoutMs: ROUTING_GLPI_CREATE_TIMEOUT_MS },
+                  { conversationId: lockedConversation.id, stage: 'profile_completed_locked' },
                 );
                 const linked = await this.conversationRepository.linkGlpiTicket(
                   lockedConversation.id,
                   ticketId,
                   lockedConversation.queueId,
-                  rememberedEntity.glpiEntityId,
-                  rememberedEntity.glpiEntityName,
+                  resolvedEntity.glpiEntityId,
+                  resolvedEntity.glpiEntityName,
                 );
                 await this.messageRepository.updateState({
                   messageId: inboundMessage.messageId,
@@ -1528,7 +1544,7 @@ export class InboundWebhookService {
               );
               let ticketId: number;
               try {
-                ticketId = await this.glpiClient.createTicket(
+                ticketId = await this.createTicketWithNativeCategoryFallback(
                   {
                     title: routedTicketPayload.title,
                     content: routedTicketPayload.content,
@@ -1542,6 +1558,7 @@ export class InboundWebhookService {
                     glpiFormId: selectedOption.glpiFormId ?? null,
                   },
                   { timeoutMs: ROUTING_GLPI_CREATE_TIMEOUT_MS },
+                  { conversationId: lockedConversation.id, stage: 'queue_selected' },
                 );
               } catch (error: unknown) {
                 logger.error(
@@ -4042,8 +4059,16 @@ export class InboundWebhookService {
   }
 
   private async advanceCompletedProfileConversation(input: CompletedProfileTransitionInput): Promise<void> {
-    const rememberedEntity = await this.findRememberedEntity(input.contact.phoneE164);
-    if (!rememberedEntity) {
+    const profile = this.contactProfileService
+      ? await this.contactProfileService.findProfile(input.contact.phoneE164)
+      : null;
+    const resolvedEntity = await this.resolveEntityFromEquipmentTagOrMemory({
+      phoneE164: input.contact.phoneE164,
+      contactId: input.contact.id,
+      profile,
+      conversationId: input.conversation.id,
+    });
+    if (!resolvedEntity) {
       await this.deferTicketCreationForEntitySelection({
         contact: input.contact,
         inboundMessage: input.inboundMessage,
@@ -4059,9 +4084,6 @@ export class InboundWebhookService {
       return;
     }
 
-    const profile = this.contactProfileService
-      ? await this.contactProfileService.findProfile(input.contact.phoneE164)
-      : null;
     const assignment = input.conversation.queueId
       ? await this.routingRepository.findAssignmentByQueueId(input.conversation.queueId)
       : null;
@@ -4085,21 +4107,26 @@ export class InboundWebhookService {
     const requesterUserId = await this.resolveRequesterUserId(
       input.contact.phoneE164,
       profile,
-      rememberedEntity.glpiEntityId,
+      resolvedEntity.glpiEntityId,
       input.conversation.id,
     );
-    const ticketId = await this.glpiClient.createTicket(
+    const nativeItilCategoryId = typeof state.glpi_itil_category_id === 'number' ? state.glpi_itil_category_id : null;
+    const nativeFormId = typeof state.glpi_form_id === 'number' ? state.glpi_form_id : null;
+    const ticketId = await this.createTicketWithNativeCategoryFallback(
       {
         title: ticketPayload.title,
         content: ticketPayload.content,
         requesterPhone: input.contact.phoneE164,
         requesterName: input.contact.name,
-        entitiesId: rememberedEntity.glpiEntityId,
+        entitiesId: resolvedEntity.glpiEntityId,
         assignedUserId: assignment?.glpiUserId ?? null,
         assignedGroupId: assignment?.glpiGroupId ?? null,
         requesterUserId,
+        itilcategoriesId: nativeItilCategoryId,
+        glpiFormId: nativeFormId,
       },
       { timeoutMs: ROUTING_GLPI_CREATE_TIMEOUT_MS },
+      { conversationId: input.conversation.id, stage: 'complete_profile_transition' },
     );
     this.logTicketCreatedWithFallback(input.contact, input.inboundMessage.messageId, ticketId);
 
@@ -4107,8 +4134,8 @@ export class InboundWebhookService {
       input.conversation.id,
       ticketId,
       input.conversation.queueId,
-      rememberedEntity.glpiEntityId,
-      rememberedEntity.glpiEntityName,
+      resolvedEntity.glpiEntityId,
+      resolvedEntity.glpiEntityName,
     );
     if (linked) {
       await this.metaClient.sendTextMessage({
@@ -4126,7 +4153,7 @@ export class InboundWebhookService {
       {
         conversation_id: input.conversation.id,
         glpi_ticket_id: ticketId,
-        glpi_entity_id: rememberedEntity.glpiEntityId,
+        glpi_entity_id: resolvedEntity.glpiEntityId,
         linked,
       },
       '[integration-service][contact_profile][COMPLETE_PROFILE_TICKET_CREATED_FROM_MEMORY]',
@@ -4175,6 +4202,255 @@ export class InboundWebhookService {
     }
 
     return rememberedEntity;
+  }
+
+  private async resolveEntityFromEquipmentTagOrMemory(input: {
+    phoneE164: string;
+    contactId: string | null;
+    profile: ContactProfileData | null;
+    conversationId: string | null;
+  }): Promise<ContactEntityMemory | null> {
+    const rememberedEntity = await this.findRememberedEntity(input.phoneE164);
+    const equipmentTag = this.extractProfileEquipmentTag(input.profile);
+
+    if (equipmentTag === null) {
+      return rememberedEntity;
+    }
+
+    let assets: Awaited<ReturnType<GlpiClient['findComputersByOtherserial']>>;
+    try {
+      assets = await this.glpiClient.findComputersByOtherserial(equipmentTag, 10);
+    } catch (error: unknown) {
+      logger.warn(
+        {
+          conversation_id: input.conversationId,
+          equipment_tag: equipmentTag,
+          error_message: error instanceof Error ? error.message : String(error),
+        },
+        '[integration-service][entity][ASSET_TAG_LOOKUP_FAILED_USING_MEMORY]',
+      );
+      this.recordAudit({
+        conversationId: input.conversationId ?? undefined,
+        direction: 'inbound',
+        eventType: 'CONTACT_ENTITY_ASSET_TAG_LOOKUP_FAILED',
+        status: 'failed',
+        severity: 'warning',
+        source: 'InboundWebhookService',
+        payload: {
+          equipment_tag: equipmentTag,
+          fallback: rememberedEntity ? 'contact_memory' : 'manual_entity_selection',
+        },
+      });
+      return rememberedEntity;
+    }
+
+    if (assets.length === 0) {
+      return rememberedEntity;
+    }
+
+    if (assets.length > 1) {
+      logger.warn(
+        {
+          conversation_id: input.conversationId,
+          equipment_tag: equipmentTag,
+          asset_matches: assets.length,
+        },
+        '[integration-service][entity][ASSET_TAG_DUPLICATE_ENTITY_SELECTION_REQUIRED]',
+      );
+      this.recordAudit({
+        conversationId: input.conversationId ?? undefined,
+        direction: 'inbound',
+        eventType: 'CONTACT_ENTITY_ASSET_TAG_DUPLICATE',
+        status: 'pending',
+        severity: 'warning',
+        source: 'InboundWebhookService',
+        payload: {
+          equipment_tag: equipmentTag,
+          asset_matches: assets.length,
+          action: 'manual_entity_selection',
+        },
+      });
+      return null;
+    }
+
+    const asset = assets[0];
+    if (asset.entitiesId === null || asset.entitiesId <= 0) {
+      logger.warn(
+        {
+          conversation_id: input.conversationId,
+          equipment_tag: equipmentTag,
+          asset_id: asset.id,
+        },
+        '[integration-service][entity][ASSET_TAG_WITHOUT_ENTITY_USING_MEMORY]',
+      );
+      return rememberedEntity;
+    }
+
+    const resolved = await this.rememberAssetEntityMatch({
+      phoneE164: input.phoneE164,
+      contactId: input.contactId,
+      conversationId: input.conversationId,
+      equipmentTag,
+      assetId: asset.id,
+      entityId: asset.entitiesId,
+      previousEntity: rememberedEntity,
+    });
+
+    return resolved;
+  }
+
+  private extractProfileEquipmentTag(profile: ContactProfileData | null): string | null {
+    if (!profile || profile.equipment_tag_unknown === true) {
+      return null;
+    }
+
+    const tag = typeof profile.last_equipment_tag === 'string' ? profile.last_equipment_tag.trim() : '';
+    return tag === '' ? null : tag;
+  }
+
+  private async rememberAssetEntityMatch(input: {
+    phoneE164: string;
+    contactId: string | null;
+    conversationId: string | null;
+    equipmentTag: string;
+    assetId: number;
+    entityId: number;
+    previousEntity: ContactEntityMemory | null;
+  }): Promise<ContactEntityMemory> {
+    const entityName = input.previousEntity?.glpiEntityId === input.entityId
+      ? input.previousEntity.glpiEntityName
+      : null;
+
+    let remembered: ContactEntityMemory | null = null;
+    if (this.contactEntityMemoryRepository) {
+      try {
+        remembered = await this.contactEntityMemoryRepository.rememberEntityForPhone({
+          phoneE164: input.phoneE164,
+          contactId: input.contactId,
+          glpiEntityId: input.entityId,
+          glpiEntityName: entityName,
+          sourceConversationId: input.conversationId,
+          source: 'asset_tag_match',
+        });
+      } catch (error: unknown) {
+        logger.warn(
+          {
+            conversation_id: input.conversationId,
+            equipment_tag: input.equipmentTag,
+            asset_id: input.assetId,
+            glpi_entity_id: input.entityId,
+            error_message: error instanceof Error ? error.message : String(error),
+          },
+          '[integration-service][entity][ASSET_TAG_MEMORY_SAVE_FAILED]',
+        );
+      }
+    }
+
+    this.recordAudit({
+      conversationId: input.conversationId ?? undefined,
+      direction: 'inbound',
+      eventType: 'CONTACT_ENTITY_RESOLVED_FROM_ASSET_TAG',
+      status: 'success',
+      severity: 'info',
+      source: 'InboundWebhookService',
+      payload: {
+        equipment_tag: input.equipmentTag,
+        asset_id: input.assetId,
+        glpi_entity_id: input.entityId,
+        previous_glpi_entity_id: input.previousEntity?.glpiEntityId ?? null,
+        source: 'asset_tag_match',
+      },
+    });
+
+    if (remembered) {
+      return remembered;
+    }
+
+    const now = new Date();
+    return {
+      id: `asset:${input.assetId}:${input.entityId}`,
+      phoneE164: input.phoneE164,
+      contactId: input.contactId,
+      glpiEntityId: input.entityId,
+      glpiEntityName: entityName,
+      sourceTicketId: null,
+      sourceConversationId: input.conversationId,
+      source: 'asset_tag_match',
+      isActive: true,
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  private async createTicketWithNativeCategoryFallback(
+    input: CreateGlpiTicketInput,
+    options: { timeoutMs?: number },
+    context: { conversationId: string | null; stage: string },
+  ): Promise<number> {
+    try {
+      return await this.glpiClient.createTicket(input, options);
+    } catch (error: unknown) {
+      if (!this.shouldRetryWithoutNativeCategory(input, error)) {
+        throw error;
+      }
+
+      logger.warn(
+        {
+          conversation_id: context.conversationId,
+          stage: context.stage,
+          glpi_entity_id: input.entitiesId,
+          itilcategories_id: input.itilcategoriesId ?? null,
+          glpi_form_id: input.glpiFormId ?? null,
+          error_message: error instanceof Error ? error.message : String(error),
+        },
+        '[integration-service][routing][GLPI_CATEGORY_REJECTED_RETRY_WITHOUT_CATEGORY]',
+      );
+      this.recordAudit({
+        conversationId: context.conversationId ?? undefined,
+        direction: 'inbound',
+        eventType: 'GLPI_NATIVE_CATEGORY_RETRY_WITHOUT_CATEGORY',
+        status: 'pending',
+        severity: 'warning',
+        source: 'InboundWebhookService',
+        payload: {
+          stage: context.stage,
+          glpi_entity_id: input.entitiesId,
+          itilcategories_id: input.itilcategoriesId ?? null,
+          glpi_form_id: input.glpiFormId ?? null,
+        },
+      });
+
+      return this.glpiClient.createTicket(
+        {
+          ...input,
+          itilcategoriesId: null,
+        },
+        options,
+      );
+    }
+  }
+
+  private shouldRetryWithoutNativeCategory(input: CreateGlpiTicketInput, error: unknown): boolean {
+    if (input.itilcategoriesId === null || input.itilcategoriesId === undefined || input.itilcategoriesId <= 0) {
+      return false;
+    }
+
+    const err = error as { message?: unknown; responseBody?: unknown; statusCode?: unknown };
+    const serialized = [
+      typeof err.message === 'string' ? err.message : '',
+      typeof err.statusCode === 'number' ? String(err.statusCode) : '',
+      this.safeStringifyForDecision(err.responseBody),
+    ].join(' ').toLowerCase();
+
+    return /itilcategor|categoria|category|entit|entity|invalid|inval|not found|não encontrado|nao encontrado/.test(serialized);
+  }
+
+  private safeStringifyForDecision(value: unknown): string {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return '';
+    }
   }
 
   private async deferTicketCreationForEntitySelection(input: EntitySelectionDeferralInput): Promise<string> {

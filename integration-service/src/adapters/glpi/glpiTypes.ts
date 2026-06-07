@@ -11,6 +11,14 @@ export interface GlpiItilCategory {
   is_helpdeskvisible: boolean;
 }
 
+export interface GlpiComputerAssetCandidate {
+  id: number;
+  name: string | null;
+  serial: string | null;
+  otherserial: string | null;
+  entitiesId: number | null;
+}
+
 /**
  * Formulário nativo do GLPI (glpi_forms_forms).
  * Retornado pelo endpoint PHP integaglpi/front/form.catalog.php.
