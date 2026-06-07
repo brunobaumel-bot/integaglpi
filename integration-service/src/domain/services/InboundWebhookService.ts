@@ -19,7 +19,7 @@ import { ContactResolutionService } from './ContactResolutionService.js';
 import type { ScheduleService } from './ScheduleService.js';
 import type { GlpiFailureStage } from '../../errors/GlpiRequestError.js';
 import type { KeyLock } from '../contracts/KeyLock.js';
-import { buildMenuMessage, parseMenuDigitChoice } from './routingMenuMessage.js';
+import { buildMenuMessage, formatMenuOptionLabel, parseMenuDigitChoice } from './routingMenuMessage.js';
 import { env } from '../../config/env.js';
 import { GlpiItilCategoryNormalizer } from '../../adapters/glpi/GlpiItilCategoryNormalizer.js';
 import { GlpiFormCatalogAdapter } from '../../adapters/glpi/GlpiFormCatalogAdapter.js';
@@ -3385,9 +3385,9 @@ export class InboundWebhookService {
           this.metaClient,
           input.toMeta,
           interactiveBody,
-          input.routingOptions.map((option) => ({
+          input.routingOptions.map((option, index) => ({
             id: option.optionKey,
-            title: option.label,
+            title: truncateButtonTitle(formatMenuOptionLabel(option.label, index)),
           })),
         );
         logger.info(
@@ -4692,7 +4692,7 @@ function buildTextOptionsFallback(body: string, buttons: Array<{ id: string; tit
   return [
     body,
     '',
-    ...buttons.map((button, index) => `${index + 1}. ${button.title}`),
+    ...buttons.map((button, index) => formatMenuOptionLabel(button.title, index)),
     '',
     'Responda tocando na opção correspondente quando ela aparecer novamente.',
   ].join('\n');

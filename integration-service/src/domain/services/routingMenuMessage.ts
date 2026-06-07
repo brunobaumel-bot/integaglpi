@@ -19,8 +19,12 @@ export function normalizeMenuHeading(heading = NUMERIC_MENU_HEADING): string {
   return `${trimmedHeading}\n${NUMERIC_MENU_HINT}`;
 }
 
+export function formatMenuOptionLabel(label: string, index: number): string {
+  return `${index + 1} - ${label}`;
+}
+
 export function buildMenuMessage(options: ActiveRoutingOption[], heading = NUMERIC_MENU_HEADING): string {
-  const lines = options.map((opt, index) => `${index + 1} - ${opt.label}`);
+  const lines = options.map((opt, index) => formatMenuOptionLabel(opt.label, index));
   const normalizedHeading = normalizeMenuHeading(heading);
   return [normalizedHeading, '', ...lines].join('\n');
 }
@@ -35,7 +39,7 @@ export function parseMenuDigitChoice(messageText: string | null | undefined, opt
     return null;
   }
 
-  const match = /^([1-9])(?:\s*[.)-])?(?:\s+.*)?$/.exec(raw);
+  const match = /^([1-9]\d*)(?:\s*[.)-])?(?:\s+.*)?$/.exec(raw);
   if (!match) {
     return null;
   }

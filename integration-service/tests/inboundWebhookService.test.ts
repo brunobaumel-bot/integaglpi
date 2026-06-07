@@ -22,7 +22,7 @@ import type {
   SolutionActionRepository,
 } from '../src/repositories/contracts/SolutionActionRepository.js';
 import { InboundWebhookService } from '../src/domain/services/InboundWebhookService.js';
-import { buildMenuMessage } from '../src/domain/services/routingMenuMessage.js';
+import { buildMenuMessage, formatMenuOptionLabel } from '../src/domain/services/routingMenuMessage.js';
 import type { AuditService } from '../src/domain/services/AuditService.js';
 import type { KeyLock } from '../src/domain/contracts/KeyLock.js';
 import type { MessageSettingKey } from '../src/domain/services/SettingsService.js';
@@ -3373,7 +3373,7 @@ describe('InboundWebhookService', () => {
     expect(meta.sendReplyButtons).toHaveBeenCalledWith(
       '5511999999999',
       buildMenuMessage(options),
-      options.map((option) => ({ id: option.optionKey, title: option.label })),
+      options.map((option, index) => ({ id: option.optionKey, title: formatMenuOptionLabel(option.label, index) })),
     );
     expect(conversationRepository.lastCreateInput?.status).toBe('awaiting_queue_selection');
   });
@@ -3734,6 +3734,12 @@ describe('InboundWebhookService', () => {
     expect(glpiClient.createTicket).not.toHaveBeenCalled();
     expect(meta.sendReplyButtons).toHaveBeenCalledTimes(1);
     expect(meta.sendReplyButtons.mock.calls[0]?.[1]).toContain('Nao entendi');
+    expect(meta.sendReplyButtons.mock.calls[0]?.[2]).toEqual(
+      sampleRoutingOptions.map((option, index) => ({
+        id: option.optionKey,
+        title: formatMenuOptionLabel(option.label, index),
+      })),
+    );
     expect(meta.sendTextMessage).not.toHaveBeenCalled();
     expect(conversationRepository.updatedStatuses).toEqual([]);
   });
