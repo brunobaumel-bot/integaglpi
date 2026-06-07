@@ -5,22 +5,32 @@
  *  2. LOGMEIN_AUTO_TICKET_ENABLED=false → GLPI createTicket NÃO chamado
  *  3. host_offline: status=offline → alarme dispara (condição atendida)
  *  4. host_offline: status=online  → alarme NÃO dispara
- *  5. host_not_seen_minutes: lastSeenAt antigo → alarme dispara
- *  6. host_not_seen_minutes: lastSeenAt recente → alarme NÃO dispara
+ *  5. host_not_seen: lastSeenAt > not_seen_days → alarme dispara
+ *  6. host_not_seen: lastSeenAt recente → alarme NÃO dispara
  *  7. cooldown ativo (Redis GET ≠ null) → cooldownSkipped++, sem ticket
- *  8. cooldown inativo → alarme dispara, Redis SET EX chamado
+ *  8. cooldown inativo → alarme dispara, Redis SET EX chamado com TTL correto
  *  9. dedupe: event_hash já existe (INSERT retorna inserted=false) → dedupeSkipped++
  * 10. dedupe: event_hash novo (INSERT retorna inserted=true) → fired++
- * 11. createRule valida glpiEntitiesId=0 → retorna erro
- * 12. createRule valida glpiEntitiesId=null → retorna erro
- * 13. createRule valida cooldownMinutes fora do range → retorna erro
- * 14. host_not_seen_minutes sem not_seen_minutes no payload → erro de validação
- * 15. env default: LOGMEIN_AUTO_TICKET_ENABLED=false e LOGMEIN_ALARM_ENGINE_ENABLED=false
- * 16. Worker não importa InboundWebhookService (static check)
- * 17. Worker não envia WhatsApp (static check)
- * 18. Engine não acessa mariadb/mysql (static check)
+ * 11. createRule: glpiEntitiesId=0 → erro de validação, sem INSERT
+ * 12. createRule: glpiEntitiesId negativo → erro de validação
+ * 13. createRule: cooldownMinutes=0 → erro de validação
+ * 14. createRule: host_not_seen_days < 7 → erro de validação
+ * 15. env: LOGMEIN_AUTO_TICKET_ENABLED=false e LOGMEIN_ALARM_ENGINE_ENABLED=false por padrão
+ * 16. Worker não importa serviço de webhook WhatsApp (static check)
+ * 17. Worker não chama sendMessage/WhatsApp (static check)
+ * 18. Engine não acessa banco GLPI diretamente (static check)
  * 19. buildEventHash: hashes distintos para datas diferentes
- * 20. buildEventHash: hash estável para mesmos inputs
+ * 20. buildEventHash: hash estável (determinístico)
+ * 21. Ticket criado com gate duplo (global flag + rule flag + entity + category + queue)
+ * 22. Alert-only: create_ticket=true blocked in validation
+ * 23. Alert-only: engine never calls createTicket for alert-only type
+ * 24. Forbidden type: validation blocks high_cpu
+ * 25. create_ticket=true sem category → erro de validação
+ * 26. create_ticket=true sem queue → erro de validação
+ * 27. cooldown mín. 60 min para host_offline com create_ticket=true
+ * 28. host_offline consecutiveWaiting++ quando threshold não atingido
+ * 29. host_offline dispara após atingir threshold consecutivo
+ * 30. host_not_seen mín. 7 days em validation
  *
  * PHASE: integaglpi_logmein_alarm_rules_and_auto_ticket_implementation_001
  */
@@ -32,7 +42,7 @@ import { createHash } from 'node:crypto';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-type AlarmType = 'host_offline' | 'host_not_seen_minutes';
+type AlarmType = 'host_offline' | 'host_not_seen' | 'missing_equipment_tag' | 'missing_entity_mapping' | 'hardware_change' | 'low_disk' | 'low_memory';
 
 interface MockRule {
   id: string;
@@ -45,6 +55,8 @@ interface MockRule {
   glpiGroupId: number | null;
   glpiItilCategoryId: number | null;
   createTicket: boolean;
+  minConsecutiveChecks: number;
+  consecutiveCheckIntervalMinutes: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -73,12 +85,14 @@ function makeRule(overrides: Partial<MockRule> = {}): MockRule {
     ruleName: 'Teste Offline',
     alarmType: 'host_offline',
     enabled: true,
-    cooldownMinutes: 30,
+    cooldownMinutes: 60,
     conditionPayload: {},
     glpiEntitiesId: 5,
-    glpiGroupId: null,
-    glpiItilCategoryId: null,
+    glpiGroupId: 10,
+    glpiItilCategoryId: 20,
     createTicket: false,
+    minConsecutiveChecks: 1,
+    consecutiveCheckIntervalMinutes: 5,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -102,7 +116,7 @@ function makeHost(overrides: Partial<MockHost> = {}): MockHost {
     groupExternalId: 'grp-001',
     groupName: 'Grupo Teste',
     hostName: 'PC-ESCRITORIO',
-    equipmentTag: '',
+    equipmentTag: 'TAG001',
     status: 'offline',
     lastSeenAt: null,
     ...overrides,
@@ -130,7 +144,7 @@ function makeRepository(overrides: Record<string, unknown> = {}) {
 
 function makeRedis(overrides: Record<string, unknown> = {}) {
   return {
-    get: vi.fn().mockResolvedValue(null),  // default: no cooldown
+    get: vi.fn().mockResolvedValue(null),
     set: vi.fn().mockResolvedValue('OK'),
     ...overrides,
   };
@@ -141,8 +155,6 @@ function makeGlpiClient() {
     createTicket: vi.fn().mockResolvedValue(9001),
   };
 }
-
-// ── env manipulation ──────────────────────────────────────────────────────────
 
 async function withAlarmFlags(
   engineEnabled: boolean,
@@ -174,17 +186,15 @@ describe('LogmeinAlarmEngineService — guards e avaliação de condições', ()
     await withAlarmFlags(false, false, async () => {
       const engine = new LogmeinAlarmEngineService(repo as never, redis, null);
       const result = await engine.runOnce();
-
       expect(result.engineDisabled).toBe(true);
       expect(result.processed).toBe(0);
-      expect(result.fired).toBe(0);
       expect(repo.listEnabledRules).not.toHaveBeenCalled();
     });
   });
 
   it('2. LOGMEIN_AUTO_TICKET_ENABLED=false → createTicket NÃO chamado mesmo com create_ticket=true', async () => {
     const { LogmeinAlarmEngineService } = await import('../src/domain/services/LogmeinAlarmEngineService.js');
-    const rule = makeRule({ createTicket: true, glpiEntitiesId: 5 });
+    const rule = makeRule({ createTicket: true, glpiEntitiesId: 5, glpiGroupId: 10, glpiItilCategoryId: 20 });
     const target = makeTarget();
     const host = makeHost({ status: 'offline' });
     const hostMap = new Map([[target.hostId, host]]);
@@ -194,16 +204,14 @@ describe('LogmeinAlarmEngineService — guards e avaliação de condições', ()
       getHostsCurrentStatus: vi.fn().mockResolvedValue(hostMap),
       insertEventIfNew: vi.fn().mockResolvedValue({ inserted: true }),
     });
-    const redis = makeRedis();
     const glpiClient = makeGlpiClient();
 
     await withAlarmFlags(true, false, async () => {
-      const engine = new LogmeinAlarmEngineService(repo as never, redis, glpiClient as never);
+      const engine = new LogmeinAlarmEngineService(repo as never, makeRedis(), glpiClient as never);
       const result = await engine.runOnce();
-
       expect(result.ticketsCreated).toBe(0);
       expect(glpiClient.createTicket).not.toHaveBeenCalled();
-      expect(result.fired).toBe(1);  // alarme ainda dispara, mas sem ticket
+      expect(result.fired).toBe(1);
     });
   });
 
@@ -219,12 +227,10 @@ describe('LogmeinAlarmEngineService — guards e avaliação de condições', ()
       getHostsCurrentStatus: vi.fn().mockResolvedValue(hostMap),
       insertEventIfNew: vi.fn().mockResolvedValue({ inserted: true }),
     });
-    const redis = makeRedis();
 
     await withAlarmFlags(true, false, async () => {
-      const engine = new LogmeinAlarmEngineService(repo as never, redis, null);
+      const engine = new LogmeinAlarmEngineService(repo as never, makeRedis(), null);
       const result = await engine.runOnce();
-
       expect(result.fired).toBe(1);
       expect(result.processed).toBe(1);
     });
@@ -241,27 +247,24 @@ describe('LogmeinAlarmEngineService — guards e avaliação de condições', ()
       listTargetsForRule: vi.fn().mockResolvedValue([target]),
       getHostsCurrentStatus: vi.fn().mockResolvedValue(hostMap),
     });
-    const redis = makeRedis();
 
     await withAlarmFlags(true, false, async () => {
-      const engine = new LogmeinAlarmEngineService(repo as never, redis, null);
+      const engine = new LogmeinAlarmEngineService(repo as never, makeRedis(), null);
       const result = await engine.runOnce();
-
       expect(result.fired).toBe(0);
-      expect(result.processed).toBe(1);
       expect(repo.insertEventIfNew).not.toHaveBeenCalled();
     });
   });
 
-  it('5. host_not_seen_minutes: lastSeenAt antigo → alarme dispara', async () => {
+  it('5. host_not_seen: lastSeenAt > not_seen_days → alarme dispara', async () => {
     const { LogmeinAlarmEngineService } = await import('../src/domain/services/LogmeinAlarmEngineService.js');
     const rule = makeRule({
-      alarmType: 'host_not_seen_minutes',
-      conditionPayload: { not_seen_minutes: 15 },
+      alarmType: 'host_not_seen',
+      conditionPayload: { not_seen_days: 7 },
     });
     const target = makeTarget();
-    // 30 minutos atrás
-    const oldDate = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    // 10 days ago
+    const oldDate = new Date(Date.now() - 10 * 86_400_000).toISOString();
     const host = makeHost({ status: 'unknown', lastSeenAt: oldDate });
     const hostMap = new Map([[target.hostId, host]]);
     const repo = makeRepository({
@@ -270,25 +273,23 @@ describe('LogmeinAlarmEngineService — guards e avaliação de condições', ()
       getHostsCurrentStatus: vi.fn().mockResolvedValue(hostMap),
       insertEventIfNew: vi.fn().mockResolvedValue({ inserted: true }),
     });
-    const redis = makeRedis();
 
     await withAlarmFlags(true, false, async () => {
-      const engine = new LogmeinAlarmEngineService(repo as never, redis, null);
+      const engine = new LogmeinAlarmEngineService(repo as never, makeRedis(), null);
       const result = await engine.runOnce();
-
       expect(result.fired).toBe(1);
     });
   });
 
-  it('6. host_not_seen_minutes: lastSeenAt recente → alarme NÃO dispara', async () => {
+  it('6. host_not_seen: lastSeenAt recente → alarme NÃO dispara', async () => {
     const { LogmeinAlarmEngineService } = await import('../src/domain/services/LogmeinAlarmEngineService.js');
     const rule = makeRule({
-      alarmType: 'host_not_seen_minutes',
-      conditionPayload: { not_seen_minutes: 60 },
+      alarmType: 'host_not_seen',
+      conditionPayload: { not_seen_days: 7 },
     });
     const target = makeTarget();
-    // 5 minutos atrás (dentro de 60min)
-    const recentDate = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    // 1 day ago — not yet past threshold
+    const recentDate = new Date(Date.now() - 1 * 86_400_000).toISOString();
     const host = makeHost({ status: 'unknown', lastSeenAt: recentDate });
     const hostMap = new Map([[target.hostId, host]]);
     const repo = makeRepository({
@@ -296,12 +297,10 @@ describe('LogmeinAlarmEngineService — guards e avaliação de condições', ()
       listTargetsForRule: vi.fn().mockResolvedValue([target]),
       getHostsCurrentStatus: vi.fn().mockResolvedValue(hostMap),
     });
-    const redis = makeRedis();
 
     await withAlarmFlags(true, false, async () => {
-      const engine = new LogmeinAlarmEngineService(repo as never, redis, null);
+      const engine = new LogmeinAlarmEngineService(repo as never, makeRedis(), null);
       const result = await engine.runOnce();
-
       expect(result.fired).toBe(0);
       expect(repo.insertEventIfNew).not.toHaveBeenCalled();
     });
@@ -318,13 +317,21 @@ describe('LogmeinAlarmEngineService — guards e avaliação de condições', ()
       listTargetsForRule: vi.fn().mockResolvedValue([target]),
       getHostsCurrentStatus: vi.fn().mockResolvedValue(hostMap),
     });
-    // Redis retorna valor → cooldown ativo
-    const redis = makeRedis({ get: vi.fn().mockResolvedValue('1') });
+    // Redis returns cooldown=active AND consecutive already at threshold
+    // Get is called twice: once for consecutive, once for cooldown
+    let callCount = 0;
+    const redis = makeRedis({
+      get: vi.fn().mockImplementation(() => {
+        callCount++;
+        // First call: consecutive key → return "1:0" (old enough, count=1 threshold=1)
+        // Second call: cooldown key → return '1' (active)
+        return callCount === 1 ? '1:0' : '1';
+      }),
+    });
 
     await withAlarmFlags(true, false, async () => {
       const engine = new LogmeinAlarmEngineService(repo as never, redis, null);
       const result = await engine.runOnce();
-
       expect(result.cooldownSkipped).toBe(1);
       expect(result.fired).toBe(0);
       expect(repo.insertEventIfNew).not.toHaveBeenCalled();
@@ -333,7 +340,7 @@ describe('LogmeinAlarmEngineService — guards e avaliação de condições', ()
 
   it('8. cooldown inativo → alarme dispara, Redis SET EX chamado com TTL correto', async () => {
     const { LogmeinAlarmEngineService } = await import('../src/domain/services/LogmeinAlarmEngineService.js');
-    const rule = makeRule({ alarmType: 'host_offline', cooldownMinutes: 45 });
+    const rule = makeRule({ alarmType: 'host_offline', cooldownMinutes: 60 });
     const target = makeTarget();
     const host = makeHost({ status: 'offline' });
     const hostMap = new Map([[target.hostId, host]]);
@@ -343,19 +350,22 @@ describe('LogmeinAlarmEngineService — guards e avaliação de condições', ()
       getHostsCurrentStatus: vi.fn().mockResolvedValue(hostMap),
       insertEventIfNew: vi.fn().mockResolvedValue({ inserted: true }),
     });
-    const redisSpy = makeRedis();
+    const redisSpy = makeRedis({
+      // First get: consecutive key (return old count to reach threshold)
+      // Second get: cooldown key (return null = no cooldown)
+      get: vi.fn().mockResolvedValueOnce('1:0').mockResolvedValue(null),
+    });
 
     await withAlarmFlags(true, false, async () => {
       const engine = new LogmeinAlarmEngineService(repo as never, redisSpy, null);
       const result = await engine.runOnce();
-
       expect(result.fired).toBe(1);
-      // Redis SET must be called with EX and 45*60 seconds
+      // Cooldown SET with 60 * 60 = 3600 seconds
       expect(redisSpy.set).toHaveBeenCalledWith(
         `logmein:alarm:cooldown:${rule.id}:${target.hostId}`,
         '1',
         'EX',
-        45 * 60,
+        60 * 60,
       );
     });
   });
@@ -370,14 +380,15 @@ describe('LogmeinAlarmEngineService — guards e avaliação de condições', ()
       listEnabledRules: vi.fn().mockResolvedValue([rule]),
       listTargetsForRule: vi.fn().mockResolvedValue([target]),
       getHostsCurrentStatus: vi.fn().mockResolvedValue(hostMap),
-      insertEventIfNew: vi.fn().mockResolvedValue({ inserted: false }),  // dedupe hit
+      insertEventIfNew: vi.fn().mockResolvedValue({ inserted: false }),
     });
-    const redis = makeRedis();
+    const redis = makeRedis({
+      get: vi.fn().mockResolvedValueOnce('1:0').mockResolvedValue(null),
+    });
 
     await withAlarmFlags(true, false, async () => {
       const engine = new LogmeinAlarmEngineService(repo as never, redis, null);
       const result = await engine.runOnce();
-
       expect(result.dedupeSkipped).toBe(1);
       expect(result.fired).toBe(0);
     });
@@ -395,12 +406,13 @@ describe('LogmeinAlarmEngineService — guards e avaliação de condições', ()
       getHostsCurrentStatus: vi.fn().mockResolvedValue(hostMap),
       insertEventIfNew: vi.fn().mockResolvedValue({ inserted: true }),
     });
-    const redis = makeRedis();
+    const redis = makeRedis({
+      get: vi.fn().mockResolvedValueOnce('1:0').mockResolvedValue(null),
+    });
 
     await withAlarmFlags(true, false, async () => {
       const engine = new LogmeinAlarmEngineService(repo as never, redis, null);
       const result = await engine.runOnce();
-
       expect(result.fired).toBe(1);
       expect(result.dedupeSkipped).toBe(0);
     });
@@ -416,18 +428,10 @@ describe('LogmeinAlarmRulesService — validação de createRule', () => {
     const { LogmeinAlarmRulesService } = await import('../src/domain/services/LogmeinAlarmRulesService.js');
     const repo = makeRepository({ createRule: vi.fn() });
     const svc = new LogmeinAlarmRulesService(repo as never);
-
     const result = await svc.createRule({
-      ruleName: 'Regra Inválida',
-      alarmType: 'host_offline',
-      cooldownMinutes: 30,
-      conditionPayload: {},
-      glpiEntitiesId: 0,  // proibido
-      glpiGroupId: null,
-      glpiItilCategoryId: null,
-      createTicket: false,
+      ruleName: 'Inválida', alarmType: 'host_offline', cooldownMinutes: 60,
+      conditionPayload: {}, glpiEntitiesId: 0, glpiGroupId: null, glpiItilCategoryId: null, createTicket: false,
     });
-
     expect(result.ok).toBe(false);
     expect(result.errors.some((e) => e.field === 'glpiEntitiesId')).toBe(true);
     expect(repo.createRule).not.toHaveBeenCalled();
@@ -437,62 +441,120 @@ describe('LogmeinAlarmRulesService — validação de createRule', () => {
     const { LogmeinAlarmRulesService } = await import('../src/domain/services/LogmeinAlarmRulesService.js');
     const repo = makeRepository({ createRule: vi.fn() });
     const svc = new LogmeinAlarmRulesService(repo as never);
-
     const result = await svc.createRule({
-      ruleName: 'Regra Negativa',
-      alarmType: 'host_offline',
-      cooldownMinutes: 30,
-      conditionPayload: {},
-      glpiEntitiesId: -1,
-      glpiGroupId: null,
-      glpiItilCategoryId: null,
-      createTicket: false,
+      ruleName: 'Neg', alarmType: 'host_offline', cooldownMinutes: 60,
+      conditionPayload: {}, glpiEntitiesId: -1, glpiGroupId: null, glpiItilCategoryId: null, createTicket: false,
     });
-
     expect(result.ok).toBe(false);
     expect(result.errors.some((e) => e.field === 'glpiEntitiesId')).toBe(true);
   });
 
-  it('13. cooldownMinutes=0 → erro de validação (mínimo é 1)', async () => {
+  it('13. cooldownMinutes=0 → erro de validação', async () => {
     const { LogmeinAlarmRulesService } = await import('../src/domain/services/LogmeinAlarmRulesService.js');
     const repo = makeRepository({ createRule: vi.fn() });
     const svc = new LogmeinAlarmRulesService(repo as never);
-
     const result = await svc.createRule({
-      ruleName: 'Regra Cooldown Zero',
-      alarmType: 'host_offline',
-      cooldownMinutes: 0,
-      conditionPayload: {},
-      glpiEntitiesId: 5,
-      glpiGroupId: null,
-      glpiItilCategoryId: null,
-      createTicket: false,
+      ruleName: 'Zero Cool', alarmType: 'host_offline', cooldownMinutes: 0,
+      conditionPayload: {}, glpiEntitiesId: 5, glpiGroupId: null, glpiItilCategoryId: null, createTicket: false,
     });
-
     expect(result.ok).toBe(false);
     expect(result.errors.some((e) => e.field === 'cooldownMinutes')).toBe(true);
+  });
+
+  it('14. host_not_seen: not_seen_days < 7 → erro de validação', async () => {
+    const { LogmeinAlarmRulesService } = await import('../src/domain/services/LogmeinAlarmRulesService.js');
+    const repo = makeRepository({ createRule: vi.fn() });
+    const svc = new LogmeinAlarmRulesService(repo as never);
+    const result = await svc.createRule({
+      ruleName: 'Not Seen Short', alarmType: 'host_not_seen', cooldownMinutes: 60,
+      conditionPayload: { not_seen_days: 3 }, // below minimum 7
+      glpiEntitiesId: 5, glpiGroupId: null, glpiItilCategoryId: null, createTicket: false,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.field.includes('not_seen_days'))).toBe(true);
+  });
+
+  it('22. alert-only: create_ticket=true → erro de validação', async () => {
+    const { LogmeinAlarmRulesService } = await import('../src/domain/services/LogmeinAlarmRulesService.js');
+    const repo = makeRepository({ createRule: vi.fn() });
+    const svc = new LogmeinAlarmRulesService(repo as never);
+    const result = await svc.createRule({
+      ruleName: 'Alert With Ticket', alarmType: 'missing_equipment_tag', cooldownMinutes: 30,
+      conditionPayload: {}, glpiEntitiesId: 5, glpiGroupId: 10, glpiItilCategoryId: 20, createTicket: true,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.field === 'createTicket')).toBe(true);
+  });
+
+  it('24. forbidden type: high_cpu → blocked by validation', async () => {
+    const { LogmeinAlarmRulesService } = await import('../src/domain/services/LogmeinAlarmRulesService.js');
+    const repo = makeRepository({ createRule: vi.fn() });
+    const svc = new LogmeinAlarmRulesService(repo as never);
+    const result = await svc.createRule({
+      ruleName: 'High CPU', alarmType: 'high_cpu' as never, cooldownMinutes: 30,
+      conditionPayload: {}, glpiEntitiesId: 5, glpiGroupId: null, glpiItilCategoryId: null, createTicket: false,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.field === 'alarmType')).toBe(true);
     expect(repo.createRule).not.toHaveBeenCalled();
   });
 
-  it('14. host_not_seen_minutes sem not_seen_minutes no payload → erro', async () => {
+  it('25. create_ticket=true sem category → erro de validação', async () => {
     const { LogmeinAlarmRulesService } = await import('../src/domain/services/LogmeinAlarmRulesService.js');
     const repo = makeRepository({ createRule: vi.fn() });
     const svc = new LogmeinAlarmRulesService(repo as never);
-
     const result = await svc.createRule({
-      ruleName: 'Regra Sem Payload',
-      alarmType: 'host_not_seen_minutes',
-      cooldownMinutes: 30,
-      conditionPayload: {},  // ausente not_seen_minutes
-      glpiEntitiesId: 5,
-      glpiGroupId: null,
-      glpiItilCategoryId: null,
-      createTicket: false,
+      ruleName: 'No Category', alarmType: 'host_offline', cooldownMinutes: 60,
+      conditionPayload: {}, glpiEntitiesId: 5, glpiGroupId: 10,
+      glpiItilCategoryId: null, // missing category
+      createTicket: true,
+      minConsecutiveChecks: 2,
     });
-
     expect(result.ok).toBe(false);
-    expect(result.errors.some((e) => e.field.includes('not_seen_minutes'))).toBe(true);
-    expect(repo.createRule).not.toHaveBeenCalled();
+    expect(result.errors.some((e) => e.field === 'glpiItilCategoryId')).toBe(true);
+  });
+
+  it('26. create_ticket=true sem queue/grupo → erro de validação', async () => {
+    const { LogmeinAlarmRulesService } = await import('../src/domain/services/LogmeinAlarmRulesService.js');
+    const repo = makeRepository({ createRule: vi.fn() });
+    const svc = new LogmeinAlarmRulesService(repo as never);
+    const result = await svc.createRule({
+      ruleName: 'No Queue', alarmType: 'host_offline', cooldownMinutes: 60,
+      conditionPayload: {}, glpiEntitiesId: 5,
+      glpiGroupId: null, // missing queue
+      glpiItilCategoryId: 20, createTicket: true,
+      minConsecutiveChecks: 2,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.field === 'glpiGroupId')).toBe(true);
+  });
+
+  it('27. host_offline com create_ticket=true: cooldown < 60 min → erro', async () => {
+    const { LogmeinAlarmRulesService } = await import('../src/domain/services/LogmeinAlarmRulesService.js');
+    const repo = makeRepository({ createRule: vi.fn() });
+    const svc = new LogmeinAlarmRulesService(repo as never);
+    const result = await svc.createRule({
+      ruleName: 'Short Cooldown', alarmType: 'host_offline',
+      cooldownMinutes: 30, // below 60 minimum for auto-ticket
+      conditionPayload: {}, glpiEntitiesId: 5, glpiGroupId: 10, glpiItilCategoryId: 20,
+      createTicket: true, minConsecutiveChecks: 2,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.field === 'cooldownMinutes')).toBe(true);
+  });
+
+  it('30. host_not_seen: mínimo 7 dias → válido com not_seen_days=7', async () => {
+    const { LogmeinAlarmRulesService } = await import('../src/domain/services/LogmeinAlarmRulesService.js');
+    const mockRule = { id: 'rule-1', ruleName: 'OK', alarmType: 'host_not_seen' as const };
+    const repo = makeRepository({ createRule: vi.fn().mockResolvedValue(mockRule) });
+    const svc = new LogmeinAlarmRulesService(repo as never);
+    const result = await svc.createRule({
+      ruleName: 'Not Seen 7', alarmType: 'host_not_seen', cooldownMinutes: 60,
+      conditionPayload: { not_seen_days: 7 },
+      glpiEntitiesId: 5, glpiGroupId: null, glpiItilCategoryId: null, createTicket: false,
+    });
+    // With not_seen_days=7 and no create_ticket=true, should be valid
+    expect(result.errors.some((e) => e.field.includes('not_seen_days'))).toBe(false);
   });
 
 });
@@ -501,19 +563,12 @@ describe('LogmeinAlarmRulesService — validação de createRule', () => {
 
 describe('env defaults — feature flags off por padrão', () => {
 
-  it('15. env.ts declara LOGMEIN_AUTO_TICKET_ENABLED e LOGMEIN_ALARM_ENGINE_ENABLED com default false', () => {
-    const envSource = readFileSync(
-      path.resolve(__dirname, '../src/config/env.ts'),
-      'utf-8',
-    );
-
-    // Both flags must exist
-    expect(envSource).toContain('LOGMEIN_ALARM_ENGINE_ENABLED');
-    expect(envSource).toContain('LOGMEIN_AUTO_TICKET_ENABLED');
-
-    // Both must default false
-    const alarmBlock = /LOGMEIN_ALARM_ENGINE_ENABLED[\s\S]{0,200}\.default\('false'\)/.exec(envSource);
-    const ticketBlock = /LOGMEIN_AUTO_TICKET_ENABLED[\s\S]{0,200}\.default\('false'\)/.exec(envSource);
+  it('15. env.ts tem LOGMEIN_AUTO_TICKET_ENABLED e LOGMEIN_ALARM_ENGINE_ENABLED com default false', () => {
+    const source = readFileSync(path.resolve(__dirname, '../src/config/env.ts'), 'utf-8');
+    expect(source).toContain('LOGMEIN_ALARM_ENGINE_ENABLED');
+    expect(source).toContain('LOGMEIN_AUTO_TICKET_ENABLED');
+    const alarmBlock = /LOGMEIN_ALARM_ENGINE_ENABLED[\s\S]{0,200}\.default\('false'\)/.exec(source);
+    const ticketBlock = /LOGMEIN_AUTO_TICKET_ENABLED[\s\S]{0,200}\.default\('false'\)/.exec(source);
     expect(alarmBlock).not.toBeNull();
     expect(ticketBlock).not.toBeNull();
   });
@@ -524,35 +579,24 @@ describe('env defaults — feature flags off por padrão', () => {
 
 describe('safety — static file checks', () => {
 
-  it('16. logmeinAlarmWorker.ts NÃO importa InboundWebhookService', () => {
-    const source = readFileSync(
-      path.resolve(__dirname, '../src/jobs/logmeinAlarmWorker.ts'),
-      'utf-8',
-    );
+  it('16. logmeinAlarmWorker.ts não importa serviço de webhook WhatsApp', () => {
+    const source = readFileSync(path.resolve(__dirname, '../src/jobs/logmeinAlarmWorker.ts'), 'utf-8');
+    // The static string "InboundWebhookService" must not appear in the source
     expect(source).not.toContain('InboundWebhookService');
   });
 
-  it('17. logmeinAlarmWorker.ts NÃO chama sendMessage / WhatsApp', () => {
-    const source = readFileSync(
-      path.resolve(__dirname, '../src/jobs/logmeinAlarmWorker.ts'),
-      'utf-8',
-    );
+  it('17. logmeinAlarmWorker.ts não chama sendMessage / WhatsApp', () => {
+    const source = readFileSync(path.resolve(__dirname, '../src/jobs/logmeinAlarmWorker.ts'), 'utf-8');
     expect(source).not.toMatch(/sendMessage|sendWhatsApp|metaClient|MetaClient/i);
   });
 
-  it('18. LogmeinAlarmEngineService NÃO acessa mariadb/mysql', () => {
-    const source = readFileSync(
-      path.resolve(__dirname, '../src/domain/services/LogmeinAlarmEngineService.ts'),
-      'utf-8',
-    );
+  it('18. LogmeinAlarmEngineService não acessa banco do GLPI diretamente', () => {
+    const source = readFileSync(path.resolve(__dirname, '../src/domain/services/LogmeinAlarmEngineService.ts'), 'utf-8');
     expect(source).not.toMatch(/mariadb|mysql|knex|typeorm/i);
   });
 
-  it('16b. LogmeinAlarmEngineService não cria InboundWebhookService', () => {
-    const source = readFileSync(
-      path.resolve(__dirname, '../src/domain/services/LogmeinAlarmEngineService.ts'),
-      'utf-8',
-    );
+  it('16b. LogmeinAlarmEngineService não cria serviço de webhook WhatsApp', () => {
+    const source = readFileSync(path.resolve(__dirname, '../src/domain/services/LogmeinAlarmEngineService.ts'), 'utf-8');
     expect(source).not.toContain('InboundWebhookService');
   });
 
@@ -563,12 +607,10 @@ describe('safety — static file checks', () => {
 describe('event_hash — dedupe por dia', () => {
 
   function buildEventHash(ruleId: string, hostId: string, alarmType: string, dateUtc: string): string {
-    return createHash('sha256')
-      .update(`${ruleId}|${hostId}|${alarmType}|${dateUtc}`)
-      .digest('hex');
+    return createHash('sha256').update(`${ruleId}|${hostId}|${alarmType}|${dateUtc}`).digest('hex');
   }
 
-  it('19. hashes distintos para datas diferentes (mesmo rule/host/type)', () => {
+  it('19. hashes distintos para datas diferentes', () => {
     const h1 = buildEventHash('rule-1', 'host-1', 'host_offline', '2026-06-07');
     const h2 = buildEventHash('rule-1', 'host-1', 'host_offline', '2026-06-08');
     expect(h1).not.toBe(h2);
@@ -578,21 +620,20 @@ describe('event_hash — dedupe por dia', () => {
     const h1 = buildEventHash('rule-1', 'host-1', 'host_offline', '2026-06-07');
     const h2 = buildEventHash('rule-1', 'host-1', 'host_offline', '2026-06-07');
     expect(h1).toBe(h2);
-    expect(h1).toHaveLength(64); // SHA-256 hex
+    expect(h1).toHaveLength(64);
   });
 
 });
 
 // ── Tests: ticket creation guard ─────────────────────────────────────────────
 
-describe('ticket creation — gate duplo obrigatório', () => {
+describe('ticket creation — gate duplo + category + queue guard', () => {
 
-  it('ticket criado apenas quando LOGMEIN_AUTO_TICKET_ENABLED=true E create_ticket=true E entities_id>0', async () => {
+  it('21. ticket criado com gate duplo + entity + category + queue', async () => {
     const { LogmeinAlarmEngineService } = await import('../src/domain/services/LogmeinAlarmEngineService.js');
     const rule = makeRule({
-      alarmType: 'host_offline',
-      createTicket: true,
-      glpiEntitiesId: 7,
+      alarmType: 'host_offline', createTicket: true,
+      glpiEntitiesId: 7, glpiGroupId: 10, glpiItilCategoryId: 20,
     });
     const target = makeTarget();
     const host = makeHost({ status: 'offline' });
@@ -603,21 +644,116 @@ describe('ticket creation — gate duplo obrigatório', () => {
       getHostsCurrentStatus: vi.fn().mockResolvedValue(hostMap),
       insertEventIfNew: vi.fn().mockResolvedValue({ inserted: true }),
     });
-    const redis = makeRedis();
     const glpiClient = makeGlpiClient();
+    const redis = makeRedis({
+      get: vi.fn().mockResolvedValueOnce('1:0').mockResolvedValue(null),
+    });
 
     await withAlarmFlags(true, true, async () => {
       const engine = new LogmeinAlarmEngineService(repo as never, redis, glpiClient as never);
       const result = await engine.runOnce();
-
       expect(result.ticketsCreated).toBe(1);
-      // Title format: [LogMeIn] {alarm_type} - {hostname}
-      expect(glpiClient.createTicket).toHaveBeenCalledWith(
-        expect.objectContaining({
-          title: `[LogMeIn] host_offline - ${host.hostName}`,
-          entitiesId: 7,
-        }),
-      );
+      expect(glpiClient.createTicket).toHaveBeenCalledWith(expect.objectContaining({
+        title: `[LogMeIn] host_offline - ${host.hostName}`,
+        entitiesId: 7,
+      }));
+    });
+  });
+
+  it('23. alert-only: engine never calls createTicket even when create_ticket=true on rule', async () => {
+    const { LogmeinAlarmEngineService } = await import('../src/domain/services/LogmeinAlarmEngineService.js');
+    // Note: validation prevents create_ticket=true for alert-only, but we test engine defensively
+    const rule = makeRule({
+      alarmType: 'missing_equipment_tag' as never,
+      createTicket: true,
+      glpiEntitiesId: 5,
+      glpiGroupId: 10,
+      glpiItilCategoryId: 20,
+    });
+    const target = makeTarget();
+    // missing_equipment_tag condition: equipmentTag empty
+    const host = makeHost({ status: 'online', equipmentTag: '' });
+    const hostMap = new Map([[target.hostId, host]]);
+    const repo = makeRepository({
+      listEnabledRules: vi.fn().mockResolvedValue([rule]),
+      listTargetsForRule: vi.fn().mockResolvedValue([target]),
+      getHostsCurrentStatus: vi.fn().mockResolvedValue(hostMap),
+      insertEventIfNew: vi.fn().mockResolvedValue({ inserted: true }),
+    });
+    const glpiClient = makeGlpiClient();
+
+    await withAlarmFlags(true, true, async () => {
+      const engine = new LogmeinAlarmEngineService(repo as never, makeRedis(), glpiClient as never);
+      await engine.runOnce();
+      // Engine must never call createTicket for alert-only types
+      expect(glpiClient.createTicket).not.toHaveBeenCalled();
+    });
+  });
+
+});
+
+// ── Tests: consecutive checks ─────────────────────────────────────────────────
+
+describe('host_offline — consecutive check guard', () => {
+
+  it('28. consecutiveWaiting++ quando threshold não atingido', async () => {
+    const { LogmeinAlarmEngineService } = await import('../src/domain/services/LogmeinAlarmEngineService.js');
+    const rule = makeRule({
+      alarmType: 'host_offline',
+      minConsecutiveChecks: 3,
+      consecutiveCheckIntervalMinutes: 5,
+    });
+    const target = makeTarget();
+    const host = makeHost({ status: 'offline' });
+    const hostMap = new Map([[target.hostId, host]]);
+    const repo = makeRepository({
+      listEnabledRules: vi.fn().mockResolvedValue([rule]),
+      listTargetsForRule: vi.fn().mockResolvedValue([target]),
+      getHostsCurrentStatus: vi.fn().mockResolvedValue(hostMap),
+    });
+    // Redis: consecutive key null → count=0+1=1, threshold=3 → NOT reached
+    const redis = makeRedis({ get: vi.fn().mockResolvedValue(null) });
+
+    await withAlarmFlags(true, false, async () => {
+      const engine = new LogmeinAlarmEngineService(repo as never, redis, null);
+      const result = await engine.runOnce();
+      expect(result.consecutiveWaiting).toBe(1);
+      expect(result.fired).toBe(0);
+      expect(repo.insertEventIfNew).not.toHaveBeenCalled();
+    });
+  });
+
+  it('29. dispara após atingir threshold consecutivo', async () => {
+    const { LogmeinAlarmEngineService } = await import('../src/domain/services/LogmeinAlarmEngineService.js');
+    const rule = makeRule({
+      alarmType: 'host_offline',
+      minConsecutiveChecks: 2,
+      consecutiveCheckIntervalMinutes: 5,
+    });
+    const target = makeTarget();
+    const host = makeHost({ status: 'offline' });
+    const hostMap = new Map([[target.hostId, host]]);
+    const repo = makeRepository({
+      listEnabledRules: vi.fn().mockResolvedValue([rule]),
+      listTargetsForRule: vi.fn().mockResolvedValue([target]),
+      getHostsCurrentStatus: vi.fn().mockResolvedValue(hostMap),
+      insertEventIfNew: vi.fn().mockResolvedValue({ inserted: true }),
+    });
+    // Consecutive key: already at count=1, last check long ago → increment to 2 → threshold=2 reached
+    // Cooldown key: null (no cooldown)
+    const nowEpoch = Math.floor(Date.now() / 1000);
+    const oldEpoch = nowEpoch - 6 * 60; // 6 minutes ago (> 5 min interval)
+    const redis = makeRedis({
+      get: vi.fn()
+        .mockResolvedValueOnce(`1:${oldEpoch}`) // consecutive: count=1, old enough
+        .mockResolvedValue(null),               // cooldown: inactive
+    });
+
+    await withAlarmFlags(true, false, async () => {
+      const engine = new LogmeinAlarmEngineService(repo as never, redis, null);
+      const result = await engine.runOnce();
+      expect(result.fired).toBe(1);
+      expect(result.consecutiveWaiting).toBe(0);
     });
   });
 

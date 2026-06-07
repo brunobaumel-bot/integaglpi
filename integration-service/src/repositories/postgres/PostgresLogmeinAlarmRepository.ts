@@ -7,7 +7,7 @@
  *   - integaglpi_logmein_alarm_events   — log de auditoria
  *
  * Nunca grava PII de usuários/perfis/contatos.
- * Nunca acessa MariaDB GLPI diretamente (apenas PostgreSQL de integração).
+ * Nunca acessa banco de dados do GLPI (MariaDB) — apenas PostgreSQL de integração.
  *
  * PHASE: integaglpi_logmein_alarm_rules_and_auto_ticket_implementation_001
  */
@@ -17,10 +17,31 @@ import type { LogmeinHostContext } from '../../domain/services/LogmeinReadonlyCo
 
 // ── Table names ───────────────────────────────────────────────────────────────
 
-const ALARM_RULES_TABLE    = 'integaglpi_logmein_alarm_rules';
-const ALARM_TARGETS_TABLE  = 'integaglpi_logmein_alarm_targets';
-const ALARM_EVENTS_TABLE   = 'integaglpi_logmein_alarm_events';
-const ASSET_CACHE_TABLE    = 'glpi_plugin_integaglpi_logmein_asset_cache';
+const ALARM_RULES_TABLE   = 'integaglpi_logmein_alarm_rules';
+const ALARM_TARGETS_TABLE = 'integaglpi_logmein_alarm_targets';
+const ALARM_EVENTS_TABLE  = 'integaglpi_logmein_alarm_events';
+const ASSET_CACHE_TABLE   = 'glpi_plugin_integaglpi_logmein_asset_cache';
+
+// ── Alarm type taxonomy ───────────────────────────────────────────────────────
+
+/**
+ * Auto-ticket capable (gate duplo: global flag + per-rule flag):
+ *   host_offline, host_not_seen
+ *
+ * Alert-only (nunca criam ticket, independentemente do flag create_ticket):
+ *   missing_equipment_tag, missing_entity_mapping, hardware_change, low_disk, low_memory
+ *
+ * Forbidden (nunca permitidos nesta fase):
+ *   high_cpu, disk_health_smart, network_bandwidth, software_compliance
+ */
+export type AlarmType =
+  | 'host_offline'
+  | 'host_not_seen'
+  | 'missing_equipment_tag'
+  | 'missing_entity_mapping'
+  | 'hardware_change'
+  | 'low_disk'
+  | 'low_memory';
 
 // ── Row types (internal) ──────────────────────────────────────────────────────
 
@@ -35,6 +56,8 @@ interface AlarmRuleRow {
   glpi_group_id: number | null;
   glpi_itil_category_id: number | null;
   create_ticket: boolean;
+  min_consecutive_checks: number;
+  consecutive_check_interval_minutes: number;
   created_at: Date;
   updated_at: Date;
 }
@@ -62,8 +85,6 @@ interface AlarmEventRow {
 
 // ── Public DTOs ───────────────────────────────────────────────────────────────
 
-export type AlarmType = 'host_offline' | 'host_not_seen_minutes';
-
 export interface LogmeinAlarmRule {
   id: string;
   ruleName: string;
@@ -75,6 +96,10 @@ export interface LogmeinAlarmRule {
   glpiGroupId: number | null;
   glpiItilCategoryId: number | null;
   createTicket: boolean;
+  /** Only relevant for host_offline. Minimum 2 for auto-ticket. */
+  minConsecutiveChecks: number;
+  /** Only relevant for host_offline. Minimum 5 minutes. */
+  consecutiveCheckIntervalMinutes: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -109,6 +134,10 @@ export interface CreateAlarmRuleInput {
   glpiGroupId: number | null;
   glpiItilCategoryId: number | null;
   createTicket: boolean;
+  /** For host_offline rules: minimum consecutive offline checks before firing. Default 1. */
+  minConsecutiveChecks?: number;
+  /** For host_offline rules: minimum minutes between consecutive check counts. Default 5. */
+  consecutiveCheckIntervalMinutes?: number;
 }
 
 export interface InsertAlarmEventInput {
@@ -122,7 +151,7 @@ export interface InsertAlarmEventInput {
   dedupeHit: boolean;
 }
 
-// ── Mappers ───────────────────────────────────────────────────────────────────
+// ── Mapper ────────────────────────────────────────────────────────────────────
 
 function toRule(row: AlarmRuleRow): LogmeinAlarmRule {
   return {
@@ -131,13 +160,16 @@ function toRule(row: AlarmRuleRow): LogmeinAlarmRule {
     alarmType: row.alarm_type as AlarmType,
     enabled: row.enabled,
     cooldownMinutes: row.cooldown_minutes,
-    conditionPayload: typeof row.condition_payload === 'object' && row.condition_payload !== null
-      ? row.condition_payload as Record<string, unknown>
-      : {},
+    conditionPayload:
+      typeof row.condition_payload === 'object' && row.condition_payload !== null
+        ? (row.condition_payload as Record<string, unknown>)
+        : {},
     glpiEntitiesId: row.glpi_entities_id,
     glpiGroupId: row.glpi_group_id ?? null,
     glpiItilCategoryId: row.glpi_itil_category_id ?? null,
     createTicket: row.create_ticket,
+    minConsecutiveChecks: row.min_consecutive_checks ?? 1,
+    consecutiveCheckIntervalMinutes: row.consecutive_check_interval_minutes ?? 5,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -173,7 +205,7 @@ function toEvent(row: AlarmEventRow): LogmeinAlarmEvent {
 export class PostgresLogmeinAlarmRepository {
   public constructor(private readonly executor: SqlExecutor) {}
 
-  // ── Schema check ────────────────────────────────────────────────────────────
+  // ── Schema ─────────────────────────────────────────────────────────────────
 
   public async isSchemaReady(): Promise<boolean> {
     const result = await this.executor.query<{ ready: boolean }>(
@@ -192,14 +224,17 @@ export class PostgresLogmeinAlarmRepository {
     return result.rows[0]?.ready === true;
   }
 
-  // ── Rules CRUD ──────────────────────────────────────────────────────────────
+  // ── Rules ──────────────────────────────────────────────────────────────────
 
   public async listEnabledRules(): Promise<LogmeinAlarmRule[]> {
     const result = await this.executor.query<AlarmRuleRow>(
       `
         SELECT id, rule_name, alarm_type, enabled, cooldown_minutes,
                condition_payload, glpi_entities_id, glpi_group_id,
-               glpi_itil_category_id, create_ticket, created_at, updated_at
+               glpi_itil_category_id, create_ticket,
+               COALESCE(min_consecutive_checks, 1) AS min_consecutive_checks,
+               COALESCE(consecutive_check_interval_minutes, 5) AS consecutive_check_interval_minutes,
+               created_at, updated_at
         FROM ${ALARM_RULES_TABLE}
         WHERE enabled = true
         ORDER BY created_at ASC
@@ -213,7 +248,10 @@ export class PostgresLogmeinAlarmRepository {
       `
         SELECT id, rule_name, alarm_type, enabled, cooldown_minutes,
                condition_payload, glpi_entities_id, glpi_group_id,
-               glpi_itil_category_id, create_ticket, created_at, updated_at
+               glpi_itil_category_id, create_ticket,
+               COALESCE(min_consecutive_checks, 1) AS min_consecutive_checks,
+               COALESCE(consecutive_check_interval_minutes, 5) AS consecutive_check_interval_minutes,
+               created_at, updated_at
         FROM ${ALARM_RULES_TABLE}
         ORDER BY created_at ASC
       `,
@@ -226,7 +264,10 @@ export class PostgresLogmeinAlarmRepository {
       `
         SELECT id, rule_name, alarm_type, enabled, cooldown_minutes,
                condition_payload, glpi_entities_id, glpi_group_id,
-               glpi_itil_category_id, create_ticket, created_at, updated_at
+               glpi_itil_category_id, create_ticket,
+               COALESCE(min_consecutive_checks, 1) AS min_consecutive_checks,
+               COALESCE(consecutive_check_interval_minutes, 5) AS consecutive_check_interval_minutes,
+               created_at, updated_at
         FROM ${ALARM_RULES_TABLE}
         WHERE id = $1::uuid
       `,
@@ -241,12 +282,16 @@ export class PostgresLogmeinAlarmRepository {
       `
         INSERT INTO ${ALARM_RULES_TABLE}
           (rule_name, alarm_type, enabled, cooldown_minutes, condition_payload,
-           glpi_entities_id, glpi_group_id, glpi_itil_category_id, create_ticket)
+           glpi_entities_id, glpi_group_id, glpi_itil_category_id, create_ticket,
+           min_consecutive_checks, consecutive_check_interval_minutes)
         VALUES
-          ($1, $2, false, $3, $4::jsonb, $5, $6, $7, $8)
+          ($1, $2, false, $3, $4::jsonb, $5, $6, $7, $8, $9, $10)
         RETURNING id, rule_name, alarm_type, enabled, cooldown_minutes,
                   condition_payload, glpi_entities_id, glpi_group_id,
-                  glpi_itil_category_id, create_ticket, created_at, updated_at
+                  glpi_itil_category_id, create_ticket,
+                  COALESCE(min_consecutive_checks, 1) AS min_consecutive_checks,
+                  COALESCE(consecutive_check_interval_minutes, 5) AS consecutive_check_interval_minutes,
+                  created_at, updated_at
       `,
       [
         input.ruleName,
@@ -257,6 +302,8 @@ export class PostgresLogmeinAlarmRepository {
         input.glpiGroupId,
         input.glpiItilCategoryId,
         input.createTicket,
+        input.minConsecutiveChecks ?? 1,
+        input.consecutiveCheckIntervalMinutes ?? 5,
       ],
     );
     const row = result.rows[0];
@@ -270,7 +317,6 @@ export class PostgresLogmeinAlarmRepository {
     id: string,
     input: Partial<Omit<CreateAlarmRuleInput, 'alarmType'>> & { enabled?: boolean },
   ): Promise<LogmeinAlarmRule | null> {
-    // Build SET clause dynamically — only columns provided are changed.
     const setClauses: string[] = ['updated_at = NOW()'];
     const params: unknown[] = [id];
     let idx = 2;
@@ -307,6 +353,14 @@ export class PostgresLogmeinAlarmRepository {
       setClauses.push(`create_ticket = $${idx++}::boolean`);
       params.push(input.createTicket);
     }
+    if (input.minConsecutiveChecks !== undefined) {
+      setClauses.push(`min_consecutive_checks = $${idx++}::int`);
+      params.push(input.minConsecutiveChecks);
+    }
+    if (input.consecutiveCheckIntervalMinutes !== undefined) {
+      setClauses.push(`consecutive_check_interval_minutes = $${idx++}::int`);
+      params.push(input.consecutiveCheckIntervalMinutes);
+    }
 
     const result = await this.executor.query<AlarmRuleRow>(
       `
@@ -315,7 +369,10 @@ export class PostgresLogmeinAlarmRepository {
         WHERE id = $1::uuid
         RETURNING id, rule_name, alarm_type, enabled, cooldown_minutes,
                   condition_payload, glpi_entities_id, glpi_group_id,
-                  glpi_itil_category_id, create_ticket, created_at, updated_at
+                  glpi_itil_category_id, create_ticket,
+                  COALESCE(min_consecutive_checks, 1) AS min_consecutive_checks,
+                  COALESCE(consecutive_check_interval_minutes, 5) AS consecutive_check_interval_minutes,
+                  created_at, updated_at
       `,
       params,
     );
@@ -375,18 +432,12 @@ export class PostgresLogmeinAlarmRepository {
     return (result.rows.length ?? 0) > 0;
   }
 
-  // ── Host status from asset cache ─────────────────────────────────────────────
+  // ── Host status ─────────────────────────────────────────────────────────────
 
-  /**
-   * Retorna o status atual dos hosts pelo host_id.
-   * Consulta o cache de ativos LogMeIn no PostgreSQL de integração.
-   * Nunca acessa MariaDB GLPI.
-   */
   public async getHostsCurrentStatus(hostIds: readonly string[]): Promise<Map<string, LogmeinHostContext>> {
     const map = new Map<string, LogmeinHostContext>();
     if (hostIds.length === 0) return map;
 
-    // Build $1, $2, ... placeholders
     const placeholders = hostIds.map((_, i) => `$${i + 1}::text`).join(', ');
     try {
       const result = await this.executor.query<{
@@ -429,7 +480,7 @@ export class PostgresLogmeinAlarmRepository {
         });
       }
     } catch {
-      // Safe degradation — empty map means host status unknown → no alarm
+      // Safe degradation — empty map → status unknown → no alarm
     }
 
     return map;
@@ -437,10 +488,6 @@ export class PostgresLogmeinAlarmRepository {
 
   // ── Events ───────────────────────────────────────────────────────────────────
 
-  /**
-   * Insere um evento de alarme se o event_hash não existir (dedupe via UNIQUE).
-   * Retorna { inserted: true } quando novo, { inserted: false } quando duplicado.
-   */
   public async insertEventIfNew(input: InsertAlarmEventInput): Promise<{ inserted: boolean }> {
     const result = await this.executor.query<{ id: string }>(
       `

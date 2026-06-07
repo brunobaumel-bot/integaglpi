@@ -13,6 +13,7 @@ use GlpiPlugin\Integaglpi\ExternalResearchMenu;
 use GlpiPlugin\Integaglpi\GestaoGroupMenu;
 use GlpiPlugin\Integaglpi\IaGroupMenu;
 use GlpiPlugin\Integaglpi\Install\Installer;
+use GlpiPlugin\Integaglpi\LogmeinAlarmMenu;
 use GlpiPlugin\Integaglpi\KnowledgeBaseMenu;
 use GlpiPlugin\Integaglpi\KbCandidatesMenu;
 use GlpiPlugin\Integaglpi\MonitoramentoGroupMenu;
@@ -266,6 +267,7 @@ function plugin_init_integaglpi(): void
     \Plugin::registerClass(KnowledgeBaseMenu::class);
     \Plugin::registerClass(KbCandidatesMenu::class);
     \Plugin::registerClass(SecurityCenterMenu::class);
+    \Plugin::registerClass(LogmeinAlarmMenu::class);
 }
 
 function plugin_integaglpi_install(): bool
