@@ -76,6 +76,20 @@ function safePositiveInt(value: unknown): number | null {
   return Number.isFinite(n) && n > 0 ? Math.trunc(n) : null;
 }
 
+/**
+ * Sums memory sizes from the LM API memories array.
+ * LM v1 reports API returns memories as Array<{size:number,...}>, not a single object.
+ * Returns null when no memory data is available.
+ */
+function sumMemoryMb(memories: unknown): number | null {
+  if (!Array.isArray(memories) || memories.length === 0) return null;
+  const total = (memories as Record<string, unknown>[]).reduce(
+    (sum, m) => sum + (safePositiveInt(m.size) ?? 0),
+    0,
+  );
+  return total > 0 ? total : null;
+}
+
 function parseProcessor(raw: Record<string, unknown>): LogmeinProcessor {
   return {
     type: safeString(raw.type, 200),
@@ -115,8 +129,8 @@ function normalizeHostInventory(hostId: number, data: Record<string, unknown>): 
   const nets = Array.isArray(data.networkConnections)
     ? (data.networkConnections as Record<string, unknown>[]).map(parseNetworkConnection)
     : [];
-  const memObj = (data.memories ?? {}) as Record<string, unknown>;
-  const memMb = safePositiveInt(memObj.size ?? null);
+  // LM v1 reports API returns memories as Array<{size:number,...}> — sum all modules.
+  const memMb = sumMemoryMb(data.memories);
 
   return {
     hostId,
@@ -256,6 +270,24 @@ export class LogmeinHardwareInventoryService {
       response = await this.post('/inventory/hardware/reports', body);
     }
 
+    // Handle invalid hostIds: LM API returns HTTP 400 with the offending IDs.
+    // Filter them out and retry once with only the valid subset.
+    // Invalid hosts map to null in the result — batch continues gracefully.
+    if (response.status === 400) {
+      const errData = (await this.safeJson(response)) as Record<string, unknown>;
+      const invalidIds = Array.isArray(errData.hostIds)
+        ? (errData.hostIds as unknown[]).filter((id): id is number => typeof id === 'number')
+        : [];
+      if (invalidIds.length > 0 && invalidIds.length < hostIds.length) {
+        logger.warn(
+          { invalid_count: invalidIds.length, total: hostIds.length },
+          '[logmein][hw_report] SKIP_INVALID_LOGMEIN_HOST — invalid hostIds filtered, retrying',
+        );
+        const validIds = hostIds.filter((id) => !invalidIds.includes(id));
+        response = await this.post('/inventory/hardware/reports', { ...body, hostIds: validIds });
+      }
+    }
+
     if (!response.ok) {
       logger.warn({ status: response.status }, '[logmein][hw_report] Report creation failed');
       return null;
@@ -344,6 +376,15 @@ export class LogmeinHardwareInventoryService {
       }
     } catch { /* ignore */ }
     return RATE_LIMIT_FALLBACK_DELAY_MS;
+  }
+
+  /** Safely parse JSON from a response without throwing on malformed body. */
+  private async safeJson(response: Response): Promise<unknown> {
+    try {
+      return await response.json();
+    } catch {
+      return {};
+    }
   }
 }
 

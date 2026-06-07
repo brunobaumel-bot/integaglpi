@@ -244,7 +244,9 @@ final class ComputerHardwareSyncService
                 'itemtype'          => 'Computer',
                 'deviceprocessors_id' => $dpId,
                 'nbcores_device'    => $cores > 0 ? $cores : null,
-                'frequency'         => $speed > 0 ? $speed : null,
+                // glpi_items_deviceprocessors.frequency is NOT NULL;
+                // 0 is GLPI's conventional value for "speed not reported".
+                'frequency'         => $speed > 0 ? $speed : 0,
             ]);
             $updated++;
         }
@@ -285,8 +287,10 @@ final class ComputerHardwareSyncService
         }
         $dp = new DeviceProcessor();
         $id = $dp->add([
-            'designation' => $cpuType,
-            'frequence'   => $speed > 0 ? $speed : null,
+            'designation'     => $cpuType,
+            // glpi_deviceprocessors.frequence is NOT NULL; 0 is GLPI's conventional
+            // value for "speed not reported by the inventory source" (no fake data inserted).
+            'frequence'       => $speed > 0 ? $speed : 0,
             'nbcores_default' => $cores > 0 ? $cores : null,
         ]);
         return $id > 0 ? (int) $id : 0;

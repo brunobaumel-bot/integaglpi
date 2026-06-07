@@ -3,6 +3,7 @@
  * All assertions are file-content checks — no HTTP calls, no DB, no Redis.
  *
  * PHASE: integaglpi_logmein_hardware_inventory_and_monitoring_001
+ * PHASE: integaglpi_logmein_hardware_enrichment_pre_production_hardening_001
  */
 
 import { readFileSync } from 'node:fs';
@@ -95,5 +96,69 @@ describe('LogmeinHardwareInventoryService static contract', () => {
     expect(hwSvc).toContain('return null;');
     // The service logs warn-level, not error-level — no throw.
     expect(hwSvc).toContain("logger.warn(");
+  });
+
+  // ── Hardening: invalid hostIds (HTTP 400) ────────────────────────────────────
+
+  it('handles LM HTTP 400 with invalid hostIds by filtering and retrying once (SKIP_INVALID_LOGMEIN_HOST)', () => {
+    // createReport must detect 400 responses with invalid hostIds list.
+    expect(hwSvc).toContain('status === 400');
+    expect(hwSvc).toContain('errData.hostIds');
+    expect(hwSvc).toContain('SKIP_INVALID_LOGMEIN_HOST');
+    // Must filter invalid IDs and build a new request with valid ones only.
+    expect(hwSvc).toContain('hostIds.filter');
+    expect(hwSvc).toContain('invalidIds.length > 0');
+    // Retry attempt must exist.
+    expect(hwSvc).toContain("retrying");
+    // safeJson helper avoids double-consume of response body.
+    expect(hwSvc).toContain('safeJson');
+  });
+
+  it('invalid hostIds never crash the batch — batch continues for remaining valid hosts', () => {
+    // When all hostIds are invalid, return null-filled map rather than throwing.
+    expect(hwSvc).toContain("invalidIds.length < hostIds.length");
+    // Graceful degradation path: if report creation ultimately fails, return nulls.
+    expect(hwSvc).toContain('return new Map(hostIds.map((id) => [id, null]))');
+  });
+
+  // ── Hardening: memories array handling ───────────────────────────────────────
+
+  it('memories field is treated as array and summed — not as single-object', () => {
+    // LM v1 reports API returns memories as Array<{size:number,...}>.
+    // The old code treated it as object.size which returned undefined for arrays.
+    expect(hwSvc).toContain('sumMemoryMb');
+    expect(hwSvc).toContain('Array.isArray');
+    expect(hwSvc).toContain('memories');
+    // sumMemoryMb must use reduce to sum all modules.
+    const sumFn = hwSvc.slice(hwSvc.indexOf('function sumMemoryMb'), hwSvc.indexOf('function normalizeHostInventory'));
+    expect(sumFn).toContain('reduce');
+    expect(sumFn).toContain('.size');
+    // The old pattern (memObj.size) must be gone.
+    expect(hwSvc).not.toContain('memObj.size');
+    expect(hwSvc).not.toContain('const memObj =');
+  });
+
+  // ── Hardening: feature flag for local IP ─────────────────────────────────────
+
+  it('LOGMEIN_SYNC_LOCAL_IP=false means ip_address is undefined in payload', () => {
+    expect(hwSvc).toContain('LOGMEIN_SYNC_LOCAL_IP');
+    expect(hwSvc).toContain('syncLocalIp === true');
+    // IP is only passed when explicitly enabled — never by default.
+    expect(hwSvc).toContain('ip_address: input.syncLocalIp === true');
+  });
+
+  // ── Hardening: PHP ComputerHardwareSyncService — frequence/frequency NOT NULL ─
+
+  it('PHP ComputerHardwareSyncService uses frequence=0 and frequency=0 for unknown speed (NOT NULL fix)', () => {
+    // Static check: PHP service file must contain both null-safe frequency writes.
+    const { readFileSync: rfs } = require('node:fs');
+    const phpSvc = rfs('../integaglpi/src/Service/ComputerHardwareSyncService.php', 'utf8');
+    // glpi_deviceprocessors.frequence — must NOT be null when speed is 0.
+    expect(phpSvc).toContain("'frequence'       => $speed > 0 ? $speed : 0,");
+    // glpi_items_deviceprocessors.frequency — same convention.
+    expect(phpSvc).toContain("'frequency'         => $speed > 0 ? $speed : 0,");
+    // Both columns must explicitly use 0 as fallback (GLPI convention for "not reported").
+    expect(phpSvc).not.toContain("'frequence'   => $speed > 0 ? $speed : null,");
+    expect(phpSvc).not.toContain("'frequency'         => $speed > 0 ? $speed : null,");
   });
 });
