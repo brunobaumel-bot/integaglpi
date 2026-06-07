@@ -11,6 +11,12 @@ export interface GlpiItilCategory {
   is_helpdeskvisible: boolean;
 }
 
+export interface GlpiEntityOption {
+  id: number;
+  name: string;
+  completename: string;
+}
+
 export interface GlpiComputerHardwareUpdate {
   serial?: string | null;
   manufacturers_id?: number | null;

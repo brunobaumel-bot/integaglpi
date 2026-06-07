@@ -13,6 +13,7 @@ interface HostRow {
   logmein_group_name: string;
   host_name_sanitized: string;
   equipment_tag: string | null;
+  glpi_entity_candidate_id: number | null;
   status: string | null;
   last_seen_at: Date | string | null;
 }
@@ -36,6 +37,7 @@ function toHost(row: HostRow): LogmeinHostContext {
     groupName: row.logmein_group_name,
     hostName: row.host_name_sanitized,
     equipmentTag: row.equipment_tag ?? '',
+    glpiEntityCandidateId: typeof row.glpi_entity_candidate_id === 'number' ? row.glpi_entity_candidate_id : null,
     status: status === 'online' || status === 'offline' ? status : 'unknown',
     lastSeenAt: dateText(row.last_seen_at),
   };
@@ -335,6 +337,7 @@ export class PostgresLogmeinReadonlyRepository implements LogmeinReadonlyCacheRe
           logmein_group_name,
           host_name_sanitized,
           equipment_tag,
+          glpi_entity_candidate_id,
           status,
           last_seen_at
         FROM ${ASSET_CACHE_TABLE}
@@ -346,5 +349,34 @@ export class PostgresLogmeinReadonlyRepository implements LogmeinReadonlyCacheRe
     );
 
     return result.rows.map(toHost);
+  }
+
+  public async findHostByEquipmentTag(equipmentTag: string): Promise<LogmeinHostContext | null> {
+    const normalized = equipmentTag.trim();
+    if (normalized === '') {
+      return null;
+    }
+
+    const result = await this.executor.query<HostRow>(
+      `
+        SELECT
+          logmein_host_external_id,
+          logmein_group_external_id,
+          logmein_group_name,
+          host_name_sanitized,
+          equipment_tag,
+          glpi_entity_candidate_id,
+          status,
+          last_seen_at
+        FROM ${ASSET_CACHE_TABLE}
+        WHERE equipment_tag = $1::text
+        ORDER BY cache_updated_at DESC NULLS LAST, last_seen_at DESC NULLS LAST
+        LIMIT 1
+      `,
+      [normalized],
+    );
+
+    const row = result.rows[0];
+    return row ? toHost(row) : null;
   }
 }

@@ -232,11 +232,15 @@ function buildCategoryClassifier(cfg: typeof env): GlpiCategoryClassifierService
  *
  * PHASE: integaglpi_asset_context_summary_001
  */
-function buildAssetContextSummaryService(cfg: typeof env, client: GlpiClient): AssetContextSummaryService | null {
+function buildAssetContextSummaryService(
+  cfg: typeof env,
+  client: GlpiClient,
+  logmeinRepository?: PostgresLogmeinReadonlyRepository,
+): AssetContextSummaryService | null {
   if (!cfg.ASSET_CONTEXT_SUMMARY_ENABLED) {
     return null;
   }
-  return new AssetContextSummaryService(client);
+  return new AssetContextSummaryService(client, logmeinRepository ?? null);
 }
 
 export function buildDependencies() {
@@ -706,7 +710,8 @@ export function buildDependencies() {
     buildCategoryClassifier(env),
     // Asset context summary — feature-flagged, internal-note only.
     // PHASE: integaglpi_asset_context_summary_001
-    buildAssetContextSummaryService(env, glpiClient),
+    buildAssetContextSummaryService(env, glpiClient, logmeinReadonlyRepository),
+    logmeinReadonlyRepository,
   );
   return {
     inboundWebhookService,

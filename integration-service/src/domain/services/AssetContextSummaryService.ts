@@ -25,6 +25,7 @@ import type { GlpiClient } from '../../adapters/glpi/GlpiClient.js';
 import type { GlpiComputerContext } from '../../adapters/glpi/glpiTypes.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../infra/logger/logger.js';
+import type { LogmeinHostContext, LogmeinReadonlyCacheRepository } from './LogmeinReadonlyContextService.js';
 
 // ── Interfaces públicas ───────────────────────────────────────────────────────
 
@@ -53,7 +54,7 @@ export interface AssetContextSummaryResult {
   status: AssetContextSummaryStatus;
   computerId: number | null;
   summaryText: string | null;
-  source: 'glpi_only' | 'none';
+  source: 'glpi_only' | 'glpi_logmein_cache' | 'none';
   aiUsed: boolean;
   noteId: number | null;
 }
@@ -71,15 +72,27 @@ export interface LocalAiSummarizer {
 // ── Classe principal ──────────────────────────────────────────────────────────
 
 export class AssetContextSummaryService {
+  private readonly logmeinRepository: Pick<LogmeinReadonlyCacheRepository, 'findHostByEquipmentTag'> | null;
+  private readonly localAi: LocalAiSummarizer | null;
+
   public constructor(
     private readonly glpiClient: GlpiClient,
+    logmeinRepositoryOrLocalAi: Pick<LogmeinReadonlyCacheRepository, 'findHostByEquipmentTag'> | LocalAiSummarizer | null = null,
     /**
      * IA local opcional para melhorar a legibilidade do resumo.
      * Se null ou se a geração falhar, o template determinístico é usado.
      * IA cloud não é aceita — verificada em runtime.
      */
-    private readonly localAi: LocalAiSummarizer | null = null,
-  ) {}
+    localAi: LocalAiSummarizer | null = null,
+  ) {
+    if (logmeinRepositoryOrLocalAi && 'summarize' in logmeinRepositoryOrLocalAi) {
+      this.logmeinRepository = null;
+      this.localAi = logmeinRepositoryOrLocalAi;
+    } else {
+      this.logmeinRepository = logmeinRepositoryOrLocalAi;
+      this.localAi = localAi;
+    }
+  }
 
   /**
    * Gera o resumo de contexto do ativo e o injeta como nota interna no chamado.
@@ -136,7 +149,10 @@ export class AssetContextSummaryService {
     } satisfies GlpiComputerContext));
 
     // 3. Sanitizar (garantia dupla: nenhum campo proibido entra no resumo)
-    const safePayload = this.buildSafePayload(input.equipmentTag, computerContext);
+    const logmeinContext = await this.logmeinRepository?.findHostByEquipmentTag?.(input.equipmentTag)
+      .catch(() => null) ?? null;
+    const safePayload = this.buildSafePayload(input.equipmentTag, computerContext, logmeinContext);
+    const source: AssetContextSummaryResult['source'] = logmeinContext ? 'glpi_logmein_cache' : 'glpi_only';
 
     // 4. Gerar resumo (IA local com fallback determinístico)
     const { summaryText, aiUsed } = await this.buildSummary(safePayload);
@@ -159,8 +175,9 @@ export class AssetContextSummaryService {
         ticket_id: input.ticketId,
         computer_id: computerId,
         entity_id: input.entityId,
-        source: 'glpi_only',
+        source,
         ai_used: aiUsed,
+        logmein_status_used: logmeinContext !== null,
         summary_generated: true,
         note_id: noteId,
         status,
@@ -172,7 +189,7 @@ export class AssetContextSummaryService {
       status,
       computerId,
       summaryText,
-      source: 'glpi_only',
+      source,
       aiUsed,
       noteId,
     };
@@ -188,6 +205,7 @@ export class AssetContextSummaryService {
   private buildSafePayload(
     equipmentTag: string,
     ctx: GlpiComputerContext,
+    logmein: LogmeinHostContext | null = null,
   ): Record<string, string> {
     const payload: Record<string, string> = {};
 
@@ -214,6 +232,21 @@ export class AssetContextSummaryService {
     }
     if (ctx.model) {
       payload['modelo'] = ctx.model;
+    }
+
+    if (logmein) {
+      if (logmein.status && logmein.status !== 'unknown') {
+        payload['logmein_status'] = logmein.status === 'online' ? 'online' : 'offline';
+      }
+      if (logmein.lastSeenAt) {
+        payload['logmein_ultimo_status'] = logmein.lastSeenAt;
+      }
+      if (logmein.groupName) {
+        payload['logmein_grupo'] = logmein.groupName;
+      }
+      if (logmein.hostName) {
+        payload['logmein_hostname_sanitizado'] = logmein.hostName;
+      }
     }
 
     // NOTA: nenhum dos seguintes campos é incluído neste payload:
@@ -278,6 +311,15 @@ export class AssetContextSummaryService {
     if (payload['fabricante'] || payload['modelo']) {
       const hw = [payload['fabricante'], payload['modelo']].filter(Boolean).join(' ');
       lines.push(`Hardware: ${hw}`);
+    }
+    if (payload['logmein_status']) {
+      lines.push(`LogMeIn: status ${payload['logmein_status']}.`);
+    }
+    if (payload['logmein_ultimo_status']) {
+      lines.push(`LogMeIn ultimo status: ${payload['logmein_ultimo_status']}.`);
+    }
+    if (payload['logmein_grupo']) {
+      lines.push(`Grupo LogMeIn: ${payload['logmein_grupo']}.`);
     }
 
     if (lines.length === 1) {

@@ -305,8 +305,8 @@ describe('AssetContextSummaryService — invariantes de segurança e design', ()
     expect(source).toMatch(/import \{ AssetContextSummaryService \}/);
     expect(source).toMatch(/function buildAssetContextSummaryService/);
     expect(source).toMatch(/ASSET_CONTEXT_SUMMARY_ENABLED/);
-    expect(source).toMatch(/new AssetContextSummaryService\(client\)/);
-    expect(source).toMatch(/buildAssetContextSummaryService\(env, glpiClient\)/);
+    expect(source).toMatch(/new AssetContextSummaryService\(client,\s*logmeinRepository/);
+    expect(source).toMatch(/buildAssetContextSummaryService\(env, glpiClient, logmeinReadonlyRepository\)/);
   });
 
   it('14. resumo determinístico inclui hostname, entidade e hardware — SEM serial/mac/ip', async () => {
@@ -344,6 +344,50 @@ describe('AssetContextSummaryService — invariantes de segurança e design', ()
       expect(text).not.toMatch(/\bserial\b/i);
       expect(text).not.toMatch(/\bmac\b/i);
       expect(text).not.toMatch(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/); // IP
+    });
+  });
+
+  it('15. usa cache LogMeIn quando disponível sem incluir IP/MAC/serial', async () => {
+    const { AssetContextSummaryService } = await import('../src/domain/services/AssetContextSummaryService.js');
+    const client = makeGlpiClient({
+      findComputersByOtherserial: vi.fn().mockResolvedValue([{ id: 101, name: 'PC-LMI', serial: null, otherserial: 'L101', entitiesId: 5 }]),
+      fetchComputerContext: vi.fn().mockResolvedValue({
+        computerId: 101,
+        hostname: 'MAQUINA-LMI',
+        entityId: 5,
+        entityName: 'Filial',
+        manufacturer: 'Dell',
+        model: 'Latitude',
+      }),
+    });
+    const logmeinRepository = {
+      findHostByEquipmentTag: vi.fn().mockResolvedValue({
+        externalId: 'host-redacted',
+        groupExternalId: 'group-redacted',
+        groupName: 'Grupo Suporte',
+        hostName: 'HOST-SANITIZADO',
+        equipmentTag: 'L101',
+        status: 'offline',
+        lastSeenAt: '2026-06-01T10:00:00.000Z',
+      }),
+    };
+    const svc = new AssetContextSummaryService(client, logmeinRepository);
+
+    await withFlag(true, async () => {
+      const result = await svc.generate({
+        equipmentTag: 'L101',
+        entityId: 5,
+        conversationId: 'conv-logmein',
+        ticketId: 301,
+      });
+
+      const text = result.summaryText ?? '';
+      expect(result.source).toBe('glpi_logmein_cache');
+      expect(text).toContain('LogMeIn: status offline');
+      expect(text).toContain('Grupo LogMeIn: Grupo Suporte');
+      expect(text).not.toMatch(/\bmac\b/i);
+      expect(text).not.toMatch(/\bserial\b/i);
+      expect(text).not.toMatch(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/);
     });
   });
 

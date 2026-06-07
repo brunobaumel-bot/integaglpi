@@ -7,6 +7,7 @@ import type {
   GlpiComputerHardwarePayload,
   GlpiComputerHardwareUpdate,
   GlpiContactLookupResult,
+  GlpiEntityOption,
   GlpiItilCategory,
   GlpiTicket,
   GlpiUserLookupResult,
@@ -613,6 +614,61 @@ export class GlpiClient {
     );
 
     return all;
+  }
+
+  /**
+   * Lista entidades GLPI para seleção humana no WhatsApp.
+   * Somente GET; falha retorna lista vazia para não bloquear o webhook.
+   */
+  public async fetchEntities(limit = 25): Promise<GlpiEntityOption[]> {
+    const safeLimit = Math.max(1, Math.min(Math.trunc(limit), 100));
+    const query = new URLSearchParams();
+    query.set('range', `0-${safeLimit - 1}`);
+    query.set('expand_dropdowns', 'true');
+
+    let response: Response;
+    try {
+      response = await this.send(`/Entity?${query.toString()}`, { method: 'GET' }, {
+        logStage: 'glpi_entity_list',
+        timeoutMs: 5_000,
+      });
+    } catch (error: unknown) {
+      logger.warn(
+        {
+          stage: 'glpi_entity_list',
+          errorMessage: error instanceof Error ? error.message : String(error),
+        },
+        '[GLPI PoC] Entity fetch transport error; returning empty list.',
+      );
+      return [];
+    }
+
+    if (response.status !== 200 && response.status !== 206) {
+      return [];
+    }
+
+    const body = await safeJson(response);
+    return normalizeEntityCollection(body)
+      .map((row) => {
+        const id = typeof row.id === 'number' && Number.isFinite(row.id)
+          ? row.id
+          : typeof row.id === 'string' && /^\d+$/.test(row.id)
+            ? Number.parseInt(row.id, 10)
+            : null;
+        if (id === null || id <= 0) {
+          return null;
+        }
+
+        const name = typeof row.name === 'string' && row.name.trim() !== ''
+          ? row.name.trim()
+          : `Entidade ${id}`;
+        const completename = typeof row.completename === 'string' && row.completename.trim() !== ''
+          ? row.completename.trim()
+          : name;
+        return { id, name, completename } satisfies GlpiEntityOption;
+      })
+      .filter((row): row is GlpiEntityOption => row !== null)
+      .slice(0, safeLimit);
   }
 
   /**

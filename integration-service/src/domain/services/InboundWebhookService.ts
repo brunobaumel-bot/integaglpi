@@ -2,7 +2,7 @@ import type { MetaWebhookPayload, ParsedMetaInboundMessage } from '../../adapter
 import type { MediaProcessingService } from './MediaProcessingService.js';
 import type { MetaClient } from '../../adapters/meta/MetaClient.js';
 import type { GlpiClient } from '../../adapters/glpi/GlpiClient.js';
-import type { CreateGlpiTicketInput } from '../../adapters/glpi/glpiTypes.js';
+import type { CreateGlpiTicketInput, GlpiEntityOption } from '../../adapters/glpi/glpiTypes.js';
 import type { Contact } from '../entities/Contact.js';
 import type { Conversation } from '../entities/Conversation.js';
 import type { ConversationRepository } from '../../repositories/contracts/ConversationRepository.js';
@@ -35,6 +35,7 @@ import { hasValidGlpiTicketId } from './EntitySelectionService.js';
 import { createCorrelationId } from './correlationId.js';
 import type { GlpiCategoryClassifierService } from './GlpiCategoryClassifierService.js';
 import type { AssetContextSummaryService } from './AssetContextSummaryService.js';
+import type { LogmeinReadonlyCacheRepository } from './LogmeinReadonlyContextService.js';
 
 export interface InboundWebhookProcessingResult {
   messageId: string;
@@ -119,8 +120,11 @@ interface CompletedProfileTransitionInput {
 }
 
 interface ExistingEntitySelectionWaitInput {
+  contact: Contact;
   inboundMessage: ParsedMetaInboundMessage;
+  toMeta: string;
   conversation: Conversation;
+  correlationId?: string | null;
 }
 
 /**
@@ -162,6 +166,7 @@ export class InboundWebhookService {
      * PHASE: integaglpi_asset_context_summary_001
      */
     private readonly assetContextSummaryService: AssetContextSummaryService | null = null,
+    private readonly logmeinReadonlyRepository: Pick<LogmeinReadonlyCacheRepository, 'findHostByEquipmentTag'> | null = null,
   ) {}
 
   /**
@@ -666,8 +671,11 @@ export class InboundWebhookService {
           }
 
           await this.acknowledgeExistingEntitySelectionWait({
+            contact,
             inboundMessage,
+            toMeta,
             conversation: activeConversation,
+            correlationId,
           });
           return;
         }
@@ -1146,9 +1154,10 @@ export class InboundWebhookService {
               activeConversation.queueId ?? null,
               'awaiting_entity_selection',
             );
-            await this.metaClient.sendTextMessage({
-              to: toMeta,
-              body: ENTITY_SELECTION_PENDING_MESSAGE,
+            await this.sendEntitySelectionMenu({
+              toMeta,
+              conversation: activeConversation,
+              reason: 'profile_completed_entity_selection_required',
             });
             logger.info(
               {
@@ -1198,8 +1207,13 @@ export class InboundWebhookService {
             activeConversation.id,
           );
           // PARTE A: recover native GLPI IDs stored at queue-selection time.
-          const nativeItilCategoryIdActive = typeof rawState?.glpi_itil_category_id === 'number' ? rawState.glpi_itil_category_id : null;
-          const nativeFormIdActive = typeof rawState?.glpi_form_id === 'number' ? rawState.glpi_form_id : null;
+          const nativeItilCategoryIdActive = this.resolveTicketCategoryId(
+            typeof rawState?.glpi_itil_category_id === 'number' ? rawState.glpi_itil_category_id : null,
+          );
+          const nativeFormIdActive = this.resolveTicketFormId(
+            typeof rawState?.glpi_form_id === 'number' ? rawState.glpi_form_id : null,
+            nativeItilCategoryIdActive,
+          );
           const ticketId = await this.createTicketWithNativeCategoryFallback(
             {
               title: ticketPayload.title,
@@ -1217,6 +1231,16 @@ export class InboundWebhookService {
             { conversationId: activeConversation.id, stage: 'profile_completed_active' },
           );
           // PHASE: integaglpi_asset_context_summary_001 — fire-and-forget, nunca bloqueia.
+          if (nativeItilCategoryIdActive === null) {
+            this.recordManualCategoryPending({
+              correlationId,
+              conversationId: activeConversation.id,
+              messageId: inboundMessage.messageId,
+              ticketId,
+              entityId: resolvedEntity.glpiEntityId,
+              stage: 'profile_completed_active',
+            });
+          }
           this.triggerAssetContextSummary(ticketId, resolvedEntity.glpiEntityId, profile, activeConversation.id);
 
           const linked = await this.conversationRepository.linkGlpiTicket(
@@ -1545,9 +1569,10 @@ export class InboundWebhookService {
                     lockedConversation.queueId ?? null,
                     'awaiting_entity_selection',
                   );
-                  await this.metaClient.sendTextMessage({
-                    to: toMeta,
-                    body: ENTITY_SELECTION_PENDING_MESSAGE,
+                  await this.sendEntitySelectionMenu({
+                    toMeta,
+                    conversation: lockedConversation,
+                    reason: 'profile_completed_entity_selection_required',
                   });
                   await this.messageRepository.updateState({
                     messageId: inboundMessage.messageId,
@@ -1576,12 +1601,17 @@ export class InboundWebhookService {
                   lockedConversation.id,
                 );
                 // PARTE A: recover native GLPI IDs stored at queue-selection time.
-                const nativeItilCategoryIdLocked = typeof lockedConversation.profileCollectionState?.glpi_itil_category_id === 'number'
-                  ? lockedConversation.profileCollectionState.glpi_itil_category_id
-                  : null;
-                const nativeFormIdLocked = typeof lockedConversation.profileCollectionState?.glpi_form_id === 'number'
-                  ? lockedConversation.profileCollectionState.glpi_form_id
-                  : null;
+                const nativeItilCategoryIdLocked = this.resolveTicketCategoryId(
+                  typeof lockedConversation.profileCollectionState?.glpi_itil_category_id === 'number'
+                    ? lockedConversation.profileCollectionState.glpi_itil_category_id
+                    : null,
+                );
+                const nativeFormIdLocked = this.resolveTicketFormId(
+                  typeof lockedConversation.profileCollectionState?.glpi_form_id === 'number'
+                    ? lockedConversation.profileCollectionState.glpi_form_id
+                    : null,
+                  nativeItilCategoryIdLocked,
+                );
                 const ticketId = await this.createTicketWithNativeCategoryFallback(
                   {
                     title: profileTicketPayload.title,
@@ -1599,6 +1629,16 @@ export class InboundWebhookService {
                   { conversationId: lockedConversation.id, stage: 'profile_completed_locked' },
                 );
                 // PHASE: integaglpi_asset_context_summary_001 — fire-and-forget, nunca bloqueia.
+                if (nativeItilCategoryIdLocked === null) {
+                  this.recordManualCategoryPending({
+                    correlationId,
+                    conversationId: lockedConversation.id,
+                    messageId: inboundMessage.messageId,
+                    ticketId,
+                    entityId: resolvedEntity.glpiEntityId,
+                    stage: 'profile_completed_locked',
+                  });
+                }
                 this.triggerAssetContextSummary(ticketId, resolvedEntity.glpiEntityId, profile, lockedConversation.id);
 
                 const linked = await this.conversationRepository.linkGlpiTicket(
@@ -1715,9 +1755,14 @@ export class InboundWebhookService {
                   normalizedQueueId,
                   'awaiting_entity_selection',
                 );
-                await this.metaClient.sendTextMessage({
-                  to: toMeta,
-                  body: ENTITY_SELECTION_PENDING_MESSAGE,
+                await this.sendEntitySelectionMenu({
+                  toMeta,
+                  conversation: {
+                    ...lockedConversation,
+                    queueId: normalizedQueueId,
+                    status: 'awaiting_entity_selection',
+                  },
+                  reason: 'queue_selected_entity_selection_required',
                 });
                 await this.messageRepository.updateState({
                   messageId: inboundMessage.messageId,
@@ -1754,8 +1799,11 @@ export class InboundWebhookService {
                     assignedUserId: selectedOption.glpiUserId,
                     assignedGroupId: selectedOption.glpiGroupId,
                     requesterUserId,
-                    itilcategoriesId: selectedOption.glpiItilCategoryId ?? null,
-                    glpiFormId: selectedOption.glpiFormId ?? null,
+                    itilcategoriesId: this.resolveTicketCategoryId(selectedOption.glpiItilCategoryId ?? null),
+                    glpiFormId: this.resolveTicketFormId(
+                      selectedOption.glpiFormId ?? null,
+                      this.resolveTicketCategoryId(selectedOption.glpiItilCategoryId ?? null),
+                    ),
                   },
                   { timeoutMs: ROUTING_GLPI_CREATE_TIMEOUT_MS },
                   { conversationId: lockedConversation.id, stage: 'queue_selected' },
@@ -1799,6 +1847,17 @@ export class InboundWebhookService {
               }
 
               this.logTicketCreatedWithFallback(contact, inboundMessage.messageId, ticketId);
+              const selectedItilCategoryId = this.resolveTicketCategoryId(selectedOption.glpiItilCategoryId ?? null);
+              if (selectedItilCategoryId === null) {
+                this.recordManualCategoryPending({
+                  correlationId,
+                  conversationId: lockedConversation.id,
+                  messageId: inboundMessage.messageId,
+                  ticketId,
+                  entityId: rememberedEntity.glpiEntityId,
+                  stage: 'queue_selected',
+                });
+              }
               logger.info(
                 {
                   conversation_id: lockedConversation.id,
@@ -4383,8 +4442,13 @@ export class InboundWebhookService {
       resolvedEntity.glpiEntityId,
       input.conversation.id,
     );
-    const nativeItilCategoryId = typeof state.glpi_itil_category_id === 'number' ? state.glpi_itil_category_id : null;
-    const nativeFormId = typeof state.glpi_form_id === 'number' ? state.glpi_form_id : null;
+    const nativeItilCategoryId = this.resolveTicketCategoryId(
+      typeof state.glpi_itil_category_id === 'number' ? state.glpi_itil_category_id : null,
+    );
+    const nativeFormId = this.resolveTicketFormId(
+      typeof state.glpi_form_id === 'number' ? state.glpi_form_id : null,
+      nativeItilCategoryId,
+    );
     const ticketId = await this.createTicketWithNativeCategoryFallback(
       {
         title: ticketPayload.title,
@@ -4403,6 +4467,15 @@ export class InboundWebhookService {
     );
     this.logTicketCreatedWithFallback(input.contact, input.inboundMessage.messageId, ticketId);
     // PHASE: integaglpi_asset_context_summary_001 — fire-and-forget, nunca bloqueia.
+    if (nativeItilCategoryId === null) {
+      this.recordManualCategoryPending({
+        conversationId: input.conversation.id,
+        messageId: input.inboundMessage.messageId,
+        ticketId,
+        entityId: resolvedEntity.glpiEntityId,
+        stage: 'complete_profile_transition',
+      });
+    }
     this.triggerAssetContextSummary(ticketId, resolvedEntity.glpiEntityId, profile, input.conversation.id);
 
     const linked = await this.conversationRepository.linkGlpiTicket(
@@ -4436,33 +4509,270 @@ export class InboundWebhookService {
   }
 
   private async acknowledgeExistingEntitySelectionWait(input: ExistingEntitySelectionWaitInput): Promise<void> {
-    await this.conversationRepository.touch(input.conversation.id, new Date());
+    const options = await this.resolveEntitySelectionOptions(input.conversation);
+    const rawChoice = input.inboundMessage.messageText?.trim() ?? '';
+    const selectedIndex = parseMenuDigitChoice(rawChoice, options.length);
+
+    if (!selectedIndex || options.length === 0) {
+      await this.sendEntitySelectionMenu({
+        toMeta: input.toMeta,
+        conversation: input.conversation,
+        options,
+        reason: selectedIndex ? 'no_entity_options' : 'invalid_entity_selection',
+      });
+      await this.messageRepository.updateState({
+        messageId: input.inboundMessage.messageId,
+        conversationId: input.conversation.id,
+        processingStatus: 'processed',
+        glpiSyncStatus: 'synced',
+      });
+      return;
+    }
+
+    const selectedEntity = options[selectedIndex - 1]!;
+    const profile = this.contactProfileService
+      ? await this.contactProfileService.findProfile(input.contact.phoneE164)
+      : null;
+    const assignment = input.conversation.queueId
+      ? await this.routingRepository.findAssignmentByQueueId(input.conversation.queueId)
+      : null;
+    const entityMode = this.contactEntityResolutionService
+      ? await this.contactEntityResolutionService.getMode()
+      : 'defer_until_known';
+    const queueLabel = assignment?.queueId ? `Fila ${assignment.queueId}` : null;
+    const ticketPayload = await this.buildProfileAwareTicketPayload({
+      basePayload: await this.buildEntitySelectionTicketBasePayload(input.contact, input.conversation),
+      contact: input.contact,
+      conversationId: input.conversation.id,
+      queueLabel,
+      profile,
+      entityMode,
+    });
+    const requesterUserId = await this.resolveRequesterUserId(
+      input.contact.phoneE164,
+      profile,
+      selectedEntity.id,
+      input.conversation.id,
+    );
+    const ticketId = await this.createTicketWithNativeCategoryFallback(
+      {
+        title: ticketPayload.title,
+        content: ticketPayload.content,
+        requesterPhone: input.contact.phoneE164,
+        requesterName: input.contact.name,
+        entitiesId: selectedEntity.id,
+        assignedUserId: assignment?.glpiUserId ?? null,
+        assignedGroupId: assignment?.glpiGroupId ?? null,
+        requesterUserId,
+        itilcategoriesId: null,
+        glpiFormId: null,
+      },
+      { timeoutMs: ROUTING_GLPI_CREATE_TIMEOUT_MS },
+      { conversationId: input.conversation.id, stage: 'whatsapp_entity_selection' },
+    );
+    this.logTicketCreatedWithFallback(input.contact, input.inboundMessage.messageId, ticketId);
+    this.recordManualCategoryPending({
+      correlationId: input.correlationId,
+      conversationId: input.conversation.id,
+      messageId: input.inboundMessage.messageId,
+      ticketId,
+      entityId: selectedEntity.id,
+      stage: 'whatsapp_entity_selection',
+    });
+    this.triggerAssetContextSummary(ticketId, selectedEntity.id, profile, input.conversation.id);
+
+    const linked = await this.conversationRepository.linkGlpiTicket(
+      input.conversation.id,
+      ticketId,
+      input.conversation.queueId,
+      selectedEntity.id,
+      selectedEntity.completename || selectedEntity.name,
+    );
+
+    if (this.contactEntityMemoryRepository) {
+      try {
+        await this.contactEntityMemoryRepository.rememberEntityForPhone({
+          phoneE164: input.contact.phoneE164,
+          contactId: input.contact.id,
+          glpiEntityId: selectedEntity.id,
+          glpiEntityName: selectedEntity.completename || selectedEntity.name,
+          sourceTicketId: ticketId,
+          sourceConversationId: input.conversation.id,
+          source: 'whatsapp_entity_selection',
+        });
+      } catch (error: unknown) {
+        logger.warn(
+          {
+            conversation_id: input.conversation.id,
+            glpi_entity_id: selectedEntity.id,
+            error_message: error instanceof Error ? error.message : String(error),
+          },
+          '[integration-service][entity][WHATSAPP_ENTITY_MEMORY_SAVE_FAILED]',
+        );
+      }
+    }
+
+    if (linked) {
+      await this.metaClient.sendTextMessage({
+        to: input.toMeta,
+        body: await this.buildTicketCreatedConfirmation(null, ticketId),
+      });
+    }
     await this.messageRepository.updateState({
       messageId: input.inboundMessage.messageId,
       conversationId: input.conversation.id,
       processingStatus: 'processed',
-      glpiSyncStatus: 'synced',
+      glpiSyncStatus: linked ? 'synced' : 'error',
     });
     logger.info(
       {
         conversation_id: input.conversation.id,
-        queue_id: input.conversation.queueId ?? null,
-        reason: 'entity_selection_already_pending',
+        glpi_ticket_id: ticketId,
+        glpi_entity_id: selectedEntity.id,
+        linked,
       },
-      '[integration-service][contact_profile][FINAL_CONFIRMATION_SUPPRESSED]',
+      '[integration-service][entity][WHATSAPP_ENTITY_SELECTION_TICKET_CREATED]',
     );
+  }
+
+  private async buildEntitySelectionTicketBasePayload(
+    contact: Contact,
+    conversation: Conversation,
+  ): Promise<{ title: string; content: string }> {
+    const profile = this.contactProfileService
+      ? await this.contactProfileService.findProfile(contact.phoneE164)
+      : null;
+    const summary = typeof profile?.last_problem_summary === 'string'
+      ? profile.last_problem_summary.trim()
+      : '';
+    const messages = summary === ''
+      ? await this.messageRepository.findByConversationId(conversation.id, 20).catch(() => [])
+      : [];
+    const latestText = messages
+      .map((message) => typeof message.messageText === 'string' ? message.messageText.trim() : '')
+      .reverse()
+      .find((text) => text !== '' && parseMenuDigitChoice(text, 99) === null) ?? '';
+    const problem = summary || latestText || 'Solicitação recebida via WhatsApp; entidade selecionada pelo cliente.';
+    const titleProblem = problem.length > 70 ? `${problem.slice(0, 67)}...` : problem;
+
+    return {
+      title: `[WA] ${titleProblem}`,
+      content: [
+        'Solicitação recebida via WhatsApp.',
+        '',
+        `Resumo informado: ${problem}`,
+        '',
+        'Categoria: pendente de classificação manual pelo técnico.',
+      ].join('\n'),
+    };
+  }
+
+  private async resolveEntitySelectionOptions(conversation: Conversation): Promise<GlpiEntityOption[]> {
+    const state = conversation.profileCollectionState ?? {};
+    const stored = Array.isArray(state.entity_selection_options) ? state.entity_selection_options : [];
+    const parsed = stored
+      .map((entry): GlpiEntityOption | null => {
+        if (!entry || typeof entry !== 'object') {
+          return null;
+        }
+        const row = entry as Record<string, unknown>;
+        const id = typeof row.id === 'number' && Number.isInteger(row.id) && row.id > 0 ? row.id : null;
+        if (id === null) {
+          return null;
+        }
+        const name = typeof row.name === 'string' && row.name.trim() !== '' ? row.name.trim() : `Entidade ${id}`;
+        const completename = typeof row.completename === 'string' && row.completename.trim() !== ''
+          ? row.completename.trim()
+          : name;
+        return { id, name, completename };
+      })
+      .filter((entry): entry is GlpiEntityOption => entry !== null);
+    if (parsed.length > 0) {
+      return parsed.slice(0, 9);
+    }
+
+    const fetchEntities = (this.glpiClient as unknown as {
+      fetchEntities?: (limit?: number) => Promise<GlpiEntityOption[]>;
+    }).fetchEntities;
+    return typeof fetchEntities === 'function'
+      ? fetchEntities.call(this.glpiClient, 9).catch(() => [])
+      : [];
+  }
+
+  private async sendEntitySelectionMenu(input: {
+    toMeta: string;
+    conversation: Conversation;
+    options?: GlpiEntityOption[];
+    reason: string;
+  }): Promise<void> {
+    const options = (input.options ?? await this.resolveEntitySelectionOptions(input.conversation)).slice(0, 9);
+    if (options.length === 0) {
+      await this.metaClient.sendTextMessage({ to: input.toMeta, body: ENTITY_SELECTION_PENDING_MESSAGE });
+      this.recordAudit({
+        conversationId: input.conversation.id,
+        direction: 'outbound',
+        eventType: 'ENTITY_SELECTION_MENU_UNAVAILABLE',
+        status: 'pending',
+        severity: 'warning',
+        source: 'InboundWebhookService',
+        payload: { reason: input.reason },
+      });
+      return;
+    }
+
+    const state = input.conversation.profileCollectionState ?? {};
+    await this.conversationRepository.updateProfileCollectionState(input.conversation.id, {
+      ...state,
+      entity_selection_options: options.map((option) => ({
+        id: option.id,
+        name: option.name,
+        completename: option.completename,
+      })),
+    });
+    const body = [
+      'Para abrir o chamado, selecione a entidade:',
+      ...options.map((option, index) => `${index + 1} - ${option.completename || option.name}`),
+      '',
+      'Responda apenas com o número da entidade.',
+    ].join('\n');
+    await this.metaClient.sendTextMessage({ to: input.toMeta, body });
     this.recordAudit({
       conversationId: input.conversation.id,
-      messageId: input.inboundMessage.messageId,
-      direction: 'inbound',
-      eventType: 'CONTACT_PROFILE_FINAL_CONFIRMATION_SUPPRESSED',
-      status: 'ignored',
+      direction: 'outbound',
+      eventType: 'ENTITY_SELECTION_MENU_SENT',
+      status: 'success',
       severity: 'info',
       source: 'InboundWebhookService',
       payload: {
-        reason: 'entity_selection_already_pending',
-        conversation_status: input.conversation.status,
-        queue_id: input.conversation.queueId ?? null,
+        reason: input.reason,
+        options_count: options.length,
+      },
+    });
+  }
+
+  private recordManualCategoryPending(input: {
+    correlationId?: string | null;
+    conversationId: string;
+    messageId?: string | null;
+    ticketId: number;
+    entityId: number;
+    stage: string;
+  }): void {
+    this.recordAudit({
+      correlationId: input.correlationId ?? undefined,
+      ticketId: input.ticketId,
+      conversationId: input.conversationId,
+      messageId: input.messageId ?? undefined,
+      direction: 'inbound',
+      eventType: 'CATEGORY_PENDING_MANUAL_TECHNICIAN',
+      status: 'pending',
+      severity: 'info',
+      source: 'InboundWebhookService',
+      payload: {
+        stage: input.stage,
+        glpi_entity_id: input.entityId,
+        itilcategories_id: null,
+        ai_category_enabled: false,
       },
     });
   }
@@ -4520,7 +4830,14 @@ export class InboundWebhookService {
     }
 
     if (assets.length === 0) {
-      return rememberedEntity;
+      const logmeinEntity = await this.resolveEntityFromLogmeinCache({
+        phoneE164: input.phoneE164,
+        contactId: input.contactId,
+        conversationId: input.conversationId,
+        equipmentTag,
+        previousEntity: rememberedEntity,
+      });
+      return logmeinEntity ?? rememberedEntity;
     }
 
     if (assets.length > 1) {
@@ -4657,6 +4974,113 @@ export class InboundWebhookService {
     };
   }
 
+  private async resolveEntityFromLogmeinCache(input: {
+    phoneE164: string;
+    contactId: string | null;
+    conversationId: string | null;
+    equipmentTag: string;
+    previousEntity: ContactEntityMemory | null;
+  }): Promise<ContactEntityMemory | null> {
+    if (!this.logmeinReadonlyRepository?.findHostByEquipmentTag) {
+      return null;
+    }
+
+    let host: Awaited<ReturnType<NonNullable<LogmeinReadonlyCacheRepository['findHostByEquipmentTag']>>>;
+    try {
+      host = await this.logmeinReadonlyRepository.findHostByEquipmentTag(input.equipmentTag);
+    } catch (error: unknown) {
+      logger.warn(
+        {
+          conversation_id: input.conversationId,
+          equipment_tag: input.equipmentTag,
+          error_message: error instanceof Error ? error.message : String(error),
+        },
+        '[integration-service][entity][LOGMEIN_TAG_LOOKUP_FAILED_USING_MEMORY]',
+      );
+      return null;
+    }
+
+    const entityId = host?.glpiEntityCandidateId ?? null;
+    if (!Number.isInteger(entityId) || entityId === null || entityId <= 0) {
+      return null;
+    }
+
+    const entityName = input.previousEntity?.glpiEntityId === entityId
+      ? input.previousEntity.glpiEntityName
+      : (host?.groupName.trim() !== '' ? host?.groupName.trim() ?? null : null);
+
+    let remembered: ContactEntityMemory | null = null;
+    if (this.contactEntityMemoryRepository) {
+      try {
+        remembered = await this.contactEntityMemoryRepository.rememberEntityForPhone({
+          phoneE164: input.phoneE164,
+          contactId: input.contactId,
+          glpiEntityId: entityId,
+          glpiEntityName: entityName,
+          sourceConversationId: input.conversationId,
+          source: 'logmein_asset_cache',
+        });
+      } catch (error: unknown) {
+        logger.warn(
+          {
+            conversation_id: input.conversationId,
+            equipment_tag: input.equipmentTag,
+            glpi_entity_id: entityId,
+            error_message: error instanceof Error ? error.message : String(error),
+          },
+          '[integration-service][entity][LOGMEIN_TAG_MEMORY_SAVE_FAILED]',
+        );
+      }
+    }
+
+    this.recordAudit({
+      conversationId: input.conversationId ?? undefined,
+      direction: 'inbound',
+      eventType: 'CONTACT_ENTITY_RESOLVED_FROM_LOGMEIN_TAG',
+      status: 'success',
+      severity: 'info',
+      source: 'InboundWebhookService',
+      payload: {
+        equipment_tag: input.equipmentTag,
+        glpi_entity_id: entityId,
+        source: 'logmein_asset_cache',
+      },
+    });
+
+    if (remembered) {
+      return remembered;
+    }
+
+    const now = new Date();
+    return {
+      id: `logmein:${input.equipmentTag}:${entityId}`,
+      phoneE164: input.phoneE164,
+      contactId: input.contactId,
+      glpiEntityId: entityId,
+      glpiEntityName: entityName,
+      sourceTicketId: null,
+      sourceConversationId: input.conversationId,
+      source: 'logmein_asset_cache',
+      isActive: true,
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  private resolveTicketCategoryId(candidate: number | null | undefined): number | null {
+    if (!env.AI_CATEGORY_CLASSIFICATION_ENABLED) {
+      return null;
+    }
+    return typeof candidate === 'number' && Number.isInteger(candidate) && candidate > 0 ? candidate : null;
+  }
+
+  private resolveTicketFormId(candidate: number | null | undefined, categoryId: number | null): number | null {
+    if (categoryId === null) {
+      return null;
+    }
+    return typeof candidate === 'number' && Number.isInteger(candidate) && candidate > 0 ? candidate : null;
+  }
+
   private async createTicketWithNativeCategoryFallback(
     input: CreateGlpiTicketInput,
     options: { timeoutMs?: number },
@@ -4730,9 +5154,10 @@ export class InboundWebhookService {
 
   private async deferTicketCreationForEntitySelection(input: EntitySelectionDeferralInput): Promise<string> {
     let conversationId = input.conversationId?.trim() ?? '';
+    let conversation: Conversation | null = null;
 
     if (conversationId === '') {
-      const conversation = await this.conversationRepository.create({
+      conversation = await this.conversationRepository.create({
         phoneE164: input.contact.phoneE164,
         contactId: input.contact.id,
         glpiTicketId: null,
@@ -4740,6 +5165,8 @@ export class InboundWebhookService {
         lastMessageAt: new Date(),
       });
       conversationId = conversation.id;
+    } else {
+      conversation = await this.conversationRepository.findById(conversationId);
     }
 
     await this.conversationRepository.updateQueueAndStatus(
@@ -4748,9 +5175,27 @@ export class InboundWebhookService {
       'awaiting_entity_selection',
     );
     await this.conversationRepository.touch(conversationId, new Date());
-    await this.metaClient.sendTextMessage({
-      to: input.toMeta,
-      body: input.message,
+    await this.sendEntitySelectionMenu({
+      toMeta: input.toMeta,
+      conversation: {
+        ...(conversation ?? {
+          id: conversationId,
+          phoneE164: input.contact.phoneE164,
+          contactId: input.contact.id,
+          glpiTicketId: null,
+          status: 'awaiting_entity_selection',
+          queueId: input.queueId ?? null,
+          lastMessageAt: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          glpiEntityId: null,
+          glpiEntityName: null,
+          profileCollectionState: null,
+        }),
+        queueId: input.queueId ?? null,
+        status: 'awaiting_entity_selection',
+      },
+      reason: input.message === ENTITY_SELECTION_PENDING_MESSAGE ? 'entity_selection_required' : 'entity_selection_reprompt',
     });
     logger.info(
       {

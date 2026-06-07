@@ -16,6 +16,7 @@ export interface LogmeinHostContext {
   groupName: string;
   hostName: string;
   equipmentTag: string;
+  glpiEntityCandidateId?: number | null;
   tagQuality?: 'valid' | 'invalid' | 'missing';
   tagSource?: 'custom_field' | 'fallback' | 'none';
   status: 'online' | 'offline' | 'unknown';
@@ -102,6 +103,7 @@ export interface LogmeinReadonlyCacheRepository {
     durationMs?: number | null;
   }): Promise<void>;
   listHostsByGroup(groupExternalId: string, limit: number): Promise<LogmeinHostContext[]>;
+  findHostByEquipmentTag?(equipmentTag: string): Promise<LogmeinHostContext | null>;
   /** Optional — present in PostgresLogmeinReadonlyRepository but mocks may omit it. */
   getHealthSummary?(): Promise<LogmeinHealthSummary>;
 }

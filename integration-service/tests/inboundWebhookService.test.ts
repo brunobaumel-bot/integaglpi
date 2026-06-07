@@ -842,6 +842,7 @@ function makeInboundService(
   glpiClient: {
     createTicket: ReturnType<typeof vi.fn>;
     addFollowUp?: ReturnType<typeof vi.fn>;
+    fetchEntities?: ReturnType<typeof vi.fn>;
     getTicketStatus?: ReturnType<typeof vi.fn>;
     getTicket?: ReturnType<typeof vi.fn>;
     closeTicket?: ReturnType<typeof vi.fn>;
@@ -1004,7 +1005,14 @@ describe('InboundWebhookService', () => {
     const messageRepository = new FakeMessageRepository();
     const conversationRepository = new FakeConversationRepository();
     const contactResolutionService = { resolve: vi.fn() };
-    const glpiClient = { createTicket: vi.fn(), addFollowUp: vi.fn() };
+    const glpiClient = {
+      createTicket: vi.fn(),
+      addFollowUp: vi.fn(),
+      fetchEntities: vi.fn().mockResolvedValue([
+        { id: 2, name: 'Matriz', completename: 'Matriz' },
+        { id: 11, name: 'Filial', completename: 'Empresa > Filial' },
+      ]),
+    };
     const audit = {
       recordAuditEventFireAndForget: vi.fn(),
     } as unknown as AuditService;
@@ -1141,7 +1149,14 @@ describe('InboundWebhookService', () => {
     const messageRepository = new FakeMessageRepository();
     const conversationRepository = new FakeConversationRepository();
     const contactResolutionService = { resolve: vi.fn() };
-    const glpiClient = { createTicket: vi.fn(), addFollowUp: vi.fn() };
+    const glpiClient = {
+      createTicket: vi.fn(),
+      addFollowUp: vi.fn(),
+      fetchEntities: vi.fn().mockResolvedValue([
+        { id: 2, name: 'Matriz', completename: 'Matriz' },
+        { id: 11, name: 'Filial', completename: 'Empresa > Filial' },
+      ]),
+    };
     const service = makeInboundService(
       webhookEventRepository,
       messageRepository,
@@ -1852,6 +1867,10 @@ describe('InboundWebhookService', () => {
       createTicket: vi.fn().mockResolvedValue(987),
       addFollowUp: vi.fn(),
       getTicketStatus: vi.fn().mockResolvedValue('closed'),
+      fetchEntities: vi.fn().mockResolvedValue([
+        { id: 2, name: 'Matriz', completename: 'Matriz' },
+        { id: 11, name: 'Filial', completename: 'Empresa > Filial' },
+      ]),
     };
     const entityMemory = makeEntityMemoryRepository();
 
@@ -1944,6 +1963,10 @@ describe('InboundWebhookService', () => {
       createTicket: vi.fn().mockResolvedValue(987),
       addFollowUp: vi.fn(),
       getTicketStatus: vi.fn().mockResolvedValue('closed'),
+      fetchEntities: vi.fn().mockResolvedValue([
+        { id: 2, name: 'Matriz', completename: 'Matriz' },
+        { id: 11, name: 'Filial', completename: 'Empresa > Filial' },
+      ]),
     };
 
     const service = makeInboundService(
@@ -1966,7 +1989,8 @@ describe('InboundWebhookService', () => {
       status: 'awaiting_entity_selection',
     });
     expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
-    expect(meta.sendTextMessage.mock.calls[0]?.[0].body).toBe('Recebemos as suas informações, em breve um de nossos técnicos irá seguir com o atendimento.');
+    expect(meta.sendTextMessage.mock.calls[0]?.[0].body).toContain('Para abrir o chamado, selecione a entidade:');
+    expect(meta.sendTextMessage.mock.calls[0]?.[0].body).toContain('1 - Matriz');
   });
 
   it('creates a ticket and links it to an existing conversation without glpi_ticket_id', async () => {
@@ -1990,6 +2014,10 @@ describe('InboundWebhookService', () => {
     const glpiClient = {
       createTicket: vi.fn().mockResolvedValue(777),
       addFollowUp: vi.fn(),
+      fetchEntities: vi.fn().mockResolvedValue([
+        { id: 2, name: 'Matriz', completename: 'Matriz' },
+        { id: 11, name: 'Filial', completename: 'Empresa > Filial' },
+      ]),
     };
     const entityMemory = makeEntityMemoryRepository();
 
@@ -2041,6 +2069,10 @@ describe('InboundWebhookService', () => {
     const glpiClient = {
       createTicket: vi.fn().mockResolvedValue(777),
       addFollowUp: vi.fn(),
+      fetchEntities: vi.fn().mockResolvedValue([
+        { id: 2, name: 'Matriz', completename: 'Matriz' },
+        { id: 11, name: 'Filial', completename: 'Empresa > Filial' },
+      ]),
     };
 
     const service = makeInboundService(
@@ -2062,7 +2094,9 @@ describe('InboundWebhookService', () => {
       queueId: null,
       status: 'awaiting_entity_selection',
     });
-    expect(meta.sendTextMessage.mock.calls[0]?.[0].body).toBe('Recebemos as suas informações, em breve um de nossos técnicos irá seguir com o atendimento.');
+    expect(meta.sendTextMessage.mock.calls[0]?.[0].body).toContain('Para abrir o chamado, selecione a entidade:');
+    expect(meta.sendTextMessage.mock.calls[0]?.[0].body).toContain('1 - Matriz');
+    expect(meta.sendTextMessage.mock.calls[0]?.[0].body).toContain('2 - Empresa > Filial');
   });
 
   it('keeps awaiting_entity_selection without repeating final confirmation when routing options are empty', async () => {
@@ -2089,6 +2123,10 @@ describe('InboundWebhookService', () => {
     const glpiClient = {
       createTicket: vi.fn().mockResolvedValue(777),
       addFollowUp: vi.fn(),
+      fetchEntities: vi.fn().mockResolvedValue([
+        { id: 2, name: 'Matriz', completename: 'Matriz' },
+        { id: 11, name: 'Filial', completename: 'Empresa > Filial' },
+      ]),
     };
 
     const service = makeInboundService(
@@ -2105,7 +2143,12 @@ describe('InboundWebhookService', () => {
     expect(result.results).toEqual([{ messageId: 'wamid.123', outcome: 'processed' }]);
     expect(glpiClient.createTicket).not.toHaveBeenCalled();
     expect(conversationRepository.updatedQueuesAndStatuses).toEqual([]);
-    expect(meta.sendTextMessage).not.toHaveBeenCalled();
+    expect(meta.sendTextMessage).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining('1 - Matriz'),
+    }));
+    expect(meta.sendTextMessage).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining('2 - Empresa > Filial'),
+    }));
     expect(messageRepository.updates[0]).toEqual({
       messageId: 'wamid.123',
       conversationId: 'conv-awaiting-entity',
@@ -2141,6 +2184,10 @@ describe('InboundWebhookService', () => {
     const glpiClient = {
       createTicket: vi.fn().mockResolvedValue(777),
       addFollowUp: vi.fn(),
+      fetchEntities: vi.fn().mockResolvedValue([
+        { id: 2, name: 'Matriz', completename: 'Matriz' },
+        { id: 11, name: 'Filial', completename: 'Empresa > Filial' },
+      ]),
     };
 
     const service = makeInboundService(
@@ -2159,7 +2206,107 @@ describe('InboundWebhookService', () => {
     expect(conversationRepository.createdCount).toBe(0);
     expect(conversationRepository.updatedQueuesAndStatuses).toEqual([]);
     expect(meta.sendReplyButtons).not.toHaveBeenCalled();
-    expect(meta.sendTextMessage).not.toHaveBeenCalled();
+    expect(meta.sendTextMessage).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining('Responda apenas com o número da entidade.'),
+    }));
+  });
+
+  it('creates ticket without category when awaiting_entity_selection receives a valid numeric entity option', async () => {
+    const webhookEventRepository = new FakeWebhookEventRepository();
+    const messageRepository = new FakeMessageRepository();
+    const conversationRepository = new FakeConversationRepository();
+    conversationRepository.reusableConversation = {
+      id: 'conv-awaiting-entity',
+      phoneE164: '+5511999999999',
+      contactId: 'contact-1',
+      glpiTicketId: null,
+      queueId: 5,
+      profileCollectionState: {
+        entity_selection_options: [
+          { id: 2, name: 'Matriz', completename: 'Matriz' },
+          { id: 11, name: 'Filial', completename: 'Empresa > Filial' },
+        ],
+      },
+      status: 'awaiting_entity_selection',
+      lastMessageAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    messageRepository.reservedMessage = {
+      ...messageRepository.reservedMessage!,
+      messageText: '2',
+    };
+    const payload = structuredClone(basePayload) as typeof basePayload;
+    (payload.entry[0].changes[0].value.messages[0] as { text: { body: string } }).text.body = '2';
+    const meta = { sendTextMessage: vi.fn().mockResolvedValue({}) };
+    const contactResolutionService = {
+      resolve: vi.fn().mockResolvedValue(resolvedContact),
+    };
+    const glpiClient = {
+      createTicket: vi.fn().mockResolvedValue(888),
+      addFollowUp: vi.fn(),
+      fetchEntities: vi.fn(),
+    };
+    const contactProfile = new FakeContactProfileService();
+    contactProfile.profile = {
+      phone_e164: '+5511999999999',
+      requester_name: 'Maria',
+      company_name_raw: 'Empresa',
+      last_equipment_tag: null,
+      equipment_tag_unknown: true,
+      last_problem_summary: 'Windows pede ativação.',
+      profile_status: 'complete',
+      profile_source: 'whatsapp',
+      confirmation_count: 1,
+      last_confirmed_at: new Date().toISOString(),
+    };
+    const entityMemory = {
+      findActiveByPhone: vi.fn().mockResolvedValue(null),
+      rememberEntityForPhone: vi.fn().mockResolvedValue(makeEntityMemory({ glpiEntityId: 11, glpiEntityName: 'Empresa > Filial' })),
+    };
+    const audit = {
+      recordAuditEventFireAndForget: vi.fn(),
+    };
+
+    const service = makeInboundService(
+      webhookEventRepository,
+      messageRepository,
+      conversationRepository,
+      contactResolutionService,
+      glpiClient,
+      {
+        meta,
+        contactProfile,
+        entityMemory: entityMemory as never,
+        audit: audit as unknown as AuditService,
+      },
+    );
+
+    const result = await service.process(payload);
+
+    expect(result.results).toEqual([{ messageId: 'wamid.123', outcome: 'processed' }]);
+    expect(glpiClient.createTicket).toHaveBeenCalledWith(expect.objectContaining({
+      entitiesId: 11,
+      itilcategoriesId: null,
+      glpiFormId: null,
+    }), expect.any(Object));
+    expect(conversationRepository.linkedTickets[0]).toEqual(expect.objectContaining({
+      conversationId: 'conv-awaiting-entity',
+      ticketId: 888,
+      glpiEntityId: 11,
+      glpiEntityName: 'Empresa > Filial',
+    }));
+    expect(entityMemory.rememberEntityForPhone).toHaveBeenCalledWith(expect.objectContaining({
+      glpiEntityId: 11,
+      source: 'whatsapp_entity_selection',
+    }));
+    expect(meta.sendTextMessage).toHaveBeenCalledWith(expect.objectContaining({
+      body: 'Seu chamado #888 foi aberto.',
+    }));
+    expect(audit.recordAuditEventFireAndForget).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'CATEGORY_PENDING_MANUAL_TECHNICIAN',
+      ticketId: 888,
+    }));
   });
 
   it('normalizes a completed contact profile collection state to awaiting_entity_selection', async () => {
@@ -2522,7 +2669,14 @@ describe('InboundWebhookService', () => {
       makeEntityMemory({ id: 'memory-1', glpiEntityId: 42, glpiEntityName: 'Cliente' }),
     );
     const meta = { sendTextMessage: vi.fn().mockResolvedValue({}) };
-    const glpiClient = { createTicket: vi.fn(), addFollowUp: vi.fn() };
+    const glpiClient = {
+      createTicket: vi.fn(),
+      addFollowUp: vi.fn(),
+      fetchEntities: vi.fn().mockResolvedValue([
+        { id: 2, name: 'Matriz', completename: 'Matriz' },
+        { id: 11, name: 'Filial', completename: 'Empresa > Filial' },
+      ]),
+    };
 
     const digitOnePayload = structuredClone(basePayload) as typeof basePayload;
     digitOnePayload.entry[0].changes[0].value.messages[0].text.body = '1';
@@ -2887,7 +3041,14 @@ describe('InboundWebhookService', () => {
     const audit = {
       recordAuditEventFireAndForget: vi.fn(),
     } as unknown as AuditService;
-    const glpiClient = { createTicket: vi.fn(), addFollowUp: vi.fn() };
+    const glpiClient = {
+      createTicket: vi.fn(),
+      addFollowUp: vi.fn(),
+      fetchEntities: vi.fn().mockResolvedValue([
+        { id: 2, name: 'Matriz', completename: 'Matriz' },
+        { id: 11, name: 'Filial', completename: 'Empresa > Filial' },
+      ]),
+    };
 
     const profilePayload = structuredClone(basePayload) as typeof basePayload;
     profilePayload.entry[0].changes[0].value.messages[0].text.body = 'Internet lenta';
@@ -2953,7 +3114,14 @@ describe('InboundWebhookService', () => {
     const audit = {
       recordAuditEventFireAndForget: vi.fn(),
     } as unknown as AuditService;
-    const glpiClient = { createTicket: vi.fn(), addFollowUp: vi.fn() };
+    const glpiClient = {
+      createTicket: vi.fn(),
+      addFollowUp: vi.fn(),
+      fetchEntities: vi.fn().mockResolvedValue([
+        { id: 2, name: 'Matriz', completename: 'Matriz' },
+        { id: 11, name: 'Filial', completename: 'Empresa > Filial' },
+      ]),
+    };
 
     const service = makeInboundService(
       webhookEventRepository,
@@ -2981,18 +3149,21 @@ describe('InboundWebhookService', () => {
       { conversationId: 'conv-summary-once', queueId: 5, status: 'awaiting_entity_selection' },
     ]);
     expect(glpiClient.createTicket).not.toHaveBeenCalled();
-    expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
-    expect(meta.sendTextMessage).toHaveBeenCalledWith({
+    expect(meta.sendTextMessage).toHaveBeenCalledTimes(2);
+    expect(meta.sendTextMessage).toHaveBeenCalledWith(expect.objectContaining({
       to: '5511999999999',
-      body: 'Recebemos as suas informações, em breve um de nossos técnicos irá seguir com o atendimento.',
-    });
+      body: expect.stringContaining('Para abrir o chamado, selecione a entidade:'),
+    }));
+    expect(meta.sendTextMessage).toHaveBeenCalledWith(expect.objectContaining({
+      to: '5511999999999',
+      body: expect.stringContaining('2 - Empresa > Filial'),
+    }));
     expect(audit.recordAuditEventFireAndForget).toHaveBeenCalledWith(expect.objectContaining({
-      eventType: 'CONTACT_PROFILE_FINAL_CONFIRMATION_SUPPRESSED',
+      eventType: 'ENTITY_SELECTION_MENU_SENT',
       conversationId: 'conv-summary-once',
-      messageId: 'wamid.summary-followup',
-      status: 'ignored',
+      status: 'success',
       payload: expect.objectContaining({
-        reason: 'entity_selection_already_pending',
+        options_count: 2,
       }),
     }));
   });
