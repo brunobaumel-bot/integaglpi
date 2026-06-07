@@ -32,6 +32,57 @@ afterEach(() => {
 });
 
 describe('GlpiClient', () => {
+  it('finds computers by otherserial when GLPI search returns rows under data and entity requires detail lookup', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const responses = [
+      new Response(JSON.stringify({ session_token: 'session-123' }), { status: 200 }),
+      new Response(JSON.stringify({
+        totalcount: 1,
+        count: 1,
+        data: [
+          {
+            1: 'HOST-001',
+            2: 77,
+            5: 'SERIAL-1',
+            6: '1234',
+            80: 'Entidade expandida',
+          },
+        ],
+      }), { status: 200 }),
+      new Response(JSON.stringify({
+        id: 77,
+        name: 'HOST-001',
+        serial: 'SERIAL-1',
+        otherserial: '1234',
+        entities_id: 42,
+      }), { status: 200 }),
+    ];
+
+    const httpClient = {
+      request: vi.fn().mockImplementation(async () => responses.shift()),
+    };
+
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    await expect(client.findComputersByOtherserial('1234')).resolves.toEqual([
+      {
+        id: 77,
+        name: 'HOST-001',
+        serial: 'SERIAL-1',
+        otherserial: '1234',
+        entitiesId: 42,
+      },
+    ]);
+    expect(httpClient.request).toHaveBeenCalledWith(
+      'https://glpi.example.local/apirest.php/search/Computer?criteria%5B0%5D%5Bfield%5D=6&criteria%5B0%5D%5Bsearchtype%5D=equals&criteria%5B0%5D%5Bvalue%5D=1234&forcedisplay%5B0%5D=2&forcedisplay%5B1%5D=1&forcedisplay%5B2%5D=5&forcedisplay%5B3%5D=6&forcedisplay%5B4%5D=80&range=0-9',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(httpClient.request).toHaveBeenCalledWith(
+      'https://glpi.example.local/apirest.php/Computer/77',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
   it('maps GLPI soft-deleted ticket flags from getTicket', async () => {
     const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
     const responses = [

@@ -625,22 +625,27 @@ export class GlpiClient {
 
     const rows = await this.searchComputersByOtherserial(normalized, limit);
 
-    return rows
-      .map((row) => {
-        const id = readIdFromGlpiSearchRow(row);
-        if (id === null) {
-          return null;
-        }
+    const assets: GlpiComputerAssetCandidate[] = [];
+    for (const row of rows) {
+      const id = readIdFromGlpiSearchRow(row);
+      if (id === null) {
+        continue;
+      }
 
-        return {
-          id,
-          name: readNameFromGlpiSearchRow(row),
-          serial: readStringField(row, '5') ?? readStringField(row, 'serial'),
-          otherserial: readStringField(row, '6') ?? readStringField(row, 'otherserial'),
-          entitiesId: readNumberField(row, '80') ?? readNumberField(row, 'entities_id'),
-        } satisfies GlpiComputerAssetCandidate;
-      })
-      .filter((asset): asset is GlpiComputerAssetCandidate => asset !== null);
+      const candidate = {
+        id,
+        name: readNameFromGlpiSearchRow(row),
+        serial: readStringField(row, '5') ?? readStringField(row, 'serial'),
+        otherserial: readStringField(row, '6') ?? readStringField(row, 'otherserial'),
+        entitiesId: readNumberField(row, '80') ?? readNumberField(row, 'entities_id'),
+      } satisfies GlpiComputerAssetCandidate;
+
+      assets.push(candidate.entitiesId === null
+        ? await this.fetchComputerAssetCandidate(id, candidate)
+        : candidate);
+    }
+
+    return assets;
   }
 
   public async checkApiHealth(): Promise<{ ok: boolean; latencyMs: number | null; errorStage: string | null }> {
@@ -1360,6 +1365,38 @@ export class GlpiClient {
     }
 
     return normalizeEntityCollection(responseBody);
+  }
+
+  private async fetchComputerAssetCandidate(
+    computerId: number,
+    fallback: GlpiComputerAssetCandidate,
+  ): Promise<GlpiComputerAssetCandidate> {
+    try {
+      const payload = await this.requestJson<JsonObject>(
+        `/Computer/${computerId}`,
+        { method: 'GET' },
+        'glpi_contact_lookup',
+      );
+
+      return {
+        id: computerId,
+        name: readStringField(payload, 'name') ?? fallback.name,
+        serial: readStringField(payload, 'serial') ?? fallback.serial,
+        otherserial: readStringField(payload, 'otherserial') ?? fallback.otherserial,
+        entitiesId: readNumberField(payload, 'entities_id') ?? fallback.entitiesId,
+      };
+    } catch (error: unknown) {
+      logger.warn(
+        {
+          stage: 'glpi_computer_lookup',
+          computerId,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        },
+        '[GLPI PoC] Computer detail lookup failed; using search row candidate.',
+      );
+
+      return fallback;
+    }
   }
 
   private async requestJson<T>(
