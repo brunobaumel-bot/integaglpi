@@ -34,6 +34,7 @@ import type { BusinessHoursService } from './BusinessHoursService.js';
 import { hasValidGlpiTicketId } from './EntitySelectionService.js';
 import { createCorrelationId } from './correlationId.js';
 import type { GlpiCategoryClassifierService } from './GlpiCategoryClassifierService.js';
+import type { AssetContextSummaryService } from './AssetContextSummaryService.js';
 
 export interface InboundWebhookProcessingResult {
   messageId: string;
@@ -154,6 +155,13 @@ export class InboundWebhookService {
     private readonly businessHoursService: BusinessHoursService | null = null,
     private readonly aiOnlineAlertTrigger: AiOnlineAlertInboundTrigger | null = null,
     private readonly categoryClassifier: GlpiCategoryClassifierService | null = null,
+    /**
+     * Serviço opcional de contexto de ativo.
+     * Quando não-null e ASSET_CONTEXT_SUMMARY_ENABLED=true, injeta nota interna
+     * no chamado GLPI após a criação. Fire-and-forget — nunca bloqueia o fluxo.
+     * PHASE: integaglpi_asset_context_summary_001
+     */
+    private readonly assetContextSummaryService: AssetContextSummaryService | null = null,
   ) {}
 
   /**
@@ -176,6 +184,38 @@ export class InboundWebhookService {
         : null;
     }
     return this._nativeTriageNormalizer;
+  }
+
+  /**
+   * Fire-and-forget: gera contexto do ativo vinculado ao chamado e injeta como nota interna.
+   * Chamado SEM await após createTicket — nunca bloqueia o fluxo de atendimento.
+   * PHASE: integaglpi_asset_context_summary_001
+   */
+  private triggerAssetContextSummary(
+    ticketId: number,
+    entityId: number,
+    profile: import('./ContactProfileService.js').ContactProfileData | null,
+    conversationId: string | null,
+  ): void {
+    if (this.assetContextSummaryService === null) {
+      return;
+    }
+    const equipmentTag = profile?.equipment_tag_unknown
+      ? null
+      : (profile?.last_equipment_tag?.trim() ?? null);
+    if (!equipmentTag) {
+      // Sem etiqueta conhecida: não há ativo a consultar.
+      return;
+    }
+    // Fire-and-forget: erros são capturados dentro do serviço; esta chamada não propaga.
+    void this.assetContextSummaryService.generate({
+      equipmentTag,
+      entityId,
+      conversationId,
+      ticketId,
+    }).catch(() => {
+      // O serviço já loga internamente; apenas garantia de dupla-cobertura.
+    });
   }
 
   private async resolveRoutingOptions(entityId: number | null = null): Promise<ActiveRoutingOption[]> {
@@ -1167,6 +1207,8 @@ export class InboundWebhookService {
             { timeoutMs: ROUTING_GLPI_CREATE_TIMEOUT_MS },
             { conversationId: activeConversation.id, stage: 'profile_completed_active' },
           );
+          // PHASE: integaglpi_asset_context_summary_001 — fire-and-forget, nunca bloqueia.
+          this.triggerAssetContextSummary(ticketId, resolvedEntity.glpiEntityId, profile, activeConversation.id);
 
           const linked = await this.conversationRepository.linkGlpiTicket(
             activeConversation.id,
@@ -1547,6 +1589,9 @@ export class InboundWebhookService {
                   { timeoutMs: ROUTING_GLPI_CREATE_TIMEOUT_MS },
                   { conversationId: lockedConversation.id, stage: 'profile_completed_locked' },
                 );
+                // PHASE: integaglpi_asset_context_summary_001 — fire-and-forget, nunca bloqueia.
+                this.triggerAssetContextSummary(ticketId, resolvedEntity.glpiEntityId, profile, lockedConversation.id);
+
                 const linked = await this.conversationRepository.linkGlpiTicket(
                   lockedConversation.id,
                   ticketId,
@@ -4352,6 +4397,8 @@ export class InboundWebhookService {
       { conversationId: input.conversation.id, stage: 'complete_profile_transition' },
     );
     this.logTicketCreatedWithFallback(input.contact, input.inboundMessage.messageId, ticketId);
+    // PHASE: integaglpi_asset_context_summary_001 — fire-and-forget, nunca bloqueia.
+    this.triggerAssetContextSummary(ticketId, resolvedEntity.glpiEntityId, profile, input.conversation.id);
 
     const linked = await this.conversationRepository.linkGlpiTicket(
       input.conversation.id,
