@@ -17,6 +17,15 @@ use GlpiPlugin\Integaglpi\Service\SecurityPermissionService;
  * UI for the IntegraGLPI RBAC matrix. The legacy "Perfis e Permissões" entry
  * is kept only as a clearly-labelled bootstrap pointer to the GLPI-native
  * Read/Update right used as access gate.
+ *
+ * NOTE (integaglpi_plugin_logmein_menu_reorganization_001):
+ *   Contratos e Horas / Catálogo de Serviços foram removidos deste menu pois
+ *   Contratos e Catálogo/Categorias/Forms NATIVOS do GLPI são a fonte oficial.
+ *   O plugin não deve manter CRUD paralelo operacional para essas entidades.
+ *   As rotas /front/contracts.hours.php e /front/service.catalog.php permanecem
+ *   acessíveis via URL direta para Admin, mas não aparecem no menu principal.
+ *   Itens LogMeIn foram movidos para LogmeinGroupMenu (grupo dedicado).
+ *   Importar Agenda e Central de Segurança permanecem aqui.
  */
 final class GestaoGroupMenu extends CommonDBTM
 {
@@ -46,22 +55,17 @@ final class GestaoGroupMenu extends CommonDBTM
             return [];
         }
 
-        $children = [
-            'contratos_banco_horas' => [
-                'title' => __('Contratos e Horas / Banco de Horas', 'glpiintegaglpi'),
-                'page'  => Plugin::getContractHoursUrl(),
-                'icon'  => 'ti ti-file-time',
-            ],
-            'catalogo_servicos' => [
-                'title' => __('Catálogo de Serviços', 'glpiintegaglpi'),
-                'page'  => Plugin::getServiceCatalogUrl(),
-                'icon'  => 'ti ti-list-check',
-            ],
-            'importar_agenda' => [
-                'title' => __('Importar agenda', 'glpiintegaglpi'),
-                'page'  => Plugin::getContactAgendaImportUrl(),
-                'icon'  => 'ti ti-address-book',
-            ],
+        $children = [];
+
+        // NOTE: Contratos/Banco de Horas e Catálogo de Serviços foram removidos
+        // do menu principal (integaglpi_plugin_logmein_menu_reorganization_001).
+        // GLPI nativo é SSOT — as rotas /front/contracts.hours.php e
+        // /front/service.catalog.php continuam acessíveis por URL para Admin.
+
+        $children['importar_agenda'] = [
+            'title' => __('Importar agenda', 'glpiintegaglpi'),
+            'page'  => Plugin::getContactAgendaImportUrl(),
+            'icon'  => 'ti ti-address-book',
         ];
 
         // FIX2: Central de Segurança como filho da Gestão — interface canônica
@@ -72,35 +76,6 @@ final class GestaoGroupMenu extends CommonDBTM
                 'title' => __('Central de Segurança', 'glpiintegaglpi'),
                 'page'  => Plugin::getWebBasePath() . '/front/security.center.php',
                 'icon'  => 'ti ti-shield-lock',
-            ];
-        }
-
-        if (SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_MAPPING)) {
-            $children['logmein_readonly_mapping'] = [
-                'title' => __('Mapeamento LogMeIn read-only', 'glpiintegaglpi'),
-                'page'  => Plugin::getWebBasePath() . '/front/logmein.mapping.php',
-                'icon'  => 'ti ti-sitemap',
-            ];
-        }
-
-        if (
-            SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_VIEW_CONTRACTS_READONLY)
-            || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_EXPORT_OPERATIONAL_REPORTS)
-            || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_MAPPING)
-        ) {
-            $children['logmein_operational_reports'] = [
-                'title' => __('Relatórios LogMeIn read-only', 'glpiintegaglpi'),
-                'page'  => Plugin::getLogmeinReportsUrl(),
-                'icon'  => 'ti ti-report-analytics',
-            ];
-        }
-
-        // V7 — Conciliação de acessos remotos (feature flag LOGMEIN_RECONCILIATION_ENABLED=false por padrão).
-        if (SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_RECONCILIATION)) {
-            $children['logmein_reconciliation'] = [
-                'title' => __('Conciliação de Acessos Remotos', 'glpiintegaglpi'),
-                'page'  => Plugin::getLogmeinReconciliationUrl(),
-                'icon'  => 'ti ti-link',
             ];
         }
 
@@ -120,13 +95,7 @@ final class GestaoGroupMenu extends CommonDBTM
 
     public static function canView(): bool
     {
-        return Plugin::canContractRead()
-            || Plugin::canServiceCatalogRead()
-            || Plugin::canUpdate()
-            || SecurityPermissionService::canViewSecurityCenter()
-            || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_VIEW_CONTRACTS_READONLY)
-            || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_EXPORT_OPERATIONAL_REPORTS)
-            || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_MAPPING)
-            || SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_MANAGE_LOGMEIN_RECONCILIATION);
+        return Plugin::canUpdate()
+            || SecurityPermissionService::canViewSecurityCenter();
     }
 }

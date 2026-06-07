@@ -196,16 +196,25 @@ export class LogmeinAlarmEngineService {
     }
 
     // 4. Cooldown via Redis
+    // FAIL-SAFE: Redis unavailable → suppress alarm (return cooldownSkipped) rather than
+    // proceeding without cooldown protection. This prevents duplicate tickets during outages.
     const cooldownKey = `logmein:alarm:cooldown:${rule.id}:${target.hostId}`;
     let cooldownActive = false;
+    let redisAvailable = true;
     try {
       const existing = await this.redis.get(cooldownKey);
       cooldownActive = existing !== null;
     } catch {
+      redisAvailable = false;
       logger.warn(
         { rule_id: rule.id, host_id: target.hostId },
-        '[logmein_alarm][engine] Redis unavailable for cooldown check — proceeding without cooldown.',
+        '[logmein_alarm][engine] Redis unavailable for cooldown check — suppressing alarm (fail-safe).',
       );
+    }
+
+    // Fail-safe: if Redis is unavailable we cannot guarantee cooldown — suppress alarm.
+    if (!redisAvailable) {
+      return { ...ZERO, cooldownSkipped: 1 };
     }
 
     if (cooldownActive) {
@@ -426,12 +435,14 @@ export class LogmeinAlarmEngineService {
 
       return { thresholdReached };
     } catch {
-      // Redis failure: treat as threshold reached to avoid indefinite suppression
+      // FAIL-SAFE: Redis unavailable → suppress alarm (thresholdReached=false) rather than
+      // treating as reached. This prevents tickets without the consecutive-check guard.
+      // The worker will retry on the next cycle when Redis is available again.
       logger.warn(
         { rule_id: rule.id, host_id: target.hostId },
-        '[logmein_alarm][engine] Redis unavailable for consecutive check — treating as threshold reached.',
+        '[logmein_alarm][engine] Redis unavailable for consecutive check — suppressing alarm (fail-safe).',
       );
-      return { thresholdReached: true };
+      return { thresholdReached: false };
     }
   }
 

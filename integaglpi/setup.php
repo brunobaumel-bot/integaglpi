@@ -14,6 +14,7 @@ use GlpiPlugin\Integaglpi\GestaoGroupMenu;
 use GlpiPlugin\Integaglpi\IaGroupMenu;
 use GlpiPlugin\Integaglpi\Install\Installer;
 use GlpiPlugin\Integaglpi\LogmeinAlarmMenu;
+use GlpiPlugin\Integaglpi\LogmeinGroupMenu;
 use GlpiPlugin\Integaglpi\KnowledgeBaseMenu;
 use GlpiPlugin\Integaglpi\KbCandidatesMenu;
 use GlpiPlugin\Integaglpi\MonitoramentoGroupMenu;
@@ -206,6 +207,13 @@ function plugin_init_integaglpi(): void
         'plugin_integaglpi_supervisao' => [
             SupervisaoGroupMenu::class,
         ],
+        // Phase integaglpi_plugin_logmein_menu_reorganization_001:
+        // LogMeIn Central — dedicated group for all LogMeIn-related admin pages.
+        // GLPI-native Contracts and Service Catalog remain the source of truth;
+        // their plugin CRUDs are hidden from the sidebar (routes preserved).
+        'plugin_integaglpi_logmein' => [
+            LogmeinGroupMenu::class,
+        ],
         // Phase FIX2: Central de Segurança não fica mais como item solto no
         // sidebar — ela passou a ser filho de Gestão (ver GestaoGroupMenu).
         // SecurityCenterMenu permanece registrada abaixo para resolução de
@@ -268,6 +276,7 @@ function plugin_init_integaglpi(): void
     \Plugin::registerClass(KbCandidatesMenu::class);
     \Plugin::registerClass(SecurityCenterMenu::class);
     \Plugin::registerClass(LogmeinAlarmMenu::class);
+    \Plugin::registerClass(LogmeinGroupMenu::class);
 }
 
 function plugin_integaglpi_install(): bool

@@ -32,8 +32,18 @@ final class ContractsHoursMenu extends CommonDBTM
         ];
     }
 
+    /**
+     * Returns false to hide from the plugin sidebar.
+     *
+     * NOTE (integaglpi_plugin_logmein_menu_reorganization_001):
+     *   GLPI-native Contracts are the single source of truth.
+     *   This plugin's Contracts/Hours page remains accessible via direct URL
+     *   (/front/contracts.hours.php) for Admin use but is no longer shown in
+     *   the sidebar as a main operational CRUD entry.
+     *   Data, routes and internal audit references are fully preserved.
+     */
     public static function canView(): bool
     {
-        return Plugin::canContractRead();
+        return false;
     }
 }

@@ -1,10 +1,22 @@
 -- 049_logmein_alarm_guards.sql
 -- Phase: integaglpi_logmein_alarm_rules_and_auto_ticket_implementation_001
--- Additive guards:
+--
+-- ⚠ SCHEMA-ALTERING MIGRATION (not purely additive):
+--   This migration performs DDL and DML operations beyond CREATE TABLE:
+--     • DROP CONSTRAINT IF EXISTS chk_alarm_type  — replaces the 2-type constraint with 7 types
+--     • ALTER TABLE ADD COLUMN IF NOT EXISTS       — adds min_consecutive_checks / interval cols
+--     • UPDATE integaglpi_logmein_alarm_rules      — normalises host_not_seen_minutes → host_not_seen
+--                                                   and enforces cooldown/consecutive minimums
+--
+-- Not data-destructive: no DROP TABLE, no TRUNCATE, no DELETE FROM, no DROP COLUMN.
+-- All operations are idempotent (IF NOT EXISTS / IF EXISTS / COALESCE / WHERE guards).
+-- Requires backup + manual gate before applying to production.
+-- Safe to re-apply to HML (idempotent).
+--
+-- Original comment: Additive guards:
 --   1. Rename host_not_seen_minutes → host_not_seen (condition_payload: not_seen_days)
 --   2. Expand alarm_type constraint to include all 7 types
 --   3. Add min_consecutive_checks / consecutive_check_interval_minutes (for host_offline)
--- No DROP TABLE. Constraint alteration is safe — no data loss.
 
 BEGIN;
 

@@ -32,8 +32,19 @@ final class ServiceCatalogMenu extends CommonDBTM
         ];
     }
 
+    /**
+     * Returns false to hide from the plugin sidebar.
+     *
+     * NOTE (integaglpi_plugin_logmein_menu_reorganization_001):
+     *   GLPI-native Service Catalog (Forms, ITILCategories) is the single source
+     *   of truth. This plugin's Service Catalog page remains accessible via direct
+     *   URL (/front/service.catalog.php) and internal read-only bridges used by
+     *   triage routing are preserved. It is no longer shown in the sidebar as a
+     *   main operational CRUD entry.
+     *   Data, routes and internal audit references are fully preserved.
+     */
     public static function canView(): bool
     {
-        return Plugin::canServiceCatalogRead();
+        return false;
     }
 }

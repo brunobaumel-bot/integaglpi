@@ -30,9 +30,12 @@
  * 27. cooldown mín. 60 min para host_offline com create_ticket=true
  * 28. host_offline consecutiveWaiting++ quando threshold não atingido
  * 29. host_offline dispara após atingir threshold consecutivo
- * 30. host_not_seen mín. 7 days em validation
+ * 31. Redis error no cooldown check → alarm suprimido (fail-safe), sem ticket
+ * 32. Redis error nos consecutive checks → thresholdReached=false, sem ticket
+ * 33. Worker continua sem lançar exceção quando Redis falha em ambas as etapas
  *
  * PHASE: integaglpi_logmein_alarm_rules_and_auto_ticket_implementation_001
+ * PHASE: integaglpi_logmein_alarm_rules_redis_fail_safe_fix_001
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -754,6 +757,111 @@ describe('host_offline — consecutive check guard', () => {
       const result = await engine.runOnce();
       expect(result.fired).toBe(1);
       expect(result.consecutiveWaiting).toBe(0);
+    });
+  });
+
+  // ── Redis fail-safe tests (PHASE: integaglpi_logmein_alarm_rules_redis_fail_safe_fix_001) ──
+
+  it('31. Redis error no cooldown → alarme suprimido (fail-safe), sem ticket criado', async () => {
+    const { LogmeinAlarmEngineService } = await import('../src/domain/services/LogmeinAlarmEngineService.js');
+    const rule = makeRule({
+      alarmType: 'host_offline',
+      minConsecutiveChecks: 1,
+      consecutiveCheckIntervalMinutes: 5,
+      createTicket: true,
+      glpiGroupId: 10,
+      glpiItilCategoryId: 20,
+    });
+    const target = makeTarget();
+    const host = makeHost({ status: 'offline' });
+    const hostMap = new Map([[target.hostId, host]]);
+    const glpiCreateTicket = vi.fn().mockResolvedValue(9999);
+    const repo = makeRepository({
+      listEnabledRules: vi.fn().mockResolvedValue([rule]),
+      listTargetsForRule: vi.fn().mockResolvedValue([target]),
+      getHostsCurrentStatus: vi.fn().mockResolvedValue(hostMap),
+      insertEventIfNew: vi.fn().mockResolvedValue({ inserted: true }),
+    });
+    // Consecutive: threshold reached (count=1, interval long ago); then cooldown Redis throws.
+    const redis = makeRedis({
+      get: vi.fn()
+        .mockResolvedValueOnce(`1:${Math.floor(Date.now() / 1000) - 9999}`) // consecutive: threshold reached
+        .mockRejectedValue(new Error('Redis connection refused')),            // cooldown GET: fail-safe
+      set: vi.fn().mockResolvedValue('OK'),
+    });
+    const glpiClient = { createTicket: glpiCreateTicket } as never;
+
+    await withAlarmFlags(true, true, async () => {
+      const engine = new LogmeinAlarmEngineService(repo as never, redis, glpiClient);
+      const result = await engine.runOnce();
+      // Fail-safe: Redis error on cooldown check → alarm suppressed (no ticket)
+      expect(glpiCreateTicket).not.toHaveBeenCalled();
+      expect(result.cooldownSkipped).toBe(1);
+      expect(result.ticketsCreated).toBe(0);
+      expect(result.errors).toBe(0);
+    });
+  });
+
+  it('32. Redis error nos consecutive checks → thresholdReached=false, sem ticket', async () => {
+    const { LogmeinAlarmEngineService } = await import('../src/domain/services/LogmeinAlarmEngineService.js');
+    const rule = makeRule({
+      alarmType: 'host_offline',
+      minConsecutiveChecks: 2,
+      consecutiveCheckIntervalMinutes: 5,
+      createTicket: true,
+      glpiGroupId: 10,
+      glpiItilCategoryId: 20,
+    });
+    const target = makeTarget();
+    const host = makeHost({ status: 'offline' });
+    const hostMap = new Map([[target.hostId, host]]);
+    const glpiCreateTicket = vi.fn().mockResolvedValue(9999);
+    const repo = makeRepository({
+      listEnabledRules: vi.fn().mockResolvedValue([rule]),
+      listTargetsForRule: vi.fn().mockResolvedValue([target]),
+      getHostsCurrentStatus: vi.fn().mockResolvedValue(hostMap),
+    });
+    // Consecutive Redis throws → fail-safe: thresholdReached=false → consecutiveWaiting++
+    const redis = makeRedis({
+      get: vi.fn().mockRejectedValue(new Error('Redis connection refused')),
+      set: vi.fn().mockResolvedValue('OK'),
+    });
+    const glpiClient = { createTicket: glpiCreateTicket } as never;
+
+    await withAlarmFlags(true, true, async () => {
+      const engine = new LogmeinAlarmEngineService(repo as never, redis, glpiClient);
+      const result = await engine.runOnce();
+      // Fail-safe: Redis error → threshold NOT treated as reached
+      expect(glpiCreateTicket).not.toHaveBeenCalled();
+      expect(result.fired).toBe(0);
+      expect(result.consecutiveWaiting).toBe(1);
+      expect(result.ticketsCreated).toBe(0);
+      expect(result.errors).toBe(0);
+    });
+  });
+
+  it('33. Worker não quebra quando Redis falha em todas as etapas', async () => {
+    const { LogmeinAlarmEngineService } = await import('../src/domain/services/LogmeinAlarmEngineService.js');
+    const rule = makeRule({ alarmType: 'host_offline', minConsecutiveChecks: 1 });
+    const target = makeTarget();
+    const host = makeHost({ status: 'offline' });
+    const hostMap = new Map([[target.hostId, host]]);
+    const repo = makeRepository({
+      listEnabledRules: vi.fn().mockResolvedValue([rule]),
+      listTargetsForRule: vi.fn().mockResolvedValue([target]),
+      getHostsCurrentStatus: vi.fn().mockResolvedValue(hostMap),
+    });
+    // All Redis calls throw
+    const redis = makeRedis({
+      get: vi.fn().mockRejectedValue(new Error('Redis down')),
+      set: vi.fn().mockRejectedValue(new Error('Redis down')),
+    });
+
+    await withAlarmFlags(true, false, async () => {
+      const engine = new LogmeinAlarmEngineService(repo as never, redis, null);
+      await expect(engine.runOnce()).resolves.toBeDefined();
+      const result = await engine.runOnce();
+      expect(result.errors).toBe(0); // graceful degradation — no crash
     });
   });
 
