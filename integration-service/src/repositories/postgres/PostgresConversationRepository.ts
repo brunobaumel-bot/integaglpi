@@ -69,7 +69,14 @@ function mapEntitySelectionAttemptRow(row: EntitySelectionAttemptRow): EntitySel
   };
 }
 
-const REUSABLE_CONVERSATION_STATUSES = ['open', 'awaiting_queue_selection', 'awaiting_entity_selection', 'collecting_contact_profile'];
+const REUSABLE_CONVERSATION_STATUSES = [
+  'open',
+  'awaiting_queue_selection',
+  'awaiting_entity_selection',
+  'awaiting_problem_description',
+  'awaiting_category_confirmation',
+  'collecting_contact_profile',
+];
 const CONVERSATION_RUNTIME_TABLE = 'glpi_plugin_integaglpi_conversation_runtime';
 
 export class PostgresConversationRepository implements ConversationRepository {

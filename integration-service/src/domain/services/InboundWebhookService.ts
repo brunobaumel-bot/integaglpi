@@ -540,12 +540,7 @@ export class InboundWebhookService {
           }
 
           if (knownExistingTicketStatus === 'closed') {
-            await this.sendClosedConversationMessage(
-              toMeta,
-              closedConversation.id,
-              closedConversationTicketId,
-            );
-            closedConversationNoticeSent = true;
+            closedConversationNoticeSent = false;
           }
         }
 
@@ -931,7 +926,15 @@ export class InboundWebhookService {
 
           // Low confidence / fallback: show menu.
           await this.conversationRepository.updateStatus(activeConversation.id, 'awaiting_queue_selection');
-          await this.sendRoutingMenu({ toMeta, routingOptions, menuHeading, menuBody, context: 'ai_low_confidence', conversationId: activeConversation.id });
+          await this.sendRoutingMenu({
+            toMeta,
+            routingOptions,
+            menuHeading,
+            menuBody,
+            context: 'ai_low_confidence',
+            conversationId: activeConversation.id,
+            prefixText: 'Não consegui identificar a categoria com segurança. Escolha uma opção:',
+          });
           await this.messageRepository.updateState({ messageId: inboundMessage.messageId, conversationId: activeConversation.id, processingStatus: 'processed', glpiSyncStatus: 'synced' });
           return;
         }
@@ -2157,11 +2160,7 @@ export class InboundWebhookService {
             && glpiTicketStatus === 'closed'
             && !closedConversationNoticeSent
           ) {
-            await this.sendClosedConversationMessage(
-              toMeta,
-              existingConversation.id,
-              existingConversationTicketId,
-            );
+            closedConversationNoticeSent = true;
           }
 
           if (conversationStatus !== 'closed') {

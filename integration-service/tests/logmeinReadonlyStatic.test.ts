@@ -372,7 +372,8 @@ describe('V6-E3 LogMeIn read-only governance', () => {
     const client = await readProjectFile('../integaglpi/src/Service/IntegrationServiceClient.php');
     const ticketContext = await readProjectFile('../integaglpi/src/Service/TicketContextService.php');
     const ticketTab = await readProjectFile('../integaglpi/templates/ticket_tab.php');
-    const menu = await readProjectFile('../integaglpi/src/GestaoGroupMenu.php');
+    const gestaoMenu = await readProjectFile('../integaglpi/src/GestaoGroupMenu.php');
+    const logmeinMenu = await readProjectFile('../integaglpi/src/LogmeinGroupMenu.php');
     const nodeService = await readProjectFile('src/domain/services/LogmeinReadonlyContextService.ts');
     const controller = await readProjectFile('src/controllers/createLogmeinReadonlyController.ts');
     const app = await readProjectFile('src/app.ts');
@@ -443,9 +444,14 @@ describe('V6-E3 LogMeIn read-only governance', () => {
     expect(ticketContext).toContain('LogmeinGovernanceService');
     expect(ticketTab).toContain('Contexto LogMeIn read-only');
     expect(ticketTab).toContain('Sem sessão remota, sem comando');
-    expect(menu).toContain('logmein.mapping.php');
-    expect(menu).toContain('logmein_operational_reports');
-    expect(menu).toContain('Plugin::getLogmeinReportsUrl()');
+    expect(logmeinMenu).toContain('logmein.mapping.php');
+    expect(logmeinMenu).toContain('logmein.fieldmapping.php');
+    expect(logmeinMenu).toContain('logmein.alarm.php');
+    expect(logmeinMenu).toContain('getLogmeinReconciliationUrl');
+    expect(logmeinMenu).toContain('Plugin::getLogmeinReportsUrl()');
+    expect(gestaoMenu).toContain('Itens LogMeIn foram movidos para LogmeinGroupMenu');
+    expect(gestaoMenu).not.toContain("'logmein_mapping'");
+    expect(gestaoMenu).not.toContain("'logmein_reports'");
     expect(nodeService).toContain('hostswithgroups');
     expect(nodeService).toContain('extractCustomFields');
     expect(nodeService).toContain('extractEquipmentTagFromCustomFields');
@@ -474,12 +480,14 @@ describe('V6-E3 LogMeIn read-only governance', () => {
     const front = await readProjectFile('../integaglpi/front/logmein.reports.php');
     const template = await readProjectFile('../integaglpi/templates/logmein_reports.php');
     const plugin = await readProjectFile('../integaglpi/src/Plugin.php');
-    const menu = await readProjectFile('../integaglpi/src/GestaoGroupMenu.php');
+    const gestaoMenu = await readProjectFile('../integaglpi/src/GestaoGroupMenu.php');
+    const logmeinMenu = await readProjectFile('../integaglpi/src/LogmeinGroupMenu.php');
     const audit = await readProjectFile('../integaglpi/src/Service/SecurityAuditService.php');
 
     expect(plugin).toContain('getLogmeinReportsUrl');
-    expect(menu).toContain('Relatórios LogMeIn read-only');
-    expect(menu).toContain('getLogmeinReportsUrl');
+    expect(logmeinMenu).toContain('Relatórios operacionais LogMeIn (read-only)');
+    expect(logmeinMenu).toContain('getLogmeinReportsUrl');
+    expect(gestaoMenu).not.toContain('getLogmeinReportsUrl');
     expect(front).toContain('Session::checkLoginUser()');
     expect(front).toContain('Plugin::isCsrfValid($_POST)');
     expect(front).toContain('exportOperationalReportCsv');

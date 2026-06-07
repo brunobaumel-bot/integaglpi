@@ -80,8 +80,83 @@ describe('PostgresConversationRepository', () => {
     expect(sql.indexOf("WHEN status = 'open'")).toBeLessThan(sql.indexOf('last_message_at DESC'));
     expect(executor.queries[0]?.params).toEqual([
       '+5541999999999',
-      ['open', 'awaiting_queue_selection', 'awaiting_entity_selection', 'collecting_contact_profile'],
+      [
+        'open',
+        'awaiting_queue_selection',
+        'awaiting_entity_selection',
+        'awaiting_problem_description',
+        'awaiting_category_confirmation',
+        'collecting_contact_profile',
+      ],
     ]);
+  });
+
+  it('reuses awaiting_problem_description and awaiting_category_confirmation conversations before closed rows', async () => {
+    const executor = new FakeSqlExecutor();
+    const repository = new PostgresConversationRepository(executor);
+
+    await repository.findReusableByPhoneE164('+554188334449');
+
+    const reusableStatuses = executor.queries[0]?.params[1];
+    expect(reusableStatuses).toContain('awaiting_problem_description');
+    expect(reusableStatuses).toContain('awaiting_category_confirmation');
+    expect(reusableStatuses).not.toContain('closed');
+  });
+
+  it('maps an awaiting_problem_description row returned by findReusableByPhoneE164', async () => {
+    const executor = new FakeSqlExecutor();
+    const now = new Date('2026-06-07T12:00:00.000Z');
+    executor.nextRows = [{
+      id: 'conv-problem',
+      phone_e164: '+554188334449',
+      contact_id: 'contact-1',
+      glpi_ticket_id: null,
+      glpi_entity_id: '42',
+      glpi_entity_name: 'HML',
+      queue_id: null,
+      profile_collection_state: null,
+      status: 'awaiting_problem_description',
+      last_message_at: now,
+      created_at: now,
+      updated_at: now,
+    }];
+    const repository = new PostgresConversationRepository(executor);
+
+    const conversation = await repository.findReusableByPhoneE164('+554188334449');
+
+    expect(conversation).toMatchObject({
+      id: 'conv-problem',
+      status: 'awaiting_problem_description',
+      glpiEntityId: 42,
+    });
+  });
+
+  it('maps an awaiting_category_confirmation row returned by findReusableByPhoneE164', async () => {
+    const executor = new FakeSqlExecutor();
+    const now = new Date('2026-06-07T12:05:00.000Z');
+    executor.nextRows = [{
+      id: 'conv-category',
+      phone_e164: '+554188334449',
+      contact_id: 'contact-1',
+      glpi_ticket_id: null,
+      glpi_entity_id: '42',
+      glpi_entity_name: 'HML',
+      queue_id: null,
+      profile_collection_state: { ai_category_candidate_id: 123 },
+      status: 'awaiting_category_confirmation',
+      last_message_at: now,
+      created_at: now,
+      updated_at: now,
+    }];
+    const repository = new PostgresConversationRepository(executor);
+
+    const conversation = await repository.findReusableByPhoneE164('+554188334449');
+
+    expect(conversation).toMatchObject({
+      id: 'conv-category',
+      status: 'awaiting_category_confirmation',
+      glpiEntityId: 42,
+    });
   });
 
   it('reopenConversation reopens the conversation row and clears closed runtime state', async () => {

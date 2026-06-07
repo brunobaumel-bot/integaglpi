@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 const classifier = readFileSync('src/domain/services/GlpiCategoryClassifierService.ts', 'utf8');
 const webhook = readFileSync('src/domain/services/InboundWebhookService.ts', 'utf8');
 const envTs = readFileSync('src/config/env.ts', 'utf8');
+const conversationRepository = readFileSync('src/repositories/postgres/PostgresConversationRepository.ts', 'utf8');
 
 describe('AI Category Classification contract', () => {
   // ── Feature flag ───────────────────────────────────────────────────────────
@@ -112,6 +113,7 @@ describe('AI Category Classification contract', () => {
     expect(webhook).toContain('sendRoutingMenu');
     expect(webhook).toContain('ai_low_confidence');
     expect(webhook).toContain('ai_category_rejected');
+    expect(webhook).toContain('Não consegui identificar a categoria com segurança. Escolha uma opção:');
   });
 
   it('confirmation rejection (2) shows manual menu', () => {
@@ -171,5 +173,16 @@ describe('AI Category Classification contract', () => {
 
   it('no direct MariaDB access in classifier', () => {
     expect(classifier).not.toMatch(/mysql|mariadb|knex|typeorm/i);
+  });
+
+  it('repository reuses AI category FSM states before falling back to closed conversations', () => {
+    expect(conversationRepository).toContain('REUSABLE_CONVERSATION_STATUSES');
+    expect(conversationRepository).toContain("'awaiting_problem_description'");
+    expect(conversationRepository).toContain("'awaiting_category_confirmation'");
+    const reusableList = conversationRepository.slice(
+      conversationRepository.indexOf('REUSABLE_CONVERSATION_STATUSES'),
+      conversationRepository.indexOf('const CONVERSATION_RUNTIME_TABLE'),
+    );
+    expect(reusableList).not.toContain("'closed'");
   });
 });

@@ -1829,7 +1829,7 @@ describe('InboundWebhookService', () => {
     expect(messageRepository.updates[0]?.conversationId).toBe('conversation-existing');
   });
 
-  it('sends conversation_closed_message for a closed conversation with a closed GLPI ticket and keeps creating a new ticket', async () => {
+  it('starts a new ticket flow without sending a closed-conversation notice when the prior ticket is closed', async () => {
     const webhookEventRepository = new FakeWebhookEventRepository();
     const messageRepository = new FakeMessageRepository();
     const conversationRepository = new FakeConversationRepository();
@@ -1867,17 +1867,14 @@ describe('InboundWebhookService', () => {
     const result = await service.process(basePayload);
 
     expect(result.results).toEqual([{ messageId: 'wamid.123', outcome: 'processed' }]);
-    expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
-    expect(meta.sendTextMessage.mock.calls[0]?.[0].body).toBe(
-      'Esta conversa esta encerrada. Inicie um novo atendimento.',
-    );
+    expect(meta.sendTextMessage).not.toHaveBeenCalled();
     expect(glpiClient.createTicket).toHaveBeenCalledTimes(1);
     expect(conversationRepository.createdCount).toBe(1);
     expect(conversationRepository.lastCreateInput?.glpiTicketId).toBe(987);
     expect(messageRepository.updates[0]?.conversationId).toBe('conversation-1');
   });
 
-  it('falls back for closed conversation message and still sends the routing menu for a new flow', async () => {
+  it('sends only the routing menu for a new flow after a closed GLPI ticket', async () => {
     const webhookEventRepository = new FakeWebhookEventRepository();
     const messageRepository = new FakeMessageRepository();
     const conversationRepository = new FakeConversationRepository();
@@ -1919,11 +1916,8 @@ describe('InboundWebhookService', () => {
 
     expect(result.results).toEqual([{ messageId: 'wamid.123', outcome: 'processed' }]);
     expect(glpiClient.createTicket).not.toHaveBeenCalled();
-    expect(meta.sendTextMessage).toHaveBeenCalledTimes(2);
-    expect(meta.sendTextMessage.mock.calls[0]?.[0].body).toBe(
-      'Esta conversa esta encerrada. Inicie um novo atendimento.',
-    );
-    expect(meta.sendTextMessage.mock.calls[1]?.[0].body).toContain('1 - Suporte');
+    expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(meta.sendTextMessage.mock.calls[0]?.[0].body).toContain('1 - Suporte');
     expect(conversationRepository.lastCreateInput?.status).toBe('awaiting_queue_selection');
   });
 
@@ -1971,7 +1965,8 @@ describe('InboundWebhookService', () => {
       queueId: null,
       status: 'awaiting_entity_selection',
     });
-    expect(meta.sendTextMessage.mock.calls[1]?.[0].body).toBe('Recebemos as suas informações, em breve um de nossos técnicos irá seguir com o atendimento.');
+    expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(meta.sendTextMessage.mock.calls[0]?.[0].body).toBe('Recebemos as suas informações, em breve um de nossos técnicos irá seguir com o atendimento.');
   });
 
   it('creates a ticket and links it to an existing conversation without glpi_ticket_id', async () => {
