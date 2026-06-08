@@ -15,7 +15,7 @@ final class KbCandidateService
     private const CANDIDATES_TABLE = 'glpi_plugin_integaglpi_kb_candidates';
     private const REVIEWS_TABLE = 'glpi_plugin_integaglpi_kb_candidate_reviews';
     private const AUDIT_TABLE = 'glpi_plugin_integaglpi_audit_events';
-    private const STATUSES = ['suggested', 'in_review', 'approved', 'rejected', 'low_confidence', 'possible_duplicate'];
+    private const STATUSES = ['candidate', 'suggested', 'in_review', 'approved', 'rejected', 'low_confidence', 'possible_duplicate'];
     private const ARTICLE_TYPES = [
         'procedimento_tecnico',
         'solucao_comum',

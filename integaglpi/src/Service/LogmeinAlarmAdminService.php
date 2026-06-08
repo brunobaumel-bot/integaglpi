@@ -357,9 +357,10 @@ final class LogmeinAlarmAdminService
             $errors[] = 'Tipo de alarme inválido.';
         }
 
-        $entitiesId = (int) ($input['glpi_entities_id'] ?? 0);
-        if ($entitiesId <= 0) {
-            $errors[] = 'Entidade GLPI deve ser > 0. Entidade raiz proibida.';
+        $entitiesIdRaw = $input['glpi_entities_id'] ?? null;
+        $entitiesId    = (int) $entitiesIdRaw;
+        if ($entitiesIdRaw === null || $entitiesIdRaw === '' || $entitiesId <= 0) {
+            $errors[] = 'Entidade GLPI é obrigatória (selecione uma entidade da lista).';
         }
 
         $createTicket = (bool) ($input['create_ticket'] ?? false);
@@ -613,29 +614,78 @@ final class LogmeinAlarmAdminService
     {
         global $DB;
         try {
-            if (!isset($DB) || !is_object($DB) || !method_exists($DB, 'tableExists') || !$DB->tableExists('glpi_entities')) {
+            if (!isset($DB) || !is_object($DB) || !method_exists($DB, 'request')) {
                 return [];
             }
-            $rows = $DB->request([
+            if (method_exists($DB, 'tableExists') && !$DB->tableExists('glpi_entities')) {
+                return [];
+            }
+
+            $criteria = [
                 'SELECT' => ['id', 'name', 'completename'],
                 'FROM'   => 'glpi_entities',
-                'WHERE'  => ['is_deleted' => 0],
-                'ORDER'  => ['completename ASC', 'name ASC'],
+                'ORDER'  => ['completename', 'name', 'id'],
                 'LIMIT'  => 500,
-            ]);
+            ];
+            $activeEntityIds = $this->getActiveEntityIds();
+            if ($activeEntityIds !== []) {
+                $criteria['WHERE'] = ['id' => $activeEntityIds];
+            }
+
             $out = [];
-            foreach ($rows as $row) {
+            foreach ($DB->request($criteria) as $row) {
                 $id = (int) ($row['id'] ?? 0);
-                if ($id <= 0) {
+                if ($id <= 0 || !$this->canUseEntity($id)) {
                     continue;
                 }
-                $name = trim((string) ($row['completename'] ?? $row['name'] ?? ''));
+                $name = trim((string) ($row['completename'] ?? ''));
+                if ($name === '') {
+                    $name = trim((string) ($row['name'] ?? ''));
+                }
                 $out[] = ['id' => $id, 'name' => $name !== '' ? $name : ('Entidade #' . $id)];
             }
+
             return $out;
-        } catch (Throwable) {
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][logmein_alarm][entities] ' . mb_substr($exception->getMessage(), 0, 180, 'UTF-8'));
             return [];
         }
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function getActiveEntityIds(): array
+    {
+        $raw = $_SESSION['glpiactiveentities'] ?? [];
+        if (!is_array($raw)) {
+            $raw = [];
+        }
+        if ($raw === [] && isset($_SESSION['glpiactive_entity'])) {
+            $raw = [(int) $_SESSION['glpiactive_entity']];
+        }
+
+        $ids = [];
+        foreach ($raw as $id) {
+            $id = (int) $id;
+            if ($id > 0) {
+                $ids[] = $id;
+            }
+        }
+
+        return array_values(array_unique($ids));
+    }
+
+    private function canUseEntity(int $entityId): bool
+    {
+        if ($entityId <= 0) {
+            return false;
+        }
+        if (class_exists('\\Session') && method_exists('\\Session', 'haveAccessToEntity')) {
+            return (bool) \Session::haveAccessToEntity($entityId);
+        }
+
+        return true;
     }
 
     /**

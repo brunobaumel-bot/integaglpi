@@ -99,10 +99,18 @@ function fmtAlarmDate(?string $ts): string {
 .lm-hist-mini           { font-size: .78rem; max-height: 220px; overflow-y: auto; }
 .lm-section-toggle      { cursor: pointer; user-select: none; }
 .lm-acc-body            { animation: fadeInDown .15s ease; }
+.lm-page-shell          { max-width: 1480px; }
+.lm-form-card           { border: 1px solid #dbe4f0; border-radius: 8px; overflow: hidden; }
+.lm-form-card .card-body{ background: #f8fafc; }
+.lm-form-grid           { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr); gap: 14px; }
+.lm-form-grid-wide      { grid-column: 1 / -1; }
+.lm-help-inline         { color: #60708a; font-size: .78rem; }
+.lm-empty-warning       { border: 1px solid #f2c36b; background: #fff8e6; color: #6f4b00; border-radius: 6px; padding: 8px 10px; }
+@media (max-width: 900px) { .lm-form-grid { grid-template-columns: 1fr; } }
 @keyframes fadeInDown    { from { opacity:0; transform:translateY(-4px) } to { opacity:1; transform:none } }
 </style>
 
-<div class="container-fluid mt-2">
+<div class="container-fluid mt-2 lm-page-shell">
 
   <!-- ── Schema warnings ──────────────────────────────────────────────────── -->
   <?php if (!$schemaReady): ?>
@@ -139,7 +147,7 @@ function fmtAlarmDate(?string $ts): string {
     <div class="d-flex gap-2">
       <button class="btn btn-primary btn-sm" type="button"
               data-bs-toggle="collapse" data-bs-target="#createRulePanel">
-        <i class="ti ti-plus me-1"></i><?= __('+ Nova Regra', 'glpiintegaglpi') ?>
+        <i class="ti ti-plus me-1"></i><?= __('Nova Regra', 'glpiintegaglpi') ?>
       </button>
       <?php if (count($rules) > 0): ?>
       <button class="btn btn-outline-info btn-sm" type="button" id="globalDryRunBtn"
@@ -153,7 +161,7 @@ function fmtAlarmDate(?string $ts): string {
 
   <!-- ── Nova Regra (accordion / colapsável) ──────────────────────────────── -->
   <?php if ($canWrite && $schemaReady): ?>
-  <div class="card mb-3 shadow-sm">
+  <div class="card mb-3 shadow-sm lm-form-card">
     <div class="collapse" id="createRulePanel">
       <div class="card-body bg-light">
         <h6 class="fw-bold mb-3"><i class="ti ti-plus me-1"></i><?= __('Nova Regra de Alarme', 'glpiintegaglpi') ?></h6>
@@ -173,13 +181,13 @@ function fmtAlarmDate(?string $ts): string {
               </h2>
               <div id="acc-geral" class="accordion-collapse collapse show" data-bs-parent="#newRuleAccordion">
                 <div class="accordion-body lm-acc-body">
-                  <div class="row g-3">
-                    <div class="col-md-6">
+                  <div class="lm-form-grid">
+                    <div>
                       <label class="form-label fw-bold"><?= __('Nome da Regra', 'glpiintegaglpi') ?> *</label>
                       <input type="text" name="rule_name" class="form-control form-control-sm" required
                              placeholder="<?= __('Ex: Servidores offline - Empresa X', 'glpiintegaglpi') ?>">
                     </div>
-                    <div class="col-md-6">
+                    <div>
                       <label class="form-label fw-bold"><?= __('Tipo de Alarme', 'glpiintegaglpi') ?> *</label>
                       <select name="alarm_type" id="alarmTypeSelect" class="form-select form-select-sm" required>
                         <option value=""><?= __('— selecionar —', 'glpiintegaglpi') ?></option>
@@ -206,17 +214,26 @@ function fmtAlarmDate(?string $ts): string {
                       </select>
                       <div id="alarmTypeHint" class="form-text text-warning fw-bold mt-1"></div>
                     </div>
-                    <div class="col-md-4">
+                    <div>
                       <label class="form-label fw-bold"><?= __('Entidade GLPI', 'glpiintegaglpi') ?> *</label>
-                      <select name="glpi_entities_id" class="form-select form-select-sm" required>
+                      <select name="glpi_entities_id" class="form-select form-select-sm" required <?= count($entities ?? []) === 0 ? 'disabled' : '' ?>>
                         <option value=""><?= __('— selecionar entidade —', 'glpiintegaglpi') ?></option>
                         <?php foreach (($entities ?? []) as $entity): ?>
                           <option value="<?= (int) $entity['id'] ?>"><?= ealarm($entity['name']) ?> (#<?= (int) $entity['id'] ?>)</option>
                         <?php endforeach; ?>
                       </select>
-                      <div class="form-text"><?= __('Lista interna do GLPI; entidade raiz proibida.', 'glpiintegaglpi') ?></div>
+                      <?php if (count($entities ?? []) === 0): ?>
+                        <div class="lm-empty-warning mt-2">
+                          <i class="ti ti-alert-triangle me-1"></i>
+                          <?= __('Nenhuma entidade disponível para sua sessão. Recarregue a página e confirme a entidade ativa do GLPI; se persistir, revise permissões de entidade.', 'glpiintegaglpi') ?>
+                        </div>
+                      <?php else: ?>
+                        <div class="lm-help-inline mt-1">
+                          <?= sprintf(__('Entidades disponíveis nesta sessão: %d. A entidade raiz/global não é usada para abrir chamados.', 'glpiintegaglpi'), count($entities)) ?>
+                        </div>
+                      <?php endif; ?>
                     </div>
-                    <div class="col-md-8">
+                    <div>
                       <label class="form-label fw-bold text-muted fw-normal"><?= __('Obs / Documentação interna', 'glpiintegaglpi') ?></label>
                       <input type="text" name="rule_notes" class="form-control form-control-sm"
                              placeholder="<?= __('Notas internas para o supervisor (não enviadas ao cliente)', 'glpiintegaglpi') ?>">
