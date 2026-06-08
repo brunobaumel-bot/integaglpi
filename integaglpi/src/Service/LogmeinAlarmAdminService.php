@@ -379,6 +379,195 @@ final class LogmeinAlarmAdminService
         return $payload;
     }
 
+    // ── Targets ───────────────────────────────────────────────────────────────
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function listTargetsForRule(string $ruleId): array
+    {
+        if (trim($ruleId) === '') {
+            return [];
+        }
+        try {
+            $pdo  = $this->getPdo();
+            $stmt = $pdo->prepare(
+                'SELECT id, rule_id, host_id, hostname, created_at
+                   FROM ' . self::TARGETS_TABLE . '
+                  WHERE rule_id = :rule_id::uuid
+                  ORDER BY hostname ASC'
+            );
+            $stmt->execute([':rule_id' => $ruleId]);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            return is_array($rows) ? array_values($rows) : [];
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    /**
+     * @param list<string> $ruleIds
+     * @return array<string, list<array<string, mixed>>>  keyed by rule_id
+     */
+    public function listTargetsForRules(array $ruleIds): array
+    {
+        if ($ruleIds === []) {
+            return [];
+        }
+        try {
+            $pdo         = $this->getPdo();
+            $placeholders = implode(', ', array_map(static fn (int $i) => ':r' . $i . '::uuid', array_keys($ruleIds)));
+            $params       = [];
+            foreach ($ruleIds as $i => $id) {
+                $params[':r' . $i] = $id;
+            }
+            $stmt = $pdo->prepare(
+                'SELECT id, rule_id, host_id, hostname, created_at
+                   FROM ' . self::TARGETS_TABLE . '
+                  WHERE rule_id IN (' . $placeholders . ')
+                  ORDER BY hostname ASC'
+            );
+            $stmt->execute($params);
+            $rows   = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $result = [];
+            if (is_array($rows)) {
+                foreach ($rows as $row) {
+                    $rid              = (string) $row['rule_id'];
+                    $result[$rid][]   = $row;
+                }
+            }
+            return $result;
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    /**
+     * @return array{ok: bool, errors: list<string>}
+     */
+    public function addTarget(string $ruleId, string $hostId, string $hostname): array
+    {
+        $ruleId   = trim($ruleId);
+        $hostId   = trim($hostId);
+        $hostname = mb_substr(trim($hostname), 0, 255, 'UTF-8');
+
+        if ($ruleId === '' || $hostId === '') {
+            return ['ok' => false, 'errors' => ['rule_id e host_id são obrigatórios.']];
+        }
+        try {
+            $pdo  = $this->getPdo();
+            $stmt = $pdo->prepare(
+                'INSERT INTO ' . self::TARGETS_TABLE . ' (rule_id, host_id, hostname)
+                 VALUES (:rule_id::uuid, :host_id, :hostname)
+                 ON CONFLICT (rule_id, host_id) DO UPDATE SET hostname = EXCLUDED.hostname'
+            );
+            $stmt->execute([':rule_id' => $ruleId, ':host_id' => $hostId, ':hostname' => $hostname]);
+            return ['ok' => true, 'errors' => []];
+        } catch (Throwable $e) {
+            return ['ok' => false, 'errors' => ['Erro ao adicionar alvo: ' . $e->getMessage()]];
+        }
+    }
+
+    /**
+     * @return array{ok: bool, errors: list<string>}
+     */
+    public function removeTarget(string $ruleId, string $hostId): array
+    {
+        $ruleId = trim($ruleId);
+        $hostId = trim($hostId);
+        if ($ruleId === '' || $hostId === '') {
+            return ['ok' => false, 'errors' => ['rule_id e host_id são obrigatórios.']];
+        }
+        try {
+            $pdo  = $this->getPdo();
+            $stmt = $pdo->prepare(
+                'DELETE FROM ' . self::TARGETS_TABLE . '
+                  WHERE rule_id = :rule_id::uuid AND host_id = :host_id'
+            );
+            $stmt->execute([':rule_id' => $ruleId, ':host_id' => $hostId]);
+            return ['ok' => true, 'errors' => []];
+        } catch (Throwable $e) {
+            return ['ok' => false, 'errors' => [$e->getMessage()]];
+        }
+    }
+
+    // ── Host search (from asset cache) ─────────────────────────────────────────
+
+    private const ASSET_CACHE_TABLE = 'glpi_plugin_integaglpi_logmein_asset_cache';
+
+    /**
+     * Search hosts in the LogMeIn asset cache for target selection.
+     * Never returns PII — only sanitized hostname, tag, status, group.
+     *
+     * @return list<array{host_id: string, hostname: string, equipment_tag: string, status: string, group_name: string}>
+     */
+    public function searchHosts(string $query, string $groupId = '', int $limit = 50): array
+    {
+        $limit = max(1, min($limit, 200));
+        try {
+            $pdo    = $this->getPdo();
+            $params = [];
+            $where  = [];
+
+            if (trim($query) !== '') {
+                $where[]          = "(host_name_sanitized ILIKE :q OR equipment_tag ILIKE :q)";
+                $params[':q']     = '%' . trim($query) . '%';
+            }
+            if (trim($groupId) !== '') {
+                $where[]             = 'logmein_group_external_id = :gid';
+                $params[':gid']      = trim($groupId);
+            }
+
+            $whereClause = $where !== [] ? 'WHERE ' . implode(' AND ', $where) : '';
+            $stmt = $pdo->prepare(
+                'SELECT logmein_host_external_id AS host_id,
+                        host_name_sanitized      AS hostname,
+                        COALESCE(equipment_tag, \'\') AS equipment_tag,
+                        COALESCE(status, \'unknown\') AS status,
+                        logmein_group_name       AS group_name
+                   FROM ' . self::ASSET_CACHE_TABLE . '
+                  ' . $whereClause . '
+                  ORDER BY host_name_sanitized ASC
+                  LIMIT :lim'
+            );
+            $stmt->bindValue(':lim', $limit, PDO::PARAM_INT);
+            foreach ($params as $k => $v) {
+                $stmt->bindValue($k, $v);
+            }
+            $stmt->execute();
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            return is_array($rows) ? array_values($rows) : [];
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    /**
+     * @return list<array{group_id: string, group_name: string, host_count: int}>
+     */
+    public function listGroups(): array
+    {
+        try {
+            $pdo  = $this->getPdo();
+            $stmt = $pdo->query(
+                'SELECT logmein_group_external_id AS group_id,
+                        logmein_group_name         AS group_name,
+                        COUNT(*)::int              AS host_count
+                   FROM ' . self::ASSET_CACHE_TABLE . '
+                  GROUP BY logmein_group_external_id, logmein_group_name
+                  ORDER BY logmein_group_name ASC
+                  LIMIT 200'
+            );
+            if (!$stmt) {
+                return [];
+            }
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            return is_array($rows) ? array_values($rows) : [];
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
     // ── Internal ──────────────────────────────────────────────────────────────
 
     private function getPdo(): PDO

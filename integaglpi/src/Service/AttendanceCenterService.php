@@ -212,12 +212,24 @@ final class AttendanceCenterService
                     && $conversationId !== '';
                 $profileComplete = self::isProfileCollectionComplete($row['profile_collection_state'] ?? null);
                 $row['profile_collection_complete'] = $profileComplete;
+                // Supervisor/Direction override: allow manual ticket open for stuck pre-ticket
+                // conversations (stalled >= 5 min) that have no ticket yet.
+                // Requires RIGHT_OVERRIDE_ENTITY_MEMORY — same gate as entity override.
+                // (integaglpi_post_smoke_operational_gaps_hml_fix_prod_report_001)
+                $supervisorCanOpenPreTicket = $effectiveStatus === 'pre_ticket'
+                    && (int) ($row['stalled_seconds'] ?? 0) >= 300
+                    && $ticketId <= 0
+                    && $conversationId !== ''
+                    && SecurityPermissionService::hasRight(SecurityPermissionService::RIGHT_OVERRIDE_ENTITY_MEMORY);
+
                 $row['can_confirm_entity'] = (
                     $effectiveStatus === 'awaiting_entity_selection'
                     || ($effectiveStatus === 'collecting_contact_profile' && $profileComplete)
+                    || $supervisorCanOpenPreTicket
                 )
                     && $ticketId <= 0
                     && $conversationId !== '';
+                $row['supervisor_manual_open_preticket'] = $supervisorCanOpenPreTicket;
                 $row['can_edit_entity'] = !$row['can_confirm_entity'] && $conversationId !== '';
                 $row['can_soft_close'] = self::isPotentialSoftCloseEligible($row);
 

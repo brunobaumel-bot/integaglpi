@@ -44,6 +44,8 @@ $targetTypeLabels = [
     'device_memory'   => 'Memória',
     'device_harddisk' => 'Disco',
     'network_port'    => 'Porta de rede',
+    'context_only'    => 'Contexto / somente leitura',
+    'alarm_context'   => 'Contexto para alarmes',
 ];
 ?>
 

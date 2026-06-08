@@ -21,7 +21,7 @@
 
 import type { GlpiClient } from '../../adapters/glpi/GlpiClient.js';
 import type { GlpiComputerHardwarePayload } from '../../adapters/glpi/glpiTypes.js';
-import type { LogmeinHardwareDryRun } from '../../adapters/glpi/glpiTypes.js';
+import type { LogmeinDisplayInfo, LogmeinHardwareDryRun, LogmeinPartitionInfo } from '../../adapters/glpi/glpiTypes.js';
 import { logger } from '../../infra/logger/logger.js';
 import type { LogmeinReadonlyConfig } from './LogmeinReadonlyContextService.js';
 import type { LogmeinFieldMappingService } from './LogmeinFieldMappingService.js';
@@ -46,6 +46,13 @@ export interface LogmeinNetworkConnection {
   name: string | null;
   macAddress: string | null;
   ipAddress: string | null;
+  defaultGateway: string | null;
+  dhcpServer: string | null;
+  primaryDns: string | null;
+  primaryWins: string | null;
+  secondaryDns: string | null;
+  secondaryWins: string | null;
+  subnetMask: string | null;
 }
 
 export interface LogmeinProcessor {
@@ -61,8 +68,15 @@ export interface LogmeinHardwareInventory {
   manufacturer: string | null;
   model: string | null;
   memoryMb: number | null;
+  memoryModules: number | null;
+  batteryName: string | null;
+  motherboardChipset: string | null;
+  motherboardMemorySlots: number | null;
+  primaryScreenResolution: string | null;
   processors: LogmeinProcessor[];
   drives: LogmeinDrive[];
+  displays: LogmeinDisplayInfo[];
+  partitions: LogmeinPartitionInfo[];
   networkConnections: LogmeinNetworkConnection[];
 }
 
@@ -92,6 +106,11 @@ function sumMemoryMb(memories: unknown): number | null {
   return total > 0 ? total : null;
 }
 
+function memoryModuleCount(memories: unknown): number | null {
+  if (!Array.isArray(memories) || memories.length === 0) return null;
+  return memories.length;
+}
+
 function parseProcessor(raw: Record<string, unknown>): LogmeinProcessor {
   return {
     type: safeString(raw.type, 200),
@@ -117,7 +136,52 @@ function parseNetworkConnection(raw: Record<string, unknown>): LogmeinNetworkCon
     name: safeString(raw.name, 200),
     macAddress: safeString(raw.macAddress, 20),
     ipAddress: safeString(raw.ipAddress, 45),
+    defaultGateway: safeString(raw.defaultGateway, 45),
+    dhcpServer: safeString(raw.dhcpServer, 45),
+    primaryDns: safeString(raw.primaryDns ?? raw.primaryDNS, 45),
+    primaryWins: safeString(raw.primaryWins ?? raw.primaryWINS, 45),
+    secondaryDns: safeString(raw.secondaryDns ?? raw.secondaryDNS, 45),
+    secondaryWins: safeString(raw.secondaryWins ?? raw.secondaryWINS, 45),
+    subnetMask: safeString(raw.subnetMask, 45),
   };
+}
+
+function parseDisplay(raw: Record<string, unknown>): LogmeinDisplayInfo {
+  return {
+    date: safeString(raw.date, 80),
+    provider: safeString(raw.provider, 120),
+    type: safeString(raw.type, 120),
+    version: safeString(raw.version, 120),
+  };
+}
+
+function parsePartition(raw: Record<string, unknown>): LogmeinPartitionInfo {
+  return {
+    drive: safeString(raw.drive, 80),
+    fileSystem: safeString(raw.fileSystem, 80),
+    freeSpaceMb: safePositiveInt(raw.freeSpace),
+    name: safeString(raw.name, 120),
+    raid: safeString(raw.raid, 80),
+    raidFailingDiskNumber: safePositiveInt(raw.raidFailingDiskNumber),
+    raidStatus: safeString(raw.raidStatus, 80),
+    totalSizeMb: safePositiveInt(raw.totalSize),
+  };
+}
+
+function selectFirstRecord(...values: unknown[]): Record<string, unknown> {
+  for (const value of values) {
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+    if (Array.isArray(value)) {
+      const first = value[0];
+      if (first !== null && typeof first === 'object' && !Array.isArray(first)) {
+        return first as Record<string, unknown>;
+      }
+    }
+  }
+
+  return {};
 }
 
 function normalizeHostInventory(hostId: number, data: Record<string, unknown>): LogmeinHardwareInventory {
@@ -131,6 +195,14 @@ function normalizeHostInventory(hostId: number, data: Record<string, unknown>): 
   const nets = Array.isArray(data.networkConnections)
     ? (data.networkConnections as Record<string, unknown>[]).map(parseNetworkConnection)
     : [];
+  const displays = Array.isArray(data.displays)
+    ? (data.displays as Record<string, unknown>[]).map(parseDisplay)
+    : [];
+  const partitions = Array.isArray(data.partitions)
+    ? (data.partitions as Record<string, unknown>[]).map(parsePartition)
+    : [];
+  const batteries = Array.isArray(data.batteries) ? data.batteries as Record<string, unknown>[] : [];
+  const motherboard = selectFirstRecord(data.motherboard, data.motherboards, data.motherboardInfo);
   // LM v1 reports API returns memories as Array<{size:number,...}> — sum all modules.
   const memMb = sumMemoryMb(data.memories);
 
@@ -140,8 +212,15 @@ function normalizeHostInventory(hostId: number, data: Record<string, unknown>): 
     manufacturer: safeString(hw.manufacturer, 120),
     model: safeString(hw.model, 120),
     memoryMb: memMb,
+    memoryModules: memoryModuleCount(data.memories),
+    batteryName: safeString(batteries[0]?.name, 120),
+    motherboardChipset: safeString(motherboard.chipset, 160),
+    motherboardMemorySlots: safePositiveInt(motherboard.memorySlots),
+    primaryScreenResolution: safeString(data.primaryScreenResolution, 80),
     processors,
     drives,
+    displays,
+    partitions,
     networkConnections: nets,
   };
 }

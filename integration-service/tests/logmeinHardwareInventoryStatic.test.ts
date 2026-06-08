@@ -57,9 +57,27 @@ describe('LogmeinHardwareInventoryService static contract', () => {
     expect(hwSvc).toContain('manufacturer');
     expect(hwSvc).toContain('model');
     expect(hwSvc).toContain('memoryMb');
+    expect(hwSvc).toContain('memoryModules');
+    expect(hwSvc).toContain('batteryName');
+    expect(hwSvc).toContain('motherboardChipset');
+    expect(hwSvc).toContain('primaryScreenResolution');
     expect(hwSvc).toContain('processors');
     expect(hwSvc).toContain('drives');
+    expect(hwSvc).toContain('displays');
+    expect(hwSvc).toContain('partitions');
     expect(hwSvc).toContain('networkConnections');
+  });
+
+  it('normalises discovered deep HML fields without adding GLPI writes for them', () => {
+    expect(hwSvc).toContain('parseDisplay');
+    expect(hwSvc).toContain('parsePartition');
+    expect(hwSvc).toContain('selectFirstRecord');
+    expect(hwSvc).toContain('defaultGateway');
+    expect(hwSvc).toContain('primaryDns');
+    expect(hwSvc).toContain('raidStatus');
+    expect(hwSvc).toContain('freeSpaceMb');
+    expect(hwSvc).not.toContain('antivirus');
+    expect(hwSvc).not.toContain('operatingSystem');
   });
 
   it('returns null for each hardware field when not present in API response', () => {

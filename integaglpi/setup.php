@@ -275,7 +275,10 @@ function plugin_init_integaglpi(): void
     \Plugin::registerClass(KnowledgeBaseMenu::class);
     \Plugin::registerClass(KbCandidatesMenu::class);
     \Plugin::registerClass(SecurityCenterMenu::class);
-    \Plugin::registerClass(LogmeinAlarmMenu::class);
+    // LogmeinAlarmMenu is NOT registered as top-level: it is a child entry
+    // inside LogmeinGroupMenu. Registering it separately causes a duplicate
+    // sidebar item and breaks menu highlighting when on logmein.alarm.php.
+    // (integaglpi_post_smoke_operational_gaps_hml_fix_prod_report_001)
     \Plugin::registerClass(LogmeinGroupMenu::class);
 }
 

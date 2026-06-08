@@ -85,6 +85,8 @@ describe('LogmeinFieldMappingService contract', () => {
     expect(glpiTypes).toContain('LogmeinHardwareDryRun');
     expect(glpiTypes).toContain('LogmeinFieldDryRunResult');
     expect(glpiTypes).toContain('LogmeinFieldDryRunStatus');
+    expect(glpiTypes).toContain("'context_only'");
+    expect(glpiTypes).toContain("'alarm_context'");
   });
 
   // ── Dry-run contract ───────────────────────────────────────────────────────
@@ -112,6 +114,9 @@ describe('LogmeinFieldMappingService contract', () => {
     expect(fieldSvc).toContain("'[redacted for dry-run]'");
     expect(fieldSvc).toContain('NetworkConnectionMacAddress');
     expect(fieldSvc).toContain('NetworkConnectionIPAddress');
+    expect(fieldSvc).toContain('LOGMEIN_NETWORK_SENSITIVE_FIELDS');
+    expect(fieldSvc).toContain('NetworkConnectionDefaultGateway');
+    expect(fieldSvc).toContain('NetworkConnectionPrimaryDNS');
   });
 
   it('PHP dry-run also marks dry_run_only: true and never modifies GLPI', () => {
@@ -182,12 +187,41 @@ describe('LogmeinFieldMappingService contract', () => {
   it('migration seeds default mappings for all major hardware fields', () => {
     const expectedSeeds = [
       'ServiceTag', 'HardwareManufacturer', 'HardwareModel',
-      'CpuType', 'CpuSpeed', 'MemorySize',
+      'CpuType', 'CpuNumberOfProcessors', 'CpuSpeed', 'MemorySize', 'MemoryModules',
+      'DriveDiskType', 'DriveMediaType', 'PartitionFreeSpace', 'PartitionTotalSize',
+      'MotherboardChipset', 'PrimaryScreenResolution',
       'NetworkConnectionMacAddress',
     ];
     for (const field of expectedSeeds) {
       expect(migration).toContain(`'${field}'`);
     }
+  });
+
+  it('migration classifies non-native fields as context_only or alarm_context', () => {
+    expect(migration).toContain("'context_only'");
+    expect(migration).toContain("'alarm_context'");
+    expect(migration).toContain("'PartitionFreeSpace',         'alarm_context'");
+    expect(migration).toContain("'DisplayProvider',            'context_only'");
+  });
+
+  it('migration keeps local network internals inactive and behind LOGMEIN_SYNC_LOCAL_IP', () => {
+    const networkFields = [
+      'NetworkConnectionDefaultGateway',
+      'NetworkConnectionDHCPServer',
+      'NetworkConnectionPrimaryDNS',
+      'NetworkConnectionSubnetMask',
+    ];
+    for (const field of networkFields) {
+      const line = migration.split('\n').find((l) => l.includes(`'${field}'`));
+      expect(line).toBeDefined();
+      expect(line).toContain('FALSE');
+      expect(line).toContain('LOGMEIN_SYNC_LOCAL_IP');
+    }
+  });
+
+  it('does not invent antivirus or operating-system mappings absent from the discovered HML fields endpoint', () => {
+    expect(migration).not.toMatch(/Antivirus|AntiVirus|OperatingSystem|OSVersion|OsName/);
+    expect(fieldSvc).not.toMatch(/Antivirus|AntiVirus|OperatingSystem|OSVersion|OsName/);
   });
 
   it('migration CHECK constraint enforces valid policies only', () => {
@@ -236,6 +270,8 @@ describe('LogmeinFieldMappingService contract', () => {
     expect(phpTemplate).toContain('Nenhum chamado é criado automaticamente');
     expect(phpTemplate).toContain('auto_ticket');
     expect(phpTemplate).toContain('blocked_pii');
+    expect(phpTemplate).toContain('Contexto / somente leitura');
+    expect(phpTemplate).toContain('Contexto para alarmes');
     expect(phpTemplate).not.toMatch(/auto_ticket\s*=\s*true/i);
   });
 });

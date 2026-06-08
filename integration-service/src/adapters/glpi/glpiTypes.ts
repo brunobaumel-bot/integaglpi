@@ -49,6 +49,24 @@ export interface GlpiComputerHardwarePayload {
   }>;
 }
 
+export interface LogmeinDisplayInfo {
+  date: string | null;
+  provider: string | null;
+  type: string | null;
+  version: string | null;
+}
+
+export interface LogmeinPartitionInfo {
+  drive: string | null;
+  fileSystem: string | null;
+  freeSpaceMb: number | null;
+  name: string | null;
+  raid: string | null;
+  raidFailingDiskNumber: number | null;
+  raidStatus: string | null;
+  totalSizeMb: number | null;
+}
+
 // ── LogMeIn Field Mapping Configuration ──────────────────────────────────────
 
 /** How the sync handles an already-populated field in GLPI. */
@@ -63,7 +81,9 @@ export type LogmeinGlpiTargetType =
   | 'device_processor'
   | 'device_memory'
   | 'device_harddisk'
-  | 'network_port';
+  | 'network_port'
+  | 'context_only'
+  | 'alarm_context';
 
 /** A single field mapping entry stored in logmein_field_mapping_config. */
 export interface LogmeinFieldMapping {
