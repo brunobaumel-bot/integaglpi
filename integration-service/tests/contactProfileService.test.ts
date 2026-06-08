@@ -273,6 +273,11 @@ describe('ContactProfileService', () => {
       state,
       text: 'TAG_UNKNOWN',
     });
+    const unknownByNumber = service.processCollectionResponse({
+      phoneE164: '+5511999999999',
+      state,
+      text: '1',
+    });
     const invalidLetters = service.processCollectionResponse({
       phoneE164: '+5511999999999',
       state,
@@ -291,6 +296,11 @@ describe('ContactProfileService', () => {
       last_equipment_tag: null,
       equipment_tag_unknown: true,
     });
+    expect(unknownByNumber.state).toMatchObject({
+      step: 'awaiting_problem_summary',
+      last_equipment_tag: null,
+      equipment_tag_unknown: true,
+    });
   });
 
   it('confirms existing profile and asks for a current-cycle reason before completing', async () => {
@@ -305,13 +315,13 @@ describe('ContactProfileService', () => {
     const yes = service.processCollectionResponse({
       phoneE164: '+5511999999999',
       state,
-      text: 'Sim',
+      text: '1',
       existingProfile: profile,
     });
     const no = service.processCollectionResponse({
       phoneE164: '+5511999999999',
       state,
-      text: 'Nao',
+      text: '2',
       existingProfile: profile,
     });
 

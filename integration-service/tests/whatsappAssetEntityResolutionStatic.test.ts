@@ -30,6 +30,18 @@ describe('WhatsApp asset entity resolution static contract', () => {
     expect(inbound).toContain('return null;');
   });
 
+  it('falls back to LogMeIn cache when GLPI asset has no entity', () => {
+    const noEntitySection = inbound.slice(
+      inbound.indexOf('if (asset.entitiesId === null || asset.entitiesId <= 0)'),
+      inbound.indexOf('const resolved = await this.rememberAssetEntityMatch'),
+    );
+
+    expect(noEntitySection).toContain('resolveEntityFromLogmeinCache');
+    expect(noEntitySection).toContain('return logmeinEntity ?? rememberedEntity');
+    expect(inbound).toContain('CONTACT_ENTITY_RESOLVED_FROM_LOGMEIN_TAG');
+    expect(inbound).toContain("source: 'logmein_asset_cache'");
+  });
+
   it('passes known entity to native triage cache and retries without invalid category', () => {
     expect(inbound).toContain('resolveRoutingOptions(entityId: number | null = null)');
     expect(inbound).toContain('normalizer.getOptions(entityId)');

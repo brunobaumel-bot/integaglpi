@@ -350,6 +350,24 @@ describe('V6-E3 LogMeIn read-only governance', () => {
     expect(query.mock.calls.map((call) => (call[1] as unknown[]).length)).toEqual([800, 800, 40]);
   });
 
+  it('derives entity candidates from active LogMeIn group mappings when reading cached hosts', async () => {
+    const repository = await readProjectFile('src/repositories/postgres/PostgresLogmeinReadonlyRepository.ts');
+    const findHostBody = repository.slice(
+      repository.indexOf('public async findHostByEquipmentTag'),
+      repository.length,
+    );
+    const listByGroupBody = repository.slice(
+      repository.indexOf('public async listHostsByGroup'),
+      repository.indexOf('public async findHostByEquipmentTag'),
+    );
+
+    expect(repository).toContain('COALESCE(m.glpi_entity_id, a.glpi_entity_candidate_id) AS glpi_entity_candidate_id');
+    expect(repository).toContain(`LEFT JOIN ${'${GROUP_MAP_TABLE}'} m`);
+    expect(repository).toContain('m.is_active = TRUE');
+    expect(findHostBody).toContain('WHERE a.equipment_tag = $1::text');
+    expect(listByGroupBody).toContain('WHERE a.logmein_group_external_id = $1::text');
+  });
+
   it('creates only additive idempotent tables for local cache, mapping and governance review', async () => {
     const migration = compact(await readProjectFile('schema-migrations/042_logmein_readonly_governance.sql'));
 

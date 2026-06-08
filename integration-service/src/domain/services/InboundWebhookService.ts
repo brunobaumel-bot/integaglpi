@@ -502,7 +502,9 @@ export class InboundWebhookService {
           ? activeConversation.glpiEntityId
           : (await this.findRememberedEntity(contact.phoneE164))?.glpiEntityId ?? null;
         const toMeta = InboundWebhookService.digitsOnlyForMeta(contact.phoneE164);
-        const routingOptions = await this.resolveRoutingOptions(knownEntityForTriage);
+        const resolvedRoutingOptions = await this.resolveRoutingOptions(knownEntityForTriage);
+        const customerTriageMenuEnabled = env.WHATSAPP_CUSTOMER_TRIAGE_MENU_ENABLED;
+        const routingOptions = customerTriageMenuEnabled ? resolvedRoutingOptions : [];
         const menuHeading = await this.settingsService.getMessage('menu_message');
         const menuBody = buildMenuMessage(routingOptions, menuHeading);
         let closedConversationNoticeSent = false;
@@ -848,9 +850,30 @@ export class InboundWebhookService {
           }
         }
 
+        const categoryClassificationActive =
+          customerTriageMenuEnabled
+          && env.AI_CATEGORY_CLASSIFICATION_ENABLED
+          && Boolean(this.categoryClassifier);
+
+        if (
+          activeConversation?.status === 'awaiting_category_confirmation'
+          && !categoryClassificationActive
+        ) {
+          await this.handleCategoryDisabledProblemDescription({
+            contact,
+            conversation: activeConversation,
+            inboundMessage,
+            toMeta,
+            routingOptions,
+            menuHeading,
+            menuBody,
+          });
+          return;
+        }
+
         // ── AI Category Classification: awaiting_problem_description ──────────────
         // PHASE: integaglpi_ai_category_classification_001
-        // Flag off: this block is completely skipped, existing flow is untouched.
+        // Flag off: accept the problem summary and continue without customer category menus.
         if (activeConversation?.status === 'awaiting_problem_description') {
           const descriptionText = inboundMessage.messageText?.trim() ?? '';
           if (!descriptionText) {
@@ -864,6 +887,19 @@ export class InboundWebhookService {
               conversationId: activeConversation.id,
               processingStatus: 'processed',
               glpiSyncStatus: 'synced',
+            });
+            return;
+          }
+
+          if (!categoryClassificationActive) {
+            await this.handleCategoryDisabledProblemDescription({
+              contact,
+              conversation: activeConversation,
+              inboundMessage,
+              toMeta,
+              routingOptions,
+              menuHeading,
+              menuBody,
             });
             return;
           }
@@ -1948,10 +1984,10 @@ export class InboundWebhookService {
             phoneE164: contact.phoneE164,
             contactId: contact.id,
             glpiTicketId: null,
-            // When AI classification is enabled and we have a valid entity: start
+            // When customer triage + AI classification are enabled and we have a valid entity: start
             // in awaiting_problem_description — user describes problem before menu.
             // Flag off: falls back to awaiting_queue_selection (unchanged legacy).
-            status: (env.AI_CATEGORY_CLASSIFICATION_ENABLED && this.categoryClassifier && knownEntityForTriage && knownEntityForTriage > 0)
+            status: (categoryClassificationActive && knownEntityForTriage && knownEntityForTriage > 0)
               ? 'awaiting_problem_description'
               : 'awaiting_queue_selection',
             lastMessageAt: new Date(),
@@ -3442,14 +3478,14 @@ export class InboundWebhookService {
           await sendReplyButtons.call(
             this.metaClient,
             toMeta,
-            body,
+            buildInteractiveButtonBodyWithNumericHint(body, buttons),
             buttons.map((button) => ({ ...button, title: truncateButtonTitle(button.title) })),
           );
         } else if (typeof sendListMessage === 'function') {
           await sendListMessage.call(
             this.metaClient,
             toMeta,
-            body,
+            buildInteractiveButtonBodyWithNumericHint(body, buttons),
             buttons.map((button) => ({
               id: button.id,
               title: truncateListTitle(button.title),
@@ -3567,7 +3603,10 @@ export class InboundWebhookService {
       }));
       await this.metaClient.sendReplyButtons(
         toMeta,
-        plan?.text.trim() || 'Como você avalia este atendimento? Toque no botão ou digite: 1 - Ótimo, 2 - Bom, 3 - Ruim.',
+        buildInteractiveButtonBodyWithNumericHint(
+          plan?.text.trim() || 'Como você avalia este atendimento?',
+          buttons,
+        ),
         buttons,
       );
       logger.info(
@@ -4344,8 +4383,8 @@ export class InboundWebhookService {
     if (input.state?.step === 'confirming_existing_profile' && typeof sendReplyButtons === 'function') {
       try {
         await sendReplyButtons.call(this.metaClient, input.toMeta, bodyWithHint, [
-          { id: 'profile_confirm_yes', title: 'Sim' },
-          { id: 'profile_confirm_no', title: 'Nao' },
+          { id: 'profile_confirm_yes', title: '1 - Sim' },
+          { id: 'profile_confirm_no', title: '2 - Nao' },
         ]);
         logger.info(
           { conversation_id: input.conversationId ?? null },
@@ -4369,7 +4408,7 @@ export class InboundWebhookService {
     ) {
       try {
         await sendReplyButtons.call(this.metaClient, input.toMeta, bodyWithHint, [
-          { id: 'TAG_UNKNOWN', title: 'Não sei' },
+          { id: 'TAG_UNKNOWN', title: '1 - Não sei' },
         ]);
         logger.info(
           { conversation_id: input.conversationId ?? null },
@@ -4506,6 +4545,97 @@ export class InboundWebhookService {
       },
       '[integration-service][contact_profile][COMPLETE_PROFILE_TICKET_CREATED_FROM_MEMORY]',
     );
+  }
+
+  private async handleCategoryDisabledProblemDescription(input: CompletedProfileTransitionInput & {
+    routingOptions: ActiveRoutingOption[];
+    menuHeading: string;
+    menuBody: string;
+  }): Promise<void> {
+    const descriptionText = input.inboundMessage.messageText?.trim() ?? '';
+    if (!descriptionText) {
+      await this.metaClient.sendTextMessage({
+        to: input.toMeta,
+        body: 'Qual o motivo do seu contato? Resuma em até 200 caracteres.',
+      });
+      await this.messageRepository.updateState({
+        messageId: input.inboundMessage.messageId,
+        conversationId: input.conversation.id,
+        processingStatus: 'processed',
+        glpiSyncStatus: 'synced',
+      });
+      return;
+    }
+
+    const existingState = input.conversation.profileCollectionState ?? {};
+    await this.conversationRepository.updateProfileCollectionState(input.conversation.id, {
+      ...existingState,
+      step: 'complete',
+      reason: descriptionText,
+      last_problem_summary: descriptionText,
+      category_classification_enabled: false,
+    });
+
+    if (this.contactProfileService) {
+      const profile = await this.contactProfileService.findProfile(input.contact.phoneE164);
+      if (profile) {
+        await this.contactProfileService.saveProfileData(
+          input.contact.phoneE164,
+          {
+            ...profile,
+            last_problem_summary: descriptionText,
+            profile_status: 'complete',
+            last_confirmed_at: new Date().toISOString(),
+            last_conversation_id: input.conversation.id,
+          },
+          input.conversation.id,
+        );
+        this.recordAudit({
+          eventType: 'CATEGORY_CLASSIFICATION_DISABLED_PROBLEM_SUMMARY_ACCEPTED',
+          conversationId: input.conversation.id,
+          status: 'success',
+          severity: 'info',
+          source: 'InboundWebhookService',
+          payload: {
+            ai_category_classification_enabled: false,
+            description_hash: descriptionText.slice(0, 60).replace(/./g, '#'),
+          },
+        });
+        await this.advanceCompletedProfileConversation({
+          contact: input.contact,
+          inboundMessage: input.inboundMessage,
+          toMeta: input.toMeta,
+          conversation: {
+            ...input.conversation,
+            profileCollectionState: {
+              ...existingState,
+              step: 'complete',
+              reason: descriptionText,
+              last_problem_summary: descriptionText,
+              category_classification_enabled: false,
+            },
+          },
+        });
+        return;
+      }
+    }
+
+    await this.conversationRepository.updateStatus(input.conversation.id, 'awaiting_queue_selection');
+    await this.sendRoutingMenu({
+      toMeta: input.toMeta,
+      routingOptions: input.routingOptions,
+      menuHeading: input.menuHeading,
+      menuBody: input.menuBody,
+      context: 'category_classification_disabled',
+      conversationId: input.conversation.id,
+      prefixText: 'Resumo recebido. Escolha a fila de atendimento:',
+    });
+    await this.messageRepository.updateState({
+      messageId: input.inboundMessage.messageId,
+      conversationId: input.conversation.id,
+      processingStatus: 'processed',
+      glpiSyncStatus: 'synced',
+    });
   }
 
   private async acknowledgeExistingEntitySelectionWait(input: ExistingEntitySelectionWaitInput): Promise<void> {
@@ -4875,7 +5005,14 @@ export class InboundWebhookService {
         },
         '[integration-service][entity][ASSET_TAG_WITHOUT_ENTITY_USING_MEMORY]',
       );
-      return rememberedEntity;
+      const logmeinEntity = await this.resolveEntityFromLogmeinCache({
+        phoneE164: input.phoneE164,
+        contactId: input.contactId,
+        conversationId: input.conversationId,
+        equipmentTag,
+        previousEntity: rememberedEntity,
+      });
+      return logmeinEntity ?? rememberedEntity;
     }
 
     const resolved = await this.rememberAssetEntityMatch({
@@ -4936,6 +5073,27 @@ export class InboundWebhookService {
           '[integration-service][entity][ASSET_TAG_MEMORY_SAVE_FAILED]',
         );
       }
+    }
+
+    if (
+      input.previousEntity
+      && input.previousEntity.glpiEntityId !== input.entityId
+    ) {
+      this.recordAudit({
+        conversationId: input.conversationId ?? undefined,
+        direction: 'inbound',
+        eventType: 'CONTACT_ENTITY_MEMORY_CONFLICT',
+        status: 'success',
+        severity: 'warning',
+        source: 'InboundWebhookService',
+        payload: {
+          conflict_source: 'asset_tag_match',
+          equipment_tag: input.equipmentTag,
+          previous_glpi_entity_id: input.previousEntity.glpiEntityId,
+          resolved_glpi_entity_id: input.entityId,
+          action: 'asset_tag_entity_preferred',
+        },
+      });
     }
 
     this.recordAudit({
@@ -5031,6 +5189,27 @@ export class InboundWebhookService {
           '[integration-service][entity][LOGMEIN_TAG_MEMORY_SAVE_FAILED]',
         );
       }
+    }
+
+    if (
+      input.previousEntity
+      && input.previousEntity.glpiEntityId !== entityId
+    ) {
+      this.recordAudit({
+        conversationId: input.conversationId ?? undefined,
+        direction: 'inbound',
+        eventType: 'CONTACT_ENTITY_MEMORY_CONFLICT',
+        status: 'success',
+        severity: 'warning',
+        source: 'InboundWebhookService',
+        payload: {
+          conflict_source: 'logmein_asset_cache',
+          equipment_tag: input.equipmentTag,
+          previous_glpi_entity_id: input.previousEntity.glpiEntityId,
+          resolved_glpi_entity_id: entityId,
+          action: 'asset_tag_entity_preferred',
+        },
+      });
     }
 
     this.recordAudit({
@@ -5407,8 +5586,20 @@ function buildTextOptionsFallback(body: string, buttons: Array<{ id: string; tit
     '',
     ...buttons.map((button, index) => formatMenuOptionLabel(button.title, index)),
     '',
-    'Responda tocando na opção correspondente quando ela aparecer novamente.',
+    'Responda tocando na opção correspondente quando ela aparecer novamente ou digitando o número.',
   ].join('\n');
+}
+
+function buildInteractiveButtonBodyWithNumericHint(body: string, buttons: Array<{ id: string; title: string }>): string {
+  const trimmedBody = body.trim();
+  if (/(digit(e|ando)|n[uú]mero|op[cç][aã]o\s*\d|\d+\s*-\s*)/iu.test(trimmedBody)) {
+    return trimmedBody;
+  }
+
+  const optionHint = buttons
+    .map((button, index) => formatMenuOptionLabel(button.title, index))
+    .join(', ');
+  return `${trimmedBody}\n\nVocê também pode responder digitando o número: ${optionHint}.`;
 }
 
 function normalizeMetaDeliveryStatus(status: string): 'sent' | 'delivered' | 'read' | 'failed' | null {

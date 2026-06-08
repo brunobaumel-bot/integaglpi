@@ -106,7 +106,7 @@ $targetTypeLabels = [
               <td>
                 <?php if (!$isForbidden): ?>
                 <form method="post" class="d-inline">
-                  <?= Plugin::getCsrfTokenInput() ?>
+                  <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken() ?>
                   <input type="hidden" name="action" value="set_policy">
                   <input type="hidden" name="mapping_id" value="<?= (int)($m['id']??0) ?>">
                   <select name="overwrite_policy" class="form-select form-select-sm"
@@ -132,7 +132,7 @@ $targetTypeLabels = [
               </td>
               <td>
                 <form method="post" class="d-inline">
-                  <?= Plugin::getCsrfTokenInput() ?>
+                  <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken() ?>
                   <input type="hidden" name="action" value="toggle_active">
                   <input type="hidden" name="mapping_id" value="<?= (int)($m['id']??0) ?>">
                   <input type="hidden" name="is_active" value="<?= (bool)($m['is_active']??false) ? '0' : '1' ?>">
@@ -165,7 +165,7 @@ $targetTypeLabels = [
       </div>
       <div class="card-body">
         <form method="post">
-          <?= Plugin::getCsrfTokenInput() ?>
+          <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken() ?>
           <input type="hidden" name="action" value="dry_run">
           <div class="row g-2 mb-3">
             <div class="col-md-4">

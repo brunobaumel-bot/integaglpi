@@ -27,7 +27,7 @@ declare(strict_types=1);
 $alertOnlyTypes = ['missing_equipment_tag', 'missing_entity_mapping', 'hardware_change', 'low_disk', 'low_memory'];
 $autoTicketTypes = ['host_offline', 'host_not_seen'];
 
-$csrfToken = Html::getNewCSRFToken();
+$csrfToken = \GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
 
 function e(mixed $v): string {
     return htmlspecialchars((string) ($v ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8');

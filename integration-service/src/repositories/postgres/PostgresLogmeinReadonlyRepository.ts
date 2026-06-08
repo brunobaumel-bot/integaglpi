@@ -332,17 +332,20 @@ export class PostgresLogmeinReadonlyRepository implements LogmeinReadonlyCacheRe
     const result = await this.executor.query<HostRow>(
       `
         SELECT
-          logmein_host_external_id,
-          logmein_group_external_id,
-          logmein_group_name,
-          host_name_sanitized,
-          equipment_tag,
-          glpi_entity_candidate_id,
-          status,
-          last_seen_at
-        FROM ${ASSET_CACHE_TABLE}
-        WHERE logmein_group_external_id = $1::text
-        ORDER BY cache_updated_at DESC NULLS LAST, host_name_sanitized ASC
+          a.logmein_host_external_id,
+          a.logmein_group_external_id,
+          a.logmein_group_name,
+          a.host_name_sanitized,
+          a.equipment_tag,
+          COALESCE(m.glpi_entity_id, a.glpi_entity_candidate_id) AS glpi_entity_candidate_id,
+          a.status,
+          a.last_seen_at
+        FROM ${ASSET_CACHE_TABLE} a
+        LEFT JOIN ${GROUP_MAP_TABLE} m
+          ON m.logmein_group_external_id = a.logmein_group_external_id
+         AND m.is_active = TRUE
+        WHERE a.logmein_group_external_id = $1::text
+        ORDER BY a.cache_updated_at DESC NULLS LAST, a.host_name_sanitized ASC
         LIMIT $2::int
       `,
       [groupExternalId, Math.max(1, Math.min(limit, 100))],
@@ -360,17 +363,20 @@ export class PostgresLogmeinReadonlyRepository implements LogmeinReadonlyCacheRe
     const result = await this.executor.query<HostRow>(
       `
         SELECT
-          logmein_host_external_id,
-          logmein_group_external_id,
-          logmein_group_name,
-          host_name_sanitized,
-          equipment_tag,
-          glpi_entity_candidate_id,
-          status,
-          last_seen_at
-        FROM ${ASSET_CACHE_TABLE}
-        WHERE equipment_tag = $1::text
-        ORDER BY cache_updated_at DESC NULLS LAST, last_seen_at DESC NULLS LAST
+          a.logmein_host_external_id,
+          a.logmein_group_external_id,
+          a.logmein_group_name,
+          a.host_name_sanitized,
+          a.equipment_tag,
+          COALESCE(m.glpi_entity_id, a.glpi_entity_candidate_id) AS glpi_entity_candidate_id,
+          a.status,
+          a.last_seen_at
+        FROM ${ASSET_CACHE_TABLE} a
+        LEFT JOIN ${GROUP_MAP_TABLE} m
+          ON m.logmein_group_external_id = a.logmein_group_external_id
+         AND m.is_active = TRUE
+        WHERE a.equipment_tag = $1::text
+        ORDER BY a.cache_updated_at DESC NULLS LAST, a.last_seen_at DESC NULLS LAST
         LIMIT 1
       `,
       [normalized],

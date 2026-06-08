@@ -11,6 +11,9 @@ const envSource = {
       ? 'test-integration-service-api-key-32chars-min'
       : ''),
   OUTBOUND_SEND_MODE: process.env.OUTBOUND_SEND_MODE ?? 'mock',
+  WHATSAPP_CUSTOMER_TRIAGE_MENU_ENABLED:
+    process.env.WHATSAPP_CUSTOMER_TRIAGE_MENU_ENABLED ??
+    (process.env.VITEST === 'true' ? 'true' : undefined),
 };
 
 const envSchema = z.object({
@@ -115,6 +118,14 @@ const envSchema = z.object({
   AI_PILOT_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(45),
   AI_PILOT_RETRY_COUNT: z.coerce.number().int().min(0).max(1).default(1),
   NATIVE_GLPI_TRIAGE_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /**
+   * Exibe o menu de triagem/categorias nativas para o cliente no WhatsApp.
+   * Default false: categorias ficam internas ao GLPI/técnico e não aparecem para o cliente.
+   */
+  WHATSAPP_CUSTOMER_TRIAGE_MENU_ENABLED: z
     .union([z.literal('true'), z.literal('false')])
     .default('false')
     .transform((value) => value === 'true'),

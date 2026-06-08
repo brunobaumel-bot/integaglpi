@@ -53,6 +53,12 @@ describe('LogmeinFieldMappingService contract', () => {
     expect(phpSvc).toContain('FORBIDDEN_FIELDS');
   });
 
+  it('PHP service uses canonical external PostgreSQL connection config', () => {
+    expect(phpSvc).toContain('$this->pluginConfigService->getConnectionConfig()');
+    expect(phpSvc).toContain('ExternalDatabase::getConnection($config)');
+    expect(phpSvc).not.toContain('getExternalDbConfig');
+  });
+
   // ── Overwrite policies ─────────────────────────────────────────────────────
 
   it('all three overwrite policies are implemented in TypeScript service', () => {

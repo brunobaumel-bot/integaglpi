@@ -308,7 +308,7 @@ final class LogmeinFieldMappingService
         if ($this->pdo instanceof PDO) {
             return $this->pdo;
         }
-        $config    = $this->pluginConfigService->getExternalDbConfig();
+        $config    = $this->pluginConfigService->getConnectionConfig();
         $this->pdo = ExternalDatabase::getConnection($config);
         return $this->pdo;
     }

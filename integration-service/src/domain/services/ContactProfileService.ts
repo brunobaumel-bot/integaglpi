@@ -61,11 +61,11 @@ export interface ContactProfileCollectionResult {
   profile: ContactProfileData | null;
 }
 
-const EQUIPMENT_UNKNOWN_RE = /^(nao sei|não sei|nao tenho|não tenho|sem etiqueta|nao aparece|não aparece|desconheco|desconheço)$/i;
+const EQUIPMENT_UNKNOWN_RE = /^(1|nao sei|não sei|nao tenho|não tenho|sem etiqueta|nao aparece|não aparece|desconheco|desconheço)$/i;
 const EMAIL_SKIP_RE = /^(nao informar|não informar|nao tenho|não tenho|sem email|sem e-mail|pular|depois)$/i;
 const PROFILE_CHANGE_RE = /^(alterar dados|corrigir cadastro|\/dados|outro equipamento)$/i;
-const PROFILE_YES_RE = /^(sim|s|yes|y|continuar|sim, continuar|profile_confirm_yes)$/i;
-const PROFILE_NO_RE = /^(nao|não|n|no|corrigir|alterar|profile_confirm_no)$/i;
+const PROFILE_YES_RE = /^(1|sim|s|yes|y|continuar|sim, continuar|profile_confirm_yes)$/i;
+const PROFILE_NO_RE = /^(2|nao|não|n|no|corrigir|alterar|profile_confirm_no)$/i;
 const EQUIPMENT_TAG_RE = /^\d{4}$/;
 const MAX_REASON_LENGTH = 200;
 const MAX_TITLE_REASON_LENGTH = 60;

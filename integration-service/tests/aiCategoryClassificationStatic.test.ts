@@ -22,6 +22,15 @@ describe('AI Category Classification contract', () => {
     expect(envTs).toContain("value === 'true'");
   });
 
+  it('customer-facing triage menu is behind an off-by-default flag', () => {
+    expect(envTs).toContain('WHATSAPP_CUSTOMER_TRIAGE_MENU_ENABLED');
+    expect(envTs).toContain(".default('false')");
+    expect(webhook).toContain('customerTriageMenuEnabled');
+    expect(webhook).toContain('const routingOptions = customerTriageMenuEnabled ? resolvedRoutingOptions : []');
+    expect(webhook).toContain('customerTriageMenuEnabled');
+    expect(webhook).toContain('&& env.AI_CATEGORY_CLASSIFICATION_ENABLED');
+  });
+
   it('auto and confirm thresholds are configurable with safe defaults', () => {
     expect(envTs).toContain('AI_CATEGORY_CLASSIFICATION_AUTO_THRESHOLD');
     expect(envTs).toContain("'0.85'");
@@ -98,7 +107,9 @@ describe('AI Category Classification contract', () => {
   });
 
   it('webhook requires entity before starting AI classification', () => {
-    const aiBlock = webhook.slice(webhook.indexOf('awaiting_problem_description'), webhook.indexOf('awaiting_category_confirmation'));
+    const blockStart = webhook.indexOf('AI Category Classification: awaiting_problem_description');
+    const blockEnd = webhook.indexOf('AI Category Classification: awaiting_category_confirmation', blockStart);
+    const aiBlock = webhook.slice(blockStart, blockEnd);
     expect(aiBlock).toContain('classifierEntityId');
     expect(aiBlock).toContain('<= 0');
     // Without entity, must fall back to menu.

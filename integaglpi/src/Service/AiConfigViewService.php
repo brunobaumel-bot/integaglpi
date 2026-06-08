@@ -1051,7 +1051,12 @@ final class AiConfigViewService
             return false;
         }
 
-        return in_array($host, ['127.0.0.1', 'localhost', '::1', 'ollama', 'ollama-local', 'host.docker.internal'], true);
+        if (in_array($host, ['127.0.0.1', 'localhost', '::1', 'ollama', 'ollama-local', 'host.docker.internal'], true)) {
+            return true;
+        }
+
+        return filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false
+            && filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false;
     }
 
     /**

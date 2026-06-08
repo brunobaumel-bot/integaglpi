@@ -23,6 +23,7 @@ import type {
 } from '../src/repositories/contracts/SolutionActionRepository.js';
 import { InboundWebhookService } from '../src/domain/services/InboundWebhookService.js';
 import { buildMenuMessage, formatMenuOptionLabel } from '../src/domain/services/routingMenuMessage.js';
+import { env } from '../src/config/env.js';
 import type { AuditService } from '../src/domain/services/AuditService.js';
 import type { KeyLock } from '../src/domain/contracts/KeyLock.js';
 import type { MessageSettingKey } from '../src/domain/services/SettingsService.js';
@@ -2309,6 +2310,94 @@ describe('InboundWebhookService', () => {
     }));
   });
 
+  it('accepts problem summary and creates ticket without category when AI category classification is disabled', async () => {
+    const previousFlag = env.AI_CATEGORY_CLASSIFICATION_ENABLED;
+    env.AI_CATEGORY_CLASSIFICATION_ENABLED = false;
+    try {
+      const webhookEventRepository = new FakeWebhookEventRepository();
+      const messageRepository = new FakeMessageRepository();
+      const conversationRepository = new FakeConversationRepository();
+      conversationRepository.reusableConversation = {
+        id: 'conv-awaiting-problem-disabled',
+        phoneE164: '+5511999999999',
+        contactId: 'contact-1',
+        glpiTicketId: null,
+        queueId: 5,
+        glpiEntityId: 124,
+        glpiEntityName: 'Ética',
+        profileCollectionState: { step: 'awaiting_problem_summary' },
+        status: 'awaiting_problem_description',
+        lastMessageAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      messageRepository.reservedMessage = {
+        ...messageRepository.reservedMessage!,
+        messageText: 'Windows pede ativação.',
+      };
+      const payload = structuredClone(basePayload) as typeof basePayload;
+      payload.entry[0].changes[0].value.messages[0].text.body = 'Windows pede ativação.';
+      const routing = new FakeRoutingRepository();
+      routing.options = sampleRoutingOptions;
+      const contactProfile = new FakeContactProfileService();
+      contactProfile.profile = {
+        phone_e164: '+5511999999999',
+        requester_name: 'Maria',
+        company_name_raw: 'Empresa',
+        last_equipment_tag: '0480',
+        equipment_tag_unknown: false,
+        last_problem_summary: null,
+        profile_status: 'complete',
+        profile_source: 'whatsapp',
+        confirmation_count: 1,
+        last_confirmed_at: new Date().toISOString(),
+      };
+      const entityMemory = makeEntityMemoryRepository(
+        makeEntityMemory({ glpiEntityId: 124, glpiEntityName: 'Ética' }),
+      );
+      const meta = { sendTextMessage: vi.fn().mockResolvedValue({}), sendReplyButtons: vi.fn().mockResolvedValue({}) };
+      const glpiClient = { createTicket: vi.fn().mockResolvedValue(889), addFollowUp: vi.fn() };
+      const audit = { recordAuditEventFireAndForget: vi.fn() };
+
+      const service = makeInboundService(
+        webhookEventRepository,
+        messageRepository,
+        conversationRepository,
+        { resolve: vi.fn().mockResolvedValue(resolvedContact) },
+        glpiClient,
+        { routing, meta, contactProfile, entityMemory, audit: audit as unknown as AuditService },
+      );
+
+      const result = await service.process(payload);
+
+      expect(result.results).toEqual([{ messageId: 'wamid.123', outcome: 'processed' }]);
+      expect(glpiClient.createTicket).toHaveBeenCalledWith(expect.objectContaining({
+        entitiesId: 124,
+        itilcategoriesId: null,
+        glpiFormId: null,
+      }), expect.any(Object));
+      expect(meta.sendReplyButtons).not.toHaveBeenCalled();
+      expect(meta.sendTextMessage).toHaveBeenCalledWith(expect.objectContaining({
+        body: 'Seu chamado #889 foi aberto.',
+      }));
+      expect(contactProfile.savedProfiles[0]).toMatchObject({
+        last_problem_summary: 'Windows pede ativação.',
+        last_conversation_id: 'conv-awaiting-problem-disabled',
+      });
+      expect(conversationRepository.profileStates[0]?.state).toMatchObject({
+        step: 'complete',
+        last_problem_summary: 'Windows pede ativação.',
+        category_classification_enabled: false,
+      });
+      expect(audit.recordAuditEventFireAndForget).toHaveBeenCalledWith(expect.objectContaining({
+        eventType: 'CATEGORY_PENDING_MANUAL_TECHNICIAN',
+        ticketId: 889,
+      }));
+    } finally {
+      env.AI_CATEGORY_CLASSIFICATION_ENABLED = previousFlag;
+    }
+  });
+
   it('normalizes a completed contact profile collection state to awaiting_entity_selection', async () => {
     const webhookEventRepository = new FakeWebhookEventRepository();
     const messageRepository = new FakeMessageRepository();
@@ -2431,6 +2520,98 @@ describe('InboundWebhookService', () => {
       glpiEntityName: 'Ética > Avulsos > Arizona',
     });
     expect(meta.sendTextMessage.mock.calls[0]?.[0].body).toContain('#2112319300');
+  });
+
+  it('prefers asset tag entity over stale contact memory and audits the conflict', async () => {
+    const webhookEventRepository = new FakeWebhookEventRepository();
+    const messageRepository = new FakeMessageRepository();
+    const conversationRepository = new FakeConversationRepository();
+    conversationRepository.reusableConversation = {
+      id: 'conv-asset-memory-conflict',
+      phoneE164: '+5511999999999',
+      contactId: 'contact-1',
+      glpiTicketId: null,
+      queueId: 5,
+      profileCollectionState: {
+        step: 'complete',
+        queue_label: 'Suporte',
+        company_name_raw: 'Empresa',
+        requester_name: 'Maria',
+        last_equipment_tag: '0480',
+        reason: 'Windows pede ativação.',
+      },
+      status: 'collecting_contact_profile',
+      lastMessageAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const routing = new FakeRoutingRepository();
+    routing.options = sampleRoutingOptions;
+    const contactProfile = new FakeContactProfileService();
+    contactProfile.collectionEnabled = true;
+    contactProfile.profile = {
+      phone_e164: '+5511999999999',
+      requester_name: 'Maria',
+      company_name_raw: 'Empresa',
+      last_equipment_tag: '0480',
+      equipment_tag_unknown: false,
+      last_problem_summary: 'Windows pede ativação.',
+      profile_status: 'complete',
+      profile_source: 'whatsapp',
+      confirmation_count: 1,
+      last_confirmed_at: new Date().toISOString(),
+    };
+    const staleMemory = makeEntityMemory({ id: 'stale-memory', glpiEntityId: 321, glpiEntityName: 'Abrasil' });
+    const entityMemory = {
+      findActiveByPhone: vi.fn().mockResolvedValue(staleMemory),
+      rememberEntityForPhone: vi.fn().mockResolvedValue(
+        makeEntityMemory({ id: 'asset-memory', glpiEntityId: 124, glpiEntityName: null, source: 'asset_tag_match' }),
+      ),
+    };
+    const meta = { sendTextMessage: vi.fn().mockResolvedValue({}) };
+    const contactResolutionService = { resolve: vi.fn().mockResolvedValue(resolvedContact) };
+    const glpiClient = {
+      createTicket: vi.fn().mockResolvedValue(2112319301),
+      addFollowUp: vi.fn(),
+      findComputersByOtherserial: vi.fn().mockResolvedValue([
+        { id: 480, name: 'Notebook 0480', entitiesId: 124 },
+      ]),
+    };
+    const audit = { recordAuditEventFireAndForget: vi.fn() };
+
+    const service = makeInboundService(
+      webhookEventRepository,
+      messageRepository,
+      conversationRepository,
+      contactResolutionService,
+      glpiClient,
+      { routing, meta, contactProfile, entityMemory: entityMemory as never, audit: audit as unknown as AuditService },
+    );
+
+    const result = await service.process(basePayload);
+
+    expect(result.results).toEqual([{ messageId: 'wamid.123', outcome: 'processed' }]);
+    expect(glpiClient.createTicket).toHaveBeenCalledWith(expect.objectContaining({
+      entitiesId: 124,
+    }), expect.anything());
+    expect(entityMemory.rememberEntityForPhone).toHaveBeenCalledWith(expect.objectContaining({
+      glpiEntityId: 124,
+      source: 'asset_tag_match',
+    }));
+    expect(conversationRepository.linkedTickets[0]).toEqual(expect.objectContaining({
+      conversationId: 'conv-asset-memory-conflict',
+      ticketId: 2112319301,
+      glpiEntityId: 124,
+    }));
+    expect(audit.recordAuditEventFireAndForget).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: 'CONTACT_ENTITY_MEMORY_CONFLICT',
+      payload: expect.objectContaining({
+        conflict_source: 'asset_tag_match',
+        previous_glpi_entity_id: 321,
+        resolved_glpi_entity_id: 124,
+        action: 'asset_tag_entity_preferred',
+      }),
+    }));
   });
 
   it('marks the message failed when follow-up creation fails', async () => {
@@ -2643,6 +2824,44 @@ describe('InboundWebhookService', () => {
     expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
     expect(meta.sendTextMessage.mock.calls[0]?.[0].body).toContain('1 - Suporte');
     expect(meta.sendTextMessage.mock.calls[0]?.[0].body).not.toContain(contactProfile.prompt);
+  });
+
+  it('with customer triage menu disabled, first contact does not expose category options and starts profile collection', async () => {
+    const previousFlag = env.WHATSAPP_CUSTOMER_TRIAGE_MENU_ENABLED;
+    env.WHATSAPP_CUSTOMER_TRIAGE_MENU_ENABLED = false;
+    try {
+      const webhookEventRepository = new FakeWebhookEventRepository();
+      const messageRepository = new FakeMessageRepository();
+      const conversationRepository = new FakeConversationRepository();
+      const routing = new FakeRoutingRepository();
+      routing.options = sampleRoutingOptions;
+      const contactProfile = new FakeContactProfileService();
+      contactProfile.collectionEnabled = true;
+      const meta = { sendTextMessage: vi.fn().mockResolvedValue({}) };
+      const contactResolutionService = { resolve: vi.fn().mockResolvedValue(resolvedContact) };
+      const glpiClient = { createTicket: vi.fn().mockResolvedValue(999), addFollowUp: vi.fn() };
+
+      const service = makeInboundService(
+        webhookEventRepository,
+        messageRepository,
+        conversationRepository,
+        contactResolutionService,
+        glpiClient,
+        { routing, meta, contactProfile },
+      );
+
+      const result = await service.process(basePayload);
+
+      expect(result.results[0]?.outcome).toBe('processed');
+      expect(glpiClient.createTicket).not.toHaveBeenCalled();
+      expect(conversationRepository.lastCreateInput?.status).toBe('collecting_contact_profile');
+      expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
+      expect(meta.sendTextMessage.mock.calls[0]?.[0].body).toContain(contactProfile.prompt);
+      expect(meta.sendTextMessage.mock.calls[0]?.[0].body).not.toContain('1 - Suporte');
+      expect(meta.sendTextMessage.mock.calls[0]?.[0].body).not.toContain('2 - Financeiro');
+    } finally {
+      env.WHATSAPP_CUSTOMER_TRIAGE_MENU_ENABLED = previousFlag;
+    }
   });
 
   it('with contact profile enabled, selected queue starts profile collection and does not create ticket yet', async () => {
@@ -2869,7 +3088,7 @@ describe('InboundWebhookService', () => {
     expect(meta.sendReplyButtons).toHaveBeenCalledWith(
       '5511999999999',
       expect.stringContaining('4 números'),
-      [{ id: 'TAG_UNKNOWN', title: 'Não sei' }],
+      [{ id: 'TAG_UNKNOWN', title: '1 - Não sei' }],
     );
     expect(meta.sendTextMessage).not.toHaveBeenCalled();
     expect(conversationRepository.profileStates[0]?.state).toMatchObject({
@@ -4145,7 +4364,7 @@ describe('InboundWebhookService', () => {
     });
     expect(meta.sendReplyButtons).toHaveBeenCalledWith(
       '5511999999999',
-      'Como você avalia este atendimento? Toque no botão ou digite: 1 - Ótimo, 2 - Bom, 3 - Ruim.',
+      'Como você avalia este atendimento?\n\nVocê também pode responder digitando o número: 1 - Ótimo, 2 - Bom, 3 - Ruim.',
       [
         { id: 'solution_csat:very_satisfied:1234:conv-solved', title: 'Ótimo' },
         { id: 'solution_csat:satisfied:1234:conv-solved', title: 'Bom' },
@@ -4530,7 +4749,7 @@ describe('InboundWebhookService', () => {
     expect(meta.sendReplyButtons).not.toHaveBeenCalled();
     expect(meta.sendListMessage).toHaveBeenCalledWith(
       '5511999999999',
-      'Qual o motivo da reabertura?',
+      'Qual o motivo da reabertura?\n\nVocê também pode responder digitando o número: 1 - O problema permanece, 2 - Ficou faltando algo, 3 - Não entendi a solução, 4 - Outro motivo.',
       [
         { id: 'solution_reopen_reason:problem_persists:1234:conv-solved', title: 'O problema permanece' },
         { id: 'solution_reopen_reason:missing_work:1234:conv-solved', title: 'Ficou faltando algo' },

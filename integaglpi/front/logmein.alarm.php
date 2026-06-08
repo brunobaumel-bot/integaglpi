@@ -16,7 +16,7 @@ if (!Plugin::canRead()) {
     Html::displayRightError();
 }
 
-$canWrite  = Plugin::canWrite();
+$canWrite  = Plugin::canUpdate();
 $service   = new LogmeinAlarmAdminService();
 $flash     = null;
 
