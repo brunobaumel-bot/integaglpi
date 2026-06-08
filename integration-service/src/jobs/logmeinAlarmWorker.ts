@@ -21,6 +21,7 @@ import { env } from '../config/env.js';
 import { buildDependencies } from '../buildDependencies.js';
 import { PostgresLogmeinAlarmRepository } from '../repositories/postgres/PostgresLogmeinAlarmRepository.js';
 import { LogmeinAlarmEngineService } from '../domain/services/LogmeinAlarmEngineService.js';
+import { LogmeinHardwareInventoryService } from '../domain/services/LogmeinHardwareInventoryService.js';
 
 // ── Redis facade (same pattern as aiOnlineSupervisorAlertWorker) ─────────────
 
@@ -50,11 +51,21 @@ export async function runLogmeinAlarmWorker(): Promise<void> {
   const dependencies = buildDependencies();
   const repository = new PostgresLogmeinAlarmRepository(postgresPool);
   const redisFacade = buildAlarmRedisFacade();
+  const hardwareInventoryService = env.LOGMEIN_HARDWARE_INVENTORY_ENABLED
+    ? new LogmeinHardwareInventoryService({
+        enabled: true,
+        baseUrl: process.env.LOGMEIN_API_BASE_URL,
+        companyId: process.env.LOGMEIN_COMPANY_ID,
+        psk: process.env.LOGMEIN_PSK,
+        timeoutMs: Number(process.env.LOGMEIN_HTTP_TIMEOUT_MS ?? '20000'),
+      })
+    : null;
 
   const engine = new LogmeinAlarmEngineService(
     repository,
     redisFacade,
     dependencies.glpiClient,
+    hardwareInventoryService,
   );
 
   const result = await engine.runOnce();

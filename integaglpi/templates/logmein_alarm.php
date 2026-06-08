@@ -8,9 +8,12 @@
  *   $rules        list<array<string, mixed>>
  *   $recentEvents list<array<string, mixed>>
  *   $validTypes   list<string>
+ *   $autoTicketTypes list<string>
+ *   $unsupportedTypes list<string>
  *   $canWrite     bool
  *   $flash        ?array{type: string, message: string}
  *   $groups       list<array{group_id: string, group_name: string, host_count: int}>
+ *   $entities     list<array{id:int, name:string}>
  *   $ruleTargets  array<string, list<array<string, mixed>>>
  *   $ruleStats    array<string, array{total_events: int, last_trigger: string|null, tickets_created: int, cooldown_skipped: int, dedupe_hit: int}>
  *
@@ -32,15 +35,31 @@ declare(strict_types=1);
 /** @var list<array<string, mixed>> $rules */
 /** @var list<array<string, mixed>> $recentEvents */
 /** @var list<string> $validTypes */
+/** @var list<string> $autoTicketTypes */
+/** @var list<string> $unsupportedTypes */
 /** @var bool $canWrite */
 /** @var array{type: string, message: string}|null $flash */
 /** @var list<array{group_id: string, group_name: string, host_count: int}> $groups */
+/** @var list<array{id:int, name:string}> $entities */
 /** @var array<string, list<array<string, mixed>>> $ruleTargets */
 /** @var array<string, array{total_events: int, last_trigger: string|null, tickets_created: int, cooldown_skipped: int, dedupe_hit: int}> $ruleStats */
 
-$alertOnlyTypes  = ['missing_equipment_tag', 'missing_entity_mapping', 'hardware_change', 'low_disk', 'low_memory'];
-$autoTicketTypes = ['host_offline', 'host_not_seen'];
-$forbiddenTypes  = ['high_cpu', 'disk_health_smart', 'network_bandwidth', 'software_compliance'];
+$alertOnlyTypes  = ['hardware_change'];
+$autoTicketTypes = $autoTicketTypes ?? ['host_offline', 'host_not_seen', 'missing_equipment_tag', 'missing_entity_mapping', 'low_disk', 'low_memory'];
+$forbiddenTypes  = $unsupportedTypes ?? ['high_cpu', 'disk_health_smart', 'network_bandwidth', 'software_compliance', 'antivirus_outdated', 'antivirus_inactive', 'antivirus_threat', 'raid_degraded'];
+$allTypeLabels = [
+    'host_offline'          => 'host_offline — Equipamento offline',
+    'host_not_seen'         => 'host_not_seen — Sem comunicação',
+    'low_disk'              => 'low_disk — Espaço em disco baixo',
+    'low_memory'            => 'low_memory — Memória instalada abaixo do mínimo',
+    'missing_equipment_tag' => 'missing_equipment_tag — Sem patrimônio/etiqueta',
+    'missing_entity_mapping'=> 'missing_entity_mapping — Grupo sem entidade',
+    'hardware_change'       => 'hardware_change — Mudança de hardware',
+    'raid_degraded'         => 'raid_degraded — RAID com falha/degradado',
+    'antivirus_outdated'    => 'antivirus_outdated — Antivírus desatualizado',
+    'antivirus_inactive'    => 'antivirus_inactive — Antivírus inativo',
+    'antivirus_threat'      => 'antivirus_threat — Ameaça detectada',
+];
 
 $csrfToken = \GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
 $selfUrl   = htmlspecialchars($_SERVER['PHP_SELF'], ENT_QUOTES | ENT_HTML5, 'UTF-8');
@@ -164,23 +183,38 @@ function fmtAlarmDate(?string $ts): string {
                       <label class="form-label fw-bold"><?= __('Tipo de Alarme', 'glpiintegaglpi') ?> *</label>
                       <select name="alarm_type" id="alarmTypeSelect" class="form-select form-select-sm" required>
                         <option value=""><?= __('— selecionar —', 'glpiintegaglpi') ?></option>
-                        <?php foreach ($validTypes as $t): ?>
+                        <?php foreach ($allTypeLabels as $t => $label): ?>
+                          <?php
+                            $isUnsupported = in_array($t, $forbiddenTypes, true);
+                            $isAlertOnlyOpt = in_array($t, $alertOnlyTypes, true);
+                            $isAutoTicketOpt = in_array($t, $autoTicketTypes, true);
+                            if (!in_array($t, $validTypes, true) && !$isUnsupported) {
+                                continue;
+                            }
+                          ?>
                           <option value="<?= ealarm($t) ?>"
-                                  data-alert-only="<?= in_array($t, $alertOnlyTypes, true) ? '1' : '0' ?>"
-                                  data-auto-ticket="<?= in_array($t, $autoTicketTypes, true) ? '1' : '0' ?>">
-                            <?= ealarm($t) ?>
-                            <?php if (in_array($t, $alertOnlyTypes, true)): ?>(alert-only)<?php endif; ?>
-                            <?php if (in_array($t, $autoTicketTypes, true)): ?>(auto-ticket)<?php endif; ?>
+                                  data-alert-only="<?= $isAlertOnlyOpt ? '1' : '0' ?>"
+                                  data-auto-ticket="<?= $isAutoTicketOpt ? '1' : '0' ?>"
+                                  data-unsupported="<?= $isUnsupported ? '1' : '0' ?>"
+                                  <?= $isUnsupported ? 'disabled' : '' ?>>
+                            <?= ealarm($label) ?>
+                            <?php if ($isUnsupported): ?>(fonte indisponível)<?php endif; ?>
+                            <?php if ($isAlertOnlyOpt): ?>(sem snapshot)<?php endif; ?>
+                            <?php if ($isAutoTicketOpt): ?>(pode gerar ticket)<?php endif; ?>
                           </option>
                         <?php endforeach; ?>
                       </select>
                       <div id="alarmTypeHint" class="form-text text-warning fw-bold mt-1"></div>
                     </div>
                     <div class="col-md-4">
-                      <label class="form-label fw-bold"><?= __('Entidade GLPI (ID)', 'glpiintegaglpi') ?> *</label>
-                      <input type="number" name="glpi_entities_id" class="form-control form-control-sm" min="1" required
-                             placeholder="Ex: 3">
-                      <div class="form-text"><?= __('ID numérico &gt; 0 (entidade raiz proibida)', 'glpiintegaglpi') ?></div>
+                      <label class="form-label fw-bold"><?= __('Entidade GLPI', 'glpiintegaglpi') ?> *</label>
+                      <select name="glpi_entities_id" class="form-select form-select-sm" required>
+                        <option value=""><?= __('— selecionar entidade —', 'glpiintegaglpi') ?></option>
+                        <?php foreach (($entities ?? []) as $entity): ?>
+                          <option value="<?= (int) $entity['id'] ?>"><?= ealarm($entity['name']) ?> (#<?= (int) $entity['id'] ?>)</option>
+                        <?php endforeach; ?>
+                      </select>
+                      <div class="form-text"><?= __('Lista interna do GLPI; entidade raiz proibida.', 'glpiintegaglpi') ?></div>
                     </div>
                     <div class="col-md-8">
                       <label class="form-label fw-bold text-muted fw-normal"><?= __('Obs / Documentação interna', 'glpiintegaglpi') ?></label>
@@ -236,6 +270,34 @@ function fmtAlarmDate(?string $ts): string {
                       <label class="form-label fw-bold"><?= __('Intervalo entre checks (min)', 'glpiintegaglpi') ?></label>
                       <input type="number" name="consecutive_check_interval_minutes" class="form-control form-control-sm" min="5" max="1440" value="5">
                     </div>
+                    <div class="col-md-4" id="offlineMinutesWrap" style="display:none">
+                      <label class="form-label fw-bold"><?= __('Offline há pelo menos (min)', 'glpiintegaglpi') ?></label>
+                      <input type="number" name="offline_minutes" class="form-control form-control-sm" min="1" max="1440" value="5">
+                    </div>
+                    <div class="col-md-4" id="diskPercentWrap" style="display:none">
+                      <label class="form-label fw-bold"><?= __('Percentual livre máximo (%)', 'glpiintegaglpi') ?></label>
+                      <input type="number" name="free_percent_threshold" class="form-control form-control-sm" min="1" max="100" value="20">
+                    </div>
+                    <div class="col-md-4" id="diskGbWrap" style="display:none">
+                      <label class="form-label fw-bold"><?= __('Livre máximo opcional (GB)', 'glpiintegaglpi') ?></label>
+                      <input type="number" name="free_space_gb_threshold" class="form-control form-control-sm" min="0" max="9999" step="0.1" value="">
+                    </div>
+                    <div class="col-md-4" id="partitionWrap" style="display:none">
+                      <label class="form-label fw-bold"><?= __('Partição opcional', 'glpiintegaglpi') ?></label>
+                      <input type="text" name="partition_selector" class="form-control form-control-sm" maxlength="80" placeholder="C:, /, Data">
+                    </div>
+                    <div class="col-md-4" id="memoryWrap" style="display:none">
+                      <label class="form-label fw-bold"><?= __('Memória mínima instalada (GB)', 'glpiintegaglpi') ?></label>
+                      <input type="number" name="min_total_memory_gb" class="form-control form-control-sm" min="1" max="1024" step="0.5" value="8">
+                    </div>
+                    <div class="col-md-4" id="raidWrap" style="display:none">
+                      <label class="form-label fw-bold"><?= __('Status RAID que dispara', 'glpiintegaglpi') ?></label>
+                      <input type="text" name="raid_status" class="form-control form-control-sm" maxlength="80" value="degraded">
+                    </div>
+                    <div class="col-md-8" id="hardwareChangeWrap" style="display:none">
+                      <label class="form-label fw-bold"><?= __('Campos monitorados', 'glpiintegaglpi') ?></label>
+                      <input type="text" name="watched_fields" class="form-control form-control-sm" maxlength="240" value="processors,memory,drives">
+                    </div>
                     <div class="col-12">
                       <div id="conditionInfoBox" class="alert alert-light border small mb-0" style="display:none"></div>
                     </div>
@@ -261,7 +323,7 @@ function fmtAlarmDate(?string $ts): string {
                       <?= __('Criar chamado GLPI quando alarme disparar', 'glpiintegaglpi') ?>
                     </label>
                     <div class="form-text text-warning">
-                      <?= __('Requer: LOGMEIN_AUTO_TICKET_ENABLED=true (flag global) + create_ticket=true por regra + entidade + categoria + fila. Apenas tipos auto-ticket.', 'glpiintegaglpi') ?>
+                      <?= __('Requer: LOGMEIN_AUTO_TICKET_ENABLED=true (flag global) + create_ticket=true por regra + entidade + categoria + fila. Fontes indisponíveis ficam bloqueadas.', 'glpiintegaglpi') ?>
                     </div>
                   </div>
                   <div class="row g-3" id="ticketFieldsWrap" style="display:none">
@@ -375,7 +437,7 @@ function fmtAlarmDate(?string $ts): string {
 
           <!-- Type badge -->
           <?php if ($isAlertOnly): ?>
-            <span class="badge bg-warning text-dark lm-type-badge">alert-only</span>
+            <span class="badge bg-warning text-dark lm-type-badge">sem snapshot</span>
           <?php elseif ($isAutoTkt): ?>
             <span class="badge bg-info text-dark lm-type-badge">auto-ticket</span>
           <?php endif; ?>
@@ -711,7 +773,7 @@ function fmtAlarmDate(?string $ts): string {
   <div class="alert alert-light border mt-2">
     <small class="text-muted">
       <i class="ti ti-shield-lock me-1"></i>
-      <?= __('Alert-only nunca cria chamado. Auto-ticket requer LOGMEIN_AUTO_TICKET_ENABLED=true (global) + create_ticket=true (por regra) + entidade + categoria + fila. Cooldown mín 60min para host_offline/host_not_seen. Vazio em Alvos = todos da entidade. Produção bloqueada até promoção manual.', 'glpiintegaglpi') ?>
+      <?= __('Fontes sem snapshot ou indisponíveis não criam chamado. Auto-ticket requer LOGMEIN_AUTO_TICKET_ENABLED=true (global) + create_ticket=true (por regra) + entidade + categoria + fila. Cooldown mín 60min. Vazio em Alvos = todos da entidade. Produção bloqueada até promoção manual.', 'glpiintegaglpi') ?>
     </small>
   </div>
 
@@ -733,6 +795,7 @@ function lmEsc(s) {
 // ── Alarm type hints on new-rule form ─────────────────────────────────────────
 var ALERT_ONLY  = <?= json_encode($alertOnlyTypes) ?>;
 var AUTO_TICKET = <?= json_encode($autoTicketTypes) ?>;
+var UNSUPPORTED = <?= json_encode($forbiddenTypes) ?>;
 var alarmTypeSelect   = document.getElementById('alarmTypeSelect');
 var createTicketCheck = document.getElementById('createTicketCheck');
 
@@ -744,14 +807,29 @@ function updateAlarmTypeHints() {
   var notSeenWrap  = document.getElementById('notSeenDaysWrap');
   var consecWrap   = document.getElementById('consecChecksWrap');
   var consecIvWrap = document.getElementById('consecIntervalWrap');
+  var offlineWrap  = document.getElementById('offlineMinutesWrap');
+  var diskPercentWrap = document.getElementById('diskPercentWrap');
+  var diskGbWrap = document.getElementById('diskGbWrap');
+  var partitionWrap = document.getElementById('partitionWrap');
+  var memoryWrap = document.getElementById('memoryWrap');
+  var raidWrap = document.getElementById('raidWrap');
+  var hardwareChangeWrap = document.getElementById('hardwareChangeWrap');
   var ticketItem   = document.getElementById('acc-ticket-item');
   var condBox      = document.getElementById('conditionInfoBox');
 
-  if (ALERT_ONLY.indexOf(t) !== -1) {
-    if (hintEl) hintEl.textContent = '⚠ Alert-only: nunca cria chamado, somente alerta interno.';
+  [notSeenWrap, consecWrap, consecIvWrap, offlineWrap, diskPercentWrap, diskGbWrap, partitionWrap, memoryWrap, raidWrap, hardwareChangeWrap].forEach(function (el) {
+    if (el) el.style.display = 'none';
+  });
+  if (condBox) { condBox.style.display = 'none'; condBox.textContent = ''; }
+
+  if (UNSUPPORTED.indexOf(t) !== -1) {
+    if (hintEl) hintEl.textContent = '⚠ Fonte indisponível no LogMeIn atual. Não é possível criar regra.';
+    if (ticketItem) ticketItem.style.opacity = '0.35';
+    if (createTicketCheck) { createTicketCheck.checked = false; createTicketCheck.disabled = true; }
+  } else if (ALERT_ONLY.indexOf(t) !== -1) {
+    if (hintEl) hintEl.textContent = '⚠ Requer snapshot histórico futuro. Ticket automático bloqueado.';
     if (ticketItem) ticketItem.style.opacity = '0.45';
     if (createTicketCheck) { createTicketCheck.checked = false; createTicketCheck.disabled = true; }
-    if (condBox) { condBox.style.display = 'none'; }
   } else {
     if (hintEl) hintEl.textContent = '';
     if (ticketItem) ticketItem.style.opacity = '1';
@@ -760,18 +838,40 @@ function updateAlarmTypeHints() {
   if (t === 'host_not_seen') {
     if (notSeenWrap) notSeenWrap.style.display = '';
     if (condBox) { condBox.style.display = ''; condBox.textContent = 'Não visto há X dias: last_seen_at < agora - X dias.'; }
-  } else {
-    if (notSeenWrap) notSeenWrap.style.display = 'none';
   }
   if (t === 'host_offline') {
+    if (offlineWrap) offlineWrap.style.display = '';
     if (consecWrap)   consecWrap.style.display   = '';
     if (consecIvWrap) consecIvWrap.style.display = '';
-    if (cooldownHint) cooldownHint.textContent = 'Mínimo 60 min recomendado para host_offline com create_ticket.';
+    if (cooldownHint) cooldownHint.textContent = 'Mínimo 60 min para create_ticket.';
     if (condBox) { condBox.style.display = ''; condBox.textContent = 'Offline: status != "online" + N checks consecutivos.'; }
-  } else {
-    if (consecWrap)   consecWrap.style.display   = 'none';
-    if (consecIvWrap) consecIvWrap.style.display = 'none';
-    if (cooldownHint) cooldownHint.textContent = '';
+  }
+  if (t === 'low_disk') {
+    if (diskPercentWrap) diskPercentWrap.style.display = '';
+    if (diskGbWrap) diskGbWrap.style.display = '';
+    if (partitionWrap) partitionWrap.style.display = '';
+    if (condBox) { condBox.style.display = ''; condBox.textContent = 'Disco: dispara quando PartitionFreeSpace / PartitionTotalSize fica abaixo do limite.'; }
+  }
+  if (t === 'low_memory') {
+    if (memoryWrap) memoryWrap.style.display = '';
+    if (condBox) { condBox.style.display = ''; condBox.textContent = 'Memória: usa MemorySize/MemoryModules. Não representa consumo em tempo real.'; }
+  }
+  if (t === 'raid_degraded') {
+    if (raidWrap) raidWrap.style.display = '';
+    if (condBox) { condBox.style.display = ''; condBox.textContent = 'RAID: usa PartitionRaidStatus/PartitionRaidFailingDiskNumber quando a API fornecer.'; }
+  }
+  if (t === 'missing_equipment_tag') {
+    if (condBox) { condBox.style.display = ''; condBox.textContent = 'Sem patrimônio: dispara quando equipment_tag/asset tag está vazio.'; }
+  }
+  if (t === 'missing_entity_mapping') {
+    if (condBox) { condBox.style.display = ''; condBox.textContent = 'Sem entidade: dispara quando o host/grupo não tem entidade candidata resolvida.'; }
+  }
+  if (t === 'hardware_change') {
+    if (hardwareChangeWrap) hardwareChangeWrap.style.display = '';
+    if (condBox) { condBox.style.display = ''; condBox.textContent = 'Mudança de hardware precisa de snapshot histórico. Bloqueado para ticket nesta fase.'; }
+  }
+  if (cooldownHint && t !== 'host_offline') {
+    cooldownHint.textContent = AUTO_TICKET.indexOf(t) !== -1 ? 'Mínimo 60 min para create_ticket.' : '';
   }
 }
 
@@ -837,7 +937,9 @@ function lmRenderHostResults(accordionId, resultsId, hosts, q) {
   hosts.forEach(function (h) {
     var statusColor = h.status === 'online' ? 'success' : (h.status === 'offline' ? 'danger' : 'secondary');
     var tag = h.equipment_tag ? ' [' + lmEsc(h.equipment_tag) + ']' : '';
-    var label = lmEsc(h.hostname) + tag + ' — ' + lmEsc(h.group_name || '');
+    var entity = h.glpi_entity_name ? ' · Entidade: ' + lmEsc(h.glpi_entity_name) : ' · Entidade não resolvida';
+    var computer = h.glpi_computer_id ? ' · Computer #' + lmEsc(h.glpi_computer_id) : '';
+    var label = lmEsc(h.hostname) + tag + ' — ' + lmEsc(h.group_name || '') + computer + entity;
     html += '<button type="button" class="list-group-item list-group-item-action py-1 small"'
           + ' data-host-id="' + lmEsc(h.host_id) + '"'
           + ' data-hostname="' + lmEsc(h.hostname) + '"'

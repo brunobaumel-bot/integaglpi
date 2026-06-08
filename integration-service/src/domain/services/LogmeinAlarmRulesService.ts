@@ -5,10 +5,10 @@
  *
  * Tipos de alarme:
  *   Auto-ticket (gate duplo global + por regra):
- *     host_offline    — min 2 checks consecutivos, cooldown mín. 60 min
- *     host_not_seen   — threshold mín. 7 dias, cooldown mín. 60 min
+ *     host_offline, host_not_seen, missing_equipment_tag, missing_entity_mapping,
+ *     low_disk, low_memory — cooldown mín. 60 min
  *   Alert-only (nunca criam ticket):
- *     missing_equipment_tag, missing_entity_mapping, hardware_change, low_disk, low_memory
+ *     hardware_change (sem snapshot histórico nesta fase)
  *   Proibidos nesta fase:
  *     high_cpu, disk_health_smart, network_bandwidth, software_compliance
  *
@@ -16,7 +16,7 @@
  *   - glpi_entities_id > 0 (entidade raiz/global proibida)
  *   - create_ticket=true exige glpi_group_id + glpi_itil_category_id (não nulos)
  *   - create_ticket=true em tipos auto-ticket exige cooldown >= 60 min
- *   - create_ticket=true proibido para tipos alert-only
+ *   - create_ticket=true proibido para tipos sem fonte/snapshot seguro
  *   - host_offline: min_consecutive_checks >= 2
  *   - host_not_seen: condition_payload.not_seen_days >= 7
  *
@@ -38,15 +38,18 @@ import type {
 // ── Alarm type taxonomy ───────────────────────────────────────────────────────
 
 /** Tipos que podem criar ticket (com gate duplo). */
-const AUTO_TICKET_ALARM_TYPES: readonly AlarmType[] = ['host_offline', 'host_not_seen'];
+const AUTO_TICKET_ALARM_TYPES: readonly AlarmType[] = [
+  'host_offline',
+  'host_not_seen',
+  'missing_equipment_tag',
+  'missing_entity_mapping',
+  'low_disk',
+  'low_memory',
+];
 
 /** Tipos que só geram alertas internos — nunca criam ticket. */
 const ALERT_ONLY_ALARM_TYPES: readonly AlarmType[] = [
-  'missing_equipment_tag',
-  'missing_entity_mapping',
   'hardware_change',
-  'low_disk',
-  'low_memory',
 ];
 
 /** Todos os tipos permitidos nesta fase. */
@@ -61,6 +64,10 @@ const FORBIDDEN_ALARM_TYPES: readonly string[] = [
   'disk_health_smart',
   'network_bandwidth',
   'software_compliance',
+  'antivirus_outdated',
+  'antivirus_inactive',
+  'antivirus_threat',
+  'raid_degraded',
 ];
 
 // ── Limites ───────────────────────────────────────────────────────────────────
@@ -319,7 +326,7 @@ function validateCreateInput(input: CreateAlarmRuleInput): AlarmRuleValidationEr
   if (input.createTicket && (ALERT_ONLY_ALARM_TYPES as readonly string[]).includes(input.alarmType)) {
     errors.push({
       field: 'createTicket',
-      reason: `Tipo '${input.alarmType}' é alert-only — create_ticket=true não é permitido.`,
+      reason: `Tipo '${input.alarmType}' não tem snapshot/fonte segura — create_ticket=true não é permitido.`,
     });
   }
 
@@ -382,6 +389,24 @@ function validateCreateInput(input: CreateAlarmRuleInput): AlarmRuleValidationEr
       errors.push({
         field: 'conditionPayload.not_seen_days',
         reason: `host_not_seen requer conditionPayload.not_seen_days (inteiro >= ${MIN_NOT_SEEN_DAYS}).`,
+      });
+    }
+  }
+  if (input.alarmType === 'low_disk') {
+    const percent = (input.conditionPayload as Record<string, unknown>)['free_percent_threshold'];
+    if (!Number.isInteger(percent) || (percent as number) < 1 || (percent as number) > 100) {
+      errors.push({
+        field: 'conditionPayload.free_percent_threshold',
+        reason: 'low_disk requer free_percent_threshold entre 1 e 100.',
+      });
+    }
+  }
+  if (input.alarmType === 'low_memory') {
+    const minGb = Number((input.conditionPayload as Record<string, unknown>)['min_total_memory_gb']);
+    if (!Number.isFinite(minGb) || minGb <= 0) {
+      errors.push({
+        field: 'conditionPayload.min_total_memory_gb',
+        reason: 'low_memory requer min_total_memory_gb maior que zero.',
       });
     }
   }

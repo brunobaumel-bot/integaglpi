@@ -26,10 +26,11 @@ const ASSET_CACHE_TABLE   = 'glpi_plugin_integaglpi_logmein_asset_cache';
 
 /**
  * Auto-ticket capable (gate duplo: global flag + per-rule flag):
- *   host_offline, host_not_seen
+ *   host_offline, host_not_seen, missing_equipment_tag, missing_entity_mapping,
+ *   low_disk, low_memory
  *
  * Alert-only (nunca criam ticket, independentemente do flag create_ticket):
- *   missing_equipment_tag, missing_entity_mapping, hardware_change, low_disk, low_memory
+ *   hardware_change
  *
  * Forbidden (nunca permitidos nesta fase):
  *   high_cpu, disk_health_smart, network_bandwidth, software_compliance
@@ -448,10 +449,12 @@ export class PostgresLogmeinAlarmRepository {
         equipment_tag: string | null;
         status: string | null;
         last_seen_at: string | Date | null;
+        glpi_entity_candidate_id: number | null;
       }>(
         `
           SELECT logmein_host_external_id, logmein_group_external_id, logmein_group_name,
-                 host_name_sanitized, equipment_tag, status, last_seen_at
+                 host_name_sanitized, equipment_tag, status, last_seen_at,
+                 glpi_entity_candidate_id
           FROM ${ASSET_CACHE_TABLE}
           WHERE logmein_host_external_id IN (${placeholders})
         `,
@@ -477,6 +480,7 @@ export class PostgresLogmeinAlarmRepository {
           equipmentTag: row.equipment_tag ?? '',
           status,
           lastSeenAt,
+          glpiEntityCandidateId: typeof row.glpi_entity_candidate_id === 'number' ? row.glpi_entity_candidate_id : null,
         });
       }
     } catch {

@@ -22,8 +22,8 @@
  * 19. buildEventHash: hashes distintos para datas diferentes
  * 20. buildEventHash: hash estável (determinístico)
  * 21. Ticket criado com gate duplo (global flag + rule flag + entity + category + queue)
- * 22. Alert-only: create_ticket=true blocked in validation
- * 23. Alert-only: engine never calls createTicket for alert-only type
+ * 22. Sem snapshot: hardware_change create_ticket=true blocked in validation
+ * 23. Tipo suportado missing_equipment_tag pode criar ticket com duplo gate
  * 24. Forbidden type: validation blocks high_cpu
  * 25. create_ticket=true sem category → erro de validação
  * 26. create_ticket=true sem queue → erro de validação
@@ -477,12 +477,12 @@ describe('LogmeinAlarmRulesService — validação de createRule', () => {
     expect(result.errors.some((e) => e.field.includes('not_seen_days'))).toBe(true);
   });
 
-  it('22. alert-only: create_ticket=true → erro de validação', async () => {
+  it('22. sem snapshot: hardware_change create_ticket=true → erro de validação', async () => {
     const { LogmeinAlarmRulesService } = await import('../src/domain/services/LogmeinAlarmRulesService.js');
     const repo = makeRepository({ createRule: vi.fn() });
     const svc = new LogmeinAlarmRulesService(repo as never);
     const result = await svc.createRule({
-      ruleName: 'Alert With Ticket', alarmType: 'missing_equipment_tag', cooldownMinutes: 30,
+      ruleName: 'Snapshot With Ticket', alarmType: 'hardware_change', cooldownMinutes: 60,
       conditionPayload: {}, glpiEntitiesId: 5, glpiGroupId: 10, glpiItilCategoryId: 20, createTicket: true,
     });
     expect(result.ok).toBe(false);
@@ -663,11 +663,10 @@ describe('ticket creation — gate duplo + category + queue guard', () => {
     });
   });
 
-  it('23. alert-only: engine never calls createTicket even when create_ticket=true on rule', async () => {
+  it('23. tipo suportado por cache pode criar ticket com duplo gate', async () => {
     const { LogmeinAlarmEngineService } = await import('../src/domain/services/LogmeinAlarmEngineService.js');
-    // Note: validation prevents create_ticket=true for alert-only, but we test engine defensively
     const rule = makeRule({
-      alarmType: 'missing_equipment_tag' as never,
+      alarmType: 'missing_equipment_tag',
       createTicket: true,
       glpiEntitiesId: 5,
       glpiGroupId: 10,
@@ -687,9 +686,11 @@ describe('ticket creation — gate duplo + category + queue guard', () => {
 
     await withAlarmFlags(true, true, async () => {
       const engine = new LogmeinAlarmEngineService(repo as never, makeRedis(), glpiClient as never);
-      await engine.runOnce();
-      // Engine must never call createTicket for alert-only types
-      expect(glpiClient.createTicket).not.toHaveBeenCalled();
+      const result = await engine.runOnce();
+      expect(result.ticketsCreated).toBe(1);
+      expect(glpiClient.createTicket).toHaveBeenCalledWith(expect.objectContaining({
+        entitiesId: 5,
+      }));
     });
   });
 

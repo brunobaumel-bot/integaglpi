@@ -10,8 +10,8 @@
  *   3. Para host_offline: verificar checks consecutivos (Redis)
  *   4. Verificar cooldown via Redis (SET EX)
  *   5. Verificar dedupe via event_hash (INSERT ON CONFLICT DO NOTHING)
- *   6. Para tipos alert-only: log interno — NUNCA cria ticket
- *   7. Para tipos auto-ticket: criar chamado GLPI (gate duplo: flag global + flag por regra)
+ *   6. Para tipos sem fonte segura: log interno — NUNCA cria ticket
+ *   7. Para tipos suportados: criar chamado GLPI (gate duplo: flag global + flag por regra)
  *   8. Gravar evento de auditoria
  *
  * FORBIDDEN:
@@ -37,6 +37,7 @@ import type {
 } from '../../repositories/postgres/PostgresLogmeinAlarmRepository.js';
 import { LogmeinAlarmRulesService } from './LogmeinAlarmRulesService.js';
 import type { LogmeinHostContext } from './LogmeinReadonlyContextService.js';
+import type { LogmeinHardwareInventoryService, LogmeinHardwareInventory } from './LogmeinHardwareInventoryService.js';
 import type { GlpiClient } from '../../adapters/glpi/GlpiClient.js';
 
 // ── Redis facade ──────────────────────────────────────────────────────────────
@@ -66,6 +67,7 @@ export class LogmeinAlarmEngineService {
     private readonly repository: PostgresLogmeinAlarmRepository,
     private readonly redis: AlarmRedisFacade,
     private readonly glpiClient: GlpiClient | null,
+    private readonly hardwareInventoryService: LogmeinHardwareInventoryService | null = null,
   ) {}
 
   /**
@@ -184,7 +186,7 @@ export class LogmeinAlarmEngineService {
     if (host === null) return ZERO;
 
     // 2. Evaluate condition
-    const conditionMet = this.evaluateCondition(rule, host);
+    const conditionMet = await this.evaluateCondition(rule, host, target);
     if (!conditionMet) return ZERO;
 
     // 3. Consecutive check gate (only for host_offline)
@@ -239,7 +241,8 @@ export class LogmeinAlarmEngineService {
       // 7. Auto-ticket: gate duplo (global flag + rule flag + category + queue)
       const hasCategory = rule.glpiItilCategoryId !== null && rule.glpiItilCategoryId > 0;
       const hasQueue    = rule.glpiGroupId !== null && rule.glpiGroupId > 0;
-      const hasEntity   = rule.glpiEntitiesId > 0;
+      const ticketEntityId = resolveTicketEntity(rule, host);
+      const hasEntity   = ticketEntityId > 0;
 
       const shouldCreateTicket =
         rule.createTicket &&
@@ -256,7 +259,7 @@ export class LogmeinAlarmEngineService {
             content: buildTicketContent(rule, host),
             requesterPhone: 'sistema',
             requesterName: 'Sistema LogMeIn',
-            entitiesId: rule.glpiEntitiesId,
+            entitiesId: ticketEntityId,
             assignedGroupId: rule.glpiGroupId ?? undefined,
             itilcategoriesId: rule.glpiItilCategoryId ?? undefined,
           });
@@ -268,7 +271,7 @@ export class LogmeinAlarmEngineService {
               host_id: target.hostId,
               hostname: target.hostname,
               glpi_ticket_id: glpiTicketId,
-              glpi_entities_id: rule.glpiEntitiesId,
+              glpi_entities_id: ticketEntityId,
               glpi_category_id: rule.glpiItilCategoryId,
               glpi_group_id: rule.glpiGroupId,
             },
@@ -294,6 +297,7 @@ export class LogmeinAlarmEngineService {
             has_category: hasCategory,
             has_queue: hasQueue,
             has_entity: hasEntity,
+            resolved_entity_id: ticketEntityId,
           },
           '[logmein_alarm][engine] Criação de ticket pulada (flag desligada ou guards ausentes).',
         );
@@ -364,7 +368,7 @@ export class LogmeinAlarmEngineService {
         host_id: target.hostId,
         hostname: target.hostname,
         glpi_ticket_id: glpiTicketId,
-        entity_id: rule.glpiEntitiesId,
+        entity_id: resolveTicketEntity(rule, host),
         cooldown_minutes: rule.cooldownMinutes,
       },
       '[logmein_alarm][engine] Alarme disparado.',
@@ -448,7 +452,11 @@ export class LogmeinAlarmEngineService {
 
   // ── Condition evaluators ──────────────────────────────────────────────────
 
-  private evaluateCondition(rule: LogmeinAlarmRule, host: LogmeinHostContext): boolean {
+  private async evaluateCondition(
+    rule: LogmeinAlarmRule,
+    host: LogmeinHostContext,
+    target: LogmeinAlarmTarget,
+  ): Promise<boolean> {
     switch (rule.alarmType) {
       case 'host_offline':
         return host.status === 'offline';
@@ -478,17 +486,63 @@ export class LogmeinAlarmEngineService {
         return false;
 
       case 'low_disk':
-        // Alert-only: reserved for future implementation when disk metrics are available
-        return false;
+        return this.evaluateLowDisk(rule, target);
 
       case 'low_memory':
-        // Alert-only: reserved for future implementation when memory metrics are available
-        return false;
+        return this.evaluateLowMemory(rule, target);
 
       default:
         return false;
     }
   }
+
+  private async fetchHardware(target: LogmeinAlarmTarget): Promise<LogmeinHardwareInventory | null> {
+    if (this.hardwareInventoryService === null) return null;
+    const hostId = Number(target.hostId);
+    if (!Number.isInteger(hostId) || hostId <= 0) return null;
+    try {
+      const inventory = await this.hardwareInventoryService.fetchHardwareInventoryForHosts([hostId]);
+      return inventory.get(hostId) ?? null;
+    } catch (error: unknown) {
+      logger.warn(
+        {
+          host_id: target.hostId,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        },
+        '[logmein_alarm][engine] Inventário de hardware indisponível para condição.',
+      );
+      return null;
+    }
+  }
+
+  private async evaluateLowDisk(rule: LogmeinAlarmRule, target: LogmeinAlarmTarget): Promise<boolean> {
+    const hardware = await this.fetchHardware(target);
+    if (hardware === null) return false;
+    const payload = rule.conditionPayload as Record<string, unknown>;
+    const freePercentThreshold = numberInRange(payload.free_percent_threshold, 1, 100, 20);
+    const freeGbThreshold = optionalPositiveNumber(payload.free_space_gb_threshold);
+    const selector = typeof payload.partition_selector === 'string' ? payload.partition_selector.trim().toLowerCase() : '';
+
+    return hardware.partitions.some((partition) => {
+      const totalMb = partition.totalSizeMb;
+      const freeMb = partition.freeSpaceMb;
+      if (totalMb == null || freeMb == null || totalMb <= 0) return false;
+      const label = `${partition.drive ?? ''} ${partition.name ?? ''}`.toLowerCase();
+      if (selector !== '' && !label.includes(selector)) return false;
+      const freePercent = (freeMb / totalMb) * 100;
+      const percentHit = freePercent <= freePercentThreshold;
+      const gbHit = freeGbThreshold !== null && freeMb / 1024 <= freeGbThreshold;
+      return percentHit || gbHit;
+    });
+  }
+
+  private async evaluateLowMemory(rule: LogmeinAlarmRule, target: LogmeinAlarmTarget): Promise<boolean> {
+    const hardware = await this.fetchHardware(target);
+    if (hardware === null || hardware.memoryMb == null) return false;
+    const minGb = optionalPositiveNumber((rule.conditionPayload as Record<string, unknown>).min_total_memory_gb) ?? 8;
+    return hardware.memoryMb / 1024 < minGb;
+  }
+
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -514,6 +568,24 @@ function buildEventHash(ruleId: string, hostId: string, alarmType: string, dateU
   return createHash('sha256')
     .update(`${ruleId}|${hostId}|${alarmType}|${dateUtc}`)
     .digest('hex');
+}
+
+function resolveTicketEntity(rule: LogmeinAlarmRule, host: LogmeinHostContext): number {
+  const hostEntity = host.glpiEntityCandidateId ?? null;
+  return Number.isInteger(hostEntity) && hostEntity !== null && hostEntity > 0
+    ? hostEntity
+    : rule.glpiEntitiesId;
+}
+
+function numberInRange(value: unknown, min: number, max: number, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
+function optionalPositiveNumber(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 /**

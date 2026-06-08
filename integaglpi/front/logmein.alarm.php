@@ -5,6 +5,7 @@ declare(strict_types=1);
 use GlpiPlugin\Integaglpi\LogmeinGroupMenu;
 use GlpiPlugin\Integaglpi\Plugin;
 use GlpiPlugin\Integaglpi\Service\LogmeinAlarmAdminService;
+use GlpiPlugin\Integaglpi\Service\SecurityPermissionService;
 
 include '../../../inc/includes.php';
 
@@ -16,7 +17,7 @@ if (!Plugin::canRead()) {
     Html::displayRightError();
 }
 
-$canWrite = Plugin::canUpdate();
+$canWrite = Plugin::canUpdate() || SecurityPermissionService::isSecurityAdmin();
 $service  = new LogmeinAlarmAdminService();
 $flash    = null;
 
@@ -39,7 +40,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['action']) && $_GET['act
 
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['action']) && $_GET['action'] === 'dry_run') {
     header('Content-Type: application/json; charset=UTF-8');
-    if (!Plugin::canUpdate()) {
+    if (!$canWrite) {
         echo json_encode(['ok' => false, 'errors' => ['Permissão insuficiente.']], JSON_UNESCAPED_UNICODE);
         exit;
     }
@@ -125,7 +126,10 @@ $hasGuards    = $service->hasGuardsColumns();
 $rules        = $schemaReady ? $service->listAllRules() : [];
 $recentEvents = $schemaReady ? $service->listRecentEvents(50) : [];
 $validTypes   = LogmeinAlarmAdminService::getValidTypes();
+$autoTicketTypes = LogmeinAlarmAdminService::getAutoTicketTypes();
+$unsupportedTypes = LogmeinAlarmAdminService::getUnsupportedTypes();
 $groups       = $schemaReady ? $service->listGroups() : [];
+$entities     = $schemaReady ? $service->listEntities() : [];
 
 // Load targets and stats for each rule (keyed by rule_id)
 $ruleIds     = array_column($rules, 'id');

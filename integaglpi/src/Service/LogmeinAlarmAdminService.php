@@ -26,8 +26,9 @@ use Throwable;
  *   - alarm_type deve estar na lista permitida
  *   - glpi_entities_id > 0
  *   - create_ticket=true exige glpi_group_id + glpi_itil_category_id
- *   - Tipos proibidos bloqueados: high_cpu, disk_health_smart, network_bandwidth, software_compliance
- *   - Tipos alert-only não podem ter create_ticket=true
+ *   - Tipos proibidos bloqueados: high_cpu, disk_health_smart, network_bandwidth,
+ *     software_compliance, antivirus_* e raid_degraded
+ *   - Tipos sem fonte real segura não podem ter create_ticket=true
  *
  * PHASE: integaglpi_logmein_alarm_rules_and_auto_ticket_implementation_001
  */
@@ -37,19 +38,26 @@ final class LogmeinAlarmAdminService
     private const EVENTS_TABLE  = 'integaglpi_logmein_alarm_events';
     private const TARGETS_TABLE = 'integaglpi_logmein_alarm_targets';
 
-    private const AUTO_TICKET_TYPES = ['host_offline', 'host_not_seen'];
-    private const ALERT_ONLY_TYPES  = [
+    private const AUTO_TICKET_TYPES = [
+        'host_offline',
+        'host_not_seen',
         'missing_equipment_tag',
         'missing_entity_mapping',
-        'hardware_change',
         'low_disk',
         'low_memory',
+    ];
+    private const ALERT_ONLY_TYPES  = [
+        'hardware_change',
     ];
     private const FORBIDDEN_TYPES = [
         'high_cpu',
         'disk_health_smart',
         'network_bandwidth',
         'software_compliance',
+        'antivirus_outdated',
+        'antivirus_inactive',
+        'antivirus_threat',
+        'raid_degraded',
     ];
     private const VALID_TYPES = [
         'host_offline',
@@ -304,6 +312,22 @@ final class LogmeinAlarmAdminService
         return in_array($alarmType, self::ALERT_ONLY_TYPES, true);
     }
 
+    /**
+     * @return list<string>
+     */
+    public static function getAutoTicketTypes(): array
+    {
+        return self::AUTO_TICKET_TYPES;
+    }
+
+    /**
+     * @return list<string>
+     */
+    public static function getUnsupportedTypes(): array
+    {
+        return self::FORBIDDEN_TYPES;
+    }
+
     public static function isForbidden(string $alarmType): bool
     {
         return in_array($alarmType, self::FORBIDDEN_TYPES, true);
@@ -340,10 +364,10 @@ final class LogmeinAlarmAdminService
 
         $createTicket = (bool) ($input['create_ticket'] ?? false);
         if ($createTicket && in_array($alarmType, self::ALERT_ONLY_TYPES, true)) {
-            $errors[] = "Tipo '$alarmType' é alert-only — create_ticket não permitido.";
+            $errors[] = "Tipo '$alarmType' ainda não tem fonte histórica segura — create_ticket não permitido.";
         }
 
-        if ($createTicket && !in_array($alarmType, self::ALERT_ONLY_TYPES, true)) {
+        if ($createTicket && in_array($alarmType, self::AUTO_TICKET_TYPES, true)) {
             if (empty($input['glpi_group_id'])) {
                 $errors[] = 'Fila/grupo GLPI é obrigatório quando create_ticket=true.';
             }
@@ -351,7 +375,7 @@ final class LogmeinAlarmAdminService
                 $errors[] = 'Categoria GLPI é obrigatória quando create_ticket=true.';
             }
             $cooldown = (int) ($input['cooldown_minutes'] ?? 0);
-            if (in_array($alarmType, self::AUTO_TICKET_TYPES, true) && $cooldown < self::AUTO_TICKET_MIN_COOLDOWN) {
+            if ($cooldown < self::AUTO_TICKET_MIN_COOLDOWN) {
                 $errors[] = 'Cooldown mínimo é ' . self::AUTO_TICKET_MIN_COOLDOWN . ' minutos para tipos auto-ticket.';
             }
         }
@@ -360,6 +384,18 @@ final class LogmeinAlarmAdminService
             $days = (int) ($input['not_seen_days'] ?? 0);
             if ($days < self::MIN_NOT_SEEN_DAYS) {
                 $errors[] = 'host_not_seen requer not_seen_days >= ' . self::MIN_NOT_SEEN_DAYS . '.';
+            }
+        }
+        if ($alarmType === 'low_disk') {
+            $percent = (int) ($input['free_percent_threshold'] ?? 0);
+            if ($percent < 1 || $percent > 100) {
+                $errors[] = 'low_disk requer percentual livre entre 1 e 100.';
+            }
+        }
+        if ($alarmType === 'low_memory') {
+            $minGb = (float) ($input['min_total_memory_gb'] ?? 0);
+            if ($minGb <= 0) {
+                $errors[] = 'low_memory requer memória mínima em GB maior que zero.';
             }
         }
 
@@ -373,8 +409,34 @@ final class LogmeinAlarmAdminService
     private function buildConditionPayload(string $alarmType, array $input): array
     {
         $payload = [];
-        if ($alarmType === 'host_not_seen') {
-            $payload['not_seen_days'] = max(self::MIN_NOT_SEEN_DAYS, (int) ($input['not_seen_days'] ?? self::MIN_NOT_SEEN_DAYS));
+        switch ($alarmType) {
+            case 'host_offline':
+                $payload['offline_minutes'] = max(1, (int) ($input['offline_minutes'] ?? 5));
+                break;
+            case 'host_not_seen':
+                $payload['not_seen_days'] = max(self::MIN_NOT_SEEN_DAYS, (int) ($input['not_seen_days'] ?? self::MIN_NOT_SEEN_DAYS));
+                break;
+            case 'low_disk':
+                $payload['free_percent_threshold'] = max(1, min(100, (int) ($input['free_percent_threshold'] ?? 20)));
+                $gb = (float) ($input['free_space_gb_threshold'] ?? 0);
+                if ($gb > 0) {
+                    $payload['free_space_gb_threshold'] = $gb;
+                }
+                $selector = mb_substr(trim((string) ($input['partition_selector'] ?? '')), 0, 80, 'UTF-8');
+                if ($selector !== '') {
+                    $payload['partition_selector'] = $selector;
+                }
+                break;
+            case 'low_memory':
+                $payload['min_total_memory_gb'] = max(1, (float) ($input['min_total_memory_gb'] ?? 8));
+                break;
+            case 'missing_equipment_tag':
+            case 'missing_entity_mapping':
+                $payload['no_threshold'] = true;
+                break;
+            case 'hardware_change':
+                $payload['watched_fields'] = array_values(array_filter(array_map('trim', explode(',', (string) ($input['watched_fields'] ?? 'processors,memory,drives')))));
+                break;
         }
         return $payload;
     }
@@ -462,6 +524,7 @@ final class LogmeinAlarmAdminService
                  ON CONFLICT (rule_id, host_id) DO UPDATE SET hostname = EXCLUDED.hostname'
             );
             $stmt->execute([':rule_id' => $ruleId, ':host_id' => $hostId, ':hostname' => $hostname]);
+            $this->syncHostEntityCandidate($hostId);
             return ['ok' => true, 'errors' => []];
         } catch (Throwable $e) {
             return ['ok' => false, 'errors' => ['Erro ao adicionar alvo: ' . $e->getMessage()]];
@@ -499,7 +562,7 @@ final class LogmeinAlarmAdminService
      * Search hosts in the LogMeIn asset cache for target selection.
      * Never returns PII — only sanitized hostname, tag, status, group.
      *
-     * @return list<array{host_id: string, hostname: string, equipment_tag: string, status: string, group_name: string}>
+     * @return list<array<string, mixed>>
      */
     public function searchHosts(string $query, string $groupId = '', int $limit = 50): array
     {
@@ -510,7 +573,7 @@ final class LogmeinAlarmAdminService
             $where  = [];
 
             if (trim($query) !== '') {
-                $where[]          = "(host_name_sanitized ILIKE :q OR equipment_tag ILIKE :q)";
+                $where[]          = "(host_name_sanitized ILIKE :q OR equipment_tag ILIKE :q OR logmein_host_external_id ILIKE :q)";
                 $params[':q']     = '%' . trim($query) . '%';
             }
             if (trim($groupId) !== '') {
@@ -524,7 +587,8 @@ final class LogmeinAlarmAdminService
                         host_name_sanitized      AS hostname,
                         COALESCE(equipment_tag, \'\') AS equipment_tag,
                         COALESCE(status, \'unknown\') AS status,
-                        logmein_group_name       AS group_name
+                        logmein_group_name       AS group_name,
+                        glpi_entity_candidate_id
                    FROM ' . self::ASSET_CACHE_TABLE . '
                   ' . $whereClause . '
                   ORDER BY host_name_sanitized ASC
@@ -536,7 +600,39 @@ final class LogmeinAlarmAdminService
             }
             $stmt->execute();
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            return is_array($rows) ? array_values($rows) : [];
+            return is_array($rows) ? $this->decorateHostsWithGlpiContext(array_values($rows)) : [];
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    /**
+     * @return list<array{id: int, name: string}>
+     */
+    public function listEntities(): array
+    {
+        global $DB;
+        try {
+            if (!isset($DB) || !is_object($DB) || !method_exists($DB, 'tableExists') || !$DB->tableExists('glpi_entities')) {
+                return [];
+            }
+            $rows = $DB->request([
+                'SELECT' => ['id', 'name', 'completename'],
+                'FROM'   => 'glpi_entities',
+                'WHERE'  => ['is_deleted' => 0],
+                'ORDER'  => ['completename ASC', 'name ASC'],
+                'LIMIT'  => 500,
+            ]);
+            $out = [];
+            foreach ($rows as $row) {
+                $id = (int) ($row['id'] ?? 0);
+                if ($id <= 0) {
+                    continue;
+                }
+                $name = trim((string) ($row['completename'] ?? $row['name'] ?? ''));
+                $out[] = ['id' => $id, 'name' => $name !== '' ? $name : ('Entidade #' . $id)];
+            }
+            return $out;
         } catch (Throwable) {
             return [];
         }
@@ -565,6 +661,104 @@ final class LogmeinAlarmAdminService
             return is_array($rows) ? array_values($rows) : [];
         } catch (Throwable) {
             return [];
+        }
+    }
+
+    /**
+     * @param list<array<string, mixed>> $rows
+     * @return list<array<string, mixed>>
+     */
+    private function decorateHostsWithGlpiContext(array $rows): array
+    {
+        foreach ($rows as &$row) {
+            $entityId = (int) ($row['glpi_entity_candidate_id'] ?? 0);
+            $computer = $this->findComputerFromHostRow($row);
+            if ($computer !== null) {
+                $row['glpi_computer_id'] = (int) ($computer['id'] ?? 0);
+                $entityId = (int) ($computer['entities_id'] ?? $entityId);
+            }
+            $row['glpi_entities_id'] = $entityId > 0 ? $entityId : null;
+            $row['glpi_entity_name'] = $entityId > 0 ? (string) \Dropdown::getDropdownName('glpi_entities', $entityId) : '';
+        }
+        unset($row);
+        return $rows;
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array{id:int, entities_id:int}|null
+     */
+    private function findComputerFromHostRow(array $row): ?array
+    {
+        global $DB;
+        try {
+            if (!isset($DB) || !is_object($DB) || !method_exists($DB, 'tableExists') || !$DB->tableExists('glpi_computers')) {
+                return null;
+            }
+            $tag = trim((string) ($row['equipment_tag'] ?? ''));
+            $hostname = trim((string) ($row['hostname'] ?? ''));
+            $or = [];
+            if ($tag !== '') {
+                if (ctype_digit($tag)) {
+                    $or[] = ['id' => (int) $tag];
+                }
+                $or[] = ['serial' => $tag];
+                $or[] = ['otherserial' => $tag];
+            }
+            if ($hostname !== '') {
+                $or[] = ['name' => $hostname];
+            }
+            if ($or === []) {
+                return null;
+            }
+            $rows = $DB->request([
+                'SELECT' => ['id', 'entities_id'],
+                'FROM'   => 'glpi_computers',
+                'WHERE'  => ['is_deleted' => 0, 'OR' => $or],
+                'LIMIT'  => 1,
+            ]);
+            foreach ($rows as $computer) {
+                return [
+                    'id' => (int) ($computer['id'] ?? 0),
+                    'entities_id' => (int) ($computer['entities_id'] ?? 0),
+                ];
+            }
+        } catch (Throwable) {
+        }
+        return null;
+    }
+
+    private function syncHostEntityCandidate(string $hostId): void
+    {
+        try {
+            $pdo = $this->getPdo();
+            $stmt = $pdo->prepare(
+                'SELECT logmein_host_external_id AS host_id,
+                        host_name_sanitized AS hostname,
+                        COALESCE(equipment_tag, \'\') AS equipment_tag,
+                        glpi_entity_candidate_id
+                   FROM ' . self::ASSET_CACHE_TABLE . '
+                  WHERE logmein_host_external_id = :host_id
+                  LIMIT 1'
+            );
+            $stmt->execute([':host_id' => $hostId]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!is_array($row)) {
+                return;
+            }
+            $decorated = $this->decorateHostsWithGlpiContext([$row]);
+            $entityId = (int) ($decorated[0]['glpi_entities_id'] ?? 0);
+            if ($entityId <= 0) {
+                return;
+            }
+            $upd = $pdo->prepare(
+                'UPDATE ' . self::ASSET_CACHE_TABLE . '
+                    SET glpi_entity_candidate_id = :entity_id
+                  WHERE logmein_host_external_id = :host_id'
+            );
+            $upd->execute([':entity_id' => $entityId, ':host_id' => $hostId]);
+        } catch (Throwable) {
+            // Best-effort cache enrichment only. Target creation remains valid.
         }
     }
 
@@ -629,8 +823,8 @@ final class LogmeinAlarmAdminService
      * Redis cooldown is NOT checked (read-only from DB only).
      * Condition evaluation is supported for: host_offline, host_not_seen,
      * missing_equipment_tag, missing_entity_mapping.
-     * Complex conditions (hardware_change, low_disk, low_memory) return
-     * 'condition_requires_full_sync' for affected hosts.
+     * Hardware/API conditions (low_disk, low_memory) require
+     * the Node worker + LogMeIn hardware inventory source.
      *
      * @return array{
      *   ok: bool,
@@ -705,7 +899,7 @@ final class LogmeinAlarmAdminService
                 $blockedBy[] = "Tipo '$alarmType' proibido por policy.";
             }
             if ($isAlertOnly) {
-                $blockedBy[] = "Tipo '$alarmType' é alert-only — nunca cria ticket.";
+                $blockedBy[] = "Tipo '$alarmType' requer snapshot histórico futuro — não cria ticket.";
             }
             $result['blocked_by_policy']             = $blockedBy;
             $result['would_create_ticket_if_enabled'] = !$isAlertOnly && $createTicket
@@ -767,7 +961,9 @@ final class LogmeinAlarmAdminService
             $conditionNote = '';
 
             if (in_array($alarmType, $complexTypes, true)) {
-                $conditionNote = "Tipo '$alarmType' requer comparação de inventário completo. Dry-run marca condição como 'requer_sync_completo'.";
+                $conditionNote = $alarmType === 'hardware_change'
+                    ? "Tipo '$alarmType' requer snapshot histórico futuro. Dry-run marca como fonte indisponível."
+                    : "Tipo '$alarmType' requer inventário de hardware LogMeIn. Dry-run administrativo marca como requires_hardware_inventory_worker.";
             }
 
             foreach ($targets as $target) {
@@ -815,8 +1011,8 @@ final class LogmeinAlarmAdminService
                         break;
 
                     default:
-                        // complex types: hardware_change, low_disk, low_memory
-                        $reason = 'requer_sync_completo';
+                        // hardware/API types are evaluated by the Node worker.
+                        $reason = $alarmType === 'hardware_change' ? 'requires_future_snapshot' : 'requires_hardware_inventory_worker';
                         $conditionMet = false;
                         break;
                 }
