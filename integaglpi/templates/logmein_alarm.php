@@ -1,6 +1,6 @@
 <?php
 /**
- * Template: LogMeIn Alarm Rules Administration
+ * Template: LogMeIn Alarm Rules Administration — Gold UI
  *
  * Variables injected by logmein.alarm.php:
  *   $schemaReady  bool
@@ -12,9 +12,17 @@
  *   $flash        ?array{type: string, message: string}
  *   $groups       list<array{group_id: string, group_name: string, host_count: int}>
  *   $ruleTargets  array<string, list<array<string, mixed>>>
+ *   $ruleStats    array<string, array{total_events: int, last_trigger: string|null, tickets_created: int, cooldown_skipped: int, dedupe_hit: int}>
  *
  * PHASE: integaglpi_logmein_alarm_rules_and_auto_ticket_implementation_001
  * PHASE: integaglpi_post_smoke_operational_gaps_hml_fix_prod_report_001
+ * PHASE: integaglpi_logmein_alarm_ui_gold_hml_001
+ *
+ * BLOCKS DECLARED:
+ *   - BLOCK_NEEDS_SCHEMA_CHANGE: maintenance/silence windows require new table
+ *     (integaglpi_logmein_alarm_maintenance: rule_id, start_at, end_at, reason)
+ *   - BLOCK_NEEDS_SCHEMA_CHANGE: target exclusions require column `excluded BOOLEAN`
+ *     on integaglpi_logmein_alarm_targets or a new integaglpi_logmein_alarm_exclusions table
  */
 
 declare(strict_types=1);
@@ -28,20 +36,56 @@ declare(strict_types=1);
 /** @var array{type: string, message: string}|null $flash */
 /** @var list<array{group_id: string, group_name: string, host_count: int}> $groups */
 /** @var array<string, list<array<string, mixed>>> $ruleTargets */
+/** @var array<string, array{total_events: int, last_trigger: string|null, tickets_created: int, cooldown_skipped: int, dedupe_hit: int}> $ruleStats */
 
 $alertOnlyTypes  = ['missing_equipment_tag', 'missing_entity_mapping', 'hardware_change', 'low_disk', 'low_memory'];
 $autoTicketTypes = ['host_offline', 'host_not_seen'];
+$forbiddenTypes  = ['high_cpu', 'disk_health_smart', 'network_bandwidth', 'software_compliance'];
 
 $csrfToken = \GlpiPlugin\Integaglpi\Plugin::getCsrfToken();
 $selfUrl   = htmlspecialchars($_SERVER['PHP_SELF'], ENT_QUOTES | ENT_HTML5, 'UTF-8');
 
+/**
+ * HTML-escape any value safely for use in innerHTML and attributes.
+ */
 function ealarm(mixed $v): string {
     return htmlspecialchars((string) ($v ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8');
 }
+
+/**
+ * Format a UTC timestamp string as a local short datetime, or return a placeholder.
+ */
+function fmtAlarmDate(?string $ts): string {
+    if ($ts === null || $ts === '') {
+        return '—';
+    }
+    try {
+        $dt = new DateTimeImmutable($ts);
+        return $dt->format('d/m/Y H:i');
+    } catch (Throwable) {
+        return ealarm($ts);
+    }
+}
 ?>
+
+<style>
+/* ── LogMeIn Alarm Gold UI ─────────────────────────────────── */
+.lm-alarm-card          { border-left: 4px solid #6c757d; transition: border-color .2s; }
+.lm-alarm-card.enabled  { border-left-color: #198754; }
+.lm-alarm-card.disabled { border-left-color: #adb5bd; }
+.lm-stat-chip           { font-size: .72rem; padding: 2px 7px; border-radius: 20px; white-space: nowrap; }
+.lm-type-badge          { font-size: .7rem; letter-spacing: .02em; }
+.lm-dry-result          { font-size: .82rem; }
+.lm-dry-result table    { font-size: .8rem; }
+.lm-hist-mini           { font-size: .78rem; max-height: 220px; overflow-y: auto; }
+.lm-section-toggle      { cursor: pointer; user-select: none; }
+.lm-acc-body            { animation: fadeInDown .15s ease; }
+@keyframes fadeInDown    { from { opacity:0; transform:translateY(-4px) } to { opacity:1; transform:none } }
+</style>
 
 <div class="container-fluid mt-2">
 
+  <!-- ── Schema warnings ──────────────────────────────────────────────────── -->
   <?php if (!$schemaReady): ?>
     <div class="alert alert-warning">
       <i class="ti ti-alert-triangle me-1"></i>
@@ -50,29 +94,50 @@ function ealarm(mixed $v): string {
   <?php elseif (!$hasGuards): ?>
     <div class="alert alert-info">
       <i class="ti ti-info-circle me-1"></i>
-      <?= __('Migration 049 ainda não aplicada. Execute 049_logmein_alarm_guards.sql para guards de checks consecutivos.', 'glpiintegaglpi') ?>
+      <?= __('Migration 049 (guards) ainda não aplicada. Execute 049_logmein_alarm_guards.sql.', 'glpiintegaglpi') ?>
     </div>
   <?php endif; ?>
 
   <?php if (isset($flash)): ?>
-    <div class="alert alert-<?= ealarm($flash['type']) ?> alert-dismissible fade show" role="alert">
+    <div class="alert alert-<?= ealarm($flash['type']) ?> alert-dismissible fade show">
       <?= ealarm($flash['message']) ?>
       <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     </div>
   <?php endif; ?>
 
-  <!-- ── Nova Regra (accordion form) ──────────────────────────────────────── -->
-  <?php if ($canWrite && $schemaReady): ?>
-  <div class="card mb-3">
-    <div class="card-header d-flex justify-content-between align-items-center">
-      <h5 class="mb-0"><i class="ti ti-plus me-1"></i><?= __('Nova Regra de Alarme', 'glpiintegaglpi') ?></h5>
-      <button class="btn btn-primary btn-sm" type="button"
-              data-bs-toggle="collapse" data-bs-target="#createRulePanel" aria-expanded="false">
-        <i class="ti ti-chevron-down me-1"></i><?= __('Expandir', 'glpiintegaglpi') ?>
-      </button>
+  <!-- ── Page header ──────────────────────────────────────────────────────── -->
+  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <div>
+      <h4 class="mb-0 fw-bold">
+        <i class="ti ti-bell-ringing me-2 text-warning"></i><?= __('Alarmes LogMeIn', 'glpiintegaglpi') ?>
+      </h4>
+      <small class="text-muted">
+        <?= __('Monitore equipamentos e valide regras antes de qualquer automação.', 'glpiintegaglpi') ?>
+        <span class="badge bg-secondary ms-1"><?= count($rules) ?> <?= __('regras', 'glpiintegaglpi') ?></span>
+      </small>
     </div>
+    <?php if ($canWrite && $schemaReady): ?>
+    <div class="d-flex gap-2">
+      <button class="btn btn-primary btn-sm" type="button"
+              data-bs-toggle="collapse" data-bs-target="#createRulePanel">
+        <i class="ti ti-plus me-1"></i><?= __('+ Nova Regra', 'glpiintegaglpi') ?>
+      </button>
+      <?php if (count($rules) > 0): ?>
+      <button class="btn btn-outline-info btn-sm" type="button" id="globalDryRunBtn"
+              onclick="lmGlobalDryRun()">
+        <i class="ti ti-test-pipe me-1"></i><?= __('Dry-run Global', 'glpiintegaglpi') ?>
+      </button>
+      <?php endif; ?>
+    </div>
+    <?php endif; ?>
+  </div>
+
+  <!-- ── Nova Regra (accordion / colapsável) ──────────────────────────────── -->
+  <?php if ($canWrite && $schemaReady): ?>
+  <div class="card mb-3 shadow-sm">
     <div class="collapse" id="createRulePanel">
       <div class="card-body bg-light">
+        <h6 class="fw-bold mb-3"><i class="ti ti-plus me-1"></i><?= __('Nova Regra de Alarme', 'glpiintegaglpi') ?></h6>
         <form method="POST" action="<?= $selfUrl ?>">
           <input type="hidden" name="_glpi_csrf_token" value="<?= ealarm($csrfToken) ?>">
           <input type="hidden" name="action" value="create_rule">
@@ -82,117 +147,185 @@ function ealarm(mixed $v): string {
             <!-- ① Identificação -->
             <div class="accordion-item">
               <h2 class="accordion-header">
-                <button class="accordion-button" type="button"
+                <button class="accordion-button py-2" type="button"
                         data-bs-toggle="collapse" data-bs-target="#acc-geral" aria-expanded="true">
-                  <i class="ti ti-tag me-2"></i><?= __('① Identificação', 'glpiintegaglpi') ?>
+                  <i class="ti ti-tag me-2 text-primary"></i><strong><?= __('① Identificação', 'glpiintegaglpi') ?></strong>
                 </button>
               </h2>
               <div id="acc-geral" class="accordion-collapse collapse show" data-bs-parent="#newRuleAccordion">
-                <div class="accordion-body">
+                <div class="accordion-body lm-acc-body">
                   <div class="row g-3">
-                    <div class="col-md-5">
+                    <div class="col-md-6">
                       <label class="form-label fw-bold"><?= __('Nome da Regra', 'glpiintegaglpi') ?> *</label>
-                      <input type="text" name="rule_name" class="form-control form-control-sm"
-                             required maxlength="200" placeholder="Ex: Offline Clínica Norte">
+                      <input type="text" name="rule_name" class="form-control form-control-sm" required
+                             placeholder="<?= __('Ex: Servidores offline - Empresa X', 'glpiintegaglpi') ?>">
                     </div>
-                    <div class="col-md-4">
+                    <div class="col-md-6">
                       <label class="form-label fw-bold"><?= __('Tipo de Alarme', 'glpiintegaglpi') ?> *</label>
-                      <select name="alarm_type" class="form-select form-select-sm" required id="alarmTypeSelect">
+                      <select name="alarm_type" id="alarmTypeSelect" class="form-select form-select-sm" required>
+                        <option value=""><?= __('— selecionar —', 'glpiintegaglpi') ?></option>
                         <?php foreach ($validTypes as $t): ?>
-                          <option value="<?= ealarm($t) ?>"><?= ealarm($t) ?>
+                          <option value="<?= ealarm($t) ?>"
+                                  data-alert-only="<?= in_array($t, $alertOnlyTypes, true) ? '1' : '0' ?>"
+                                  data-auto-ticket="<?= in_array($t, $autoTicketTypes, true) ? '1' : '0' ?>">
+                            <?= ealarm($t) ?>
                             <?php if (in_array($t, $alertOnlyTypes, true)): ?>(alert-only)<?php endif; ?>
                             <?php if (in_array($t, $autoTicketTypes, true)): ?>(auto-ticket)<?php endif; ?>
                           </option>
                         <?php endforeach; ?>
                       </select>
-                      <small class="text-muted" id="alarmTypeHint"></small>
+                      <div id="alarmTypeHint" class="form-text text-warning fw-bold mt-1"></div>
                     </div>
-                    <div class="col-md-3">
+                    <div class="col-md-4">
                       <label class="form-label fw-bold"><?= __('Entidade GLPI (ID)', 'glpiintegaglpi') ?> *</label>
-                      <input type="number" name="glpi_entities_id" class="form-control form-control-sm"
-                             required min="1" placeholder="Ex: 5">
-                      <small class="text-muted"><?= __('Obrigatório; entidade raiz (0) proibida', 'glpiintegaglpi') ?></small>
+                      <input type="number" name="glpi_entities_id" class="form-control form-control-sm" min="1" required
+                             placeholder="Ex: 3">
+                      <div class="form-text"><?= __('ID numérico &gt; 0 (entidade raiz proibida)', 'glpiintegaglpi') ?></div>
+                    </div>
+                    <div class="col-md-8">
+                      <label class="form-label fw-bold text-muted fw-normal"><?= __('Obs / Documentação interna', 'glpiintegaglpi') ?></label>
+                      <input type="text" name="rule_notes" class="form-control form-control-sm"
+                             placeholder="<?= __('Notas internas para o supervisor (não enviadas ao cliente)', 'glpiintegaglpi') ?>">
                     </div>
                   </div>
                 </div>
               </div>
-            </div><!-- /Identificação -->
+            </div>
 
-            <!-- ② Condições -->
+            <!-- ② Escopo / Alvos (info only no create; adiciona alvos após criar) -->
             <div class="accordion-item">
               <h2 class="accordion-header">
-                <button class="accordion-button collapsed" type="button"
-                        data-bs-toggle="collapse" data-bs-target="#acc-cond" aria-expanded="false">
-                  <i class="ti ti-settings me-2"></i><?= __('② Condições de Disparo', 'glpiintegaglpi') ?>
+                <button class="accordion-button collapsed py-2" type="button"
+                        data-bs-toggle="collapse" data-bs-target="#acc-scope">
+                  <i class="ti ti-devices me-2 text-info"></i><strong><?= __('② Escopo / Alvos', 'glpiintegaglpi') ?></strong>
+                </button>
+              </h2>
+              <div id="acc-scope" class="accordion-collapse collapse" data-bs-parent="#newRuleAccordion">
+                <div class="accordion-body lm-acc-body">
+                  <div class="alert alert-light border small mb-0">
+                    <i class="ti ti-info-circle me-1"></i>
+                    <?= __('Alvos (dispositivos específicos, grupos LogMeIn) são adicionados após criar a regra. Sem alvos = avalia TODOS os hosts da entidade.', 'glpiintegaglpi') ?>
+                    <br><span class="text-muted">
+                      <?= __('Exclusões de alvos específicos requerem alteração de schema (coluna `excluded` em alarm_targets) — disponível em fase futura.', 'glpiintegaglpi') ?>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ③ Condições de Disparo -->
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button collapsed py-2" type="button"
+                        data-bs-toggle="collapse" data-bs-target="#acc-cond">
+                  <i class="ti ti-adjustments me-2 text-warning"></i><strong><?= __('③ Condições de Disparo', 'glpiintegaglpi') ?></strong>
                 </button>
               </h2>
               <div id="acc-cond" class="accordion-collapse collapse" data-bs-parent="#newRuleAccordion">
-                <div class="accordion-body">
+                <div class="accordion-body lm-acc-body">
                   <div class="row g-3">
-                    <div class="col-md-3">
-                      <label class="form-label fw-bold"><?= __('Cooldown (min)', 'glpiintegaglpi') ?></label>
-                      <input type="number" name="cooldown_minutes" class="form-control form-control-sm"
-                             value="60" min="1" max="10080">
-                      <small class="text-warning" id="cooldownHint"></small>
+                    <div class="col-md-4" id="notSeenDaysWrap" style="display:none">
+                      <label class="form-label fw-bold"><?= __('Não visto há (dias)', 'glpiintegaglpi') ?> *</label>
+                      <input type="number" name="not_seen_days" class="form-control form-control-sm" min="7" value="7">
                     </div>
-                    <div class="col-md-3" id="notSeenDaysWrap" style="display:none">
-                      <label class="form-label"><?= __('Dias sem contato (host_not_seen)', 'glpiintegaglpi') ?></label>
-                      <input type="number" name="not_seen_days" class="form-control form-control-sm"
-                             value="7" min="7">
-                      <small class="text-muted"><?= __('Mínimo 7 dias', 'glpiintegaglpi') ?></small>
+                    <div class="col-md-4" id="consecChecksWrap" style="display:none">
+                      <label class="form-label fw-bold"><?= __('Checks consecutivos mínimos', 'glpiintegaglpi') ?></label>
+                      <input type="number" name="min_consecutive_checks" class="form-control form-control-sm" min="1" max="10" value="2">
                     </div>
-                    <div class="col-md-3" id="consecChecksWrap">
-                      <label class="form-label"><?= __('Checks Consecutivos (host_offline)', 'glpiintegaglpi') ?></label>
-                      <input type="number" name="min_consecutive_checks" class="form-control form-control-sm"
-                             value="2" min="1" max="10">
-                      <small class="text-muted"><?= __('Mínimo 2 quando create_ticket=true', 'glpiintegaglpi') ?></small>
+                    <div class="col-md-4" id="consecIntervalWrap" style="display:none">
+                      <label class="form-label fw-bold"><?= __('Intervalo entre checks (min)', 'glpiintegaglpi') ?></label>
+                      <input type="number" name="consecutive_check_interval_minutes" class="form-control form-control-sm" min="5" max="1440" value="5">
                     </div>
-                    <div class="col-md-3" id="consecIntervalWrap">
-                      <label class="form-label"><?= __('Intervalo Check (min)', 'glpiintegaglpi') ?></label>
-                      <input type="number" name="consecutive_check_interval_minutes"
-                             class="form-control form-control-sm" value="5" min="5">
+                    <div class="col-12">
+                      <div id="conditionInfoBox" class="alert alert-light border small mb-0" style="display:none"></div>
                     </div>
                   </div>
                 </div>
               </div>
-            </div><!-- /Condições -->
+            </div>
 
-            <!-- ③ Chamado -->
+            <!-- ④ Ações ITSM -->
             <div class="accordion-item" id="acc-ticket-item">
               <h2 class="accordion-header">
-                <button class="accordion-button collapsed" type="button"
-                        data-bs-toggle="collapse" data-bs-target="#acc-ticket" aria-expanded="false">
-                  <i class="ti ti-ticket me-2"></i><?= __('③ Abertura de Chamado (opcional)', 'glpiintegaglpi') ?>
+                <button class="accordion-button collapsed py-2" type="button"
+                        data-bs-toggle="collapse" data-bs-target="#acc-ticket">
+                  <i class="ti ti-ticket me-2 text-danger"></i><strong><?= __('④ Ações ITSM', 'glpiintegaglpi') ?></strong>
+                  <span class="badge bg-secondary ms-2 small"><?= __('auto-ticket desligado por padrão', 'glpiintegaglpi') ?></span>
                 </button>
               </h2>
               <div id="acc-ticket" class="accordion-collapse collapse" data-bs-parent="#newRuleAccordion">
-                <div class="accordion-body">
+                <div class="accordion-body lm-acc-body">
                   <div class="form-check mb-3">
                     <input type="checkbox" name="create_ticket" value="1" class="form-check-input" id="createTicketCheck">
                     <label class="form-check-label fw-bold" for="createTicketCheck">
                       <?= __('Criar chamado GLPI quando alarme disparar', 'glpiintegaglpi') ?>
                     </label>
-                    <div>
-                      <small class="text-warning">
-                        <?= __('Requer LOGMEIN_AUTO_TICKET_ENABLED=true + entidade + categoria + fila. Apenas tipos auto-ticket (host_offline, host_not_seen).', 'glpiintegaglpi') ?>
-                      </small>
+                    <div class="form-text text-warning">
+                      <?= __('Requer: LOGMEIN_AUTO_TICKET_ENABLED=true (flag global) + create_ticket=true por regra + entidade + categoria + fila. Apenas tipos auto-ticket.', 'glpiintegaglpi') ?>
                     </div>
                   </div>
                   <div class="row g-3" id="ticketFieldsWrap" style="display:none">
-                    <div class="col-md-4">
+                    <div class="col-md-6">
                       <label class="form-label fw-bold"><?= __('Fila/Grupo GLPI (ID)', 'glpiintegaglpi') ?> *</label>
-                      <input type="number" name="glpi_group_id" class="form-control form-control-sm" min="1"
-                             placeholder="Ex: 10">
+                      <input type="number" name="glpi_group_id" class="form-control form-control-sm" min="1" placeholder="Ex: 10">
                     </div>
-                    <div class="col-md-4">
+                    <div class="col-md-6">
                       <label class="form-label fw-bold"><?= __('Categoria GLPI (ID)', 'glpiintegaglpi') ?> *</label>
-                      <input type="number" name="glpi_itil_category_id" class="form-control form-control-sm" min="1"
-                             placeholder="Ex: 20">
+                      <input type="number" name="glpi_itil_category_id" class="form-control form-control-sm" min="1" placeholder="Ex: 20">
                     </div>
                   </div>
                 </div>
               </div>
-            </div><!-- /Chamado -->
+            </div>
+
+            <!-- ⑤ Cooldown e Deduplicação -->
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button collapsed py-2" type="button"
+                        data-bs-toggle="collapse" data-bs-target="#acc-cooldown">
+                  <i class="ti ti-clock-pause me-2 text-secondary"></i><strong><?= __('⑤ Cooldown e Deduplicação', 'glpiintegaglpi') ?></strong>
+                </button>
+              </h2>
+              <div id="acc-cooldown" class="accordion-collapse collapse" data-bs-parent="#newRuleAccordion">
+                <div class="accordion-body lm-acc-body">
+                  <div class="row g-3">
+                    <div class="col-md-4">
+                      <label class="form-label fw-bold"><?= __('Cooldown (minutos)', 'glpiintegaglpi') ?></label>
+                      <input type="number" name="cooldown_minutes" class="form-control form-control-sm" min="1" max="10080" value="60">
+                      <div id="cooldownHint" class="form-text text-warning"></div>
+                    </div>
+                    <div class="col-12">
+                      <div class="alert alert-light border small mb-0">
+                        <i class="ti ti-shield-check me-1 text-success"></i>
+                        <?= __('Dedupe automático por hash diário (rule_id + host_id + alarm_type + data UTC). Cooldown via Redis.', 'glpiintegaglpi') ?>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ⑥ Segurança / Preview -->
+            <div class="accordion-item">
+              <h2 class="accordion-header">
+                <button class="accordion-button collapsed py-2" type="button"
+                        data-bs-toggle="collapse" data-bs-target="#acc-security">
+                  <i class="ti ti-shield-lock me-2 text-success"></i><strong><?= __('⑥ Segurança / Preview', 'glpiintegaglpi') ?></strong>
+                </button>
+              </h2>
+              <div id="acc-security" class="accordion-collapse collapse" data-bs-parent="#newRuleAccordion">
+                <div class="accordion-body lm-acc-body">
+                  <ul class="list-unstyled small mb-0">
+                    <li><i class="ti ti-check text-success me-1"></i><?= __('Regra nasce DESABILITADA — não dispara sem ativação manual.', 'glpiintegaglpi') ?></li>
+                    <li><i class="ti ti-check text-success me-1"></i><?= __('create_ticket nasce false — nenhum chamado criado sem confirmação.', 'glpiintegaglpi') ?></li>
+                    <li><i class="ti ti-check text-success me-1"></i><?= __('Nunca envia WhatsApp.', 'glpiintegaglpi') ?></li>
+                    <li><i class="ti ti-check text-success me-1"></i><?= __('Nunca fecha chamado automaticamente.', 'glpiintegaglpi') ?></li>
+                    <li><i class="ti ti-check text-success me-1"></i><?= __('Nunca atribui técnico automaticamente.', 'glpiintegaglpi') ?></li>
+                    <li><i class="ti ti-alert-triangle text-warning me-1"></i><?= __('Auto-ticket requer LOGMEIN_AUTO_TICKET_ENABLED=true na flag global (desligado em HML).', 'glpiintegaglpi') ?></li>
+                  </ul>
+                </div>
+              </div>
+            </div>
 
           </div><!-- /accordion -->
 
@@ -200,7 +333,10 @@ function ealarm(mixed $v): string {
             <button type="submit" class="btn btn-primary btn-sm">
               <i class="ti ti-device-floppy me-1"></i><?= __('Criar Regra (desabilitada por padrão)', 'glpiintegaglpi') ?>
             </button>
-            <span class="text-muted small"><?= __('Alvos podem ser adicionados após criação da regra.', 'glpiintegaglpi') ?></span>
+            <button type="button" class="btn btn-outline-secondary btn-sm"
+                    data-bs-toggle="collapse" data-bs-target="#createRulePanel">
+              <?= __('Cancelar', 'glpiintegaglpi') ?>
+            </button>
           </div>
         </form>
       </div>
@@ -208,382 +344,462 @@ function ealarm(mixed $v): string {
   </div>
   <?php endif; ?>
 
-  <!-- ── Lista de Regras ────────────────────────────────────────────────────── -->
-  <div class="card mb-3">
-    <div class="card-header">
-      <h5 class="mb-0"><i class="ti ti-bell-ringing me-1"></i>
-        <?= __('Regras de Alarme LogMeIn', 'glpiintegaglpi') ?>
-        <span class="badge bg-secondary ms-1"><?= count($rules) ?></span>
-      </h5>
-    </div>
-    <div class="card-body p-0">
-      <?php if ($schemaReady && count($rules) > 0): ?>
-      <div class="accordion" id="rulesAccordion">
-        <?php foreach ($rules as $idx => $rule): ?>
-        <?php
-          $ruleId        = (string) $rule['id'];
-          $targets       = $ruleTargets[$ruleId] ?? [];
-          $targetCount   = count($targets);
-          $isAlertOnly   = in_array($rule['alarm_type'], $alertOnlyTypes, true);
-          $isAutoTicket  = in_array($rule['alarm_type'], $autoTicketTypes, true);
-          $accordionId   = 'rule-' . preg_replace('/[^a-z0-9]/i', '-', $ruleId);
-        ?>
-        <div class="accordion-item border-0 border-bottom">
-          <h2 class="accordion-header">
-            <button class="accordion-button collapsed py-2" type="button"
-                    data-bs-toggle="collapse"
-                    data-bs-target="#<?= ealarm($accordionId) ?>">
-              <!-- Status badge -->
-              <?php if ($rule['enabled']): ?>
-                <span class="badge bg-success me-2" title="Ativa"><?= __('ON', 'glpiintegaglpi') ?></span>
-              <?php else: ?>
-                <span class="badge bg-secondary me-2" title="Inativa"><?= __('OFF', 'glpiintegaglpi') ?></span>
-              <?php endif; ?>
-              <!-- Rule info -->
-              <strong class="me-2"><?= ealarm($rule['rule_name']) ?></strong>
-              <code class="small text-muted me-2"><?= ealarm($rule['alarm_type']) ?></code>
-              <?php if ($isAlertOnly): ?>
-                <span class="badge bg-secondary me-1"><?= __('alert-only', 'glpiintegaglpi') ?></span>
-              <?php elseif ($isAutoTicket): ?>
-                <span class="badge bg-info text-dark me-1"><?= __('auto-ticket', 'glpiintegaglpi') ?></span>
-              <?php endif; ?>
-              <?php if ($rule['create_ticket']): ?>
-                <span class="badge bg-warning text-dark me-1"><i class="ti ti-ticket me-1"></i><?= __('ticket', 'glpiintegaglpi') ?></span>
-              <?php endif; ?>
-              <span class="badge bg-light text-dark ms-auto me-2">
-                <i class="ti ti-devices me-1"></i><?= $targetCount ?> <?= __('alvos', 'glpiintegaglpi') ?>
-              </span>
-              <span class="text-muted small"><?= ealarm($rule['cooldown_minutes']) ?>min</span>
-            </button>
-          </h2>
+  <!-- ── Cards de Regras ────────────────────────────────────────────────────── -->
+  <?php if ($schemaReady && count($rules) > 0): ?>
+  <div class="row g-3 mb-3" id="rulesGrid">
+    <?php foreach ($rules as $rule):
+      $ruleId      = (string) ($rule['id'] ?? '');
+      $targets     = $ruleTargets[$ruleId] ?? [];
+      $stats       = $ruleStats[$ruleId]   ?? null;
+      $targetCount = count($targets);
+      $isEnabled   = (bool) ($rule['enabled'] ?? false);
+      $isAlertOnly = in_array($rule['alarm_type'], $alertOnlyTypes, true);
+      $isAutoTkt   = in_array($rule['alarm_type'], $autoTicketTypes, true);
+      $cardClass   = $isEnabled ? 'enabled' : 'disabled';
+      $accordionId = 'rc-' . preg_replace('/[^a-z0-9]/i', '-', $ruleId);
+    ?>
+    <div class="col-12 col-xl-6">
+      <div class="card shadow-sm lm-alarm-card <?= ealarm($cardClass) ?>">
 
-          <div id="<?= ealarm($accordionId) ?>" class="accordion-collapse collapse">
-            <div class="accordion-body pt-2 pb-3">
+        <!-- Card header row -->
+        <div class="card-header py-2 bg-white d-flex align-items-center gap-2 flex-wrap">
+          <!-- Status badge -->
+          <?php if ($isEnabled): ?>
+            <span class="badge bg-success lm-stat-chip"><i class="ti ti-player-play me-1"></i>ON</span>
+          <?php else: ?>
+            <span class="badge bg-secondary lm-stat-chip"><i class="ti ti-player-pause me-1"></i>OFF</span>
+          <?php endif; ?>
 
-              <!-- Rule summary -->
-              <div class="row g-2 mb-3">
-                <div class="col-auto">
-                  <small class="text-muted"><?= __('Entidade GLPI:', 'glpiintegaglpi') ?></small>
-                  <strong><?= ealarm($rule['glpi_entities_id']) ?></strong>
-                </div>
-                <?php if ($rule['glpi_group_id']): ?>
-                <div class="col-auto">
-                  <small class="text-muted"><?= __('Fila/Grupo:', 'glpiintegaglpi') ?></small>
-                  <strong><?= ealarm($rule['glpi_group_id']) ?></strong>
-                </div>
-                <?php endif; ?>
-                <?php if ($rule['glpi_itil_category_id']): ?>
-                <div class="col-auto">
-                  <small class="text-muted"><?= __('Categoria:', 'glpiintegaglpi') ?></small>
-                  <strong><?= ealarm($rule['glpi_itil_category_id']) ?></strong>
-                </div>
-                <?php endif; ?>
-                <div class="col-auto">
-                  <small class="text-muted"><?= __('Checks consec.:', 'glpiintegaglpi') ?></small>
-                  <strong><?= ealarm($rule['min_consecutive_checks'] ?? 1) ?></strong>
-                </div>
-              </div>
+          <!-- Rule name -->
+          <strong class="flex-grow-1"><?= ealarm($rule['rule_name']) ?></strong>
 
-              <!-- Actions row -->
-              <?php if ($canWrite): ?>
-              <div class="d-flex gap-2 mb-3 flex-wrap">
-                <!-- Toggle enabled -->
-                <form method="POST" action="<?= $selfUrl ?>" class="d-inline">
-                  <input type="hidden" name="_glpi_csrf_token" value="<?= ealarm($csrfToken) ?>">
-                  <input type="hidden" name="action" value="toggle_enabled">
-                  <input type="hidden" name="rule_id" value="<?= ealarm($ruleId) ?>">
-                  <input type="hidden" name="enabled" value="<?= $rule['enabled'] ? '0' : '1' ?>">
-                  <button type="submit" class="btn btn-sm <?= $rule['enabled'] ? 'btn-outline-warning' : 'btn-outline-success' ?>">
-                    <i class="ti <?= $rule['enabled'] ? 'ti-player-pause' : 'ti-player-play' ?> me-1"></i>
-                    <?= $rule['enabled'] ? __('Desabilitar', 'glpiintegaglpi') : __('Habilitar', 'glpiintegaglpi') ?>
-                  </button>
-                </form>
-                <!-- Delete -->
-                <form method="POST" action="<?= $selfUrl ?>" class="d-inline"
-                      onsubmit="return confirm('<?= __('Confirmar exclusão da regra e todos os seus alvos?', 'glpiintegaglpi') ?>')">
-                  <input type="hidden" name="_glpi_csrf_token" value="<?= ealarm($csrfToken) ?>">
-                  <input type="hidden" name="action" value="delete_rule">
-                  <input type="hidden" name="rule_id" value="<?= ealarm($ruleId) ?>">
-                  <button type="submit" class="btn btn-sm btn-outline-danger">
-                    <i class="ti ti-trash me-1"></i><?= __('Excluir Regra', 'glpiintegaglpi') ?>
-                  </button>
-                </form>
-              </div>
-              <?php endif; ?>
+          <!-- Type badge -->
+          <?php if ($isAlertOnly): ?>
+            <span class="badge bg-warning text-dark lm-type-badge">alert-only</span>
+          <?php elseif ($isAutoTkt): ?>
+            <span class="badge bg-info text-dark lm-type-badge">auto-ticket</span>
+          <?php endif; ?>
+          <code class="text-muted small"><?= ealarm($rule['alarm_type']) ?></code>
 
-              <!-- ── Targets section ─────────────────────────────────────── -->
-              <div class="border rounded p-3 bg-white">
-                <h6 class="mb-2">
-                  <i class="ti ti-devices me-1"></i>
-                  <?= __('Dispositivos Monitorados', 'glpiintegaglpi') ?>
-                  <span class="badge bg-secondary"><?= $targetCount ?></span>
-                  <small class="text-muted ms-2 fw-normal"><?= __('(vazio = monitorar TODOS da entidade)', 'glpiintegaglpi') ?></small>
+          <!-- Expand button -->
+          <button class="btn btn-sm btn-outline-secondary py-0 px-2 ms-auto" type="button"
+                  data-bs-toggle="collapse" data-bs-target="#<?= ealarm($accordionId) ?>"
+                  title="<?= __('Expandir detalhes', 'glpiintegaglpi') ?>">
+            <i class="ti ti-chevron-down"></i>
+          </button>
+        </div>
+
+        <!-- Stat chips row -->
+        <div class="card-body py-2 border-bottom d-flex flex-wrap gap-2 align-items-center">
+          <!-- Targets -->
+          <span class="lm-stat-chip bg-light border text-dark">
+            <i class="ti ti-devices me-1"></i><?= $targetCount ?>
+            <?= $targetCount === 0 ? __('alvos (todos da entidade)', 'glpiintegaglpi') : __('alvos', 'glpiintegaglpi') ?>
+          </span>
+          <!-- Cooldown -->
+          <span class="lm-stat-chip bg-light border text-dark">
+            <i class="ti ti-clock-pause me-1"></i><?= ealarm($rule['cooldown_minutes']) ?>min
+          </span>
+          <!-- Entidade -->
+          <span class="lm-stat-chip bg-light border text-dark">
+            <i class="ti ti-building me-1"></i>entidade <?= ealarm($rule['glpi_entities_id']) ?>
+          </span>
+          <!-- create_ticket badge -->
+          <?php if ($rule['create_ticket']): ?>
+            <span class="lm-stat-chip bg-warning text-dark">
+              <i class="ti ti-ticket me-1"></i><?= __('ticket=ON', 'glpiintegaglpi') ?>
+            </span>
+          <?php endif; ?>
+
+          <?php if ($stats !== null): ?>
+            <!-- Total fires -->
+            <span class="lm-stat-chip bg-primary text-white" title="<?= __('Total de disparos', 'glpiintegaglpi') ?>">
+              <i class="ti ti-bell me-1"></i><?= (int) ($stats['total_events']) ?>
+            </span>
+            <!-- Tickets -->
+            <?php if ($stats['tickets_created'] > 0): ?>
+            <span class="lm-stat-chip bg-danger text-white" title="<?= __('Chamados gerados', 'glpiintegaglpi') ?>">
+              <i class="ti ti-ticket me-1"></i><?= (int) ($stats['tickets_created']) ?>
+            </span>
+            <?php endif; ?>
+            <!-- Last trigger -->
+            <?php if ($stats['last_trigger'] !== null): ?>
+            <span class="lm-stat-chip bg-light border text-secondary" title="<?= __('Último disparo', 'glpiintegaglpi') ?>">
+              <i class="ti ti-clock me-1"></i><?= ealarm(fmtAlarmDate($stats['last_trigger'])) ?>
+            </span>
+            <?php endif; ?>
+          <?php else: ?>
+            <span class="lm-stat-chip bg-light border text-muted"><i class="ti ti-circle-off me-1"></i><?= __('sem eventos', 'glpiintegaglpi') ?></span>
+          <?php endif; ?>
+        </div>
+
+        <!-- Collapsible detail -->
+        <div class="collapse" id="<?= ealarm($accordionId) ?>">
+          <div class="card-body pt-2 pb-3">
+
+            <!-- Quick actions -->
+            <?php if ($canWrite): ?>
+            <div class="d-flex gap-2 mb-3 flex-wrap align-items-center">
+              <!-- Toggle enabled -->
+              <form method="POST" action="<?= $selfUrl ?>" class="d-inline">
+                <input type="hidden" name="_glpi_csrf_token" value="<?= ealarm($csrfToken) ?>">
+                <input type="hidden" name="action" value="toggle_enabled">
+                <input type="hidden" name="rule_id" value="<?= ealarm($ruleId) ?>">
+                <input type="hidden" name="enabled" value="<?= $isEnabled ? '0' : '1' ?>">
+                <button type="submit" class="btn btn-sm <?= $isEnabled ? 'btn-outline-warning' : 'btn-outline-success' ?>">
+                  <i class="ti <?= $isEnabled ? 'ti-player-pause' : 'ti-player-play' ?> me-1"></i>
+                  <?= $isEnabled ? __('Desabilitar', 'glpiintegaglpi') : __('Habilitar', 'glpiintegaglpi') ?>
+                </button>
+              </form>
+              <!-- Dry-run -->
+              <button type="button" class="btn btn-sm btn-outline-info" id="dryRunBtn-<?= ealarm($accordionId) ?>"
+                      onclick="lmDryRun('<?= ealarm($ruleId) ?>','<?= ealarm($accordionId) ?>')">
+                <i class="ti ti-test-pipe me-1"></i><?= __('Dry-run', 'glpiintegaglpi') ?>
+              </button>
+              <!-- Delete -->
+              <form method="POST" action="<?= $selfUrl ?>" class="d-inline ms-auto"
+                    onsubmit="return confirm('<?= __('Confirmar exclusão da regra e todos os alvos?', 'glpiintegaglpi') ?>')">
+                <input type="hidden" name="_glpi_csrf_token" value="<?= ealarm($csrfToken) ?>">
+                <input type="hidden" name="action" value="delete_rule">
+                <input type="hidden" name="rule_id" value="<?= ealarm($ruleId) ?>">
+                <button type="submit" class="btn btn-sm btn-outline-danger">
+                  <i class="ti ti-trash me-1"></i><?= __('Excluir', 'glpiintegaglpi') ?>
+                </button>
+              </form>
+            </div>
+            <?php endif; ?>
+
+            <!-- Dry-run result panel -->
+            <div id="dryRunResult-<?= ealarm($accordionId) ?>" class="lm-dry-result mb-3" style="display:none"></div>
+
+            <!-- ── Targets section ─────────────────────────────────────── -->
+            <div class="border rounded p-2 bg-white mb-3">
+              <div class="d-flex align-items-center mb-2 gap-2">
+                <h6 class="mb-0 small fw-bold">
+                  <i class="ti ti-devices me-1"></i><?= __('Dispositivos Monitorados', 'glpiintegaglpi') ?>
+                  <span class="badge bg-secondary ms-1"><?= $targetCount ?></span>
                 </h6>
-
-                <?php if ($targetCount > 0): ?>
-                <div class="table-responsive mb-2">
-                  <table class="table table-sm table-hover mb-0">
-                    <thead class="table-light">
-                      <tr>
-                        <th><?= __('Hostname', 'glpiintegaglpi') ?></th>
-                        <th><?= __('Host ID', 'glpiintegaglpi') ?></th>
-                        <?php if ($canWrite): ?><th></th><?php endif; ?>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <?php foreach ($targets as $target): ?>
-                      <tr>
-                        <td><code><?= ealarm($target['hostname']) ?></code></td>
-                        <td><small class="text-muted"><?= ealarm($target['host_id']) ?></small></td>
-                        <?php if ($canWrite): ?>
-                        <td>
-                          <form method="POST" action="<?= $selfUrl ?>" class="d-inline">
-                            <input type="hidden" name="_glpi_csrf_token" value="<?= ealarm($csrfToken) ?>">
-                            <input type="hidden" name="action" value="remove_target">
-                            <input type="hidden" name="rule_id" value="<?= ealarm($ruleId) ?>">
-                            <input type="hidden" name="host_id" value="<?= ealarm($target['host_id']) ?>">
-                            <button type="submit" class="btn btn-sm btn-outline-danger btn-xs py-0 px-1"
-                                    title="<?= __('Remover alvo', 'glpiintegaglpi') ?>">
-                              <i class="ti ti-x"></i>
-                            </button>
-                          </form>
-                        </td>
-                        <?php endif; ?>
-                      </tr>
-                      <?php endforeach; ?>
-                    </tbody>
-                  </table>
-                </div>
-                <?php elseif ($schemaReady): ?>
-                  <div class="text-muted small mb-2">
-                    <i class="ti ti-info-circle me-1"></i>
-                    <?= __('Nenhum dispositivo específico — a regra será avaliada para TODOS os hosts da entidade.', 'glpiintegaglpi') ?>
-                  </div>
+                <?php if ($targetCount === 0): ?>
+                  <span class="badge bg-light text-muted border small">
+                    <?= __('vazio = TODOS da entidade', 'glpiintegaglpi') ?>
+                  </span>
                 <?php endif; ?>
+              </div>
 
-                <!-- Add target UI -->
-                <?php if ($canWrite): ?>
-                <div class="mt-2" id="addTargetSection-<?= ealarm($accordionId) ?>">
-                  <!-- Target selection mode -->
-                  <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
-                    <span class="small fw-bold"><?= __('Adicionar dispositivos por:', 'glpiintegaglpi') ?></span>
-                    <div class="btn-group btn-group-sm" role="group">
-                      <button type="button" class="btn btn-outline-secondary active"
-                              onclick="lmAlarmTargetMode('<?= ealarm($accordionId) ?>', 'search')">
-                        <i class="ti ti-search me-1"></i><?= __('Busca', 'glpiintegaglpi') ?>
+              <?php if ($targetCount > 0): ?>
+              <div class="d-flex flex-wrap gap-1 mb-2">
+                <?php foreach ($targets as $tgt): ?>
+                  <span class="badge bg-light text-dark border d-flex align-items-center gap-1">
+                    <i class="ti ti-device-desktop-analytics" style="font-size:.75rem"></i>
+                    <?= ealarm($tgt['hostname']) ?>
+                    <?php if ($canWrite): ?>
+                    <form method="POST" action="<?= $selfUrl ?>" class="d-inline m-0 p-0">
+                      <input type="hidden" name="_glpi_csrf_token" value="<?= ealarm($csrfToken) ?>">
+                      <input type="hidden" name="action" value="remove_target">
+                      <input type="hidden" name="rule_id" value="<?= ealarm($ruleId) ?>">
+                      <input type="hidden" name="host_id" value="<?= ealarm($tgt['host_id']) ?>">
+                      <button type="submit" class="btn p-0 border-0 bg-transparent text-danger ms-1"
+                              style="font-size:.7rem;line-height:1"
+                              title="<?= __('Remover alvo', 'glpiintegaglpi') ?>">
+                        <i class="ti ti-x"></i>
                       </button>
-                      <button type="button" class="btn btn-outline-secondary"
-                              onclick="lmAlarmTargetMode('<?= ealarm($accordionId) ?>', 'group')">
-                        <i class="ti ti-sitemap me-1"></i><?= __('Grupo LogMeIn', 'glpiintegaglpi') ?>
-                      </button>
-                    </div>
-                  </div>
+                    </form>
+                    <?php endif; ?>
+                  </span>
+                <?php endforeach; ?>
+              </div>
+              <?php elseif ($schemaReady): ?>
+                <p class="text-muted small mb-2">
+                  <i class="ti ti-info-circle me-1"></i>
+                  <?= __('Nenhum dispositivo específico — avalia TODOS os hosts da entidade.', 'glpiintegaglpi') ?>
+                </p>
+              <?php endif; ?>
 
-                  <!-- Mode: Search by hostname/tag -->
-                  <div id="targetMode-search-<?= ealarm($accordionId) ?>">
-                    <div class="input-group input-group-sm mb-2">
-                      <input type="text" class="form-control"
-                             id="hostSearch-<?= ealarm($accordionId) ?>"
-                             placeholder="<?= __('Hostname ou etiqueta...', 'glpiintegaglpi') ?>"
-                             oninput="lmHostSearch('<?= ealarm($accordionId) ?>','')"
-                             autocomplete="off">
-                      <span class="input-group-text"><i class="ti ti-search"></i></span>
-                    </div>
-                    <div id="hostResults-<?= ealarm($accordionId) ?>" class="list-group mb-2" style="max-height:200px;overflow-y:auto;"></div>
+              <!-- Add target UI -->
+              <?php if ($canWrite): ?>
+              <div class="mt-1" id="addTargetSection-<?= ealarm($accordionId) ?>">
+                <div class="d-flex gap-2 mb-2 flex-wrap align-items-center">
+                  <small class="fw-bold text-muted"><?= __('Adicionar por:', 'glpiintegaglpi') ?></small>
+                  <div class="btn-group btn-group-sm">
+                    <button type="button" class="btn btn-outline-secondary active btn-xs"
+                            onclick="lmAlarmTargetMode('<?= ealarm($accordionId) ?>', 'search')">
+                      <i class="ti ti-search me-1"></i><?= __('Busca', 'glpiintegaglpi') ?>
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary btn-xs"
+                            onclick="lmAlarmTargetMode('<?= ealarm($accordionId) ?>', 'group')">
+                      <i class="ti ti-sitemap me-1"></i><?= __('Grupo LMI', 'glpiintegaglpi') ?>
+                    </button>
                   </div>
+                </div>
 
-                  <!-- Mode: Add by group -->
-                  <div id="targetMode-group-<?= ealarm($accordionId) ?>" style="display:none">
-                    <?php if (count($groups) > 0): ?>
-                    <select class="form-select form-select-sm mb-2"
-                            id="groupSelect-<?= ealarm($accordionId) ?>"
-                            onchange="lmHostSearch('<?= ealarm($accordionId) ?>', this.value)">
-                      <option value=""><?= __('— selecionar grupo —', 'glpiintegaglpi') ?></option>
-                      <?php foreach ($groups as $g): ?>
-                        <option value="<?= ealarm($g['group_id']) ?>">
-                          <?= ealarm($g['group_name']) ?> (<?= (int) $g['host_count'] ?> hosts)
-                        </option>
-                      <?php endforeach; ?>
-                    </select>
-                    <div id="hostResults-<?= ealarm($accordionId) ?>-g" class="list-group mb-2" style="max-height:200px;overflow-y:auto;"></div>
-                    <?php else: ?>
-                      <div class="text-muted small"><?= __('Nenhum grupo disponível no cache.', 'glpiintegaglpi') ?></div>
+                <!-- Search mode -->
+                <div id="targetMode-search-<?= ealarm($accordionId) ?>">
+                  <div class="input-group input-group-sm mb-1">
+                    <input type="text" class="form-control form-control-sm"
+                           id="hostSearch-<?= ealarm($accordionId) ?>"
+                           placeholder="<?= __('Hostname ou etiqueta (mín 2 chars)...', 'glpiintegaglpi') ?>"
+                           oninput="lmHostSearch('<?= ealarm($accordionId) ?>','')"
+                           autocomplete="off">
+                    <span class="input-group-text"><i class="ti ti-search"></i></span>
+                  </div>
+                  <div id="hostResults-<?= ealarm($accordionId) ?>" class="list-group mb-1" style="max-height:180px;overflow-y:auto;"></div>
+                </div>
+
+                <!-- Group mode -->
+                <div id="targetMode-group-<?= ealarm($accordionId) ?>" style="display:none">
+                  <?php if (count($groups) > 0): ?>
+                  <select class="form-select form-select-sm mb-1"
+                          id="groupSelect-<?= ealarm($accordionId) ?>"
+                          onchange="lmHostSearch('<?= ealarm($accordionId) ?>', this.value)">
+                    <option value=""><?= __('— selecionar grupo LogMeIn —', 'glpiintegaglpi') ?></option>
+                    <?php foreach ($groups as $g): ?>
+                      <option value="<?= ealarm($g['group_id']) ?>">
+                        <?= ealarm($g['group_name']) ?> (<?= (int) $g['host_count'] ?> hosts)
+                      </option>
+                    <?php endforeach; ?>
+                  </select>
+                  <div id="hostResults-<?= ealarm($accordionId) ?>-g" class="list-group mb-1" style="max-height:180px;overflow-y:auto;"></div>
+                  <?php else: ?>
+                    <div class="text-muted small"><?= __('Nenhum grupo disponível no cache.', 'glpiintegaglpi') ?></div>
+                  <?php endif; ?>
+                </div>
+
+                <!-- Hidden add form (populated by JS) -->
+                <form method="POST" action="<?= $selfUrl ?>" id="addTargetForm-<?= ealarm($accordionId) ?>">
+                  <input type="hidden" name="_glpi_csrf_token" value="<?= ealarm($csrfToken) ?>">
+                  <input type="hidden" name="action" value="add_target">
+                  <input type="hidden" name="rule_id" value="<?= ealarm($ruleId) ?>">
+                  <input type="hidden" name="host_id" id="addHostId-<?= ealarm($accordionId) ?>" value="">
+                  <input type="hidden" name="hostname" id="addHostname-<?= ealarm($accordionId) ?>" value="">
+                  <button type="submit" class="btn btn-sm btn-success" id="addTargetBtn-<?= ealarm($accordionId) ?>" style="display:none">
+                    <i class="ti ti-plus me-1"></i><span id="addTargetBtnLabel-<?= ealarm($accordionId) ?>"></span>
+                  </button>
+                </form>
+
+                <div class="form-text text-muted mt-1">
+                  <i class="ti ti-lock me-1"></i>
+                  <?= __('Exclusões de hosts específicos requerem schema change futuro (coluna `excluded` em alarm_targets).', 'glpiintegaglpi') ?>
+                </div>
+              </div>
+              <?php endif; ?>
+            </div>
+
+            <!-- ── Histórico / Estatísticas ─────────────────────────────── -->
+            <div class="border rounded p-2 bg-white">
+              <div class="d-flex align-items-center mb-2 justify-content-between">
+                <h6 class="mb-0 small fw-bold">
+                  <i class="ti ti-history me-1"></i><?= __('Histórico / Estatísticas', 'glpiintegaglpi') ?>
+                </h6>
+                <?php if ($stats !== null): ?>
+                  <div class="d-flex gap-1 flex-wrap">
+                    <span class="badge bg-primary lm-stat-chip" title="<?= __('Total disparos', 'glpiintegaglpi') ?>">
+                      ↑<?= (int) $stats['total_events'] ?>
+                    </span>
+                    <?php if ($stats['tickets_created'] > 0): ?>
+                    <span class="badge bg-danger lm-stat-chip" title="<?= __('Tickets criados', 'glpiintegaglpi') ?>">
+                      #<?= (int) $stats['tickets_created'] ?>
+                    </span>
+                    <?php endif; ?>
+                    <?php if ($stats['cooldown_skipped'] > 0): ?>
+                    <span class="badge bg-warning text-dark lm-stat-chip" title="<?= __('Suprimidos por cooldown', 'glpiintegaglpi') ?>">
+                      ~cool<?= (int) $stats['cooldown_skipped'] ?>
+                    </span>
+                    <?php endif; ?>
+                    <?php if ($stats['dedupe_hit'] > 0): ?>
+                    <span class="badge bg-secondary lm-stat-chip" title="<?= __('Suprimidos por dedupe', 'glpiintegaglpi') ?>">
+                      ~dup<?= (int) $stats['dedupe_hit'] ?>
+                    </span>
+                    <?php endif; ?>
+                    <?php if ($stats['last_trigger'] !== null): ?>
+                    <span class="badge bg-light border text-secondary lm-stat-chip">
+                      <i class="ti ti-clock me-1"></i><?= ealarm(fmtAlarmDate($stats['last_trigger'])) ?>
+                    </span>
                     <?php endif; ?>
                   </div>
-
-                  <!-- Add selected hosts form (populated by JS) -->
-                  <form method="POST" action="<?= $selfUrl ?>" id="addTargetForm-<?= ealarm($accordionId) ?>">
-                    <input type="hidden" name="_glpi_csrf_token" value="<?= ealarm($csrfToken) ?>">
-                    <input type="hidden" name="action" value="add_target">
-                    <input type="hidden" name="rule_id" value="<?= ealarm($ruleId) ?>">
-                    <input type="hidden" name="host_id" id="addHostId-<?= ealarm($accordionId) ?>" value="">
-                    <input type="hidden" name="hostname" id="addHostname-<?= ealarm($accordionId) ?>" value="">
-                    <button type="submit" class="btn btn-sm btn-success" id="addTargetBtn-<?= ealarm($accordionId) ?>" style="display:none">
-                      <i class="ti ti-plus me-1"></i><span id="addTargetBtnLabel-<?= ealarm($accordionId) ?>"></span>
-                    </button>
-                  </form>
-                </div>
                 <?php endif; ?>
-              </div><!-- /targets section -->
+              </div>
 
-            </div><!-- /accordion-body -->
-          </div><!-- /accordion-collapse -->
-        </div><!-- /accordion-item -->
-        <?php endforeach; ?>
-      </div><!-- /rulesAccordion -->
-      <?php elseif ($schemaReady): ?>
-        <div class="p-3 text-muted">
-          <i class="ti ti-info-circle me-1"></i>
-          <?= __('Nenhuma regra cadastrada. Use o formulário acima para criar.', 'glpiintegaglpi') ?>
-        </div>
-      <?php endif; ?>
-    </div>
-  </div>
+              <?php
+                // Load recent events for this rule (already in $recentEvents filtered by rule_id)
+                $ruleEvents = array_values(array_filter($recentEvents, static fn($e) => (string) ($e['rule_id'] ?? '') === $ruleId));
+                $ruleEvents = array_slice($ruleEvents, 0, 10);
+              ?>
 
-  <!-- ── Eventos recentes ────────────────────────────────────────────────── -->
-  <div class="card mb-3">
-    <div class="card-header d-flex justify-content-between align-items-center">
-      <h5 class="mb-0"><i class="ti ti-history me-1"></i><?= __('Eventos Recentes (últimos 50)', 'glpiintegaglpi') ?></h5>
-      <button class="btn btn-sm btn-outline-secondary" type="button"
-              data-bs-toggle="collapse" data-bs-target="#eventsPanel">
-        <i class="ti ti-chevron-down"></i>
-      </button>
-    </div>
-    <div class="collapse" id="eventsPanel">
-      <div class="card-body p-0">
-        <?php if ($schemaReady && count($recentEvents) > 0): ?>
-        <div class="table-responsive">
-          <table class="table table-hover table-sm mb-0">
-            <thead class="table-dark">
-              <tr>
-                <th><?= __('Data/Hora', 'glpiintegaglpi') ?></th>
-                <th><?= __('Regra', 'glpiintegaglpi') ?></th>
-                <th><?= __('Host', 'glpiintegaglpi') ?></th>
-                <th><?= __('Tipo', 'glpiintegaglpi') ?></th>
-                <th><?= __('Ticket', 'glpiintegaglpi') ?></th>
-                <th><?= __('Cooldown', 'glpiintegaglpi') ?></th>
-                <th><?= __('Dedupe', 'glpiintegaglpi') ?></th>
-              </tr>
-            </thead>
-            <tbody>
-              <?php foreach ($recentEvents as $event): ?>
-              <tr>
-                <td><small><?= ealarm($event['created_at']) ?></small></td>
-                <td><small><?= ealarm($event['rule_name'] ?? $event['rule_id']) ?></small></td>
-                <td><code><?= ealarm($event['hostname']) ?></code></td>
-                <td><code><?= ealarm($event['alarm_type']) ?></code></td>
-                <td>
-                  <?php if (!empty($event['glpi_ticket_id'])): ?>
-                    <span class="badge bg-info">#<?= ealarm($event['glpi_ticket_id']) ?></span>
-                  <?php else: ?>
-                    <span class="text-muted">—</span>
-                  <?php endif; ?>
-                </td>
-                <td><?= $event['cooldown_skipped'] ? '<span class="badge bg-warning text-dark">skip</span>' : '' ?></td>
-                <td><?= $event['dedupe_hit'] ? '<span class="badge bg-secondary">dup</span>' : '' ?></td>
-              </tr>
-              <?php endforeach; ?>
-            </tbody>
-          </table>
-        </div>
-        <?php elseif ($schemaReady): ?>
-          <div class="p-3 text-muted"><?= __('Nenhum evento registrado ainda.', 'glpiintegaglpi') ?></div>
-        <?php endif; ?>
+              <?php if (count($ruleEvents) > 0): ?>
+              <div class="lm-hist-mini">
+                <table class="table table-sm table-hover mb-0">
+                  <thead class="table-light sticky-top">
+                    <tr>
+                      <th class="small"><?= __('Data', 'glpiintegaglpi') ?></th>
+                      <th class="small"><?= __('Host', 'glpiintegaglpi') ?></th>
+                      <th class="small"><?= __('Ticket', 'glpiintegaglpi') ?></th>
+                      <th class="small"><?= __('Flags', 'glpiintegaglpi') ?></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <?php foreach ($ruleEvents as $ev): ?>
+                    <tr>
+                      <td class="small"><?= ealarm(fmtAlarmDate($ev['created_at'] ?? null)) ?></td>
+                      <td><code class="small"><?= ealarm($ev['hostname'] ?? $ev['host_id'] ?? '—') ?></code></td>
+                      <td>
+                        <?php if (!empty($ev['glpi_ticket_id'])): ?>
+                          <span class="badge bg-info">#<?= ealarm($ev['glpi_ticket_id']) ?></span>
+                        <?php else: ?>
+                          <span class="text-muted small">—</span>
+                        <?php endif; ?>
+                      </td>
+                      <td>
+                        <?php if ($ev['cooldown_skipped'] ?? false): ?>
+                          <span class="badge bg-warning text-dark" title="cooldown">~C</span>
+                        <?php endif; ?>
+                        <?php if ($ev['dedupe_hit'] ?? false): ?>
+                          <span class="badge bg-secondary" title="dedupe">~D</span>
+                        <?php endif; ?>
+                      </td>
+                    </tr>
+                    <?php endforeach; ?>
+                  </tbody>
+                </table>
+              </div>
+              <?php else: ?>
+                <div class="text-muted small py-2 text-center">
+                  <i class="ti ti-circle-off me-1"></i>
+                  <?= __('Nenhum evento registrado ainda para esta regra.', 'glpiintegaglpi') ?>
+                </div>
+              <?php endif; ?>
+            </div><!-- /histórico -->
+
+          </div><!-- /card-body detail -->
+        </div><!-- /collapse -->
+
+      </div><!-- /card -->
+    </div><!-- /col -->
+    <?php endforeach; ?>
+  </div><!-- /rulesGrid -->
+
+  <?php elseif ($schemaReady): ?>
+    <div class="card mb-3">
+      <div class="card-body text-center text-muted py-5">
+        <i class="ti ti-bell-off" style="font-size:3rem;opacity:.3"></i>
+        <p class="mt-2 mb-0"><?= __('Nenhuma regra de alarme cadastrada. Clique em "+ Nova Regra" para começar.', 'glpiintegaglpi') ?></p>
       </div>
     </div>
+  <?php endif; ?>
+
+  <!-- ── Blocos declarados (BLOCK_NEEDS_SCHEMA_CHANGE) ──────────────────────── -->
+  <div class="alert alert-secondary border mt-2">
+    <strong><i class="ti ti-database-exclamation me-1"></i>BLOCK_NEEDS_SCHEMA_CHANGE</strong>
+    <ul class="mb-0 mt-1 small">
+      <li>
+        <strong><?= __('Maintenance/Silenciamento:', 'glpiintegaglpi') ?></strong>
+        <?= __('Requer nova tabela', 'glpiintegaglpi') ?>
+        <code>integaglpi_logmein_alarm_maintenance (id, rule_id, start_at, end_at, reason, created_by)</code>.
+        <?= __('Não implementado nesta fase.', 'glpiintegaglpi') ?>
+      </li>
+      <li>
+        <strong><?= __('Exclusões de alvos:', 'glpiintegaglpi') ?></strong>
+        <?= __('Requer coluna', 'glpiintegaglpi') ?>
+        <code>excluded BOOLEAN DEFAULT false</code>
+        <?= __('em', 'glpiintegaglpi') ?>
+        <code>integaglpi_logmein_alarm_targets</code>
+        <?= __('(ou tabela separada de exclusões). Não implementado nesta fase.', 'glpiintegaglpi') ?>
+      </li>
+    </ul>
   </div>
 
-  <!-- ── Info segurança ─────────────────────────────────────────────────── -->
+  <!-- ── Painel de segurança ────────────────────────────────────────────────── -->
   <div class="alert alert-light border mt-2">
     <small class="text-muted">
       <i class="ti ti-shield-lock me-1"></i>
-      <?= __('Alarmes alert-only nunca criam chamados. Auto-ticket requer LOGMEIN_AUTO_TICKET_ENABLED=true + create_ticket=true por regra + entidade + categoria + fila. Cooldown mínimo: 60 min para host_offline e host_not_seen. Vazio em Alvos = monitorar todos os hosts da entidade. Produção bloqueada até promoção manual.', 'glpiintegaglpi') ?>
+      <?= __('Alert-only nunca cria chamado. Auto-ticket requer LOGMEIN_AUTO_TICKET_ENABLED=true (global) + create_ticket=true (por regra) + entidade + categoria + fila. Cooldown mín 60min para host_offline/host_not_seen. Vazio em Alvos = todos da entidade. Produção bloqueada até promoção manual.', 'glpiintegaglpi') ?>
     </small>
   </div>
 
 </div><!-- /container -->
 
 <script>
-// ── LogMeIn Alarm UI helpers ──────────────────────────────────────────────────
-
 (function () {
-  const SELF = <?= json_encode($_SERVER['PHP_SELF'] ?? '', JSON_UNESCAPED_SLASHES) ?>;
 
-  // Show/hide ticket fields and hints based on alarm type
-  var alarmTypeSelect = document.getElementById('alarmTypeSelect');
-  var createTicketCheck = document.getElementById('createTicketCheck');
-  var ALERT_ONLY = <?= json_encode($alertOnlyTypes) ?>;
-  var AUTO_TICKET = <?= json_encode($autoTicketTypes) ?>;
-
-  function updateAlarmTypeHints() {
-    if (!alarmTypeSelect) return;
-    var t = alarmTypeSelect.value;
-    var hint = document.getElementById('alarmTypeHint');
-    var cooldownHint = document.getElementById('cooldownHint');
-    var notSeenWrap = document.getElementById('notSeenDaysWrap');
-    var consecWrap = document.getElementById('consecChecksWrap');
-    var consecIntervalWrap = document.getElementById('consecIntervalWrap');
-    var ticketItem = document.getElementById('acc-ticket-item');
-
-    if (ALERT_ONLY.indexOf(t) !== -1) {
-      if (hint) hint.textContent = '⚠ Alert-only: nunca cria chamado.';
-      if (ticketItem) ticketItem.style.opacity = '0.5';
-      if (createTicketCheck) { createTicketCheck.checked = false; createTicketCheck.disabled = true; }
-    } else {
-      if (hint) hint.textContent = '';
-      if (ticketItem) ticketItem.style.opacity = '1';
-      if (createTicketCheck) createTicketCheck.disabled = false;
-    }
-
-    if (t === 'host_not_seen') {
-      if (notSeenWrap) notSeenWrap.style.display = '';
-      if (cooldownHint) cooldownHint.textContent = '';
-    } else {
-      if (notSeenWrap) notSeenWrap.style.display = 'none';
-    }
-
-    if (t === 'host_offline') {
-      if (consecWrap) consecWrap.style.display = '';
-      if (consecIntervalWrap) consecIntervalWrap.style.display = '';
-      if (cooldownHint) cooldownHint.textContent = 'Mínimo 60 min para host_offline com create_ticket=true.';
-    } else {
-      if (consecWrap) consecWrap.style.display = 'none';
-      if (consecIntervalWrap) consecIntervalWrap.style.display = 'none';
-      if (cooldownHint) cooldownHint.textContent = '';
-    }
-  }
-
-  if (alarmTypeSelect) {
-    alarmTypeSelect.addEventListener('change', updateAlarmTypeHints);
-    updateAlarmTypeHints();
-  }
-
-  // Show/hide ticket fields when create_ticket is checked
-  if (createTicketCheck) {
-    createTicketCheck.addEventListener('change', function () {
-      var wrap = document.getElementById('ticketFieldsWrap');
-      if (wrap) wrap.style.display = this.checked ? '' : 'none';
-    });
-  }
-})();
-
-// ── Target mode toggle ────────────────────────────────────────────────────────
-
-function lmAlarmTargetMode(accordionId, mode) {
-  var searchDiv = document.getElementById('targetMode-search-' + accordionId);
-  var groupDiv  = document.getElementById('targetMode-group-' + accordionId);
-  if (searchDiv) searchDiv.style.display = (mode === 'search') ? '' : 'none';
-  if (groupDiv)  groupDiv.style.display  = (mode === 'group')  ? '' : 'none';
-  // clear results
-  var r1 = document.getElementById('hostResults-' + accordionId);
-  if (r1) r1.innerHTML = '';
+// ── HTML escaping (XSS-safe) ──────────────────────────────────────────────────
+function lmEsc(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
-// ── AJAX host search ──────────────────────────────────────────────────────────
+// ── Alarm type hints on new-rule form ─────────────────────────────────────────
+var ALERT_ONLY  = <?= json_encode($alertOnlyTypes) ?>;
+var AUTO_TICKET = <?= json_encode($autoTicketTypes) ?>;
+var alarmTypeSelect   = document.getElementById('alarmTypeSelect');
+var createTicketCheck = document.getElementById('createTicketCheck');
 
+function updateAlarmTypeHints() {
+  if (!alarmTypeSelect) return;
+  var t = alarmTypeSelect.value;
+  var hintEl       = document.getElementById('alarmTypeHint');
+  var cooldownHint = document.getElementById('cooldownHint');
+  var notSeenWrap  = document.getElementById('notSeenDaysWrap');
+  var consecWrap   = document.getElementById('consecChecksWrap');
+  var consecIvWrap = document.getElementById('consecIntervalWrap');
+  var ticketItem   = document.getElementById('acc-ticket-item');
+  var condBox      = document.getElementById('conditionInfoBox');
+
+  if (ALERT_ONLY.indexOf(t) !== -1) {
+    if (hintEl) hintEl.textContent = '⚠ Alert-only: nunca cria chamado, somente alerta interno.';
+    if (ticketItem) ticketItem.style.opacity = '0.45';
+    if (createTicketCheck) { createTicketCheck.checked = false; createTicketCheck.disabled = true; }
+    if (condBox) { condBox.style.display = 'none'; }
+  } else {
+    if (hintEl) hintEl.textContent = '';
+    if (ticketItem) ticketItem.style.opacity = '1';
+    if (createTicketCheck) createTicketCheck.disabled = false;
+  }
+  if (t === 'host_not_seen') {
+    if (notSeenWrap) notSeenWrap.style.display = '';
+    if (condBox) { condBox.style.display = ''; condBox.textContent = 'Não visto há X dias: last_seen_at < agora - X dias.'; }
+  } else {
+    if (notSeenWrap) notSeenWrap.style.display = 'none';
+  }
+  if (t === 'host_offline') {
+    if (consecWrap)   consecWrap.style.display   = '';
+    if (consecIvWrap) consecIvWrap.style.display = '';
+    if (cooldownHint) cooldownHint.textContent = 'Mínimo 60 min recomendado para host_offline com create_ticket.';
+    if (condBox) { condBox.style.display = ''; condBox.textContent = 'Offline: status != "online" + N checks consecutivos.'; }
+  } else {
+    if (consecWrap)   consecWrap.style.display   = 'none';
+    if (consecIvWrap) consecIvWrap.style.display = 'none';
+    if (cooldownHint) cooldownHint.textContent = '';
+  }
+}
+
+if (alarmTypeSelect) {
+  alarmTypeSelect.addEventListener('change', updateAlarmTypeHints);
+  updateAlarmTypeHints();
+}
+if (createTicketCheck) {
+  createTicketCheck.addEventListener('change', function () {
+    var wrap = document.getElementById('ticketFieldsWrap');
+    if (wrap) wrap.style.display = this.checked ? '' : 'none';
+  });
+}
+
+// ── Target mode toggle ────────────────────────────────────────────────────────
+window.lmAlarmTargetMode = function (accordionId, mode) {
+  var searchDiv = document.getElementById('targetMode-search-' + accordionId);
+  var groupDiv  = document.getElementById('targetMode-group-'  + accordionId);
+  if (searchDiv) searchDiv.style.display = (mode === 'search') ? '' : 'none';
+  if (groupDiv)  groupDiv.style.display  = (mode === 'group')  ? '' : 'none';
+  var r1 = document.getElementById('hostResults-' + accordionId);
+  if (r1) r1.innerHTML = '';
+};
+
+// ── AJAX host search ──────────────────────────────────────────────────────────
 var _lmSearchTimers = {};
 
-function lmHostSearch(accordionId, groupId) {
+window.lmHostSearch = function (accordionId, groupId) {
   var isGroupMode = (groupId !== '');
   var resultsId   = 'hostResults-' + accordionId + (isGroupMode ? '-g' : '');
   var inputEl     = document.getElementById('hostSearch-' + accordionId);
@@ -597,58 +813,166 @@ function lmHostSearch(accordionId, groupId) {
 
   clearTimeout(_lmSearchTimers[accordionId]);
   _lmSearchTimers[accordionId] = setTimeout(function () {
-    var url = window.location.pathname + '?action=search_hosts&q=' + encodeURIComponent(q)
-              + (groupId ? '&group_id=' + encodeURIComponent(groupId) : '');
+    var url = window.location.pathname
+            + '?action=search_hosts&q=' + encodeURIComponent(q)
+            + (groupId ? '&group_id=' + encodeURIComponent(groupId) : '');
     fetch(url, { credentials: 'same-origin' })
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        lmRenderHostResults(accordionId, resultsId, data.hosts || [], q, groupId);
+        lmRenderHostResults(accordionId, resultsId, data.hosts || [], q);
       })
       .catch(function () {});
   }, isGroupMode ? 0 : 350);
-}
+};
 
-function lmRenderHostResults(accordionId, resultsId, hosts, q, groupId) {
+function lmRenderHostResults(accordionId, resultsId, hosts, q) {
   var container = document.getElementById(resultsId);
   if (!container) return;
-
   if (hosts.length === 0) {
-    container.innerHTML = '<div class="list-group-item list-group-item-action text-muted small py-1">'
-      + '<?= __('Nenhum dispositivo encontrado.', 'glpiintegaglpi') ?>'
-      + '</div>';
+    container.innerHTML = '<div class="list-group-item text-muted small py-1">'
+      + '<?= __('Nenhum dispositivo encontrado.', 'glpiintegaglpi') ?></div>';
     return;
   }
-
   var html = '';
   hosts.forEach(function (h) {
     var statusColor = h.status === 'online' ? 'success' : (h.status === 'offline' ? 'danger' : 'secondary');
-    var label = h.hostname + (h.equipment_tag ? ' [' + h.equipment_tag + ']' : '')
-                           + ' — ' + h.group_name;
+    var tag = h.equipment_tag ? ' [' + lmEsc(h.equipment_tag) + ']' : '';
+    var label = lmEsc(h.hostname) + tag + ' — ' + lmEsc(h.group_name || '');
     html += '<button type="button" class="list-group-item list-group-item-action py-1 small"'
-          + ' onclick="lmSelectHost(\'' + accordionId + '\','
-          + '\'' + h.host_id.replace(/'/g, "\\'") + '\','
-          + '\'' + h.hostname.replace(/'/g, "\\'") + '\')">'
-          + '<span class="badge bg-' + statusColor + ' me-2" style="width:14px;height:14px;display:inline-block;border-radius:50%"></span>'
+          + ' data-host-id="' + lmEsc(h.host_id) + '"'
+          + ' data-hostname="' + lmEsc(h.hostname) + '"'
+          + ' onclick="lmSelectHost(\'' + lmEsc(accordionId) + '\', this)">'
+          + '<span class="badge bg-' + lmEsc(statusColor) + ' me-2" style="width:10px;height:10px;display:inline-block;border-radius:50%"></span>'
           + label
           + '</button>';
   });
-
   if (hosts.length === 100) {
-    html += '<div class="list-group-item text-muted small py-1"><?= __('Mostrando primeiros 100 resultados. Refine a busca.', 'glpiintegaglpi') ?></div>';
+    html += '<div class="list-group-item text-muted small py-1"><?= __('Mostrando primeiros 100. Refine a busca.', 'glpiintegaglpi') ?></div>';
   }
-
   container.innerHTML = html;
 }
 
-function lmSelectHost(accordionId, hostId, hostname) {
-  var idEl    = document.getElementById('addHostId-' + accordionId);
-  var nameEl  = document.getElementById('addHostname-' + accordionId);
-  var btn     = document.getElementById('addTargetBtn-' + accordionId);
-  var lblEl   = document.getElementById('addTargetBtnLabel-' + accordionId);
-
-  if (idEl) idEl.value = hostId;
+window.lmSelectHost = function (accordionId, btn) {
+  var hostId   = btn.getAttribute('data-host-id')   || '';
+  var hostname = btn.getAttribute('data-hostname')   || '';
+  var idEl     = document.getElementById('addHostId-'          + accordionId);
+  var nameEl   = document.getElementById('addHostname-'        + accordionId);
+  var addBtn   = document.getElementById('addTargetBtn-'       + accordionId);
+  var lblEl    = document.getElementById('addTargetBtnLabel-'  + accordionId);
+  if (idEl)   idEl.value   = hostId;
   if (nameEl) nameEl.value = hostname;
-  if (btn) btn.style.display = '';
-  if (lblEl) lblEl.textContent = '<?= __('Adicionar:', 'glpiintegaglpi') ?> ' + hostname;
+  if (addBtn) addBtn.style.display = '';
+  if (lblEl)  lblEl.textContent = '<?= __('Adicionar:', 'glpiintegaglpi') ?> ' + hostname;
+};
+
+// ── Dry-run per rule ──────────────────────────────────────────────────────────
+window.lmDryRun = function (ruleId, accordionId) {
+  var panel = document.getElementById('dryRunResult-' + accordionId);
+  var btn   = document.getElementById('dryRunBtn-'    + accordionId);
+  if (!panel) return;
+
+  panel.style.display = '';
+  panel.innerHTML = '<div class="alert alert-light border py-2"><i class="ti ti-loader-2 me-1"></i>'
+    + '<?= __('Executando dry-run…', 'glpiintegaglpi') ?></div>';
+  if (btn) { btn.disabled = true; }
+
+  var url = window.location.pathname + '?action=dry_run&rule_id=' + encodeURIComponent(ruleId);
+  fetch(url, { credentials: 'same-origin' })
+    .then(function (r) { return r.json(); })
+    .then(function (d) { lmRenderDryRunResult(panel, d); })
+    .catch(function (e) {
+      panel.innerHTML = '<div class="alert alert-danger py-2"><?= __('Erro na requisição dry-run.', 'glpiintegaglpi') ?></div>';
+    })
+    .finally(function () { if (btn) btn.disabled = false; });
+};
+
+function lmRenderDryRunResult(panel, d) {
+  if (!d.ok) {
+    panel.innerHTML = '<div class="alert alert-danger py-2">'
+      + lmEsc((d.errors || []).join(' | ') || '<?= __('Erro desconhecido.', 'glpiintegaglpi') ?>') + '</div>';
+    return;
+  }
+
+  var fireCount = (d.hosts_triggering || []).length;
+  var alertClass = fireCount > 0 ? 'warning' : 'success';
+  var icon = fireCount > 0 ? 'ti-alert-triangle' : 'ti-circle-check';
+
+  var html = '<div class="alert alert-' + alertClass + ' py-2 mb-2">'
+    + '<i class="ti ' + icon + ' me-1"></i>'
+    + '<strong>Dry-run: ' + lmEsc(d.rule_name) + ' (' + lmEsc(d.alarm_type) + ')</strong>'
+    + '</div>';
+
+  // Summary chips
+  html += '<div class="d-flex flex-wrap gap-2 mb-2">';
+  html += '<span class="badge bg-secondary"><?= __('Em escopo:', 'glpiintegaglpi') ?> ' + (d.hosts_in_scope || 0) + '</span>';
+  html += '<span class="badge bg-' + (fireCount > 0 ? 'danger' : 'success') + '">'
+        + '<?= __('Disparariam:', 'glpiintegaglpi') ?> ' + fireCount + '</span>';
+  html += '<span class="badge bg-light text-dark border"><?= __('Seguros:', 'glpiintegaglpi') ?> ' + (d.hosts_safe || 0) + '</span>';
+  html += '<span class="badge bg-secondary"><?= __('Dedupe hoje:', 'glpiintegaglpi') ?> ' + (d.suppressed_by_dedupe_today || 0) + '</span>';
+  html += '<span class="badge ' + (d.would_create_ticket_if_enabled ? 'bg-warning text-dark' : 'bg-light text-muted border') + '">'
+        + (d.would_create_ticket_if_enabled ? '⚠ <?= __('Criaria ticket', 'glpiintegaglpi') ?>' : '✓ <?= __('Não criaria ticket', 'glpiintegaglpi') ?>') + '</span>';
+  html += '</div>';
+
+  // Notes
+  if (d.cooldown_note) {
+    html += '<div class="text-muted small mb-1"><i class="ti ti-info-circle me-1"></i>' + lmEsc(d.cooldown_note) + '</div>';
+  }
+  if (d.condition_note) {
+    html += '<div class="text-muted small mb-1"><i class="ti ti-info-circle me-1"></i>' + lmEsc(d.condition_note) + '</div>';
+  }
+  if ((d.blocked_by_policy || []).length > 0) {
+    html += '<div class="alert alert-info py-1 mb-2 small"><i class="ti ti-shield-lock me-1"></i><strong>Bloqueios de policy:</strong> '
+      + lmEsc(d.blocked_by_policy.join(' · ')) + '</div>';
+  }
+
+  // Triggering hosts table
+  if (fireCount > 0) {
+    html += '<div class="table-responsive mt-2"><table class="table table-sm table-hover mb-0">'
+      + '<thead class="table-warning"><tr>'
+      + '<th class="small"><?= __('Hostname', 'glpiintegaglpi') ?></th>'
+      + '<th class="small"><?= __('Host ID', 'glpiintegaglpi') ?></th>'
+      + '<th class="small"><?= __('Motivo da condição', 'glpiintegaglpi') ?></th>'
+      + '</tr></thead><tbody>';
+    (d.hosts_triggering || []).forEach(function (h) {
+      html += '<tr>'
+        + '<td><code class="small">' + lmEsc(h.hostname) + '</code></td>'
+        + '<td><small class="text-muted">' + lmEsc(h.host_id) + '</small></td>'
+        + '<td><small>' + lmEsc(h.reason) + '</small></td>'
+        + '</tr>';
+    });
+    html += '</tbody></table></div>';
+    html += '<div class="text-muted small mt-1"><i class="ti ti-bell me-1 text-warning"></i>'
+      + '<?= __('Alerta interno de supervisão criado para', 'glpiintegaglpi') ?> ' + fireCount + ' host(s).</div>';
+  } else {
+    html += '<div class="text-success small"><i class="ti ti-circle-check me-1"></i>'
+      + '<?= __('Nenhum host dispararia com as condições atuais.', 'glpiintegaglpi') ?></div>';
+  }
+
+  panel.innerHTML = html;
 }
+
+// ── Global dry-run (all enabled rules) ────────────────────────────────────────
+window.lmGlobalDryRun = function () {
+  var btn = document.getElementById('globalDryRunBtn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader-2 me-1"></i><?= __('Executando…', 'glpiintegaglpi') ?>'; }
+  // Expand all enabled-rule cards and trigger individual dry-runs
+  var cards = document.querySelectorAll('[id^="dryRunBtn-"]');
+  var count = 0;
+  cards.forEach(function (b) {
+    var aid = b.id.replace('dryRunBtn-', '');
+    // expand collapse
+    var collapseEl = document.getElementById(aid);
+    if (collapseEl && !collapseEl.classList.contains('show')) {
+      var bsCollapse = bootstrap.Collapse.getOrCreateInstance(collapseEl);
+      bsCollapse.show();
+    }
+    setTimeout(function () { b.click(); }, count * 300);
+    count++;
+  });
+  setTimeout(function () {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="ti ti-test-pipe me-1"></i><?= __('Dry-run Global', 'glpiintegaglpi') ?>'; }
+  }, Math.max(1500, count * 400));
+};
+
+})();
 </script>

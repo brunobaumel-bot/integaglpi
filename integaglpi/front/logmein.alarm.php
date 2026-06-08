@@ -35,6 +35,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['action']) && $_GET['act
     exit;
 }
 
+// ── AJAX: dry-run (GET, JSON, requires canUpdate) ─────────────────────────────
+
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['action']) && $_GET['action'] === 'dry_run') {
+    header('Content-Type: application/json; charset=UTF-8');
+    if (!Plugin::canUpdate()) {
+        echo json_encode(['ok' => false, 'errors' => ['Permissão insuficiente.']], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    $ruleId = trim((string) ($_GET['rule_id'] ?? ''));
+    $report = $service->dryRunRule($ruleId);
+
+    // If dry-run found hosts triggering, create an internal supervisor alert
+    $firedCount = count($report['hosts_triggering'] ?? []);
+    if ($report['ok'] && $firedCount > 0) {
+        $severity = $firedCount >= 5 ? 'high' : ($firedCount >= 2 ? 'medium' : 'low');
+        $service->createInternalAlert(
+            $ruleId,
+            (string) ($report['rule_name'] ?? ''),
+            (string) ($report['alarm_type'] ?? ''),
+            $firedCount,
+            'dry_run',
+            $severity
+        );
+    }
+
+    echo json_encode($report, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
 // ── POST actions (require write right + CSRF) ──────────────────────────────────
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -98,9 +127,10 @@ $recentEvents = $schemaReady ? $service->listRecentEvents(50) : [];
 $validTypes   = LogmeinAlarmAdminService::getValidTypes();
 $groups       = $schemaReady ? $service->listGroups() : [];
 
-// Load targets for each rule (keyed by rule_id)
+// Load targets and stats for each rule (keyed by rule_id)
 $ruleIds     = array_column($rules, 'id');
 $ruleTargets = $schemaReady && $ruleIds !== [] ? $service->listTargetsForRules($ruleIds) : [];
+$ruleStats   = $schemaReady && $ruleIds !== [] ? $service->getStatsForRules($ruleIds)   : [];
 
 // ── Render ─────────────────────────────────────────────────────────────────────
 

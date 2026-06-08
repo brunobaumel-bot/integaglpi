@@ -568,6 +568,350 @@ final class LogmeinAlarmAdminService
         }
     }
 
+    // ── Stats per rule (batch) ────────────────────────────────────────────────
+
+    /**
+     * Returns aggregated statistics for a set of rules from the events table.
+     *
+     * @param  list<string> $ruleIds
+     * @return array<string, array{total_events: int, last_trigger: string|null, tickets_created: int, cooldown_skipped: int, dedupe_hit: int}>
+     */
+    public function getStatsForRules(array $ruleIds): array
+    {
+        if ($ruleIds === []) {
+            return [];
+        }
+        try {
+            $pdo          = $this->getPdo();
+            $placeholders = implode(', ', array_map(static fn (int $i) => ':r' . $i . '::uuid', array_keys($ruleIds)));
+            $params       = [];
+            foreach ($ruleIds as $i => $id) {
+                $params[':r' . $i] = $id;
+            }
+            $stmt = $pdo->prepare(
+                'SELECT rule_id::text,
+                        COUNT(*)::int                                    AS total_events,
+                        MAX(created_at)                                  AS last_trigger,
+                        COUNT(*) FILTER (WHERE glpi_ticket_id IS NOT NULL)::int AS tickets_created,
+                        COUNT(*) FILTER (WHERE cooldown_skipped = true)::int    AS cooldown_skipped,
+                        COUNT(*) FILTER (WHERE dedupe_hit = true)::int          AS dedupe_hit
+                   FROM ' . self::EVENTS_TABLE . '
+                  WHERE rule_id IN (' . $placeholders . ')
+                  GROUP BY rule_id'
+            );
+            $stmt->execute($params);
+            $rows   = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $result = [];
+            if (is_array($rows)) {
+                foreach ($rows as $row) {
+                    $result[(string) $row['rule_id']] = [
+                        'total_events'    => (int) ($row['total_events']    ?? 0),
+                        'last_trigger'    => $row['last_trigger'] ?? null,
+                        'tickets_created' => (int) ($row['tickets_created'] ?? 0),
+                        'cooldown_skipped'=> (int) ($row['cooldown_skipped']?? 0),
+                        'dedupe_hit'      => (int) ($row['dedupe_hit']      ?? 0),
+                    ];
+                }
+            }
+            return $result;
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    // ── Dry-run ───────────────────────────────────────────────────────────────
+
+    /**
+     * Simulates rule evaluation against the current asset cache snapshot.
+     * NEVER creates a ticket. NEVER sends WhatsApp. NEVER writes any event.
+     * NEVER modifies rule enabled state.
+     *
+     * Redis cooldown is NOT checked (read-only from DB only).
+     * Condition evaluation is supported for: host_offline, host_not_seen,
+     * missing_equipment_tag, missing_entity_mapping.
+     * Complex conditions (hardware_change, low_disk, low_memory) return
+     * 'condition_requires_full_sync' for affected hosts.
+     *
+     * @return array{
+     *   ok: bool,
+     *   rule_id: string,
+     *   rule_name: string,
+     *   alarm_type: string,
+     *   hosts_in_scope: int,
+     *   hosts_triggering: list<array{host_id: string, hostname: string, reason: string}>,
+     *   hosts_safe: int,
+     *   suppressed_by_dedupe_today: int,
+     *   would_create_ticket_if_enabled: bool,
+     *   blocked_by_policy: list<string>,
+     *   cooldown_note: string,
+     *   condition_note: string,
+     *   errors: list<string>
+     * }
+     */
+    public function dryRunRule(string $ruleId): array
+    {
+        $empty = [
+            'ok'                            => false,
+            'rule_id'                       => $ruleId,
+            'rule_name'                     => '',
+            'alarm_type'                    => '',
+            'hosts_in_scope'                => 0,
+            'hosts_triggering'              => [],
+            'hosts_safe'                    => 0,
+            'suppressed_by_dedupe_today'    => 0,
+            'would_create_ticket_if_enabled'=> false,
+            'blocked_by_policy'             => [],
+            'cooldown_note'                 => 'Redis não verificado em dry-run (read-only de DB apenas).',
+            'condition_note'                => '',
+            'errors'                        => [],
+        ];
+
+        $ruleId = trim($ruleId);
+        if ($ruleId === '') {
+            $empty['errors'][] = 'rule_id obrigatório.';
+            return $empty;
+        }
+
+        try {
+            $pdo  = $this->getPdo();
+
+            // 1. Load rule
+            $stmt = $pdo->prepare(
+                'SELECT id::text, rule_name, alarm_type, enabled, condition_payload,
+                        glpi_entities_id, glpi_group_id, glpi_itil_category_id,
+                        create_ticket, cooldown_minutes
+                   FROM ' . self::RULES_TABLE . ' WHERE id = :id::uuid'
+            );
+            $stmt->execute([':id' => $ruleId]);
+            $rule = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!is_array($rule)) {
+                $empty['errors'][] = 'Regra não encontrada.';
+                return $empty;
+            }
+
+            $alarmType    = (string) ($rule['alarm_type'] ?? '');
+            $condPayload  = json_decode((string) ($rule['condition_payload'] ?? '{}'), true) ?? [];
+            $createTicket = (bool) ($rule['create_ticket'] ?? false);
+            $isAlertOnly  = in_array($alarmType, self::ALERT_ONLY_TYPES, true);
+
+            $result                  = $empty;
+            $result['ok']            = true;
+            $result['rule_name']     = (string) ($rule['rule_name'] ?? '');
+            $result['alarm_type']    = $alarmType;
+
+            // 2. Blocked-by-policy checks
+            $blockedBy = [];
+            if (in_array($alarmType, self::FORBIDDEN_TYPES, true)) {
+                $blockedBy[] = "Tipo '$alarmType' proibido por policy.";
+            }
+            if ($isAlertOnly) {
+                $blockedBy[] = "Tipo '$alarmType' é alert-only — nunca cria ticket.";
+            }
+            $result['blocked_by_policy']             = $blockedBy;
+            $result['would_create_ticket_if_enabled'] = !$isAlertOnly && $createTicket
+                && (int) ($rule['glpi_entities_id'] ?? 0) > 0
+                && !empty($rule['glpi_itil_category_id'])
+                && !empty($rule['glpi_group_id']);
+
+            // 3. Load targets
+            $tStmt = $pdo->prepare(
+                'SELECT host_id, hostname FROM ' . self::TARGETS_TABLE . ' WHERE rule_id = :id::uuid ORDER BY hostname ASC'
+            );
+            $tStmt->execute([':id' => $ruleId]);
+            $targets = $tStmt->fetchAll(PDO::FETCH_ASSOC);
+            if (!is_array($targets)) {
+                $targets = [];
+            }
+
+            if ($targets === []) {
+                // No explicit targets → would evaluate ALL hosts in entity (can't enumerate without entity map)
+                $result['condition_note'] = 'Sem alvos explícitos: em produção avaliaria TODOS os hosts da entidade. Dry-run não pode enumerar hosts sem alvo específico.';
+                $result['hosts_in_scope'] = 0;
+                return $result;
+            }
+
+            // 4. Fetch host statuses from asset cache
+            $hostIds      = array_column($targets, 'host_id');
+            $hPlaceholders = implode(', ', array_map(static fn (int $i) => ':h' . $i, array_keys($hostIds)));
+            $hParams       = [];
+            foreach ($hostIds as $i => $hid) {
+                $hParams[':h' . $i] = $hid;
+            }
+            $cStmt = $pdo->prepare(
+                'SELECT logmein_host_external_id AS host_id,
+                        host_name_sanitized      AS hostname,
+                        COALESCE(equipment_tag, \'\') AS equipment_tag,
+                        status,
+                        last_seen_at,
+                        glpi_entity_candidate_id
+                   FROM ' . self::ASSET_CACHE_TABLE . '
+                  WHERE logmein_host_external_id IN (' . $hPlaceholders . ')'
+            );
+            $cStmt->execute($hParams);
+            $cacheRows = $cStmt->fetchAll(PDO::FETCH_ASSOC);
+            $cacheMap  = [];
+            if (is_array($cacheRows)) {
+                foreach ($cacheRows as $cr) {
+                    $cacheMap[(string) $cr['host_id']] = $cr;
+                }
+            }
+
+            // 5. Dedupe check: event_hash = sha256(rule_id || host_id || alarm_type || YYYY-MM-DD)
+            $dateUtc        = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d');
+            $dedupeHitCount = 0;
+
+            // 6. Evaluate each target
+            $triggering    = [];
+            $safeCount     = 0;
+            $complexTypes  = ['hardware_change', 'low_disk', 'low_memory'];
+            $conditionNote = '';
+
+            if (in_array($alarmType, $complexTypes, true)) {
+                $conditionNote = "Tipo '$alarmType' requer comparação de inventário completo. Dry-run marca condição como 'requer_sync_completo'.";
+            }
+
+            foreach ($targets as $target) {
+                $hostId   = (string) ($target['host_id'] ?? '');
+                $hostname = (string) ($target['hostname'] ?? $hostId);
+                $cache    = $cacheMap[$hostId] ?? null;
+
+                if ($cache === null) {
+                    $triggering[] = ['host_id' => $hostId, 'hostname' => $hostname, 'reason' => 'host_nao_encontrado_no_cache'];
+                    continue;
+                }
+
+                $conditionMet = false;
+                $reason       = 'condicao_nao_avaliada';
+
+                switch ($alarmType) {
+                    case 'host_offline':
+                        $conditionMet = (string) ($cache['status'] ?? 'unknown') !== 'online';
+                        $reason       = 'status=' . ($cache['status'] ?? 'unknown');
+                        break;
+
+                    case 'host_not_seen':
+                        $notSeenDays = (int) ($condPayload['not_seen_days'] ?? 7);
+                        $lastSeen    = $cache['last_seen_at'] ?? null;
+                        if ($lastSeen === null) {
+                            $conditionMet = true;
+                            $reason       = 'last_seen_at=null';
+                        } else {
+                            $ts           = strtotime((string) $lastSeen);
+                            $cutoff       = strtotime("-{$notSeenDays} days");
+                            $conditionMet = $ts !== false && $ts < $cutoff;
+                            $reason       = 'last_seen_at=' . substr((string) $lastSeen, 0, 10);
+                        }
+                        break;
+
+                    case 'missing_equipment_tag':
+                        $conditionMet = trim((string) ($cache['equipment_tag'] ?? '')) === '';
+                        $reason       = 'equipment_tag=' . (trim((string) ($cache['equipment_tag'] ?? '')) === '' ? 'vazio' : 'presente');
+                        break;
+
+                    case 'missing_entity_mapping':
+                        $entityCandId = $cache['glpi_entity_candidate_id'] ?? null;
+                        $conditionMet = ($entityCandId === null || (int) $entityCandId === 0);
+                        $reason       = 'entity_candidate=' . ($entityCandId ?? 'null');
+                        break;
+
+                    default:
+                        // complex types: hardware_change, low_disk, low_memory
+                        $reason = 'requer_sync_completo';
+                        $conditionMet = false;
+                        break;
+                }
+
+                if (!$conditionMet) {
+                    $safeCount++;
+                    continue;
+                }
+
+                // Dedupe check (DB, read-only)
+                $eventHash = hash('sha256', $ruleId . $hostId . $alarmType . $dateUtc);
+                $dStmt     = $pdo->prepare(
+                    'SELECT 1 FROM ' . self::EVENTS_TABLE . ' WHERE event_hash = :hash LIMIT 1'
+                );
+                $dStmt->execute([':hash' => $eventHash]);
+                $alreadyFired = $dStmt->fetch(PDO::FETCH_ASSOC) !== false;
+
+                if ($alreadyFired) {
+                    $dedupeHitCount++;
+                } else {
+                    $triggering[] = ['host_id' => $hostId, 'hostname' => $hostname, 'reason' => $reason];
+                }
+            }
+
+            $result['hosts_in_scope']             = count($targets);
+            $result['hosts_triggering']            = $triggering;
+            $result['hosts_safe']                  = $safeCount;
+            $result['suppressed_by_dedupe_today']  = $dedupeHitCount;
+            $result['condition_note']              = $conditionNote;
+
+            return $result;
+        } catch (Throwable $e) {
+            $empty['errors'][] = 'Erro interno: ' . $e->getMessage();
+            return $empty;
+        }
+    }
+
+    // ── Supervisor internal alert ──────────────────────────────────────────────
+
+    private const ALERTS_TABLE = 'glpi_plugin_integaglpi_ai_online_alerts';
+
+    /**
+     * Creates an internal supervisor alert in the existing AI alerts table.
+     * NEVER sends WhatsApp. Only writes an internal alert row for the supervisor UI.
+     *
+     * @param  string $context  'dry_run' | 'worker_fired'
+     * @param  string $severity 'low' | 'medium' | 'high'
+     */
+    public function createInternalAlert(
+        string $ruleId,
+        string $ruleName,
+        string $alarmType,
+        int    $firedCount,
+        string $context  = 'dry_run',
+        string $severity = 'medium'
+    ): bool {
+        $severity = in_array($severity, ['low', 'medium', 'high'], true) ? $severity : 'medium';
+        $alertId  = 'logmein_alarm:' . $context . ':' . hash('sha256', $ruleId . $context . date('Y-m-d-H'));
+
+        try {
+            $pdo  = $this->getPdo();
+            $stmt = $pdo->prepare(
+                'INSERT INTO ' . self::ALERTS_TABLE . '
+                   (alert_id, conversation_id, alert_type, severity, confidence_score,
+                    evidence_summary_sanitized, recommended_human_action, source_signals_json, status)
+                 VALUES
+                   (:alert_id, :conv_id, :alert_type, :severity, :score,
+                    :evidence, :action, :signals::jsonb, \'open\')
+                 ON CONFLICT (alert_id) DO NOTHING'
+            );
+            $stmt->execute([
+                ':alert_id'   => $alertId,
+                ':conv_id'    => 'logmein:' . $ruleId,
+                ':alert_type' => 'logmein_alarm_' . $context,
+                ':severity'   => $severity,
+                ':score'      => min(100, max(0, $firedCount * 20)),
+                ':evidence'   => mb_substr(
+                    "Regra LogMeIn '{$ruleName}' ({$alarmType}): {$firedCount} host(s) disparariam em {$context}.",
+                    0, 500, 'UTF-8'
+                ),
+                ':action'     => 'Revisar regra de alarme LogMeIn e confirmar se automação deve ser habilitada.',
+                ':signals'    => json_encode([
+                    'rule_id'    => $ruleId,
+                    'rule_name'  => $ruleName,
+                    'alarm_type' => $alarmType,
+                    'fired'      => $firedCount,
+                    'context'    => $context,
+                ], JSON_THROW_ON_ERROR),
+            ]);
+            return true;
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
     // ── Internal ──────────────────────────────────────────────────────────────
 
     private function getPdo(): PDO
