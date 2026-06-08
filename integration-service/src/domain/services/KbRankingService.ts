@@ -72,8 +72,8 @@ const SCORE_WEIGHTS = {
   contextBoostCategory: 0.05, // softer boost for category match
 } as const;
 
-/** Minimum score to include in results (excludes truly irrelevant hits). */
-const MIN_SCORE_THRESHOLD = 0.02;
+/** Minimum score to include in results (excludes weak lexical noise). */
+const MIN_SCORE_THRESHOLD = 0.25;
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
@@ -100,6 +100,7 @@ export class KbRankingService {
     }));
 
     return scored
+      .filter((r) => !this.hasDomainConflict(queryTokens, r.hit))
       // If no tokens (degenerate query), accept all hits above threshold
       .filter((r) =>
         queryTokens.length === 0
@@ -169,5 +170,36 @@ export class KbRankingService {
       contextBoost,
       total: Number(total.toFixed(4)),
     };
+  }
+
+  private hasDomainConflict(queryTokens: string[], hit: KbCandidateHit): boolean {
+    const query = queryTokens.join(' ');
+    const hitText = [
+      hit.title,
+      hit.categorySuggestion,
+      hit.problemPattern,
+      hit.symptomsJson.join(' '),
+      hit.tagsJson.join(' '),
+      hit.evidenceSummarySanitized,
+    ].join(' ').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ' ');
+
+    const queryIsDirectorySync =
+      /\b(active|directory|azure|entra|dominio|domain|ad)\b/.test(query)
+      && /\b(sync|sincron|sincronizacao|sincronizando|replicacao|replicar)\b/.test(query);
+    if (queryIsDirectorySync) {
+      const hitIsActivation =
+        /\b(ativacao|ativar|ativa|licenca|license)\b/.test(hitText)
+        || (/\bwindows\b/.test(hitText) && !/\b(active|directory|azure|entra|dominio|domain|ad|sync|sincron)\b/.test(hitText));
+      return hitIsActivation;
+    }
+
+    const queryIsWindowsActivation =
+      /\bwindows\b/.test(query)
+      && /\b(ativacao|ativar|ativa|licenca|license)\b/.test(query);
+    if (queryIsWindowsActivation) {
+      return /\b(active|directory|azure|entra|dominio|domain|ad|sync|sincron)\b/.test(hitText);
+    }
+
+    return false;
   }
 }

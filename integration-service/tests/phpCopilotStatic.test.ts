@@ -30,7 +30,7 @@ describe('PHP internal Copilot static safety', () => {
     expect(front).toContain('integaglpiCopilotUserMessage');
     expect(front).toContain('O Copiloto demorou mais que o esperado');
     expect(front).toContain('Serviço de IA indisponível no momento');
-    expect(front).toContain('A IA respondeu em formato inválido');
+    expect(front).toContain('O Copiloto não conseguiu montar um rascunho confiável');
     expect(front).toContain('A IA retornou um rascunho sem checklist técnico obrigatório');
     expect(front).toContain('buildCopilotContext');
     expect(client).toContain('/internal/glpi/copilot/draft');

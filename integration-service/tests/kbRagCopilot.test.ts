@@ -417,4 +417,30 @@ describe('KbRagCopilotService', () => {
       expect(entry100.totalScore).toBeGreaterThan(lexicalBase + 0.09); // boost adds ≥0.10
     }
   });
+
+  it('16. returns no_sufficient_kb without calling AI when reranking filters weak/conflicting hits', async () => {
+    const weakHit = makeHit({
+      id: 300,
+      rawScore: 0.01,
+      title: 'Windows solicita ativação',
+      categorySuggestion: 'Sistema / Windows',
+      problemPattern: 'Windows pede ativação',
+      symptomsJson: ['windows ativacao'],
+      evidenceSummarySanitized: 'windows ativacao licenca',
+      tagsJson: ['windows', 'ativacao'],
+    });
+    const ollama = makeOllama(validPlaybookJson);
+    const svc = new KbRagCopilotService(makeSearchRepo([weakHit]), ollama, nullAudit);
+
+    const result = await svc.generatePlaybook({
+      query: 'active directory não esta sincronizando',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.error).toBe('no_sufficient_kb');
+    expect(result.kbsUsed).toHaveLength(0);
+    expect(result.localAiUsed).toBe(false);
+    expect(ollama.generateText).toHaveBeenCalledTimes(1);
+    expect((ollama.generateText as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain('Sugira até 5 termos');
+  });
 });

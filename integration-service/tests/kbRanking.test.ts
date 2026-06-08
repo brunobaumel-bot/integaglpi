@@ -183,4 +183,32 @@ describe('KbRankingService', () => {
     expect(s1.symptomsMatch).toBe(true);
     expect(s1.total).toBeGreaterThan(s2.total);
   });
+
+  it('13. Active Directory sync query excludes Windows activation articles', () => {
+    const adSync = makeHit({
+      id: 1,
+      rawScore: 0.45,
+      title: 'Azure AD Connect não sincroniza usuários',
+      categorySuggestion: 'Identidade / Active Directory',
+      problemPattern: 'Active Directory não sincroniza; Azure AD Connect parado',
+      symptomsJson: ['active directory nao sincroniza', 'azure ad connect erro sync'],
+      evidenceSummarySanitized: 'active directory azure sync falha',
+      tagsJson: ['active directory', 'azure', 'sync'],
+    });
+    const activation = makeHit({
+      id: 2,
+      rawScore: 0.95,
+      title: 'Windows solicita ativação',
+      categorySuggestion: 'Sistema / Windows',
+      problemPattern: 'Windows pede ativação de licença',
+      symptomsJson: ['windows ativacao', 'licenca windows'],
+      evidenceSummarySanitized: 'windows ativacao licenca',
+      tagsJson: ['windows', 'ativacao', 'licenca'],
+    });
+
+    const ranked = svc.rankHits([activation, adSync], ['active', 'directory', 'sincronizando', 'sync'], null, 5);
+
+    expect(ranked.map((r) => r.hit.id)).toContain(1);
+    expect(ranked.map((r) => r.hit.id)).not.toContain(2);
+  });
 });

@@ -523,6 +523,21 @@ export class KbRagCopilotService {
 
     // 6. Hybrid reranking
     const ranked = this.rankingService.rankHits(hits, queryTokens, input.clientContext, topK);
+    if (ranked.length === 0) {
+      return {
+        ok: true,
+        query: rawQuery,
+        expandedTerms,
+        playbook: buildDeterministicPlaybook(safeQuery, [], []),
+        kbsUsed: [],
+        kbsScoreBreakdown: [],
+        source: 'deterministic_fallback',
+        localAiUsed: false,
+        deterministicFallback: true,
+        kbsFound: hits.length,
+        error: 'no_sufficient_kb',
+      };
+    }
 
     const kbsUsed: KbUsed[] = ranked.map(({ hit, breakdown }) => ({
       id: hit.id,
@@ -548,7 +563,8 @@ export class KbRagCopilotService {
         const rawResponse = await this.ollamaPort.generateText(prompt, OLLAMA_RAG_OPTIONS);
         const parsed = parseJsonPlaybook(rawResponse);
         playbook = mergePlaybook(parsed, articles, kbsUsed, safeQuery);
-        localAiUsed = true;
+        localAiUsed = parsed !== null;
+        deterministicFallback = parsed === null;
       } catch {
         playbook = buildDeterministicPlaybook(safeQuery, articles, kbsUsed);
         deterministicFallback = true;

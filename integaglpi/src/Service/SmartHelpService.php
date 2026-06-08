@@ -230,7 +230,7 @@ final class SmartHelpService
 
         $schema044Status = self::migration044SchemaStatus();
 
-        // 1. Local native KB search (PHP-side; never leaves the page; no cloud).
+        // 1. Local native KB search (PHP-side fallback; never leaves the page; no cloud).
         $localArticles = [];
         $searchContext = $technicalSummary !== '' ? $technicalSummary : $summary;
         try {
@@ -253,6 +253,14 @@ final class SmartHelpService
             }
         } catch (\Throwable $e) {
             error_log('[integaglpi][smart_help] native KB error: ' . mb_substr($e->getMessage(), 0, 180, 'UTF-8'));
+        }
+
+        $ragResult = null;
+        if ($wantLocalAiSuggestion) {
+            $ragResult = $this->buildLocalRagResult($ticketId, $searchContext);
+            if ($ragResult !== null && ($ragResult['localResolved'] ?? false) === true) {
+                $localArticles = $ragResult['relatedArticles'];
+            }
         }
 
         // 2. Ask Node for checklist + suggested questions + cloud gate (best-effort).
@@ -284,17 +292,23 @@ final class SmartHelpService
         }
 
         $localResolved = $this->hasTrustedArticle($relatedArticles) || (($node['localResolved'] ?? false) === true);
+        if ($ragResult !== null && ($ragResult['localResolved'] ?? false) === true) {
+            $localResolved = true;
+            $checklist = $ragResult['checklist'] !== [] ? $ragResult['checklist'] : $checklist;
+            $questions = $ragResult['suggestedQuestions'] !== [] ? $ragResult['suggestedQuestions'] : $questions;
+        }
         $message = '';
         if (!$nodeOk) {
             $message = 'Assistente em modo local: o serviço de IA não respondeu agora. '
                 . 'Veja a base de conhecimento local e o checklist abaixo.';
         } elseif (!$localResolved) {
-            $message = 'Nenhum artigo local de alta confiança. '
-                . 'Use o checklist e as perguntas sugeridas para diagnosticar.';
+            $message = $ragResult !== null && ($ragResult['message'] ?? '') !== ''
+                ? (string) $ragResult['message']
+                : 'Nenhum artigo local de alta confiança. Use o checklist e as perguntas sugeridas para diagnosticar.';
         }
 
-        $localSuggestion = null;
-        if (!$localResolved && $wantLocalAiSuggestion) {
+        $localSuggestion = is_array($ragResult['localSuggestion'] ?? null) ? $ragResult['localSuggestion'] : null;
+        if (!$localResolved && $wantLocalAiSuggestion && $localSuggestion === null) {
             $localSuggestion = $this->localAiSuggestion($ticketId, $technicalSummary !== '' ? $technicalSummary : $summary);
         }
 
@@ -314,9 +328,12 @@ final class SmartHelpService
             'summary_source'     => $summarySource,
             'summaryErrorType'   => $summaryErrorType,
             'summary_error_type' => $summaryErrorType,
+            'playbook'          => is_array($ragResult['playbook'] ?? null) ? $ragResult['playbook'] : null,
+            'kbsUsed'           => is_array($ragResult['kbsUsed'] ?? null) ? $ragResult['kbsUsed'] : [],
+            'kbsScoreBreakdown' => is_array($ragResult['kbsScoreBreakdown'] ?? null) ? $ragResult['kbsScoreBreakdown'] : [],
             'kbSearchSource'     => [
-                'source' => 'php_native_glpi_kb',
-                'label' => 'Base de Conhecimento GLPI local',
+                'source' => $ragResult !== null ? 'node_kb_rag' : 'php_native_glpi_kb',
+                'label' => $ragResult !== null ? 'KB local / RAG do IntegraGLPI' : 'Base de Conhecimento GLPI local',
                 'node_endpoint' => 'GLPI_KB_SEARCH_URL',
             ],
             'schema044Status'    => $schema044Status,
@@ -466,10 +483,6 @@ final class SmartHelpService
         $clean = preg_replace('/\best[áa]\s+recebendo\s+(?:a\s+)?mensagem\s+d[eo]\s+erro/iu', 'foi informada mensagem de erro', $clean) ?? $clean;
         $clean = preg_replace('/\bFoi relatado\s+foi relatado\b/iu', 'Foi relatado', $clean) ?? $clean;
 
-        if (!preg_match('/^\s*(?:Foi relatado|Foi informado|O solicitante relatou)\b/iu', $clean)) {
-            $clean = 'Foi relatado ' . $clean;
-        }
-
         $clean = preg_replace('/\bsync\s+d[eo]\s+ad\b/iu', 'sync do AD', $clean) ?? $clean;
         $clean = preg_replace('/\bactive\s+directory\b/iu', 'Active Directory', $clean) ?? $clean;
         $clean = preg_replace('/\s{2,}/u', ' ', $clean) ?? $clean;
@@ -511,7 +524,7 @@ final class SmartHelpService
     private function enforceSummaryContract(string $candidate, string $sourceContext): string
     {
         $clean = $this->stripSummaryBoilerplate($this->sanitizeContext($candidate));
-        $forbidden = '/Foi relatado\s+O usuário|O usuário foi relatado|Para solucionar|consulte o artigo|Base de Conhecimento|técnico\s+Bruno|Bruno\s+Baumel|logon|login|servidor|Active Directory|banco de dados/iu';
+        $forbidden = '/Foi relatado\s+O usuário|O usuário foi relatado|Para solucionar|consulte o artigo|Base de Conhecimento|técnico\s+Bruno|Bruno\s+Baumel/iu';
         if ($clean === '' || preg_match($forbidden, $clean) === 1) {
             return $this->buildTechnicalSummary($sourceContext);
         }
@@ -604,10 +617,24 @@ final class SmartHelpService
 
         $normalized = $this->normalizeForRelevance($clean);
         if ($this->isGenericTestContext($normalized)) {
-            return 'Foi informado apenas um teste do sistema, sem descrição de problema técnico. Faltam detalhes sobre o erro, sistema afetado, mensagem exibida e impacto.';
+            return $this->structuredSummary(
+                'Teste do sistema sem descrição de problema técnico.',
+                'Não informado',
+                'Não informada',
+                'Não informado',
+                'Não informado',
+                ['erro ou comportamento observado', 'sistema afetado', 'impacto para o usuário']
+            );
         }
         if ($this->isWindowsActivationContext($normalized)) {
-            return 'Foi relatado problema no Windows com mensagem solicitando ativação. Faltam detalhes sobre a mensagem exata, edição do Windows, tipo de licença, conta Microsoft/domínio corporativo, conectividade e mudanças recentes no equipamento.';
+            return $this->structuredSummary(
+                'Windows exibindo mensagem solicitando ativação.',
+                'Windows',
+                'Mensagem de ativação do Windows',
+                'Não informado',
+                'Não informado',
+                ['mensagem exata', 'edição do Windows', 'tipo de licença', 'conectividade e mudanças recentes']
+            );
         }
 
         $sentences = preg_split('/(?<=[.!?])\s+/u', $clean) ?: [$clean];
@@ -615,26 +642,36 @@ final class SmartHelpService
         $prose = preg_replace('/\b(?:Para solucionar|Solução|Procedimento|Base de Conhecimento|consulte o artigo)[^.?!]*(?:[.?!]|$)/iu', '', $prose) ?? $prose;
         $prose = trim($prose);
         if ($prose === '') {
-            $prose = 'Foi relatado problema técnico sem detalhes suficientes.';
-        }
-        if (!preg_match('/\bFaltam detalhes\b/iu', $prose)) {
-            $prose .= ' Faltam detalhes sobre mensagem de erro, impacto, escopo e quando começou.';
+            $prose = 'Problema técnico sem detalhes suficientes.';
         }
 
-        return mb_substr($this->stripSummaryBoilerplate($prose), 0, 600, 'UTF-8');
+        return $this->structuredSummary(
+            $prose,
+            $this->inferSystemFromText($normalized),
+            $this->inferEvidenceFromText($clean),
+            'Não informado',
+            'Não informado',
+            ['mensagem de erro exata', 'impacto', 'escopo', 'quando começou']
+        );
     }
 
     private function extractClientOnlyContext(string $text): string
     {
-        if (!str_contains($text, 'Cliente:')) {
-            return $text;
-        }
-
         $clientLines = [];
         foreach (preg_split('/\r?\n|(?=\b(?:Cliente|Técnico):)/u', $text) ?: [] as $line) {
             $line = trim($line);
+            if ($line === '' || $this->isSystemSmartHelpLine($line)) {
+                continue;
+            }
             if (preg_match('/^Cliente:\s*(.+)$/iu', $line, $matches) === 1) {
-                $clientLines[] = trim((string) $matches[1]);
+                $content = trim((string) $matches[1]);
+                if ($content !== '' && !$this->isSystemSmartHelpLine($content)) {
+                    $clientLines[] = $content;
+                }
+                continue;
+            }
+            if (preg_match('/^T[eé]cnico:\s*/iu', $line) !== 1 && !str_contains($text, 'Cliente:')) {
+                $clientLines[] = $line;
             }
         }
 
@@ -687,6 +724,10 @@ final class SmartHelpService
         if ($this->isWindowsActivationContext($context)) {
             return preg_match('/\b(logon|login|servidor|dominio|active directory|ad)\b/u', $article) === 1;
         }
+        if ($this->isActiveDirectoryContext($context)) {
+            return preg_match('/\b(ativacao|ativar|licenca|license)\b/u', $article) === 1
+                || (str_contains($article, 'windows') && !preg_match('/\b(active directory|azure|sync|sincron|dominio|domain|ad)\b/u', $article));
+        }
 
         return false;
     }
@@ -728,6 +769,230 @@ final class SmartHelpService
     {
         return str_contains($normalized, 'windows')
             && preg_match('/\b(ativacao|ativar|ativa|licenca|license)\b/u', $normalized) === 1;
+    }
+
+    private function isActiveDirectoryContext(string $normalized): bool
+    {
+        return preg_match('/\b(active directory|azure ad|entra|dominio|domain|ad)\b/u', $normalized) === 1
+            && preg_match('/\b(sync|sincron|sincronizando|sincronizacao|replicacao|replicar)\b/u', $normalized) === 1;
+    }
+
+    private function isSystemSmartHelpLine(string $line): bool
+    {
+        return preg_match(
+            '/\b(?:t[eé]cnico|sistema|chamado|ticket|solu[cç][aã]o|csat|avalia[cç][aã]o|assumiu|designado|transferido|encerrado|aberto|reaberto|atendimento seguir[aá]|obrigado pela avalia[cç][aã]o)\b/iu',
+            $line
+        ) === 1;
+    }
+
+    /**
+     * @param list<string> $missing
+     */
+    private function structuredSummary(string $problem, string $system, string $evidence, string $impact, string $scope, array $missing): string
+    {
+        $missing = array_values(array_filter(array_map(static fn ($item) => trim((string) $item), $missing)));
+        $parts = [
+            'Problema relatado: ' . $this->summaryField($problem),
+            'Sistema afetado: ' . $this->summaryField($system),
+            'Evidência/erro: ' . $this->summaryField($evidence),
+            'Impacto: ' . $this->summaryField($impact),
+            'Escopo: ' . $this->summaryField($scope),
+            'Dados faltantes: ' . ($missing !== [] ? implode('; ', $missing) : 'não informado'),
+        ];
+
+        return mb_substr(implode("\n", $parts), 0, 900, 'UTF-8');
+    }
+
+    private function summaryField(string $value): string
+    {
+        $value = trim($this->stripSummaryBoilerplate($value));
+        $value = preg_replace('/\s+/u', ' ', $value) ?? $value;
+
+        return $value !== '' ? $value : 'Não informado';
+    }
+
+    private function inferSystemFromText(string $normalized): string
+    {
+        $known = [
+            'active directory' => 'Active Directory',
+            'azure' => 'Azure AD / Entra ID',
+            'entra' => 'Azure AD / Entra ID',
+            'micromed' => 'Micromed',
+            'windows' => 'Windows',
+            'word' => 'Microsoft Word',
+            'office' => 'Microsoft Office',
+            'logmein' => 'LogMeIn',
+        ];
+        foreach ($known as $needle => $label) {
+            if (str_contains($normalized, $needle)) {
+                return $label;
+            }
+        }
+
+        return 'Não informado';
+    }
+
+    private function inferEvidenceFromText(string $text): string
+    {
+        if (preg_match('/(?:erro|mensagem|falha)\s*[:\-]?\s*([^.;\n]{8,160})/iu', $text, $matches) === 1) {
+            return trim((string) $matches[1]);
+        }
+
+        return 'Não informada';
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function buildLocalRagResult(int $ticketId, string $searchContext): ?array
+    {
+        try {
+            $rag = (new KbCopilotBridgeService($this->config))->fetchPlaybook(
+                $searchContext,
+                $ticketId,
+                Plugin::getCurrentUserId() > 0 ? Plugin::getCurrentUserId() : null,
+                5,
+                $this->buildKbClientContext($ticketId, $searchContext)
+            );
+        } catch (\Throwable $exception) {
+            error_log('[integaglpi][smart_help][kb_rag] ' . mb_substr($exception->getMessage(), 0, 160, 'UTF-8'));
+            return null;
+        }
+
+        if (($rag['ok'] ?? false) !== true || !is_array($rag['playbook'] ?? null)) {
+            return [
+                'localResolved' => false,
+                'relatedArticles' => [],
+                'checklist' => $this->defaultChecklist(),
+                'suggestedQuestions' => $this->defaultQuestions(),
+                'localSuggestion' => null,
+                'playbook' => null,
+                'kbsUsed' => [],
+                'kbsScoreBreakdown' => [],
+                'message' => 'Não encontrei KB local suficiente para este contexto.',
+            ];
+        }
+
+        $playbook = $rag['playbook'];
+        $kbsUsed = is_array($rag['kbsUsed'] ?? null) ? $rag['kbsUsed'] : (is_array($playbook['kbs_utilizadas'] ?? null) ? $playbook['kbs_utilizadas'] : []);
+        $relatedArticles = [];
+        foreach (array_slice($kbsUsed, 0, 5) as $kb) {
+            if (!is_array($kb)) {
+                continue;
+            }
+            $score = (float) ($kb['score'] ?? 0);
+            $relatedArticles[] = [
+                'glpiKnowbaseitemId' => 0,
+                'kbCandidateId' => (int) ($kb['id'] ?? 0),
+                'title' => (string) ($kb['title'] ?? 'KB local'),
+                'confidence' => $score,
+                'category' => (string) ($kb['category'] ?? ''),
+                'excerpt' => (string) ($playbook['resumo_do_incidente'] ?? ''),
+                'internal_url' => '',
+                'source_label' => 'KB RAG local',
+                'confidence_reason' => $score >= self::LOCAL_CONFIDENCE_THRESHOLD
+                    ? 'Correspondência RAG de alta confiança com o resumo atual'
+                    : 'Candidato RAG; valide antes de aplicar',
+            ];
+        }
+
+        $confidence = (float) ($playbook['nivel_de_confianca'] ?? 0);
+        if ($confidence <= 0 && $relatedArticles !== []) {
+            $confidence = max(array_map(static fn ($a) => (float) ($a['confidence'] ?? 0), $relatedArticles));
+        }
+
+        $localResolved = $confidence >= self::LOCAL_CONFIDENCE_THRESHOLD && $relatedArticles !== [];
+        $localSuggestion = $this->buildRagLocalSuggestion($playbook, $localResolved);
+
+        return [
+            'localResolved' => $localResolved,
+            'relatedArticles' => $relatedArticles,
+            'checklist' => $this->playbookList($playbook, 'verificacoes_ou_comandos_sugeridos', $this->defaultChecklist()),
+            'suggestedQuestions' => $this->playbookList($playbook, 'perguntas_de_triagem', $this->defaultQuestions()),
+            'localSuggestion' => $localSuggestion,
+            'playbook' => $playbook,
+            'kbsUsed' => $kbsUsed,
+            'kbsScoreBreakdown' => is_array($rag['kbsScoreBreakdown'] ?? null) ? $rag['kbsScoreBreakdown'] : [],
+            'message' => $localResolved ? '' : 'KB local insuficiente para resolver com segurança; use o playbook e valide com o cliente.',
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function buildKbClientContext(int $ticketId, string $searchContext): array
+    {
+        $context = [];
+        $ticket = new \Ticket();
+        if ($ticketId > 0 && $ticket->getFromDB($ticketId)) {
+            $entityId = (int) ($ticket->fields['entities_id'] ?? 0);
+            if ($entityId > 0) {
+                $context['entityId'] = $entityId;
+            }
+            $categoryId = (int) ($ticket->fields['itilcategories_id'] ?? 0);
+            if ($categoryId > 0) {
+                $category = new \ITILCategory();
+                if ($category->getFromDB($categoryId)) {
+                    $context['category'] = (string) ($category->fields['name'] ?? '');
+                }
+            }
+        }
+        $system = $this->inferSystemFromText($this->normalizeForRelevance($searchContext));
+        if ($system !== 'Não informado') {
+            $context['productOrSystem'] = $system;
+        }
+
+        return $context;
+    }
+
+    /**
+     * @param array<string, mixed> $playbook
+     * @param list<string> $fallback
+     * @return list<string>
+     */
+    private function playbookList(array $playbook, string $key, array $fallback): array
+    {
+        $value = $playbook[$key] ?? [];
+        if (!is_array($value)) {
+            return $fallback;
+        }
+
+        $items = array_values(array_filter(array_map(static fn ($item) => trim((string) $item), $value)));
+        return $items !== [] ? array_slice($items, 0, 8) : $fallback;
+    }
+
+    /**
+     * @param array<string, mixed> $playbook
+     * @return array<string, mixed>
+     */
+    private function buildRagLocalSuggestion(array $playbook, bool $localResolved): array
+    {
+        $sections = [];
+        foreach ([
+            'resumo_do_incidente' => 'Resumo',
+            'causas_possiveis' => 'Causas possíveis',
+            'resolucao_sugerida' => 'Resolução sugerida',
+            'validacao' => 'Validação',
+            'escalonamento' => 'Escalonamento',
+        ] as $key => $label) {
+            $value = $playbook[$key] ?? null;
+            if (is_array($value)) {
+                $value = implode('; ', array_filter(array_map('strval', $value)));
+            }
+            $value = trim((string) $value);
+            if ($value !== '') {
+                $sections[] = $label . ': ' . $value;
+            }
+        }
+
+        return [
+            'source' => 'local_kb_rag',
+            'source_label' => 'KB local / RAG',
+            'title' => $localResolved ? 'Playbook KB local — valide antes de aplicar' : 'Playbook local sem confiança suficiente — valide manualmente',
+            'content' => mb_substr(implode("\n", $sections), 0, 1400, 'UTF-8'),
+            'unverified' => true,
+            'error_type' => '',
+        ];
     }
 
     private function normalizeForRelevance(string $value): string

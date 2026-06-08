@@ -83,7 +83,7 @@ function integaglpiCopilotUserMessage(string $message): string
     }
 
     if (preg_match('/COPILOT_DRAFT_(?:INVALID_JSON|INVALID_SHAPE|INVALID_ENUM|EMPTY)|formato inválido/i', $message) === 1) {
-        return __('A IA respondeu em formato inválido. Tente novamente.', 'glpiintegaglpi');
+        return __('O Copiloto não conseguiu montar um rascunho confiável. Use uma resposta manual cordial e tente gerar novamente se necessário.', 'glpiintegaglpi');
     }
 
     if ($message === 'COPILOT_DRAFT_CHECKLIST_REQUIRED') {

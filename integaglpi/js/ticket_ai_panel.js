@@ -650,6 +650,23 @@
     };
   }
 
+  function safePlaybookForStorage(playbook) {
+    if (!playbook || typeof playbook !== 'object') { return null; }
+    return {
+      resumo_do_incidente: safeScalar(playbook.resumo_do_incidente, 800),
+      sintomas_identificados: safeListForStorage(playbook.sintomas_identificados || [], 8, 260),
+      hipoteses_por_camada: safeListForStorage(playbook.hipoteses_por_camada || [], 8, 320),
+      perguntas_de_triagem: safeListForStorage(playbook.perguntas_de_triagem || [], 8, 260),
+      verificacoes_ou_comandos_sugeridos: safeListForStorage(playbook.verificacoes_ou_comandos_sugeridos || [], 8, 320),
+      causas_possiveis: safeListForStorage(playbook.causas_possiveis || [], 8, 320),
+      resolucao_sugerida: safeListForStorage(playbook.resolucao_sugerida || [], 10, 360),
+      validacao: safeListForStorage(playbook.validacao || [], 8, 260),
+      escalonamento: safeListForStorage(playbook.escalonamento || [], 6, 260),
+      riscos_rollback: safeListForStorage(playbook.riscos_rollback || [], 6, 260),
+      nivel_de_confianca: Number(playbook.nivel_de_confianca || 0) || 0
+    };
+  }
+
   function safeSmartHelpViewModel(result) {
     result = result || {};
     var schema = result.schema044Status || result.schema_044_status || {};
@@ -670,6 +687,18 @@
         title: safeScalar(localSuggestion.title || 'Sugestão IA local — valide antes de aplicar', 160),
         content: safeScalar(localSuggestion.content || localSuggestion.summary || localSuggestion.text || localSuggestion.answer, 1200)
       } : null,
+      playbook: safePlaybookForStorage(result.playbook || null),
+      kbsUsed: Array.isArray(result.kbsUsed || result.kbs_used)
+        ? (result.kbsUsed || result.kbs_used).slice(0, 5).map(function (kb) {
+            kb = kb || {};
+            return {
+              id: Number(kb.id || 0) || 0,
+              title: safeScalar(kb.title, 180),
+              category: safeScalar(kb.category, 120),
+              score: Number(kb.score || 0) || 0
+            };
+          })
+        : [],
       cloudOffer: {
         available: offer.available === true,
         reason: safeScalar(offer.reason || '', 240)
@@ -809,6 +838,116 @@
     }
   }
 
+  function renderPlaybookSection(title, items, code) {
+    items = viewList(items);
+    if (!items.length) { return ''; }
+    return '<div class="mt-2"><div class="fw-bold small mb-1">' + esc(title) + '</div><ul class="mb-1">'
+      + items.map(function (item) {
+          return '<li>' + (code ? '<code>' + esc(item) + '</code>' : esc(item)) + '</li>';
+        }).join('')
+      + '</ul></div>';
+  }
+
+  function renderLocalPlaybook(panel, result) {
+    var playbook = result.playbook || null;
+    var target = panel.querySelector('.js-smart-help-local-suggestion');
+    if (!target || !playbook || typeof playbook !== 'object') { return false; }
+    var kbs = result.kbsUsed || result.kbs_used || playbook.kbs_utilizadas || [];
+    var confidence = Number(playbook.nivel_de_confianca || 0) || 0;
+    var summary = viewText(playbook.resumo_do_incidente || '');
+    var copyText = [
+      summary ? ('Resumo: ' + summary) : '',
+      sectionText('Sintomas', playbook.sintomas_identificados),
+      sectionText('Hipóteses', playbook.hipoteses_por_camada),
+      sectionText('Perguntas de triagem', playbook.perguntas_de_triagem),
+      sectionText('Verificações/comandos', playbook.verificacoes_ou_comandos_sugeridos),
+      sectionText('Causas possíveis', playbook.causas_possiveis),
+      sectionText('Resolução sugerida', playbook.resolucao_sugerida),
+      sectionText('Validação', playbook.validacao),
+      'Revisão humana obrigatória. Nada é enviado ao cliente nem altera o chamado automaticamente.'
+    ].filter(Boolean).join('\n\n');
+
+    var html = '<div class="border border-warning rounded p-2 mt-1 js-smart-help-local-playbook">';
+    html += '<div class="d-flex justify-content-between align-items-start gap-2 flex-wrap">';
+    html += '<div class="fw-bold text-warning">' + esc('Playbook KB local — valide antes de aplicar') + '</div>';
+    html += '<span class="badge bg-warning text-dark">' + esc('confiança: ' + Math.round(confidence * 100) + '%') + '</span>';
+    html += '</div>';
+    html += '<div class="alert alert-warning py-1 mt-2 mb-2 small">' + esc('Uso interno do técnico. Não envia WhatsApp, não altera o chamado e não publica KB automaticamente.') + '</div>';
+    if (summary) {
+      html += '<div class="fw-bold small mb-1">' + esc('Resumo') + '</div><p class="mb-2">' + esc(summary) + '</p>';
+    }
+    html += renderPlaybookSection('Sintomas identificados', playbook.sintomas_identificados, false);
+    html += renderPlaybookSection('Hipóteses por camada', playbook.hipoteses_por_camada, false);
+    html += renderPlaybookSection('Perguntas de triagem', playbook.perguntas_de_triagem, false);
+    html += renderPlaybookSection('Verificações/comandos sugeridos', playbook.verificacoes_ou_comandos_sugeridos, true);
+    html += renderPlaybookSection('Causas possíveis', playbook.causas_possiveis, false);
+    html += renderPlaybookSection('Resolução sugerida', playbook.resolucao_sugerida, false);
+    html += renderPlaybookSection('Validação', playbook.validacao, false);
+    if (Array.isArray(kbs) && kbs.length) {
+      html += '<div class="mt-2"><div class="fw-bold small mb-1">' + esc('KBs usadas') + '</div><ul class="mb-1">';
+      html += kbs.slice(0, 5).map(function (kb) {
+        return '<li>' + esc(viewText(kb.title || 'KB local')) + ' <span class="text-muted">(' + esc(Math.round((Number(kb.score || 0) || 0) * 100) + '%') + ')</span></li>';
+      }).join('');
+      html += '</ul></div>';
+    }
+    html += '<button type="button" class="btn btn-sm btn-outline-primary js-smart-help-copy" data-text="' + esc(copyText) + '">' + esc('Copiar playbook') + '</button>';
+    html += ' <button type="button" class="btn btn-sm btn-outline-secondary js-smart-help-add-private-note" data-text="' + esc(copyText) + '">' + esc('Adicionar nota privada') + '</button>';
+    html += '</div>';
+    target.innerHTML = html;
+    return true;
+  }
+
+  function addPrivateNote(panel, content) {
+    content = viewText(content).trim();
+    if (content.length < 5) {
+      setStatus(panel, 'nota vazia', 'warning');
+      return;
+    }
+    if (!window.confirm('Adicionar este playbook como nota PRIVADA no chamado? Nada será enviado ao cliente.')) {
+      return;
+    }
+    var addNoteUrl = String(panel.dataset.actionUrl || '').replace(/smart\.help\.php(?:\?.*)?$/, 'kb.add_note.php');
+    if (!addNoteUrl || addNoteUrl === String(panel.dataset.actionUrl || '')) {
+      setStatus(panel, 'nota indisponível', 'warning');
+      return;
+    }
+    setStatus(panel, 'salvando nota privada', 'info');
+    refreshCsrfToken(panel).then(function () {
+      var token = panel.dataset.csrf || '';
+      return fetch(addNoteUrl, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+          'X-Glpi-Csrf-Token': token
+        },
+        body: JSON.stringify({
+          _glpi_csrf_token: token,
+          csrf_token: token,
+          ticket_id: Number(panel.dataset.ticketId || 0) || 0,
+          content: content
+        })
+      });
+    }).then(function (response) {
+      return response.json().catch(function () { return { ok: false, message: 'Resposta inválida ao salvar nota privada.' }; });
+    }).then(function (body) {
+      var msgEl = panel.querySelector('.js-smart-help-message');
+      if (body && body.ok) {
+        setStatus(panel, 'nota privada salva', 'success');
+        if (msgEl) { msgEl.textContent = 'Nota privada adicionada ao chamado.'; }
+        return;
+      }
+      setStatus(panel, 'erro na nota', 'danger');
+      if (msgEl) { msgEl.textContent = (body && body.message) ? body.message : 'Não foi possível adicionar a nota privada.'; }
+    }).catch(function () {
+      setStatus(panel, 'erro na nota', 'danger');
+      var msgEl = panel.querySelector('.js-smart-help-message');
+      if (msgEl) { msgEl.textContent = 'Não foi possível adicionar a nota privada.'; }
+    });
+  }
+
   function renderResult(panel, result, options) {
     options = options || {};
     var articlesEl = panel.querySelector('.js-smart-help-articles');
@@ -875,9 +1014,12 @@
       }).join('');
     }
 
+    var hasPlaybook = renderLocalPlaybook(panel, result);
     var localSuggestion = result.localSuggestion || result.local_suggestion || null;
     if (localSuggestionEl) {
-      if (localSuggestion && localSuggestion.unverified) {
+      if (hasPlaybook) {
+        // RAG playbook already rendered in this slot.
+      } else if (localSuggestion && localSuggestion.unverified) {
         var localSuggestionTitle = viewText(localSuggestion.title || 'Sugestão IA local — valide antes de aplicar')
           || 'Sugestão IA local — valide antes de aplicar';
         var localSuggestionContent = viewText(
@@ -963,11 +1105,9 @@
       setStatus(panel, 'erro', 'danger');
       renderResult(panel, { message: (error && error.message) ? error.message : 'Não foi possível consultar a Ajuda Inteligente. Revise permissões, schema 044 e configuração local.' });
     }).finally(function () {
-      if (isCurrentRequest(panel, requestId)) {
-        setButtonLoading(runBtn, '', false);
-        finishRequest(panel, requestId);
-        updateGuidedState(panel);
-      }
+      setButtonLoading(runBtn, '', false);
+      finishRequest(panel, requestId);
+      updateGuidedState(panel);
     });
   }
 
@@ -1001,11 +1141,9 @@
       setStatus(panel, 'erro', 'danger');
       renderResult(panel, { message: (error && error.message) ? error.message : 'Não foi possível executar a busca local.' });
     }).finally(function () {
-      if (isCurrentRequest(panel, requestId)) {
-        setButtonLoading(searchBtn, '', false);
-        finishRequest(panel, requestId);
-        updateGuidedState(panel);
-      }
+      setButtonLoading(searchBtn, '', false);
+      finishRequest(panel, requestId);
+      updateGuidedState(panel);
     });
   }
 
@@ -1119,10 +1257,18 @@
 
     var copyBtn = t.closest('.js-smart-help-copy');
     if (copyBtn) {
+      event.preventDefault();
       var text = copyBtn.getAttribute('data-text') || '';
       if (navigator.clipboard) { navigator.clipboard.writeText(text); }
       copyBtn.textContent = 'Copiado';
       setTimeout(function () { copyBtn.textContent = 'Copiar'; }, 1500);
+      return;
+    }
+
+    var addNoteBtn = t.closest('.js-smart-help-add-private-note');
+    if (addNoteBtn) {
+      event.preventDefault();
+      addPrivateNote(panel, addNoteBtn.getAttribute('data-text') || '');
       return;
     }
 

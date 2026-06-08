@@ -18,6 +18,7 @@ declare(strict_types=1);
  *   @var int|null    $ticketId        Pre-filled ticket context (optional)
  *   @var string      $ticketTitle     Pre-filled ticket title (optional, sanitized)
  *   @var string      $ticketDesc      Pre-filled ticket description (optional, sanitized)
+ *   @var string      $ticketWarning   Controlled warning for invalid ticket context
  *
  * Phase: integaglpi_local_kb_rag_technician_copilot_001
  * Adendo 1: integaglpi_local_kb_rag_technician_copilot_001_adendo_pipeline_qdrant_001
@@ -28,6 +29,7 @@ $smartHelpUrl= htmlspecialchars($smartHelpUrl ?? '', ENT_QUOTES, 'UTF-8');
 $ticketId    = isset($ticketId) && (int) $ticketId > 0 ? (int) $ticketId : null;
 $ticketTitle = htmlspecialchars(mb_substr((string) ($ticketTitle ?? ''), 0, 200, 'UTF-8'), ENT_QUOTES, 'UTF-8');
 $ticketDesc  = htmlspecialchars(mb_substr((string) ($ticketDesc ?? ''), 0, 600, 'UTF-8'), ENT_QUOTES, 'UTF-8');
+$ticketWarning = htmlspecialchars((string) ($ticketWarning ?? ''), ENT_QUOTES, 'UTF-8');
 $kbFeedbackUrl = htmlspecialchars($kbFeedbackUrl ?? '', ENT_QUOTES, 'UTF-8');
 $addNoteUrl    = htmlspecialchars($addNoteUrl ?? '', ENT_QUOTES, 'UTF-8');
 ?>
@@ -88,6 +90,12 @@ $addNoteUrl    = htmlspecialchars($addNoteUrl ?? '', ENT_QUOTES, 'UTF-8');
         </div>
         <?php endif; ?>
 
+        <?php if ($ticketWarning !== ''): ?>
+        <div class="rag-warn" style="margin-bottom:.75rem;">
+            <?= $ticketWarning ?>
+        </div>
+        <?php endif; ?>
+
         <div style="display:flex;gap:.5rem;align-items:flex-start;flex-wrap:wrap;">
             <textarea
                 id="rag-query-input"
@@ -131,6 +139,15 @@ $addNoteUrl    = htmlspecialchars($addNoteUrl ?? '', ENT_QUOTES, 'UTF-8');
         document.getElementById('rag-top-k-val').textContent = this.value;
     });
 
+    function formBody(payload) {
+        var body = new URLSearchParams();
+        Object.keys(payload).forEach(function (key) {
+            if (payload[key] === null || typeof payload[key] === 'undefined') { return; }
+            body.append(key, String(payload[key]));
+        });
+        return body;
+    }
+
     window.integaRagSearch = function () {
         var query = (document.getElementById('rag-query-input').value || '').trim();
         if (!query) { alert('Informe a consulta.'); return; }
@@ -142,8 +159,8 @@ $addNoteUrl    = htmlspecialchars($addNoteUrl ?? '', ENT_QUOTES, 'UTF-8');
 
         fetch(SMART_HELP_URL, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify({
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'Accept': 'application/json' },
+            body: formBody({
                 _glpi_csrf_token: CSRF,
                 query: query,
                 ticket_id: TICKET_ID,
@@ -341,8 +358,8 @@ $addNoteUrl    = htmlspecialchars($addNoteUrl ?? '', ENT_QUOTES, 'UTF-8');
         kbIds.forEach(function (kbId) {
             fetch(KB_FEEDBACK_URL, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'Accept': 'application/json' },
+                body: formBody({
                     _glpi_csrf_token: CSRF,
                     kb_candidate_id: kbId,
                     ticket_id: TICKET_ID,
@@ -397,8 +414,8 @@ $addNoteUrl    = htmlspecialchars($addNoteUrl ?? '', ENT_QUOTES, 'UTF-8');
 
         fetch(ADD_NOTE_URL, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify({
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'Accept': 'application/json' },
+            body: formBody({
                 _glpi_csrf_token: CSRF,
                 ticket_id: TICKET_ID,
                 content: textarea.value

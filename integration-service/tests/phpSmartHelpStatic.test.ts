@@ -13,7 +13,7 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
 
     expect(front).toContain("integaglpiCopilotUserMessage($rawMessage)");
     expect(front).toContain("$response['body']['message'] = $displayMessage");
-    expect(front).toContain("A IA respondeu em formato inválido. Tente novamente.");
+    expect(front).toContain('O Copiloto não conseguiu montar um rascunho confiável');
     expect(tab).toContain('function copilotFriendlyMessage(message)');
     expect(tab).toContain('COPILOT_DRAFT_(INVALID_JSON|INVALID_SHAPE|INVALID_ENUM|EMPTY)');
     expect(tab).toContain('copilotStatus.textContent = copilotFriendlyMessage');
@@ -108,8 +108,10 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(svc).toContain('function hasConflictingKbDomain');
     expect(svc).toContain('function isGenericTestContext');
     expect(svc).toContain('function isWindowsActivationContext');
-    expect(svc).toContain('Foi informado apenas um teste do sistema');
-    expect(svc).toContain('Foi relatado problema no Windows com mensagem solicitando ativação');
+    expect(svc).toContain('Teste do sistema sem descrição de problema técnico.');
+    expect(svc).toContain('Windows exibindo mensagem solicitando ativação.');
+    expect(svc).toContain('function structuredSummary');
+    expect(svc).toContain('Sistema afetado: ');
     expect(svc).toContain('Referência local candidata; baixa confiança, valide antes de usar');
     expect(svc).toMatch(/logon\|login\|servidor\|dominio\|active directory\|ad/i);
   });
@@ -889,7 +891,16 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(svc).toContain('bool $wantAiSummary = true');
     expect(svc).toContain('if ($wantAiSummary)');
     expect(svc).toContain('bool $wantLocalAiSuggestion = false');
-    expect(svc).toContain('if (!$localResolved && $wantLocalAiSuggestion)');
+    expect(svc).toContain('if (!$localResolved && $wantLocalAiSuggestion && $localSuggestion === null)');
+    expect(svc).toContain('new KbCopilotBridgeService($this->config)');
+    expect(svc).toContain('buildLocalRagResult');
+    expect(svc).toContain("'source' => \$ragResult !== null ? 'node_kb_rag' : 'php_native_glpi_kb'");
+    expect(js).toContain('renderLocalPlaybook(panel, result)');
+    expect(js).toContain('Playbook KB local');
+    expect(js).toContain('js-smart-help-add-private-note');
+    expect(js).toContain('Adicionar este playbook como nota PRIVADA');
+    expect(js).toContain("'kb.add_note.php'");
+    expect(js).toContain('refreshCsrfToken(panel).then(function ()');
     expect(svc).toContain('LOCAL_CONFIDENCE_THRESHOLD');
     expect(svc).toContain('PATH_TECHNICAL_SUMMARY');
     expect(svc).toContain('/internal/glpi/ai/technical-summary');
