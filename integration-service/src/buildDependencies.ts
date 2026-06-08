@@ -61,9 +61,13 @@ import { PostgresMessageFlowRepository } from './repositories/postgres/PostgresM
 import { PostgresLogmeinReadonlyRepository } from './repositories/postgres/PostgresLogmeinReadonlyRepository.js';
 import { PostgresKbFeedbackRepository } from './repositories/postgres/PostgresKbFeedbackRepository.js';
 import { PostgresCloudAuditRepository } from './repositories/postgres/PostgresCloudAuditRepository.js';
+import { PostgresKbCandidateSearchRepository } from './repositories/postgres/PostgresKbCandidateSearchRepository.js';
+import { PostgresRagAuditRepository } from './repositories/postgres/PostgresRagAuditRepository.js';
+import type { KbRagCachePort } from './domain/services/KbRagCopilotService.js';
 import { FeedbackService } from './domain/services/FeedbackService.js';
 import { ExternalResearchService } from './domain/services/ExternalResearchService.js';
 import { SmartHelpService } from './domain/services/SmartHelpService.js';
+import { KbRagCopilotService } from './domain/services/KbRagCopilotService.js';
 import type { KbSearchPort } from './domain/services/SmartHelpService.js';
 import { CoachingService } from './domain/services/CoachingService.js';
 import { HttpKbSearchPort } from './infra/http/HttpKbSearchPort.js';
@@ -421,6 +425,31 @@ export function buildDependencies() {
   };
   const coachingService = new CoachingService(postgresPool, auditService);
 
+  // ── KB RAG Copilot — local-first, technician-only ──────────────────────────
+  // Uses PostgreSQL full-text search over kb_candidates (approved + candidate).
+  // Calls local Ollama if available; deterministic fallback always works.
+  // Cloud AI is structurally absent: OllamaRagPort has no cloud implementation.
+  const kbRagSearchRepo = new PostgresKbCandidateSearchRepository(postgresPool);
+  const ragAuditRepo = new PostgresRagAuditRepository(postgresPool);
+  const kbRagTimeoutMs = envInt('KB_RAG_TIMEOUT_MS', 8_000, 1_000, 30_000);
+  const kbRagModel = (process.env.KB_RAG_MODEL ?? '').trim() ||
+    (env.COPILOT_DRAFT_MODEL.trim() !== '' ? env.COPILOT_DRAFT_MODEL.trim() : env.AI_SUPERVISOR_MODEL);
+  // OllamaRagPort: only instantiate if a valid Ollama URL is configured.
+  // The KbRagCopilotService gracefully falls back to deterministic if ollamaRagPort is null.
+  const ollamaBaseUrl = env.AI_SUPERVISOR_BASE_URL.trim();
+  const ollamaRagPort = ollamaBaseUrl !== ''
+    ? new OllamaClient(ollamaBaseUrl, kbRagModel, kbRagTimeoutMs)
+    : null;
+  // Redis cache for KB RAG search results (TTL 300s).
+  // Cache key = query hash (no PII). Non-blocking: cache failure never affects response.
+  const kbRagCache: KbRagCachePort = {
+    get: (key: string) => redisClient.get(key),
+    set: async (key: string, value: string, ttlSeconds: number): Promise<void> => {
+      await redisClient.set(key, value, 'EX', ttlSeconds);
+    },
+  };
+  const kbRagCopilotService = new KbRagCopilotService(kbRagSearchRepo, ollamaRagPort, ragAuditRepo, kbRagCache);
+
   const logmeinReadonlyContextService = new LogmeinReadonlyContextService(
     {
       enabled: envBool('LOGMEIN_INTEGRATION_ENABLED', false),
@@ -737,6 +766,7 @@ export function buildDependencies() {
     smartHelpService,
     technicalSummarizer,
     coachingService,
+    kbRagCopilotService,
     integrationServiceApiKey: env.INTEGRATION_SERVICE_API_KEY,
     glpiClient,
     metaClient,

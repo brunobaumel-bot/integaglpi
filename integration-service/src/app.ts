@@ -50,6 +50,8 @@ import {
   createSmartHelpController,
   createTechnicalSummaryController,
 } from './controllers/ai.controller.js';
+import { createKbRagController } from './controllers/kb.rag.controller.js';
+import type { KbRagCopilotService } from './domain/services/KbRagCopilotService.js';
 import type { SmartHelpService } from './domain/services/SmartHelpService.js';
 import type { ExternalResearchService } from './domain/services/ExternalResearchService.js';
 import type { CoachingService } from './domain/services/CoachingService.js';
@@ -102,6 +104,7 @@ export interface AppDependencies {
   coachingService?: CoachingService;
   feedbackService?: FeedbackService;
   cloudAuditRepository?: CloudAuditRepository;
+  kbRagCopilotService?: KbRagCopilotService;
 }
 
 function createJsonParser(options: { limit?: string } = {}) {
@@ -321,6 +324,15 @@ export function createApp(dependencies: AppDependencies) {
         '/internal/glpi/ai/metrics/effectiveness',
         aiAuth,
         createAiMetricsController(dependencies.feedbackService, dependencies.cloudAuditRepository),
+      );
+    }
+    // KB RAG Copilot — local-first, technician-only, no cloud, no auto-send
+    if (dependencies.kbRagCopilotService) {
+      app.post(
+        '/internal/glpi/ai/kb-rag',
+        aiAuth,
+        createJsonParser(),
+        createKbRagController(dependencies.kbRagCopilotService),
       );
     }
     if (dependencies.feedbackService) {
