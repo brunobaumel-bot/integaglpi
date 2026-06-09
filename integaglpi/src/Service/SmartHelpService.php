@@ -609,8 +609,13 @@ final class SmartHelpService
 
     private function buildTechnicalSummary(string $summary): string
     {
-        // PII-sanitize, then strip any existing labels/duplication for idempotency.
-        $clean = $this->extractClientOnlyContext($this->stripSummaryBoilerplate($this->sanitizeContext($summary)));
+        // Extract client-only context BEFORE sanitizing so that "Cliente:"/"Técnico:"
+        // markers survive the PII neutralizer in sanitizeContext. Order:
+        //   1. stripSummaryBoilerplate — removes "Problema relatado:" etc. (safe on raw text)
+        //   2. extractClientOnlyContext — filters out Técnico/system lines using the markers
+        //   3. sanitizeContext — removes PII from the now-clean client text
+        $extracted = $this->extractClientOnlyContext($this->stripSummaryBoilerplate($summary));
+        $clean = $this->sanitizeContext($extracted !== '' ? $extracted : $summary);
         if ($clean === '') {
             return '';
         }
@@ -780,7 +785,7 @@ final class SmartHelpService
     private function isSystemSmartHelpLine(string $line): bool
     {
         return preg_match(
-            '/\b(?:t[eé]cnico|sistema|chamado|ticket|solu[cç][aã]o|csat|avalia[cç][aã]o|assumiu|designado|transferido|encerrado|aberto|reaberto|atendimento seguir[aá]|obrigado pela avalia[cç][aã]o)\b/iu',
+            '/\b(?:t[eé]cnico|sistema|chamado|ticket|solu[cç][aã]o|csat|avalia[cç][aã]o|assumiu|designado|transferido|encerrado|aberto|reaberto|atendimento seguir[aá]|obrigado pela avalia[cç][aã]o|mensagens recentes)\b/iu',
             $line
         ) === 1;
     }

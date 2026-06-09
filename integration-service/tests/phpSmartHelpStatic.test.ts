@@ -1092,4 +1092,57 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(svc).toContain('searchVisibleArticles');
     expect(svc).not.toMatch(/->add\(|->update\(|->delete\(/i);
   });
+
+  it('buildTechnicalSummary extracts client context BEFORE sanitizing (marker-preservation fix)', async () => {
+    const svc = await read('integaglpi/src/Service/SmartHelpService.php');
+
+    // $this->extractClientOnlyContext must be called before $this->sanitizeContext in
+    // buildTechnicalSummary so that "Cliente:"/"Técnico:" markers survive the PII neutralizer.
+    const fnStart = svc.indexOf('private function buildTechnicalSummary');
+    const fnEnd   = svc.indexOf('private function extractClientOnlyContext');
+    expect(fnStart).toBeGreaterThanOrEqual(0);
+    expect(fnEnd).toBeGreaterThan(fnStart);
+    const fnBody = svc.slice(fnStart, fnEnd);
+    // Search for actual code calls (not comment mentions)
+    const extractCodePos  = fnBody.indexOf('$this->extractClientOnlyContext');
+    const sanitizeCodePos = fnBody.indexOf('$this->sanitizeContext');
+    expect(extractCodePos).toBeGreaterThanOrEqual(0);
+    // $this->sanitizeContext is called AFTER $this->extractClientOnlyContext (fixed order)
+    expect(sanitizeCodePos).toBeGreaterThan(extractCodePos);
+
+    // "Mensagens recentes" header is classified as a system line so it is never
+    // included in the client-only context even when there are no "Cliente:" lines.
+    expect(svc).toMatch(/function isSystemSmartHelpLine[\s\S]{0,500}mensagens recentes/i);
+  });
+
+  it('PostgresKbCandidateSearchRepository excludes external/AI-generated articles from local search', async () => {
+    const repo = await read('integration-service/src/repositories/postgres/PostgresKbCandidateSearchRepository.ts');
+
+    // "Ajuda externa por IA" articles created via cloud research must never
+    // appear in the local KB search results.
+    expect(repo).toContain("NOT ILIKE '%Ajuda externa por IA%'");
+    expect(repo).toContain("NOT IN ('external_research', 'cloud_preview', 'external_ai')");
+
+    // Both the primary FTS query and the ILIKE fallback carry the exclusion.
+    const firstOccurrence  = repo.indexOf("NOT ILIKE '%Ajuda externa por IA%'");
+    const secondOccurrence = repo.lastIndexOf("NOT ILIKE '%Ajuda externa por IA%'");
+    expect(firstOccurrence).toBeGreaterThanOrEqual(0);
+    expect(secondOccurrence).toBeGreaterThan(firstOccurrence);
+  });
+
+  it('KbRankingService blocks Windows activation KB for isolated-product queries', async () => {
+    const svc = await read('integration-service/src/domain/services/KbRankingService.ts');
+
+    // hasDomainConflict contains the isolated-product exclusion rule
+    expect(svc).toContain('ISOLATED_PRODUCTS');
+    expect(svc).toContain("'micromed'");
+    expect(svc).toContain('queryHasIsolatedProduct');
+    expect(svc).toContain('hitIsWindowsActivation');
+    // The rule appears inside hasDomainConflict (not a separate gate)
+    const fnStart = svc.indexOf('private hasDomainConflict');
+    expect(fnStart).toBeGreaterThanOrEqual(0);
+    const fnBody = svc.slice(fnStart, fnStart + 2500);
+    expect(fnBody).toContain('ISOLATED_PRODUCTS');
+    expect(fnBody).toContain('queryHasIsolatedProduct');
+  });
 });

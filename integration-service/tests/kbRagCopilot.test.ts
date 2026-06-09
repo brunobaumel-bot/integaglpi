@@ -21,6 +21,17 @@
  *  13.  expandedTerms present in result (non-empty array of strings).
  *  14.  kbsScoreBreakdown present and contains score fields for each KB used.
  *  15.  clientContext productOrSystem boost: matching hits rank first.
+ *  16.  no_sufficient_kb when reranking filters all weak/conflicting hits.
+ *  17.  searchPlan included in result for anchored query.
+ *  18.  kbInsufficient=true when plan minimumConfidence exceeds top-ranked score.
+ *
+ * Search Planner fix_001 (integaglpi_kb_rag_ai_search_planner_hybrid_retrieval_fix_001):
+ *  19.  searchPlan present in hits.length===0 early return.
+ *  20.  KB_INSUFFICIENT path fires audit with planSummary.
+ *  21.  tier_4_automation article blocked when sourceTiersAllowed=[tier_1,tier_2].
+ *
+ * Search Planner fix_002 (integaglpi_kb_rag_ai_search_planner_hybrid_retrieval_fix_002):
+ *  22.  empty query returns searchPlan (EMPTY_QUERY_PLAN sentinel), ok=false, no KB, no Ollama.
  */
 
 import { describe, it, expect, vi } from 'vitest';
@@ -183,12 +194,14 @@ describe('KbRagCopilotService', () => {
   });
 
   it('6. kbsUsed only contains retrieved article IDs', async () => {
+    // Use a generic query (no product anchor) so all tiers are allowed and
+    // both default Micromed articles (tier_1) pass the tier filter.
     const hits = [
-      makeHit({ id: 42, title: 'Artigo A' }),
-      makeHit({ id: 99, title: 'Artigo B' }),
+      makeHit({ id: 42, title: 'Artigo A sobre sistema' }),
+      makeHit({ id: 99, title: 'Artigo B sobre permissão' }),
     ];
     const svc = new KbRagCopilotService(makeSearchRepo(hits), null, nullAudit);
-    const result = await svc.generatePlaybook({ query: 'firewall bloqueando api' });
+    const result = await svc.generatePlaybook({ query: 'sistema apresenta falha inesperada' });
 
     const usedIds = result.kbsUsed.map((k) => k.id);
     expect(usedIds).toContain(42);
@@ -418,6 +431,43 @@ describe('KbRagCopilotService', () => {
     }
   });
 
+  it('17. searchPlan is included in result for an anchored query (Micromed)', async () => {
+    // Default hit: rawScore=0.8 with Micromed content — passes both must_terms and minimumConfidence
+    const svc = new KbRagCopilotService(makeSearchRepo(), null, nullAudit);
+    const result = await svc.generatePlaybook({ query: 'micromed nao abre' });
+
+    expect(result.ok).toBe(true);
+    expect(result.searchPlan).toBeDefined();
+    expect(result.searchPlan?.productOrSystem).toBe('Micromed');
+    expect(result.searchPlan?.planSource).toBe('deterministic');
+    expect(result.searchPlan?.minimumConfidence).toBe(0.60);
+    expect(result.searchPlan?.mustTerms).toContain('micromed');
+  });
+
+  it('18. kbInsufficient=true when anchored plan minimumConfidence exceeds top-ranked score', async () => {
+    // Micromed plan: minimumConfidence=0.60, mustTerms=['micromed']
+    // Hit has Micromed content (passes must_terms) but rawScore=0.01 → total ≈ 0.41 < 0.60
+    const lowScoreHit = makeHit({
+      id: 1,
+      rawScore: 0.01,
+      // Keep default Micromed content so must_terms=['micromed'] is satisfied
+    });
+    const svc = new KbRagCopilotService(makeSearchRepo([lowScoreHit]), null, nullAudit);
+    const result = await svc.generatePlaybook({ query: 'micromed nao abre' });
+
+    expect(result.ok).toBe(true);
+    expect(result.kbInsufficient).toBe(true);
+    expect(result.error).toBe('kb_insufficient');
+    expect(result.kbsUsed).toHaveLength(0);
+    expect(result.searchPlan?.productOrSystem).toBe('Micromed');
+    // KB_INSUFFICIENT playbook must have all required sections
+    expect(result.playbook.avisos_de_seguranca.length).toBeGreaterThan(0);
+    expect(result.playbook.resolucao_sugerida.length).toBeGreaterThan(0);
+    expect(typeof result.playbook.resumo_do_incidente).toBe('string');
+    expect(result.deterministicFallback).toBe(true);
+    expect(result.localAiUsed).toBe(false);
+  });
+
   it('16. returns no_sufficient_kb without calling AI when reranking filters weak/conflicting hits', async () => {
     const weakHit = makeHit({
       id: 300,
@@ -442,5 +492,104 @@ describe('KbRagCopilotService', () => {
     expect(result.localAiUsed).toBe(false);
     expect(ollama.generateText).toHaveBeenCalledTimes(1);
     expect((ollama.generateText as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain('Sugira até 5 termos');
+  });
+
+  // ── Search Planner fix_001 — early-return + audit coverage ──────────────────
+
+  it('19. searchPlan present in hits.length===0 early return (Micromed anchor)', async () => {
+    // Empty repo → hits=[] → early return path
+    const svc = new KbRagCopilotService(makeSearchRepo([]), null, nullAudit);
+    const result = await svc.generatePlaybook({ query: 'micromed nao abre' });
+
+    expect(result.ok).toBe(true);
+    expect(result.kbsFound).toBe(0);
+    // FIX: searchPlan must now be present even in the empty-hits path
+    expect(result.searchPlan).toBeDefined();
+    expect(result.searchPlan?.productOrSystem).toBe('Micromed');
+    expect(result.error).toBe('no_sufficient_kb');
+  });
+
+  it('20. KB_INSUFFICIENT path fires audit with planSummary containing product anchor', async () => {
+    const auditSpy: RagAuditPort = { writeRagAudit: vi.fn(async () => {}) };
+    // rawScore=0.01 → total ≈ 0.41 — Micromed mustTerms satisfied but below minimumConfidence=0.60
+    const lowScoreHit = makeHit({ id: 99, rawScore: 0.01 });
+    const svc = new KbRagCopilotService(makeSearchRepo([lowScoreHit]), null, auditSpy);
+
+    const result = await svc.generatePlaybook({ query: 'micromed nao abre', ticketId: 42 });
+    // Small async wait for fire-and-forget audit
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(result.kbInsufficient).toBe(true);
+    expect(result.error).toBe('kb_insufficient');
+
+    // FIX: audit must be called with planSummary even in KB_INSUFFICIENT path
+    expect(auditSpy.writeRagAudit).toHaveBeenCalledOnce();
+    const auditCall = (auditSpy.writeRagAudit as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>;
+    expect(typeof auditCall['planSummary']).toBe('string');
+    expect(String(auditCall['planSummary'])).toContain('Micromed');
+    expect(auditCall['ticketId']).toBe(42);
+    expect(auditCall['deterministicFallback']).toBe(true);
+  });
+
+  it('22. empty query returns ok=false with EMPTY_QUERY_PLAN sentinel — no KB, no Ollama', async () => {
+    const ollama = makeOllama(validPlaybookJson); // would be called if reached — must NOT be called
+    const svc = new KbRagCopilotService(makeSearchRepo(), ollama, nullAudit);
+
+    const result = await svc.generatePlaybook({ query: '' });
+
+    // Gate: ok=false, early exit
+    expect(result.ok).toBe(false);
+    expect(result.error).toBeDefined();
+
+    // FIX: searchPlan must be present even for empty query
+    expect(result.searchPlan).toBeDefined();
+    expect(result.searchPlan?.normalizedQuery).toBe('');
+    expect(result.searchPlan?.productOrSystem).toBeNull();
+    expect(result.searchPlan?.intent).toBe('generic');
+    expect(result.searchPlan?.reason).toBe('empty_query');
+    expect(result.searchPlan?.planSource).toBe('deterministic');
+    expect(result.searchPlan?.mustTerms).toHaveLength(0);
+
+    // Safety: no KB invented, no Ollama call
+    expect(result.kbsUsed).toHaveLength(0);
+    expect(result.kbsFound).toBe(0);
+    expect(result.localAiUsed).toBe(false);
+    expect(ollama.generateText).not.toHaveBeenCalled();
+
+    // Deterministic fallback
+    expect(result.deterministicFallback).toBe(true);
+  });
+
+  it('21. tier_4_automation article blocked when sourceTiersAllowed=[tier_1,tier_2] (Micromed query)', async () => {
+    // Automation article with Micromed in title — must_terms satisfied, score OK, but tier_4 → blocked
+    const automationHit = makeHit({
+      id: 5,
+      rawScore: 0.99,  // extremely high rawScore — should NOT win
+      title: 'Script PowerShell automação micromed reset permissão',
+      categorySuggestion: 'Automação / SRE',
+      tagsJson: ['automation', 'script', 'micromed'],
+      articleType: 'automation',  // <— tier_4
+      symptomsJson: ['micromed nao abre', 'permissao negada'],
+      evidenceSummarySanitized: 'micromed automacao script',
+      problemPattern: 'micromed automacao script reset',
+    });
+    const tier1Hit = makeHit({
+      id: 6,
+      rawScore: 0.40,  // lower rawScore — should win after tier filter
+      title: 'Micromed permissão de pasta bloqueada',
+      categorySuggestion: 'Sistema / Micromed',
+      tagsJson: ['micromed', 'permissao'],
+      articleType: 'procedimento_tecnico',  // <— tier_1
+    });
+
+    const svc = new KbRagCopilotService(makeSearchRepo([automationHit, tier1Hit]), null, nullAudit);
+    const result = await svc.generatePlaybook({ query: 'micromed nao abre' });
+
+    expect(result.ok).toBe(true);
+    // automation article (id=5) must NOT appear in results
+    expect(result.kbsUsed.map((k) => k.id)).not.toContain(5);
+    // tier_1 article (id=6) must survive and be the primary result
+    expect(result.kbsUsed.map((k) => k.id)).toContain(6);
+    expect(result.kbsUsed[0]!.id).toBe(6);
   });
 });

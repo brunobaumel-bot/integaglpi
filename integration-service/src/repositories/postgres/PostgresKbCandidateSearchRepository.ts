@@ -143,6 +143,8 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
         )::float8::text AS ts_score
       FROM ${KB_CANDIDATES_TABLE}
       WHERE status IN (${statusPlaceholders})
+        AND COALESCE(title, '') NOT ILIKE '%Ajuda externa por IA%'
+        AND COALESCE(article_type, '') NOT IN ('external_research', 'cloud_preview', 'external_ai')
         AND (
           setweight(to_tsvector('portuguese', COALESCE(problem_pattern,'') || ' ' || COALESCE(symptoms_json::text,'[]')), 'A') ||
           setweight(to_tsvector('portuguese', COALESCE(evidence_summary_sanitized,'')), 'B') ||
@@ -223,6 +225,8 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
           COALESCE(title,'') || COALESCE(category_suggestion,'') AS search_text
         FROM ${KB_CANDIDATES_TABLE}
         WHERE status IN (${statusPlaceholders})
+          AND COALESCE(title, '') NOT ILIKE '%Ajuda externa por IA%'
+          AND COALESCE(article_type, '') NOT IN ('external_research', 'cloud_preview', 'external_ai')
       ) sub
       WHERE ${tokenConditions}
       ORDER BY ts_score DESC, confidence_score DESC

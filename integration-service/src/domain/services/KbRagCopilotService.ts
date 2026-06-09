@@ -26,16 +26,20 @@
  * Phase: integaglpi_local_kb_rag_technician_copilot_001
  * Adendo 1: integaglpi_local_kb_rag_technician_copilot_001_adendo_pipeline_qdrant_001
  * Adendo 2: integaglpi_local_kb_rag_model_query_expansion_adendum_001
+ * Search Planner: integaglpi_kb_rag_ai_search_planner_hybrid_retrieval_001
  */
 
 import type { KbCandidateSearchRepository, KbCandidateHit } from '../../repositories/postgres/PostgresKbCandidateSearchRepository.js';
 import { QueryExpansionService } from './QueryExpansionService.js';
 import { KbRankingService } from './KbRankingService.js';
 import type { KbClientContext, KbScoreBreakdown } from './KbRankingService.js';
+import { KbSearchPlannerService } from './KbSearchPlannerService.js';
+import type { SearchPlan } from './KbSearchPlannerService.js';
 
 // Re-export for consumers (tests, controllers, buildDependencies)
 export type { KbCandidateSearchRepository, KbCandidateHit } from '../../repositories/postgres/PostgresKbCandidateSearchRepository.js';
 export type { KbClientContext } from './KbRankingService.js';
+export type { SearchPlan } from './KbSearchPlannerService.js';
 
 // ── Ports ─────────────────────────────────────────────────────────────────────
 
@@ -66,6 +70,8 @@ export interface RagAuditEvent {
   localAiUsed: boolean;
   deterministicFallback: boolean;
   technicianId: number | null;
+  /** Summary of the SearchPlan used (product:intent:source). Stored in payload_json — no migration needed. */
+  planSummary?: string | null;
 }
 
 /**
@@ -145,6 +151,16 @@ export interface KbRagResult {
   deterministicFallback: boolean;
   kbsFound: number;
   error?: string;
+  /**
+   * The SearchPlan used for this search (for UI/audit transparency).
+   * Populated whenever KbSearchPlannerService succeeds.
+   */
+  searchPlan?: SearchPlan;
+  /**
+   * True when the plan's minimumConfidence was not met by any ranked article.
+   * The playbook will contain a KB_INSUFFICIENT message to guide the technician.
+   */
+  kbInsufficient?: boolean;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -153,6 +169,32 @@ const TOP_K_DEFAULT = 5;
 const TOP_K_MIN = 3;
 const MAX_CONTEXT_ARTICLES = 5;
 const KB_RAG_CACHE_TTL_SECONDS = 300; // 5 min
+
+/**
+ * SearchPlan returned for empty queries.
+ * No Ollama call, no KB lookup, no PII, no command.
+ * Fulfils the contractual requirement that SearchPlan is present on ALL code paths.
+ */
+const EMPTY_QUERY_PLAN = {
+  normalizedQuery: '',
+  intent: 'generic',
+  productOrSystem: null,
+  domain: null,
+  symptoms: [],
+  mustTerms: [],
+  boostTerms: [],
+  negativeTerms: [],
+  negativeDomains: [],
+  sourceTiersAllowed: [
+    'tier_1_product_specific',
+    'tier_2_operational_kb',
+    'tier_3_generic_playbook',
+  ],
+  minimumConfidence: 0.25,
+  topK: TOP_K_DEFAULT,
+  reason: 'empty_query',
+  planSource: 'deterministic',
+} as const satisfies SearchPlan;
 
 // Snippet limits per article (never full KB)
 const MAX_SYMPTOMS_PER_ARTICLE = 3;
@@ -432,11 +474,52 @@ function mergePlaybook(
   };
 }
 
+// ── KB_INSUFFICIENT playbook ──────────────────────────────────────────────────
+
+/**
+ * Playbook returned when the plan's minimumConfidence is not met.
+ * Guides the technician to refine the query or consult N2.
+ * All 12 sections present; nivel_de_confianca = 0.
+ */
+function buildKbInsufficientPlaybook(query: string): TechnicianPlaybook {
+  const shortQuery = piiGuard(query).slice(0, 80);
+  return {
+    resumo_do_incidente: `KB insuficiente — nenhum artigo atingiu o limiar de confiança mínima para: "${shortQuery}". Consulte manualmente ou refine a consulta.`,
+    sintomas_identificados: ['KB local não retornou resultado com confiança suficiente para a consulta informada.'],
+    hipoteses_por_camada: [
+      'Verifique se a KB foi indexada com as palavras-chave corretas para este produto/sistema.',
+      'Tente reformular a consulta com termos mais específicos (nome do produto, sintoma exato).',
+    ],
+    perguntas_de_triagem: [
+      'Qual é o produto/sistema exato afetado?',
+      'Qual é o sintoma específico observado?',
+      'Há mensagem de erro visível?',
+      'O problema é recorrente ou ocorreu pela primeira vez?',
+    ],
+    verificacoes_ou_comandos_sugeridos: [
+      'Consulte a base de conhecimento manualmente com termos alternativos.',
+      'Escale para N2 se o produto não constar na KB local.',
+    ],
+    causas_possiveis: ['Nenhum artigo KB adequado encontrado com confiança suficiente para esta consulta.'],
+    resolucao_sugerida: [
+      'Refine a busca com termos mais específicos (nome do produto, versão, sintoma).',
+      'Consulte o suporte especializado para este produto/sistema.',
+    ],
+    validacao: ['Confirme que o problema foi identificado via consulta manual ou N2.'],
+    escalonamento: ['Escale imediatamente se o problema for crítico ou afetar muitos usuários.'],
+    riscos_rollback: [],
+    kbs_utilizadas: [],
+    nivel_de_confianca: 0,
+    avisos_de_seguranca: SAFETY_WARNINGS_ALWAYS,
+  };
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 export class KbRagCopilotService {
   private readonly queryExpansionService: QueryExpansionService;
   private readonly rankingService: KbRankingService;
+  private readonly plannerService: KbSearchPlannerService;
 
   public constructor(
     private readonly searchRepo: KbCandidateSearchRepository,
@@ -445,10 +528,13 @@ export class KbRagCopilotService {
     private readonly cachePort: KbRagCachePort | null = null,
     queryExpansionService?: QueryExpansionService,
     rankingService?: KbRankingService,
+    plannerService?: KbSearchPlannerService,
   ) {
     // Share ollamaPort with QueryExpansionService (structurally compatible)
     this.queryExpansionService = queryExpansionService ?? new QueryExpansionService(ollamaPort);
     this.rankingService = rankingService ?? new KbRankingService();
+    // Planner uses deterministic mode only (no cloud AI — null ollamaPort is correct)
+    this.plannerService = plannerService ?? new KbSearchPlannerService(null);
   }
 
   public async generatePlaybook(input: KbRagInput): Promise<KbRagResult> {
@@ -460,6 +546,39 @@ export class KbRagCopilotService {
     // 1. PII guard on raw query
     const safeQuery = piiGuard(rawQuery);
     const queryHash = sha256Hex(safeQuery);
+
+    // 1b. Build SearchPlan (deterministic; fail-safe — never blocks the pipeline)
+    let searchPlan: SearchPlan | null = null;
+    try {
+      searchPlan = await this.plannerService.buildPlan(safeQuery, input.clientContext ?? null);
+    } catch {
+      // Plan failure is non-fatal — proceed without plan
+    }
+
+    // fireAudit: fire-and-forget audit helper used on ALL exit paths.
+    // Captures queryHash + input by closure; reads searchPlan by reference (let — updated after step 1b).
+    const fireAudit = (
+      kbIdsUsed: number[],
+      rankingScores: number[],
+      localAiUsed: boolean,
+      deterministicFallback: boolean,
+    ) => {
+      if (this.auditPort) {
+        this.auditPort.writeRagAudit({
+          ticketId: input.ticketId ?? null,
+          queryHash,
+          kbIdsUsed,
+          rankingScores,
+          source: 'local_kb',
+          localAiUsed,
+          deterministicFallback,
+          technicianId: input.technicianId ?? null,
+          planSummary: searchPlan
+            ? `${searchPlan.productOrSystem ?? 'generic'}:${searchPlan.intent}:${searchPlan.planSource}`
+            : null,
+        }).catch(() => {});
+      }
+    };
 
     // 2. Query expansion (deterministic + optional local AI)
     let expansionResult = { terms: [] as string[], ftsQuery: safeQuery, aiEnriched: false };
@@ -507,10 +626,12 @@ export class KbRagCopilotService {
     }
 
     if (hits.length === 0) {
+      fireAudit([], [], false, true);
       return {
         ok: true,
         query: rawQuery,
         expandedTerms,
+        searchPlan: searchPlan ?? undefined,
         playbook: buildDeterministicPlaybook(safeQuery, [], []),
         kbsUsed: [],
         kbsScoreBreakdown: [],
@@ -518,39 +639,80 @@ export class KbRagCopilotService {
         localAiUsed: false,
         deterministicFallback: true,
         kbsFound: 0,
+        error: 'no_sufficient_kb',
       };
     }
 
-    // 6. Hybrid reranking
-    const ranked = this.rankingService.rankHits(hits, queryTokens, input.clientContext, topK);
-    if (ranked.length === 0) {
+    // 6. Hybrid reranking (with plan for must_terms / negative_domains hard filters)
+    const ranked = this.rankingService.rankHits(hits, queryTokens, input.clientContext, topK, searchPlan);
+
+    // 6a. Source tier filter — enforces sourceTiersAllowed from SearchPlan.
+    // tier_1 always beats tier_3 even when tier_3 has higher raw score.
+    // tier_4_automation is never included unless explicitly allowed (not in any plan today).
+    const tieredRanked = searchPlan?.sourceTiersAllowed
+      ? this.rankingService.applyTierFilter(ranked, searchPlan.sourceTiersAllowed)
+      : ranked;
+
+    if (tieredRanked.length === 0) {
+      // Distinguish cause: tier filter removed all ranked results (kb_insufficient)
+      // vs domain/must_terms/score threshold removed them all (no_sufficient_kb).
+      const tierClearedAll = ranked.length > 0 && (searchPlan?.productOrSystem ?? null) !== null;
+      fireAudit([], [], false, true);
       return {
         ok: true,
         query: rawQuery,
         expandedTerms,
-        playbook: buildDeterministicPlaybook(safeQuery, [], []),
+        searchPlan: searchPlan ?? undefined,
+        kbInsufficient: tierClearedAll || undefined,
+        playbook: tierClearedAll
+          ? buildKbInsufficientPlaybook(safeQuery)
+          : buildDeterministicPlaybook(safeQuery, [], []),
         kbsUsed: [],
         kbsScoreBreakdown: [],
         source: 'deterministic_fallback',
         localAiUsed: false,
         deterministicFallback: true,
         kbsFound: hits.length,
-        error: 'no_sufficient_kb',
+        error: tierClearedAll ? 'kb_insufficient' : 'no_sufficient_kb',
       };
     }
 
-    const kbsUsed: KbUsed[] = ranked.map(({ hit, breakdown }) => ({
+    // 6b. KB_INSUFFICIENT confidence check:
+    // Only for anchored plans (productOrSystem set) to avoid false positives on generic queries.
+    if (searchPlan !== null && searchPlan.productOrSystem !== null) {
+      const topScore = tieredRanked[0]!.breakdown.total;
+      if (topScore < searchPlan.minimumConfidence) {
+        fireAudit([], [], false, true);
+        return {
+          ok: true,
+          query: rawQuery,
+          expandedTerms,
+          searchPlan,
+          kbInsufficient: true,
+          playbook: buildKbInsufficientPlaybook(safeQuery),
+          kbsUsed: [],
+          kbsScoreBreakdown: [],
+          source: 'deterministic_fallback',
+          localAiUsed: false,
+          deterministicFallback: true,
+          kbsFound: hits.length,
+          error: 'kb_insufficient',
+        };
+      }
+    }
+
+    const kbsUsed: KbUsed[] = tieredRanked.map(({ hit, breakdown }) => ({
       id: hit.id,
       title: hit.title,
       category: hit.categorySuggestion,
       score: breakdown.total,
     }));
 
-    const kbsScoreBreakdown: KbScoreEntry[] = ranked.map(({ hit, breakdown }) =>
+    const kbsScoreBreakdown: KbScoreEntry[] = tieredRanked.map(({ hit, breakdown }) =>
       scoreBreakdownToEntry(hit.id, hit.title, breakdown),
     );
 
-    const articles = ranked.map(({ hit }) => hit);
+    const articles = tieredRanked.map(({ hit }) => hit);
 
     // 7. Local AI generation
     let localAiUsed = false;
@@ -574,24 +736,14 @@ export class KbRagCopilotService {
       deterministicFallback = true;
     }
 
-    // 8. Audit (fire-and-forget)
-    if (this.auditPort) {
-      this.auditPort.writeRagAudit({
-        ticketId: input.ticketId ?? null,
-        queryHash,
-        kbIdsUsed: kbsUsed.map((k) => k.id),
-        rankingScores: kbsUsed.map((k) => k.score),
-        source: 'local_kb',
-        localAiUsed,
-        deterministicFallback,
-        technicianId: input.technicianId ?? null,
-      }).catch(() => {});
-    }
+    // 8. Audit — fire-and-forget; planSummary included via fireAudit helper on all paths
+    fireAudit(kbsUsed.map((k) => k.id), kbsUsed.map((k) => k.score), localAiUsed, deterministicFallback);
 
     return {
       ok: true,
       query: rawQuery,
       expandedTerms,
+      searchPlan: searchPlan ?? undefined,
       playbook,
       kbsUsed,
       kbsScoreBreakdown,
@@ -603,10 +755,13 @@ export class KbRagCopilotService {
   }
 
   private emptyResult(error: string): KbRagResult {
+    // searchPlan is always included (contract: all paths must carry a plan).
+    // EMPTY_QUERY_PLAN is a zero-risk sentinel — no Ollama call, no KB lookup, no PII.
     return {
       ok: false,
       query: '',
       expandedTerms: [],
+      searchPlan: EMPTY_QUERY_PLAN,
       playbook: buildDeterministicPlaybook('', [], []),
       kbsUsed: [],
       kbsScoreBreakdown: [],

@@ -26,15 +26,17 @@ export class PostgresRagAuditRepository implements RagAuditPort {
       deterministic_fallback: event.deterministicFallback,
       technician_id: event.technicianId,
       kb_count: event.kbIdsUsed.length,
+      // Search Planner summary (product:intent:source) — stored in payload_json, no migration needed
+      plan_summary: event.planSummary ?? null,
     };
 
     await this.executor.query(
       `
         INSERT INTO ${AUDIT_TABLE} (
-          correlation_id, ticket_id, event_type, status, source, payload_json, created_at
+          correlation_id, ticket_id, event_type, status, severity, source, payload_json, created_at
         )
         VALUES (
-          $1::text, $2::bigint, 'kb_rag_search', 'ok', 'local_kb', $3::jsonb, NOW()
+          $1::text, $2::bigint, 'kb_rag_search', 'ok', 'info', 'local_kb', $3::jsonb, NOW()
         )
       `,
       [
