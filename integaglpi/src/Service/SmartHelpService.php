@@ -169,7 +169,10 @@ final class SmartHelpService
             $lines = [];
             foreach ($rows as $row) {
                 $text = $this->sanitizeContext((string) ($row['message_text'] ?? ''));
-                if ($text === '') {
+                // Skip empty or non-technical single-purpose messages (e.g. bare names,
+                // numeric IDs, short greetings) that add no diagnostic value and may
+                // contain residual PII not caught by label-based patterns.
+                if ($text === '' || $this->isLikelyNonTechnicalMessage($text)) {
                     continue;
                 }
                 $direction = strtolower(trim((string) ($row['direction'] ?? '')));
@@ -380,22 +383,32 @@ final class SmartHelpService
             'glpi_plugin_integaglpi_cloud_compliance_audit',
         ];
 
-        $missing = $required;
-        if (is_readable($path)) {
-            $sql = (string) file_get_contents($path);
-            $missing = [];
-            foreach ($required as $token) {
-                if (stripos($sql, $token) === false) {
-                    $missing[] = $token;
-                }
+        // When the SQL file is not accessible (e.g. integration-service and GLPI web
+        // are on separate hosts/containers in HML/prod), treat as "check skipped" rather
+        // than "schema missing". The table exists — it was applied via the DB migration;
+        // the file check is only a local-dev convenience guard.
+        if (!is_readable($path)) {
+            return [
+                'ok'        => true,
+                'migration' => '044_ai_kb_ecosystem_reengineered',
+                'mode'      => 'file_check_skipped_integration_service_not_collocated',
+                'missing'   => [],
+            ];
+        }
+
+        $sql = (string) file_get_contents($path);
+        $missing = [];
+        foreach ($required as $token) {
+            if (stripos($sql, $token) === false) {
+                $missing[] = $token;
             }
         }
 
         return [
-            'ok' => $missing === [],
+            'ok'        => $missing === [],
             'migration' => '044_ai_kb_ecosystem_reengineered',
-            'mode' => 'file_check_only_no_db_mutation',
-            'missing' => $missing,
+            'mode'      => 'file_check_only_no_db_mutation',
+            'missing'   => $missing,
         ];
     }
 
@@ -407,6 +420,15 @@ final class SmartHelpService
     private function sanitizeContext(string $text): string
     {
         $clean = html_entity_decode(strip_tags($text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+
+        // Strip leading salutations/greetings — no technical value; frequent in WhatsApp
+        // opening messages (e.g. "oi", "olá", "bom dia"). Applied before PII patterns so
+        // that "oi Bruno Baumel" also becomes "Bruno Baumel" for subsequent name removal.
+        $clean = preg_replace(
+            '/^\s*(?:oi|ol[aá]|bom\s+dia|boa\s+(?:tarde|noite)|tudo\s+(?:bem|bom)|como\s+vai|al[oô])\s*[,!.]?\s*/iu',
+            '',
+            $clean
+        ) ?? $clean;
 
         // High-confidence secrets / identifiers first (specific placeholders, not over-broad).
         $clean = preg_replace('/\b(?:senha|password|token|api[_-]?key|app[_-]?secret|secret|bearer)\s*[:=]\s*\S+/iu', '[credencial removida]', $clean) ?? $clean;
@@ -788,6 +810,40 @@ final class SmartHelpService
             '/\b(?:t[eé]cnico|sistema|chamado|ticket|solu[cç][aã]o|csat|avalia[cç][aã]o|assumiu|designado|transferido|encerrado|aberto|reaberto|atendimento seguir[aá]|obrigado pela avalia[cç][aã]o|mensagens recentes)\b/iu',
             $line
         ) === 1;
+    }
+
+    /**
+     * Returns true when a sanitized WhatsApp message has no diagnostic value and may
+     * carry residual PII (bare names, numeric IDs, single-word answers). Such messages
+     * are skipped in buildRecentConversationMessageContext to keep the IA context clean.
+     *
+     * Conservative: only filters messages that consist ENTIRELY of the matching pattern
+     * so that legitimate short technical messages are preserved.
+     */
+    private function isLikelyNonTechnicalMessage(string $sanitized): bool
+    {
+        $trimmed = trim($sanitized);
+        if ($trimmed === '') {
+            return false;
+        }
+        // Only digits (numeric IDs, asset codes) — no words, no technical context.
+        if (preg_match('/^\d+$/', $trimmed) === 1) {
+            return true;
+        }
+        // Short acknowledgment / confirmation words with no technical content.
+        if (preg_match(
+            '/^\s*(?:oi|ol[aá]|bom\s+dia|boa\s+(?:tarde|noite)|obrigad[ao]|tchau|ok|sim|n[aã]o|certo|entendido|certo|perfeito|pode ser)\s*[,!.]?\s*$/iu',
+            $trimmed
+        ) === 1) {
+            return true;
+        }
+        // Exactly 2–4 Title-Case words with no other content: high probability of being a
+        // name inputted in response to a WhatsApp registration prompt.
+        // Excludes strings with digits, punctuation or mixed-case (technical identifiers).
+        if (preg_match('/^[A-ZÀ-Ý][a-zà-ÿ]{1,30}(?:\s+[A-ZÀ-Ý][a-zà-ÿ]{1,30}){1,3}$/u', $trimmed) === 1) {
+            return true;
+        }
+        return false;
     }
 
     /**

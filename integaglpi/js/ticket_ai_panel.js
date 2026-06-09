@@ -854,6 +854,17 @@
     if (!target || !playbook || typeof playbook !== 'object') { return false; }
     var kbs = result.kbsUsed || result.kbs_used || playbook.kbs_utilizadas || [];
     var confidence = Number(playbook.nivel_de_confianca || 0) || 0;
+    var localResolved = !!(result.localResolved || result.local_resolved);
+
+    // At very low confidence (< 10%) and unresolved: a generic playbook is not actionable.
+    // Show a triage notice instead so the technician asks clarifying questions first.
+    if (confidence < 0.1 && !localResolved) {
+      target.innerHTML = '<div class="alert alert-secondary py-2 mb-0 small">'
+        + esc('Nenhuma KB local com confiança suficiente para este contexto. '
+          + 'Use as perguntas de triagem acima para coletar mais informações antes de consultar a nuvem.')
+        + '</div>';
+      return false;
+    }
     var summary = viewText(playbook.resumo_do_incidente || '');
     var copyText = [
       summary ? ('Resumo: ' + summary) : '',
@@ -1154,15 +1165,31 @@
   function handleExternal(panel) {
     var requestId = nextRequestId(panel, 'external_preview');
     setStatus(panel, 'sanitizando contexto', 'info');
+    var cloudEl = panel.querySelector('.js-smart-help-cloud');
     var msgEl = panel.querySelector('.js-smart-help-message');
     post(panel, 'prepare_external_context', { technical_summary: currentSummary(panel) }, { refreshCsrfBeforePost: true }).then(function (resp) {
       if (!isCurrentRequest(panel, requestId)) { return; }
+      // Error at the PHP wrapper level (CSRF, permission, network).
       if (resp && resp.ok === false && resp.error && !resp.result) {
         if (msgEl) { msgEl.textContent = resp.message || 'Pré-visualização indisponível.'; }
         setStatus(panel, resp.error === 'timeout' ? 'tempo esgotado' : 'erro de rede', 'danger');
         return;
       }
       var r = resp && resp.result ? resp.result : {};
+      // Node service error (e.g. unconfigured, integration-service unreachable).
+      // Distinguish from PII-blocked: PII block has sanitized_text but safe_for_cloud=false;
+      // a service error has empty sanitized_text with no removed_kinds and ok=false.
+      var hasContent = !!(r.cloud_safe_context || r.sanitized_text || r.sanitizedText);
+      if (r.ok === false && !hasContent) {
+        var svcMsg = r.message || 'Pesquisa externa indisponível. Verifique a configuração do provider de IA externo.';
+        if (cloudEl) {
+          cloudEl.innerHTML = '<div class="alert alert-warning py-2 mb-0 small">'
+            + esc(svcMsg) + '</div>';
+        }
+        if (msgEl) { msgEl.textContent = ''; }
+        setStatus(panel, 'nuvem indisponível', 'secondary');
+        return;
+      }
       var preview = renderExternalPreview(panel, r);
       saveFlow(panel, { step: 'cloud_ready', view_model: preview }, 'external_preview');
       saveFlow(panel, { step: 'cloud_ready' }, 'workflow');

@@ -223,8 +223,13 @@ try {
 
     $rawMessage = (string) ($response['body']['message'] ?? '');
     $displayMessage = $response['success'] ? $rawMessage : integaglpiCopilotUserMessage($rawMessage);
-    if (!$response['success'] && isset($response['body']['message'])) {
-        $response['body']['message'] = $displayMessage;
+    if (!$response['success']) {
+        // Overwrite both message fields in the nested body so no raw error code or
+        // untranslated Node display_message can leak to the JS copilotFriendlyMessage path.
+        if (isset($response['body']['message'])) {
+            $response['body']['message'] = $displayMessage;
+        }
+        $response['body']['display_message'] = $displayMessage;
     }
     integaglpiCopilotJsonResponse([
         'success' => $response['success'],
