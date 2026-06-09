@@ -43,6 +43,36 @@ import type { SearchPlan, SourceTier } from './KbSearchPlannerService.js';
 
 // ── Domain types ──────────────────────────────────────────────────────────────
 
+/**
+ * Feedback bias map for non-punitive ranking (F2.2 — FEEDBACK_RANKING_ENABLED).
+ *
+ * Preconditions guaranteed by the caller:
+ *   - Caller only passes this when FEEDBACK_RANKING_ENABLED=true (env/flag).
+ *   - Only articles with totalVotes >= MIN_VOTES_FOR_RANKING are included in byKey.
+ *   - Identity of individual technicians is NEVER included here — aggregated scores only.
+ *
+ * Multiplier formula:
+ *   helpfulness score ∈ [0, 1] (Laplace-smoothed from PostgresKbFeedbackRepository)
+ *   multiplier = 0.80 + score × 0.40  → [0.80, 1.20]
+ *   score=0.5 (neutral / no data) → multiplier=1.0 (no effect)
+ *   score→1.0 (very helpful)     → multiplier→1.2 (+20%)
+ *   score→0.0 (never helpful)    → multiplier→0.8 (−20% — soft, never eliminates)
+ *
+ * Invariants:
+ *   - Hard domain filters and mustTerms exclusions run BEFORE the multiplier.
+ *   - Score cap at 1.0 is applied AFTER the multiplier.
+ *   - A single negative vote NEVER penalises (volume threshold enforced by caller).
+ */
+export interface KbFeedbackBias {
+  /** Map from candidateKey → Laplace-smoothed helpfulness score [0, 1]. */
+  byKey: ReadonlyMap<string, number>;
+  /**
+   * Minimum votes that were required before inclusion in byKey.
+   * Informational — allows F2.4 dashboard to show this threshold.
+   */
+  appliedMinVotes: number;
+}
+
 export interface KbClientContext {
   entityId?: number | null;
   clientName?: string | null;
@@ -141,6 +171,8 @@ export class KbRankingService {
    * @param clientContext Optional client context for boost (never hard filter).
    * @param topK          Maximum results to return (3–5).
    * @param plan          Optional SearchPlan for plan-based hard filters (mustTerms, negativeDomains).
+   * @param feedbackBias  F2.2 — pre-fetched helpfulness bias (null = FEEDBACK_RANKING_ENABLED=false).
+   *                      Caller is responsible for enforcing the feature flag and min votes threshold.
    */
   public rankHits(
     hits: KbCandidateHit[],
@@ -148,6 +180,7 @@ export class KbRankingService {
     clientContext?: KbClientContext | null,
     topK = 5,
     plan?: SearchPlan | null,
+    feedbackBias?: KbFeedbackBias | null,
   ): RankedKbHit[] {
     const safeTopK = Math.max(3, Math.min(5, topK));
 
@@ -167,6 +200,8 @@ export class KbRankingService {
           ? r.breakdown.total >= 0
           : r.breakdown.total >= MIN_SCORE_THRESHOLD,
       )
+      // F2.2 — apply non-punitive feedback multiplier (only when bias provided)
+      .map((r) => feedbackBias ? this.applyFeedbackBias(r, feedbackBias) : r)
       .sort((a, b) => b.breakdown.total - a.breakdown.total)
       .slice(0, safeTopK);
   }
@@ -332,6 +367,28 @@ export class KbRankingService {
         if (prioA !== prioB) return prioA - prioB; // lower number = higher rank
         return b.breakdown.total - a.breakdown.total; // same tier: score desc
       });
+  }
+
+  /**
+   * F2.2 — Apply non-punitive feedback multiplier.
+   *
+   * Multiplier formula: 0.80 + helpfulnessScore × 0.40 → [0.80, 1.20]
+   * Neutral score (0.5) → multiplier 1.0 (no effect).
+   * Applied AFTER hard filters so exclusion logic is never softened.
+   * Score is capped at 1.0 after the multiplier.
+   */
+  private applyFeedbackBias(ranked: RankedKbHit, bias: KbFeedbackBias): RankedKbHit {
+    const score = bias.byKey.get(ranked.hit.candidateKey);
+    if (score === undefined) {
+      // No bias entry → article either has insufficient votes or is new → neutral (no change)
+      return ranked;
+    }
+    const multiplier = 0.80 + score * 0.40; // [0.80, 1.20]
+    const adjustedTotal = Number(Math.min(1.0, ranked.breakdown.total * multiplier).toFixed(4));
+    return {
+      hit: ranked.hit,
+      breakdown: { ...ranked.breakdown, total: adjustedTotal },
+    };
   }
 
   private hasDomainConflict(queryTokens: string[], hit: KbCandidateHit, plan?: SearchPlan | null): boolean {

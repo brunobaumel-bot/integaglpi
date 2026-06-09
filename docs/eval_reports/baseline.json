@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "phase": "integaglpi_v9_kb_quality_001",
+  "deliverable": "F2.1",
+  "note": "Baseline inicial — commitado manualmente na entrega do golden set. Atualizar SOMENTE por commit manual revisado após smoke HML aprovado.",
+  "golden_set_version": "1.0.0",
+  "total_queries": 50,
+  "metrics": {
+    "product_detection_rate": 0.86,
+    "tier_coverage_rate": 1.0,
+    "avg_faithfulness": null,
+    "faithfulness_sample_size": 0
+  },
+  "tolerance_thresholds": {
+    "tier_coverage_min": 0.75,
+    "product_detection_min": 0.70,
+    "faithfulness_max_drop": 0.05
+  },
+  "committed_at": "2026-06-09",
+  "committed_by": "integaglpi_v9_kb_quality_001-F2.1-initial"
+}

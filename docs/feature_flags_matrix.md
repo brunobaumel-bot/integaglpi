@@ -125,6 +125,23 @@ Regras:
 
 Safe default rule: if owner or gate evidence is missing, keep the flag OFF or read-only.
 
+## V9 — KB Quality Pipeline (`integaglpi_v9_kb_quality_001`)
+
+PHASE: `integaglpi_v9_kb_quality_001` — Updated: 2026-06-09
+
+| Flag | Default seguro | Domínio | Efeito | Gate mínimo |
+| --- | --- | --- | --- | --- |
+| `FEEDBACK_RANKING_ENABLED` | `false` | KB ranking | `false`: ranking puro (lexical + field weights). `true`: aplica multiplicador não-punitivo (0.80–1.20) por helpfulness score Laplace-smoothed. Caller aplica threshold `MIN_VOTES_FOR_RANKING`. | Smoke local + Cursor review + `npm run test:kb-regression` verde |
+| `RERANKER_ENABLED` | `false` | KB cross-encoder | `false`: sem re-ranking (latência mínima). `true`: re-ranking dos top-5 candidatos via Ollama cross-encoder local. Timeout 1500ms/inferência; fallback para ranking original em timeout. | Ollama instalado + smoke latência + Cursor review |
+
+Regras:
+- Ambas as flags OFF = comportamento pré-V9 preservado (nenhuma regressão).
+- `FEEDBACK_RANKING_ENABLED=true` jamais elimina um artigo — apenas ajusta score (multiplier ≥ 0.8).
+- `RERANKER_ENABLED=true` jamais acessa cloud, MariaDB ou expõe PII.
+- Nenhuma das flags muta ticket, envia WhatsApp ou publica KB automaticamente.
+- Identidade de técnicos individuais NUNCA inclusa nos mapas de bias — apenas scores agregados.
+- Alterar qualquer flag exige gate humano + smoke em TESTE antes de HOMOLOGAÇÃO.
+
 ## V8 — Triagem Nativa GLPI (fase 3: Forms integrados)
 
 PHASE: `integaglpi_v8_forms_native_triage_integration_001` — Updated: 2026-06-06

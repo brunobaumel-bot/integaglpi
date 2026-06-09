@@ -15,7 +15,9 @@
     "start": "node dist/main.js",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:kb-regression": "vitest run tests/kbGoldenSet.test.ts",
+    "test:kb-ragas": "tsx tests/kbRagasHarness.ts"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
