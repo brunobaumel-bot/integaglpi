@@ -2,6 +2,32 @@ import type { SqlExecutor } from '../../infra/db/postgres.js';
 import type { LogmeinHealthSummary, LogmeinHostContext, LogmeinReadonlyCacheRepository } from '../../domain/services/LogmeinReadonlyContextService.js';
 import { LOGMEIN_HEALTH_THRESHOLDS } from '../../domain/services/LogmeinReadonlyContextService.js';
 
+// ── F2B — Coverage types ──────────────────────────────────────────────────────
+
+export interface CoverageHostEntry {
+  externalId: string;
+  hostName: string;
+  groupExternalId: string;
+  groupName: string;
+  /** null means no tag set. */
+  equipmentTag: string | null;
+  lastSeenAt: string | null;
+}
+
+export interface CoverageGroupEntry {
+  groupExternalId: string;
+  groupName: string;
+  /** Number of hosts in this group. */
+  hostCount: number;
+}
+
+export interface CoveragePage<T> {
+  entries: T[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 const ASSET_CACHE_TABLE = 'glpi_plugin_integaglpi_logmein_asset_cache';
 const GROUP_MAP_TABLE = 'glpi_plugin_integaglpi_logmein_group_maps';
 const SYNC_AUDIT_TABLE = 'glpi_plugin_integaglpi_logmein_sync_audit';
@@ -384,5 +410,187 @@ export class PostgresLogmeinReadonlyRepository implements LogmeinReadonlyCacheRe
 
     const row = result.rows[0];
     return row ? toHost(row) : null;
+  }
+
+  // ── F2B — Coverage listings (read-only) ───────────────────────────────────
+
+  /**
+   * Hosts with no confirmed GLPI entity mapping.
+   * Uses glpi_entity_candidate_id IS NULL on the asset_cache —
+   * no JOIN to group_maps so result reflects raw cache state.
+   *
+   * Safety: read-only, parameterised, no PII (no MAC/IP/user returned).
+   */
+  public async listHostsWithoutEntity(
+    limit = 100,
+    offset = 0,
+  ): Promise<CoveragePage<CoverageHostEntry>> {
+    const safeLimit = Math.max(1, Math.min(limit, 500));
+    const safeOffset = Math.max(0, offset);
+
+    const countResult = await this.safeQuery<{ total: string }>(
+      `SELECT COUNT(*)::text AS total FROM ${ASSET_CACHE_TABLE}
+       WHERE glpi_entity_candidate_id IS NULL`,
+    );
+    const total = parseInt(countResult[0]?.total ?? '0', 10);
+
+    interface CoverageHostRow {
+      logmein_host_external_id: string;
+      host_name_sanitized: string;
+      logmein_group_external_id: string;
+      logmein_group_name: string;
+      equipment_tag: string | null;
+      last_seen_at: Date | string | null;
+    }
+
+    const dataResult = await this.executor.query<CoverageHostRow>(
+      `
+        SELECT
+          logmein_host_external_id,
+          host_name_sanitized,
+          logmein_group_external_id,
+          logmein_group_name,
+          equipment_tag,
+          last_seen_at
+        FROM ${ASSET_CACHE_TABLE}
+        WHERE glpi_entity_candidate_id IS NULL
+        ORDER BY logmein_group_name ASC, host_name_sanitized ASC
+        LIMIT $1::int OFFSET $2::int
+      `,
+      [safeLimit, safeOffset],
+    );
+
+    return {
+      entries: dataResult.rows.map((r) => ({
+        externalId: r.logmein_host_external_id,
+        hostName: r.host_name_sanitized,
+        groupExternalId: r.logmein_group_external_id,
+        groupName: r.logmein_group_name,
+        equipmentTag: r.equipment_tag ?? null,
+        lastSeenAt: dateText(r.last_seen_at),
+      })),
+      total,
+      limit: safeLimit,
+      offset: safeOffset,
+    };
+  }
+
+  /**
+   * Distinct groups that have no active entity mapping in group_maps.
+   * A group "without entity" means all its hosts will have no confirmed entity.
+   */
+  public async listGroupsWithoutEntity(
+    limit = 100,
+    offset = 0,
+  ): Promise<CoveragePage<CoverageGroupEntry>> {
+    const safeLimit = Math.max(1, Math.min(limit, 500));
+    const safeOffset = Math.max(0, offset);
+
+    const countResult = await this.safeQuery<{ total: string }>(
+      `
+        SELECT COUNT(DISTINCT a.logmein_group_external_id)::text AS total
+        FROM ${ASSET_CACHE_TABLE} a
+        LEFT JOIN ${GROUP_MAP_TABLE} m
+          ON m.logmein_group_external_id = a.logmein_group_external_id
+         AND m.is_active = TRUE
+        WHERE COALESCE(a.logmein_group_external_id, '') <> ''
+          AND m.id IS NULL
+      `,
+    );
+    const total = parseInt(countResult[0]?.total ?? '0', 10);
+
+    interface GroupCoverageRow {
+      logmein_group_external_id: string;
+      logmein_group_name: string;
+      host_count: string;
+    }
+
+    const dataResult = await this.executor.query<GroupCoverageRow>(
+      `
+        SELECT
+          a.logmein_group_external_id,
+          a.logmein_group_name,
+          COUNT(a.logmein_host_external_id)::text AS host_count
+        FROM ${ASSET_CACHE_TABLE} a
+        LEFT JOIN ${GROUP_MAP_TABLE} m
+          ON m.logmein_group_external_id = a.logmein_group_external_id
+         AND m.is_active = TRUE
+        WHERE COALESCE(a.logmein_group_external_id, '') <> ''
+          AND m.id IS NULL
+        GROUP BY a.logmein_group_external_id, a.logmein_group_name
+        ORDER BY COUNT(a.logmein_host_external_id) DESC, a.logmein_group_name ASC
+        LIMIT $1::int OFFSET $2::int
+      `,
+      [safeLimit, safeOffset],
+    );
+
+    return {
+      entries: dataResult.rows.map((r) => ({
+        groupExternalId: r.logmein_group_external_id,
+        groupName: r.logmein_group_name,
+        hostCount: parseInt(r.host_count, 10) || 0,
+      })),
+      total,
+      limit: safeLimit,
+      offset: safeOffset,
+    };
+  }
+
+  /**
+   * Hosts with no equipment tag (or empty string).
+   * These hosts cannot be correlated to a GLPI computer asset.
+   */
+  public async listHostsWithoutTag(
+    limit = 100,
+    offset = 0,
+  ): Promise<CoveragePage<CoverageHostEntry>> {
+    const safeLimit = Math.max(1, Math.min(limit, 500));
+    const safeOffset = Math.max(0, offset);
+
+    const countResult = await this.safeQuery<{ total: string }>(
+      `SELECT COUNT(*)::text AS total FROM ${ASSET_CACHE_TABLE}
+       WHERE COALESCE(equipment_tag, '') = ''`,
+    );
+    const total = parseInt(countResult[0]?.total ?? '0', 10);
+
+    interface CoverageHostRow {
+      logmein_host_external_id: string;
+      host_name_sanitized: string;
+      logmein_group_external_id: string;
+      logmein_group_name: string;
+      equipment_tag: string | null;
+      last_seen_at: Date | string | null;
+    }
+
+    const dataResult = await this.executor.query<CoverageHostRow>(
+      `
+        SELECT
+          logmein_host_external_id,
+          host_name_sanitized,
+          logmein_group_external_id,
+          logmein_group_name,
+          equipment_tag,
+          last_seen_at
+        FROM ${ASSET_CACHE_TABLE}
+        WHERE COALESCE(equipment_tag, '') = ''
+        ORDER BY logmein_group_name ASC, host_name_sanitized ASC
+        LIMIT $1::int OFFSET $2::int
+      `,
+      [safeLimit, safeOffset],
+    );
+
+    return {
+      entries: dataResult.rows.map((r) => ({
+        externalId: r.logmein_host_external_id,
+        hostName: r.host_name_sanitized,
+        groupExternalId: r.logmein_group_external_id,
+        groupName: r.logmein_group_name,
+        equipmentTag: null,
+        lastSeenAt: dateText(r.last_seen_at),
+      })),
+      total,
+      limit: safeLimit,
+      offset: safeOffset,
+    };
   }
 }

@@ -152,6 +152,62 @@ export interface InsertAlarmEventInput {
   dedupeHit: boolean;
 }
 
+// ── F2B — Alarm history read-only ────────────────────────────────────────────
+
+/**
+ * Derived result type for a recorded alarm event.
+ *
+ * Derivation rules (applied in priority order, in memory — no DB column):
+ *   cooldown_skipped=true            → suppressed_cooldown
+ *   dedupe_hit=true                  → suppressed_dedupe
+ *   glpi_ticket_id IS NOT NULL       → ticket_created
+ *   alarm_type contains 'dry_run'    → dry_run
+ *   default                          → fired
+ */
+export type AlarmResultType =
+  | 'fired'
+  | 'suppressed_cooldown'
+  | 'suppressed_dedupe'
+  | 'ticket_created'
+  | 'dry_run';
+
+/** Single history entry with derived fields (no new DB columns). */
+export interface AlarmHistoryEntry {
+  id: string;
+  ruleId: string;
+  hostId: string;
+  hostname: string;
+  alarmType: string;
+  /** Alias for createdAt — derivado sem coluna nova. */
+  firedAt: Date;
+  /** Derived in memory — not persisted. */
+  resultType: AlarmResultType;
+  glpiTicketId: number | null;
+  eventHash: string;
+}
+
+export interface AlarmHistoryPage {
+  entries: AlarmHistoryEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AlarmHistoryFilters {
+  /** Filter by specific rule UUID. */
+  ruleId?: string | null;
+  /** Filter by LogMeIn host external ID. */
+  hostId?: string | null;
+  /** Filter by alarm type. */
+  alarmType?: AlarmType | null;
+  /** Look-back window in days [1, 90]. Default 30. */
+  periodDays?: number;
+  /** Maximum results per page [1, 200]. Default 50. */
+  limit?: number;
+  /** Offset for pagination. Default 0. */
+  offset?: number;
+}
+
 // ── Mapper ────────────────────────────────────────────────────────────────────
 
 function toRule(row: AlarmRuleRow): LogmeinAlarmRule {
@@ -198,6 +254,37 @@ function toEvent(row: AlarmEventRow): LogmeinAlarmEvent {
     cooldownSkipped: row.cooldown_skipped,
     dedupeHit: row.dedupe_hit,
     createdAt: row.created_at,
+  };
+}
+
+/**
+ * Derive resultType in memory from existing columns — no new DB column.
+ * Priority order matches the F2B contract specification.
+ */
+export function deriveResultType(event: {
+  cooldown_skipped: boolean;
+  dedupe_hit: boolean;
+  glpi_ticket_id: number | null;
+  alarm_type: string;
+}): AlarmResultType {
+  if (event.cooldown_skipped) return 'suppressed_cooldown';
+  if (event.dedupe_hit) return 'suppressed_dedupe';
+  if (event.glpi_ticket_id !== null) return 'ticket_created';
+  if (String(event.alarm_type).includes('dry_run')) return 'dry_run';
+  return 'fired';
+}
+
+function toHistoryEntry(row: AlarmEventRow): AlarmHistoryEntry {
+  return {
+    id: row.id,
+    ruleId: row.rule_id,
+    hostId: row.host_id,
+    hostname: row.hostname,
+    alarmType: row.alarm_type,
+    firedAt: row.created_at,
+    resultType: deriveResultType(row),
+    glpiTicketId: row.glpi_ticket_id ?? null,
+    eventHash: row.event_hash,
   };
 }
 
@@ -532,5 +619,70 @@ export class PostgresLogmeinAlarmRepository {
       [ruleId, safeLimit],
     );
     return result.rows.map(toEvent);
+  }
+
+  // ── F2B — Alarm history (paginated, multi-filter) ─────────────────────────
+
+  /**
+   * Paginated alarm history with optional filters.
+   *
+   * Safety invariants (F2B):
+   *   - Read-only: no INSERT / UPDATE / DELETE.
+   *   - resultType derived in memory — no new DB column.
+   *   - firedAt is an alias for created_at — no schema change.
+   *   - Parameterised SQL only — no string interpolation for user values.
+   *   - glpiTicketId included for correlation (no PII — ticket ID is not PII).
+   *   - hostname is sanitized by the ingest pipeline; logged here as-is.
+   */
+  public async listAlarmHistory(filters: AlarmHistoryFilters = {}): Promise<AlarmHistoryPage> {
+    const periodDays = Math.max(1, Math.min(filters.periodDays ?? 30, 90));
+    const limit = Math.max(1, Math.min(filters.limit ?? 50, 200));
+    const offset = Math.max(0, filters.offset ?? 0);
+
+    // Build dynamic WHERE clauses with parameterised values.
+    const params: unknown[] = [`${periodDays} days`]; // $1
+    const conditions: string[] = [`created_at >= NOW() - $1::interval`];
+
+    if (filters.ruleId != null) {
+      params.push(filters.ruleId);
+      conditions.push(`rule_id = $${params.length}::uuid`);
+    }
+    if (filters.hostId != null) {
+      params.push(filters.hostId);
+      conditions.push(`host_id = $${params.length}::text`);
+    }
+    if (filters.alarmType != null) {
+      params.push(filters.alarmType);
+      conditions.push(`alarm_type = $${params.length}::text`);
+    }
+
+    const where = conditions.join(' AND ');
+
+    const countResult = await this.executor.query<{ total: string }>(
+      `SELECT COUNT(*)::text AS total FROM ${ALARM_EVENTS_TABLE} WHERE ${where}`,
+      params,
+    );
+    const total = parseInt(countResult.rows[0]?.total ?? '0', 10);
+
+    const dataParams = [...params, limit, offset];
+    const dataResult = await this.executor.query<AlarmEventRow>(
+      `
+        SELECT id, rule_id, host_id, hostname, alarm_type, event_hash,
+               glpi_ticket_id, cooldown_skipped, dedupe_hit, created_at
+        FROM ${ALARM_EVENTS_TABLE}
+        WHERE ${where}
+        ORDER BY created_at DESC
+        LIMIT $${params.length + 1}::int
+        OFFSET $${params.length + 2}::int
+      `,
+      dataParams,
+    );
+
+    return {
+      entries: dataResult.rows.map(toHistoryEntry),
+      total,
+      limit,
+      offset,
+    };
   }
 }
