@@ -183,3 +183,25 @@ production_ai_policy:
   release_status: GO_WITH_RESSALVA_ONLY_IF_DISABLED_OR_FALLBACK
   manual_enable_gate: required
 ```
+
+## V9 — Central Hub Operacional (`integaglpi_v9_central_hub_001`)
+
+PHASE: `integaglpi_v9_central_hub_001` — Updated: 2026-06-09
+
+| Flag | Default seguro | Domínio | Efeito | Gate mínimo |
+| --- | --- | --- | --- | --- |
+| `CENTRAL_HUB_ENABLED` | `false` | Hub Operacional UI | `false`: página acessível via URL direta mas exibe badge "feature desabilitada"; snap-shot Node ainda é calculado (cards read-only). `true`: página visível normalmente no menu Supervisão. | Smoke local em TESTE (curl GET /internal/glpi/central-hub) + Cursor review |
+
+Regras (ABSOLUTAS — F3 contract):
+- `CENTRAL_HUB_ENABLED=false` é o default em todos os ambientes; nunca alterar sem gate humano.
+- Hub read-only: nenhum INSERT / UPDATE / DELETE / ALTER executado em nenhum card.
+- Nenhum ticket é criado pelo Hub; `create_ticket: false` é invariante literal no código.
+- Nenhum WhatsApp é enviado; `whatsAppSent: false` propagado de F2B.
+- Nenhum acesso ao MariaDB (GLPI) via Node; apenas PostgreSQL e Redis do integration-service.
+- Sem schema change; sem tabela nova; sem migration.
+- PII Guard ativo: nenhum telefone, IP, MAC, token, credencial ou prompt bruto no payload.
+- Timeout por card: 3000ms — falha de card nunca derruba o Hub inteiro.
+- Cache Redis do snapshot: TTL 60s; falha de cache é silenciosa (fallback para chamada direta).
+- Sem Fase 4 de correlação avançada; sem incidente mestre; sem deduplicação cross-card.
+- Sem bibliotecas JS/CSS externas novas; apenas Tabler Icons (já presente no GLPI).
+- Produção: alteração exige gate humano + smoke em HOMOLOGAÇÃO + aprovação Cursor.

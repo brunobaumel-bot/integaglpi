@@ -52,6 +52,8 @@ import {
 } from './controllers/ai.controller.js';
 import { createKbRagController } from './controllers/kb.rag.controller.js';
 import type { KbRagCopilotService } from './domain/services/KbRagCopilotService.js';
+import { createCentralHubController } from './controllers/createCentralHubController.js';
+import type { CentralHubAggregatorService } from './domain/services/CentralHubAggregatorService.js';
 import type { SmartHelpService } from './domain/services/SmartHelpService.js';
 import type { ExternalResearchService } from './domain/services/ExternalResearchService.js';
 import type { CoachingService } from './domain/services/CoachingService.js';
@@ -105,6 +107,7 @@ export interface AppDependencies {
   feedbackService?: FeedbackService;
   cloudAuditRepository?: CloudAuditRepository;
   kbRagCopilotService?: KbRagCopilotService;
+  centralHubAggregatorService?: CentralHubAggregatorService;
 }
 
 function createJsonParser(options: { limit?: string } = {}) {
@@ -333,6 +336,14 @@ export function createApp(dependencies: AppDependencies) {
         aiAuth,
         createJsonParser(),
         createKbRagController(dependencies.kbRagCopilotService),
+      );
+    }
+    // F3 — Central Hub Operacional (read-only aggregator, CENTRAL_HUB_ENABLED=false default)
+    if (dependencies.centralHubAggregatorService) {
+      app.get(
+        '/internal/glpi/central-hub',
+        aiAuth,
+        createCentralHubController(dependencies.centralHubAggregatorService),
       );
     }
     if (dependencies.feedbackService) {

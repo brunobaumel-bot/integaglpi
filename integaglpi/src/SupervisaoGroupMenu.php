@@ -48,6 +48,11 @@ final class SupervisaoGroupMenu extends CommonDBTM
                 'page'  => Plugin::getWebBasePath() . '/front/supervisor.command.php',
                 'icon'  => 'ti ti-layout-dashboard',
             ],
+            'central_hub' => [
+                'title' => __('Hub Operacional', 'glpiintegaglpi'),
+                'page'  => Plugin::getWebBasePath() . '/front/central_hub.php',
+                'icon'  => 'ti ti-layout-grid',
+            ],
         ];
     }
 

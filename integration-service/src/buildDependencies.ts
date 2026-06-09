@@ -74,6 +74,10 @@ import { HttpKbSearchPort } from './infra/http/HttpKbSearchPort.js';
 import { redisClient } from './cache/redisClient.js';
 import { QualityDashboardService } from './services/QualityDashboardService.js';
 import { ObservabilityService } from './services/ObservabilityService.js';
+import { KbEffectivenessService } from './services/KbEffectivenessService.js';
+import { PostgresLogmeinAlarmRepository } from './repositories/postgres/PostgresLogmeinAlarmRepository.js';
+import { LogmeinOperationsDashboardService } from './domain/services/LogmeinOperationsDashboardService.js';
+import { CentralHubAggregatorService } from './domain/services/CentralHubAggregatorService.js';
 
 const AI_SETTINGS_KEYS = [
   'ai_supervisor_enabled',
@@ -462,6 +466,17 @@ export function buildDependencies() {
     logmeinReadonlyRepository,
     logmeinSyncLock,
   );
+  // ── F3 Central Hub services (read-only aggregators) ──────────────────────────
+  const kbEffectivenessService = new KbEffectivenessService(postgresPool, kbFeedbackRepository);
+  const logmeinAlarmRepository = new PostgresLogmeinAlarmRepository(postgresPool);
+  const logmeinOperationsDashboardService = new LogmeinOperationsDashboardService(logmeinAlarmRepository);
+  const centralHubAggregatorService = new CentralHubAggregatorService({
+    pool: postgresPool,
+    kbEffectivenessService,
+    logmeinContextService: logmeinReadonlyContextService,
+    logmeinDashboardService: logmeinOperationsDashboardService,
+    alarmRepository: logmeinAlarmRepository,
+  });
   const inactivityAutomationService = new InactivityAutomationService(
     inactivityTrackingRepository,
     outboundMessageService,
@@ -767,6 +782,7 @@ export function buildDependencies() {
     technicalSummarizer,
     coachingService,
     kbRagCopilotService,
+    centralHubAggregatorService,
     integrationServiceApiKey: env.INTEGRATION_SERVICE_API_KEY,
     glpiClient,
     metaClient,
