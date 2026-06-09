@@ -245,3 +245,64 @@ Regras (ABSOLUTAS — F5 contract — hardcoded, não configuráveis):
 - Audit event registrado em toda advisory request (fire-and-forget, não bloqueia resposta).
 - Nenhum PII exposto nas respostas; metadata de signals é sanitizado.
 - Produção: alteração exige gate humano + smoke em HOMOLOGAÇÃO + aprovação Cursor.
+
+---
+
+## V9 F6 — Inventory Reconciliation (integaglpi_v9_inventory_reconciliation_001)
+
+PHASE: `integaglpi_v9_inventory_reconciliation_001` — Updated: 2026-06-09
+
+| Flag | Default seguro | Domínio | Comportamento | Gate mínimo |
+| --- | --- | --- | --- | --- |
+| `INVENTORY_RECONCILIATION_ENABLED` | `false` | Conciliação de inventário LogMeIn ↔ GLPI | `false`: endpoints de relatório acessíveis, feature_flag_enabled=false no payload. `true`: habilitado para uso do painel. | Smoke local em TESTE + Cursor review |
+
+Regras (ABSOLUTAS — F6 contract):
+- `INVENTORY_RECONCILIATION_ENABLED=false` é o default; nunca alterar sem gate humano.
+- **Read-only absoluto**: nenhum INSERT / UPDATE / DELETE / ALTER executado pelos endpoints de conciliação.
+- `real_mutation_forbidden: true` — invariante literal em todos os responses.
+- `create_ticket: false` — invariante literal; nunca muda.
+- `whatsAppSent: false` — invariante literal; nunca muda.
+- `stateModified: false` — invariante literal em preview; nenhum estado é modificado.
+- `preview_only: true` — endpoint de preview é somente para visualização; não executa correção.
+- **Sem LLM como fonte de verdade**: scoring de matching é 100% determinístico (constantes fixas).
+- **Sem acesso ao MariaDB GLPI via Node**: matching usa apenas PostgreSQL (`logmein_asset_cache`, `logmein_group_maps`).
+- Scoring fixo (não configurável em runtime): equipment_tag_exact=0.90, hostname+entity=0.70, hostname_only=0.40, group+entity=0.30, no_match=0.00.
+- Ambiguidade: múltiplos candidatos para mesma entidade com diff < 0.20 → status=ambiguous.
+- Nenhum PII exposto: sem MAC, IP, username, token, credencial, prompt bruto.
+- Aprovação humana obrigatória antes de qualquer correção manual de mapeamento.
+- Produção: alteração exige gate humano + smoke em HOMOLOGAÇÃO + aprovação Cursor.
+
+---
+
+## V9 F7 — Vector Search Gate (integaglpi_v9_vector_search_gate_001)
+
+PHASE: `integaglpi_v9_vector_search_gate_001` — Updated: 2026-06-09
+Decision: **KEEP_CURRENT_SEARCH** (documentação de decisão arquitetural — não é feature flag operacional)
+
+| Controle | Status | Regra absoluta |
+| --- | --- | --- |
+| pgvector | **BLOQUEADO** | Não instalar, não migrar, não habilitar. |
+| qdrant / qualquer vector DB | **BLOQUEADO** | Não instalar, não integrar. |
+| Cloud embeddings (OpenAI, Cohere, etc.) | **BLOQUEADO** | Sem DPO + direção + admin + incidentAck = BLOQUEADO. |
+| FTS + Search Planner + KB Ranking + KB Reranker | **ATUAL ATIVO** | Stack atual — preservado e suficiente para baseline atual. |
+
+Baseline atual (docs/eval_reports/baseline.json — NÃO AUTO-MODIFICAR):
+- `product_detection_rate: 0.86`
+- `tier_coverage_rate: 1.0`
+- `total_queries: 50`
+
+Restrições absolutas (KEEP_CURRENT_SEARCH — hardcoded):
+- `no_pgvector_install: true` — proibido `CREATE EXTENSION vector` sem gate completo aprovado.
+- `no_qdrant: true` — proibido container Qdrant/Weaviate ou qualquer vector DB dedicado.
+- `no_cloud_embeddings: true` — sem DPO + direção + admin + incidentAck = BLOQUEADO.
+- `baseline_no_auto_modify: true` — `baseline.json` NUNCA é auto-modificado.
+- `documentation_decision_only: true` — este gate é documentação de decisão, não feature flag operacional.
+
+Regras de decisão (KEEP_CURRENT_SEARCH):
+- Baseline atual (product_detection=0.86, tier_coverage=1.0) **não justifica** custo e risco de pgvector/cloud embeddings.
+- O ganho projetado de pgvector (estimativa 0.02–0.05 pontos) está dentro da margem de ruído para o volume atual.
+- Busca vetorial exigiria DPO + migration + novo infra — gate alto sem ROI claro neste volume.
+- A decisão é revisável somente via smoke HML aprovado + commit manual revisado do baseline.json.
+- `baseline.json` NUNCA é auto-modificado por automação — atualização exige commit manual revisado após smoke HML.
+- ADR completo: `docs/architecture/adr_004_vector_search_decision.md`
+- Relatório de avaliação: `docs/eval_reports/vector_search_gate_2026-06-09.md`

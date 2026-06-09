@@ -72,6 +72,12 @@ import {
   createAutomationMatrixController,
 } from './controllers/automation.controller.js';
 import type { ControlledAutomationService } from './domain/services/ControlledAutomationService.js';
+import {
+  createReconciliationMatchingReportController,
+  createReconciliationCoverageGapsController,
+  createReconciliationPreviewController,
+} from './controllers/reconciliation.controller.js';
+import type { LogmeinAssetMatchingService } from './domain/services/LogmeinAssetMatchingService.js';
 import type { SmartHelpService } from './domain/services/SmartHelpService.js';
 import type { ExternalResearchService } from './domain/services/ExternalResearchService.js';
 import type { CoachingService } from './domain/services/CoachingService.js';
@@ -136,6 +142,9 @@ export interface AppDependencies {
   logmeinAlarmCorrelationService?: LogmeinAlarmCorrelationService;
   // F5 Controlled Automation
   controlledAutomationService?: ControlledAutomationService;
+  // F6 Inventory Reconciliation
+  logmeinAssetMatchingService?: LogmeinAssetMatchingService;
+  logmeinReadonlyRepository?: import('./repositories/postgres/PostgresLogmeinReadonlyRepository.js').PostgresLogmeinReadonlyRepository;
 }
 
 function createJsonParser(options: { limit?: string } = {}) {
@@ -457,6 +466,29 @@ export function createApp(dependencies: AppDependencies) {
         '/internal/glpi/automation/matrix',
         aiAuth,
         createAutomationMatrixController(dependencies.controlledAutomationService),
+      );
+    }
+    // F6 — Inventory Reconciliation (INVENTORY_RECONCILIATION_ENABLED=false default)
+    if (dependencies.logmeinAssetMatchingService && dependencies.logmeinReadonlyRepository) {
+      const reconciliationDeps = {
+        matchingService: dependencies.logmeinAssetMatchingService,
+        readonlyRepository: dependencies.logmeinReadonlyRepository,
+      };
+      app.get(
+        '/internal/glpi/logmein/operations/inventory/matching-report',
+        aiAuth,
+        createReconciliationMatchingReportController(reconciliationDeps),
+      );
+      app.get(
+        '/internal/glpi/logmein/operations/inventory/coverage-gaps',
+        aiAuth,
+        createReconciliationCoverageGapsController(reconciliationDeps),
+      );
+      app.post(
+        '/internal/glpi/logmein/operations/inventory/preview',
+        aiAuth,
+        createJsonParser(),
+        createReconciliationPreviewController(reconciliationDeps),
       );
     }
     if (dependencies.feedbackService) {

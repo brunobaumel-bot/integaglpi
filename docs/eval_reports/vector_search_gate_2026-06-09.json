@@ -1,0 +1,62 @@
+{
+  "schema_version": "1.0",
+  "phase": "integaglpi_v9_vector_search_gate_001",
+  "decision": "KEEP_CURRENT_SEARCH",
+  "decision_date": "2026-06-09",
+  "adr": "docs/architecture/adr_004_vector_search_decision.md",
+  "baseline": {
+    "source": "docs/eval_reports/baseline.json",
+    "product_detection_rate": 0.86,
+    "tier_coverage_rate": 1.0,
+    "total_queries": 50,
+    "note": "baseline.json NUNCA é auto-modificado. Atualização exige commit manual revisado após smoke HML aprovado."
+  },
+  "alternatives_evaluated": [
+    {
+      "option": "pgvector",
+      "status": "not_justified",
+      "projected_gain": "+0.02 to +0.05 product_detection (within noise margin for N=50)",
+      "cost": "high",
+      "risk": "medium",
+      "gate_required": "infra + migration + cursor_review + smoke"
+    },
+    {
+      "option": "qdrant",
+      "status": "blocked",
+      "reason": "new service, data replicated outside PostgreSQL, Node->MariaDB sync prohibited",
+      "gate_required": "maximum: infra + security + data + cursor_review"
+    },
+    {
+      "option": "cloud_embeddings",
+      "status": "blocked",
+      "reason": "requires DPO + direction + admin + incidentAck; data leaves perimeter",
+      "gate_required": "DPO + direction + admin + incidentAck + PII_guard + audit"
+    },
+    {
+      "option": "keep_current_search",
+      "status": "approved",
+      "reason": "baseline satisfactory (0.86/1.0); zero incremental cost and risk"
+    }
+  ],
+  "current_stack": [
+    "FTS PostgreSQL (tsvector/tsquery)",
+    "KbSearchPlannerService (intent scoring)",
+    "KbRankingService (feedback multiplier, FEEDBACK_RANKING_ENABLED=false default)",
+    "KbRerankerService (Ollama cross-encoder, RERANKER_ENABLED=false default)"
+  ],
+  "absolute_restrictions": {
+    "no_pgvector_install": true,
+    "no_qdrant": true,
+    "no_cloud_embeddings": true,
+    "baseline_no_auto_modify": true,
+    "documentation_decision_only": true
+  },
+  "revaluation_criteria": {
+    "product_detection_threshold": 0.75,
+    "minimum_sample_size": 100,
+    "gap_identification_required": true,
+    "gate_required": true,
+    "manual_commit_required": true
+  },
+  "static_tests": "integration-service/tests/vectorSearchGateStatic.test.ts"
+}

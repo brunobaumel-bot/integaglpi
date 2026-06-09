@@ -83,6 +83,7 @@ import { LogmeinLowDiskCheckService } from './domain/services/LogmeinLowDiskChec
 import { LogmeinCoverageReportService } from './domain/services/LogmeinCoverageReportService.js';
 import { LogmeinAlarmCorrelationService } from './domain/services/LogmeinAlarmCorrelationService.js';
 import { ControlledAutomationService } from './domain/services/ControlledAutomationService.js';
+import { LogmeinAssetMatchingService } from './domain/services/LogmeinAssetMatchingService.js';
 
 const AI_SETTINGS_KEYS = [
   'ai_supervisor_enabled',
@@ -488,6 +489,7 @@ export function buildDependencies() {
   const logmeinCoverageReportService = new LogmeinCoverageReportService(logmeinReadonlyRepository);
   const logmeinAlarmCorrelationService = new LogmeinAlarmCorrelationService(logmeinAlarmRepository);
   const controlledAutomationService = new ControlledAutomationService();
+  const logmeinAssetMatchingService = new LogmeinAssetMatchingService();
   const inactivityAutomationService = new InactivityAutomationService(
     inactivityTrackingRepository,
     outboundMessageService,
@@ -801,6 +803,8 @@ export function buildDependencies() {
     logmeinCoverageReportService,
     logmeinAlarmCorrelationService,
     controlledAutomationService,
+    logmeinAssetMatchingService,
+    logmeinReadonlyRepository,
     integrationServiceApiKey: env.INTEGRATION_SERVICE_API_KEY,
     glpiClient,
     metaClient,

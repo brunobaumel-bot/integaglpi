@@ -536,6 +536,94 @@ export class PostgresLogmeinReadonlyRepository implements LogmeinReadonlyCacheRe
     };
   }
 
+  // ── F6 — Inventory Reconciliation (read-only) ─────────────────────────────
+
+  /**
+   * Load all active group→entity mappings as a plain Map.
+   * Used by LogmeinAssetMatchingService to compute scores in-memory.
+   * Read-only. No GLPI MariaDB access — only PostgreSQL group_maps table.
+   */
+  public async listGroupEntityMaps(): Promise<Array<{ groupExternalId: string; entityId: number }>> {
+    const rows = await this.safeQuery<{
+      logmein_group_external_id: string;
+      glpi_entity_id: string;
+    }>(
+      `
+        SELECT logmein_group_external_id, glpi_entity_id::text
+        FROM ${GROUP_MAP_TABLE}
+        WHERE is_active = TRUE
+          AND COALESCE(logmein_group_external_id, '') <> ''
+          AND glpi_entity_id IS NOT NULL
+        ORDER BY logmein_group_external_id ASC
+      `,
+    );
+    return rows
+      .map((r) => ({
+        groupExternalId: r.logmein_group_external_id,
+        entityId: parseInt(r.glpi_entity_id, 10),
+      }))
+      .filter((r) => Number.isFinite(r.entityId) && r.entityId > 0);
+  }
+
+  /**
+   * List all hosts from the asset cache for in-memory matching.
+   * Includes group name and nullable equipment_tag.
+   * No MAC/IP/username/token fields returned.
+   * Read-only, parameterised, no PII.
+   */
+  public async listHostsForMatching(
+    limit = 500,
+    offset = 0,
+  ): Promise<Array<{
+    externalId: string;
+    hostName: string;
+    equipmentTag: string | null;
+    groupExternalId: string;
+    groupName: string;
+  }>> {
+    const safeLimit = Math.max(1, Math.min(limit, 2000));
+    const safeOffset = Math.max(0, offset);
+
+    const result = await this.executor.query<{
+      logmein_host_external_id: string;
+      host_name_sanitized: string;
+      equipment_tag: string | null;
+      logmein_group_external_id: string;
+      logmein_group_name: string;
+    }>(
+      `
+        SELECT
+          logmein_host_external_id,
+          host_name_sanitized,
+          equipment_tag,
+          logmein_group_external_id,
+          logmein_group_name
+        FROM ${ASSET_CACHE_TABLE}
+        ORDER BY logmein_group_name ASC, host_name_sanitized ASC
+        LIMIT $1::int OFFSET $2::int
+      `,
+      [safeLimit, safeOffset],
+    );
+
+    return result.rows.map((r) => ({
+      externalId: r.logmein_host_external_id,
+      hostName: r.host_name_sanitized,
+      equipmentTag: r.equipment_tag ?? null,
+      groupExternalId: r.logmein_group_external_id,
+      groupName: r.logmein_group_name,
+    }));
+  }
+
+  /**
+   * Count all hosts in the asset cache (for matching report pagination).
+   */
+  public async countHostsForMatching(): Promise<number> {
+    const rows = await this.safeQuery<{ total: string }>(
+      `SELECT COUNT(*)::text AS total FROM ${ASSET_CACHE_TABLE}`,
+    );
+    return parseInt(rows[0]?.total ?? '0', 10);
+  }
+
   /**
    * Hosts with no equipment tag (or empty string).
    * These hosts cannot be correlated to a GLPI computer asset.
