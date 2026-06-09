@@ -803,6 +803,8 @@ export function buildDependencies() {
     logmeinCoverageReportService,
     logmeinAlarmCorrelationService,
     controlledAutomationService,
+    // F5 wiring fix: app.ts gates /automation/* on auditService being present.
+    auditService,
     logmeinAssetMatchingService,
     logmeinReadonlyRepository,
     integrationServiceApiKey: env.INTEGRATION_SERVICE_API_KEY,
