@@ -18,6 +18,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   deriveResultType,
+  deriveReason,
   type AlarmHistoryFilters,
   type AlarmHistoryPage,
 } from '../src/repositories/postgres/PostgresLogmeinAlarmRepository.js';
@@ -191,6 +192,65 @@ describe('deriveResultType — F2B_2 contract', () => {
     const r4 = deriveResultType({ cooldown_skipped: false, dedupe_hit: false, glpi_ticket_id: 1, alarm_type: 'host_offline' });
     const r5 = deriveResultType({ cooldown_skipped: false, dedupe_hit: false, glpi_ticket_id: null, alarm_type: 'dry_run_low_disk' });
     expect(new Set([r1, r2, r3, r4, r5]).size).toBe(5);
+  });
+});
+
+// ── F2B_2: deriveReason ───────────────────────────────────────────────────────
+
+describe('deriveReason — F2B_2 campo reason', () => {
+  it('suppressed_cooldown → texto cooldown', () => {
+    const r = deriveReason('suppressed_cooldown', null);
+    expect(r).toContain('cooldown');
+  });
+
+  it('suppressed_dedupe → texto deduplicação', () => {
+    const r = deriveReason('suppressed_dedupe', null);
+    expect(r).toContain('deduplicação');
+  });
+
+  it('ticket_created com ID → inclui ticket ID no texto', () => {
+    const r = deriveReason('ticket_created', 99999);
+    expect(r).toContain('99999');
+  });
+
+  it('ticket_created sem ID → texto genérico', () => {
+    const r = deriveReason('ticket_created', null);
+    expect(r).toContain('GLPI');
+    expect(r).not.toContain('null');
+  });
+
+  it('dry_run → texto dry-run/simulação', () => {
+    const r = deriveReason('dry_run', null);
+    expect(r.toLowerCase()).toMatch(/simulação|dry.run/i);
+  });
+
+  it('fired → texto registrado', () => {
+    const r = deriveReason('fired', null);
+    expect(r).toContain('registrado');
+  });
+
+  it('todos os resultType retornam string não vazia', () => {
+    const types = ['suppressed_cooldown', 'suppressed_dedupe', 'ticket_created', 'dry_run', 'fired'] as const;
+    for (const t of types) {
+      const r = deriveReason(t, null);
+      expect(typeof r).toBe('string');
+      expect(r.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('nenhum resultType retorna PII', () => {
+    const types = ['suppressed_cooldown', 'suppressed_dedupe', 'ticket_created', 'dry_run', 'fired'] as const;
+    const piiPatterns = [/\d{2,20}[\s-]?\d{4,}/, /\b\d{11}\b/, /password|senha|token/i];
+    for (const t of types) {
+      const r = deriveReason(t, 12345);
+      for (const pattern of piiPatterns) {
+        // Only ticket ID (12345) is a number — that's expected and not PII.
+        // We only block phone-number-like patterns.
+        if (pattern.source !== '\\b\\d{11}\\b') {
+          expect(r).not.toMatch(pattern);
+        }
+      }
+    }
   });
 });
 

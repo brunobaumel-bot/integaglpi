@@ -182,6 +182,8 @@ export interface AlarmHistoryEntry {
   firedAt: Date;
   /** Derived in memory — not persisted. */
   resultType: AlarmResultType;
+  /** Human-readable reason derived from resultType — no new DB column. */
+  reason: string;
   glpiTicketId: number | null;
   eventHash: string;
 }
@@ -274,7 +276,35 @@ export function deriveResultType(event: {
   return 'fired';
 }
 
+/**
+ * Derive a human-readable reason string from the resultType.
+ * All text is static — no PII, no ticket content, no user data.
+ * Priority order matches deriveResultType().
+ */
+export function deriveReason(
+  resultType: AlarmResultType,
+  glpiTicketId: number | null,
+): string {
+  switch (resultType) {
+    case 'suppressed_cooldown':
+      return 'Evento suprimido por cooldown.';
+    case 'suppressed_dedupe':
+      return 'Evento suprimido por deduplicação.';
+    case 'ticket_created':
+      return glpiTicketId !== null
+        ? `Evento associado ao ticket GLPI ${glpiTicketId}.`
+        : 'Evento associado ao ticket GLPI informado.';
+    case 'dry_run':
+      return 'Execução em modo simulação/dry-run.';
+    case 'fired':
+      return 'Evento de alarme registrado.';
+    default:
+      return 'Evento registrado.';
+  }
+}
+
 function toHistoryEntry(row: AlarmEventRow): AlarmHistoryEntry {
+  const resultType = deriveResultType(row);
   return {
     id: row.id,
     ruleId: row.rule_id,
@@ -282,7 +312,8 @@ function toHistoryEntry(row: AlarmEventRow): AlarmHistoryEntry {
     hostname: row.hostname,
     alarmType: row.alarm_type,
     firedAt: row.created_at,
-    resultType: deriveResultType(row),
+    resultType,
+    reason: deriveReason(resultType, row.glpi_ticket_id ?? null),
     glpiTicketId: row.glpi_ticket_id ?? null,
     eventHash: row.event_hash,
   };
@@ -685,4 +716,78 @@ export class PostgresLogmeinAlarmRepository {
       offset,
     };
   }
+
+  /**
+   * Aggregate alarm events by alarm_type within a sliding time window.
+   * Used by F4 LogmeinAlarmCorrelationService — read-only, no schema change.
+   *
+   * Safety invariants:
+   *   - Read-only SELECT only.
+   *   - No PII: returns alarm_type (enum-like string), counts, and timestamps.
+   *   - No new DB column.
+   *   - HAVING COUNT(*) >= 2 filters out single-event types.
+   *
+   * Phase: integaglpi_v9_alarm_correlation_001 — F4
+   */
+  public async listCorrelationAggregates(
+    windowMinutes: number,
+    limit: number,
+  ): Promise<CorrelationAggregate[]> {
+    const safeWindow = Math.max(1, Math.min(windowMinutes, 10_080)); // 1m..7d
+    const safeLimit = Math.max(1, Math.min(limit, 100));
+
+    const result = await this.executor.query<{
+      alarm_type: string;
+      total_events: string;
+      distinct_hosts: string;
+      first_event: Date;
+      last_event: Date;
+      cooldown_skipped_count: string;
+      dedupe_hit_count: string;
+      ticket_created_count: string;
+    }>(
+      `
+        SELECT
+          alarm_type,
+          COUNT(*)::text                                                  AS total_events,
+          COUNT(DISTINCT host_id)::text                                   AS distinct_hosts,
+          MIN(created_at)                                                 AS first_event,
+          MAX(created_at)                                                 AS last_event,
+          SUM(CASE WHEN cooldown_skipped THEN 1 ELSE 0 END)::text        AS cooldown_skipped_count,
+          SUM(CASE WHEN dedupe_hit THEN 1 ELSE 0 END)::text              AS dedupe_hit_count,
+          COUNT(CASE WHEN glpi_ticket_id IS NOT NULL THEN 1 END)::text   AS ticket_created_count
+        FROM ${ALARM_EVENTS_TABLE}
+        WHERE created_at >= NOW() - ($1::int * INTERVAL '1 minute')
+        GROUP BY alarm_type
+        HAVING COUNT(*) >= 2
+        ORDER BY COUNT(*) DESC
+        LIMIT $2::int
+      `,
+      [safeWindow, safeLimit],
+    );
+
+    return result.rows.map((row) => ({
+      alarmType: row.alarm_type,
+      totalEvents: parseInt(row.total_events, 10),
+      distinctHosts: parseInt(row.distinct_hosts, 10),
+      firstEvent: row.first_event,
+      lastEvent: row.last_event,
+      cooldownSkippedCount: parseInt(row.cooldown_skipped_count, 10),
+      dedupeHitCount: parseInt(row.dedupe_hit_count, 10),
+      ticketCreatedCount: parseInt(row.ticket_created_count, 10),
+    }));
+  }
+}
+
+// ── F4 Correlation types (exported for LogmeinAlarmCorrelationService) ────────
+
+export interface CorrelationAggregate {
+  alarmType: string;
+  totalEvents: number;
+  distinctHosts: number;
+  firstEvent: Date;
+  lastEvent: Date;
+  cooldownSkippedCount: number;
+  dedupeHitCount: number;
+  ticketCreatedCount: number;
 }

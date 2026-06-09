@@ -205,3 +205,43 @@ Regras (ABSOLUTAS — F3 contract):
 - Sem Fase 4 de correlação avançada; sem incidente mestre; sem deduplicação cross-card.
 - Sem bibliotecas JS/CSS externas novas; apenas Tabler Icons (já presente no GLPI).
 - Produção: alteração exige gate humano + smoke em HOMOLOGAÇÃO + aprovação Cursor.
+
+---
+
+## V9 F4 — Alarm Correlation (integaglpi_v9_alarm_correlation_001)
+
+| Flag | Default seguro | Domínio | Comportamento | Gate mínimo |
+| --- | --- | --- | --- | --- |
+| `ALARM_CORRELATION_ENABLED` | `false` | Correlação de alarmes | `false`: endpoint /correlation retorna feature_flag_enabled=false; service continua calculando agregados (read-only). `true`: habilitado para uso. | Smoke local em TESTE + Cursor review |
+
+Regras (ABSOLUTAS — F4 contract):
+- `ALARM_CORRELATION_ENABLED=false` é o default; nunca alterar sem gate humano.
+- Correlação read-only: nenhum INSERT / UPDATE / DELETE executado.
+- Nenhum ticket criado; `create_ticket: false` invariante literal.
+- `real_execution_forbidden: true` em toda resposta.
+- Sem LLM na rota crítica; severidade e reason são determinísticos.
+- Agrupamento apenas por alarm_type + janela temporal; sem correlação cross-entidade avançada.
+- Nenhum PII exposto: alarm_type é string enum-like; hostnames sanitizados pelo ingest.
+- Limite de window: 1..10080 minutos; limite de grupos: 1..100.
+- Produção: alteração exige gate humano + smoke em HOMOLOGAÇÃO + aprovação Cursor.
+
+---
+
+## V9 F5 — Controlled Automation (integaglpi_v9_controlled_automation_001)
+
+| Flag | Default seguro | Domínio | Comportamento | Gate mínimo |
+| --- | --- | --- | --- | --- |
+| `CONTROLLED_AUTOMATION_ENABLED` | `false` | Automação controlada (advisory) | `false`: todos os requests retornam status=feature_disabled sem processamento. `true`: advisory e preview habilitados; execução real permanece bloqueada em código. | Smoke local em TESTE + Cursor review |
+
+Regras (ABSOLUTAS — F5 contract — hardcoded, não configuráveis):
+- `CONTROLLED_AUTOMATION_ENABLED=false` é o default; nunca alterar sem gate humano.
+- `real_execution_forbidden: true` — SEMPRE, independente de flag ou configuração.
+- `human_review_checkbox_required: true` — camada PHP deve exigir checkbox antes de qualquer ação.
+- `create_ticket: false` — invariante literal; nunca muda.
+- `whatsAppSent: false` — invariante literal; nunca muda.
+- `stateModified: false` — invariante literal; nunca muda.
+- `no_llm_executor: true` — nenhum LLM executa ação; advisory é determinístico.
+- Ações bloqueadas em código (não em config): restart_logmein_agent, create_maintenance_ticket, send_whatsapp_alert.
+- Audit event registrado em toda advisory request (fire-and-forget, não bloqueia resposta).
+- Nenhum PII exposto nas respostas; metadata de signals é sanitizado.
+- Produção: alteração exige gate humano + smoke em HOMOLOGAÇÃO + aprovação Cursor.

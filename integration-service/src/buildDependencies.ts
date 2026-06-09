@@ -78,6 +78,11 @@ import { KbEffectivenessService } from './services/KbEffectivenessService.js';
 import { PostgresLogmeinAlarmRepository } from './repositories/postgres/PostgresLogmeinAlarmRepository.js';
 import { LogmeinOperationsDashboardService } from './domain/services/LogmeinOperationsDashboardService.js';
 import { CentralHubAggregatorService } from './domain/services/CentralHubAggregatorService.js';
+import { LogmeinRuleTestService } from './domain/services/LogmeinRuleTestService.js';
+import { LogmeinLowDiskCheckService } from './domain/services/LogmeinLowDiskCheckService.js';
+import { LogmeinCoverageReportService } from './domain/services/LogmeinCoverageReportService.js';
+import { LogmeinAlarmCorrelationService } from './domain/services/LogmeinAlarmCorrelationService.js';
+import { ControlledAutomationService } from './domain/services/ControlledAutomationService.js';
 
 const AI_SETTINGS_KEYS = [
   'ai_supervisor_enabled',
@@ -477,6 +482,12 @@ export function buildDependencies() {
     logmeinDashboardService: logmeinOperationsDashboardService,
     alarmRepository: logmeinAlarmRepository,
   });
+  // ── F2B LogMeIn Operations + F4 Correlation + F5 Automation ─────────────────
+  const logmeinRuleTestService = new LogmeinRuleTestService();
+  const logmeinLowDiskCheckService = new LogmeinLowDiskCheckService();
+  const logmeinCoverageReportService = new LogmeinCoverageReportService(logmeinReadonlyRepository);
+  const logmeinAlarmCorrelationService = new LogmeinAlarmCorrelationService(logmeinAlarmRepository);
+  const controlledAutomationService = new ControlledAutomationService();
   const inactivityAutomationService = new InactivityAutomationService(
     inactivityTrackingRepository,
     outboundMessageService,
@@ -783,6 +794,13 @@ export function buildDependencies() {
     coachingService,
     kbRagCopilotService,
     centralHubAggregatorService,
+    logmeinOperationsDashboardService,
+    logmeinAlarmRepository,
+    logmeinRuleTestService,
+    logmeinLowDiskCheckService,
+    logmeinCoverageReportService,
+    logmeinAlarmCorrelationService,
+    controlledAutomationService,
     integrationServiceApiKey: env.INTEGRATION_SERVICE_API_KEY,
     glpiClient,
     metaClient,

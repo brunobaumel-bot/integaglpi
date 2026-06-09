@@ -54,6 +54,24 @@ import { createKbRagController } from './controllers/kb.rag.controller.js';
 import type { KbRagCopilotService } from './domain/services/KbRagCopilotService.js';
 import { createCentralHubController } from './controllers/createCentralHubController.js';
 import type { CentralHubAggregatorService } from './domain/services/CentralHubAggregatorService.js';
+import {
+  createLogmeinOperationsDashboardController,
+  createLogmeinAlarmHistoryController,
+  createLogmeinRuleTestController,
+  createLogmeinLowDiskDryRunController,
+  createLogmeinCoverageController,
+} from './controllers/logmein.controller.js';
+import type { LogmeinOperationsDashboardService } from './domain/services/LogmeinOperationsDashboardService.js';
+import type { PostgresLogmeinAlarmRepository } from './repositories/postgres/PostgresLogmeinAlarmRepository.js';
+import type { LogmeinRuleTestService } from './domain/services/LogmeinRuleTestService.js';
+import type { LogmeinLowDiskCheckService } from './domain/services/LogmeinLowDiskCheckService.js';
+import type { LogmeinCoverageReportService } from './domain/services/LogmeinCoverageReportService.js';
+import type { LogmeinAlarmCorrelationService } from './domain/services/LogmeinAlarmCorrelationService.js';
+import {
+  createAutomationAdvisoryController,
+  createAutomationMatrixController,
+} from './controllers/automation.controller.js';
+import type { ControlledAutomationService } from './domain/services/ControlledAutomationService.js';
 import type { SmartHelpService } from './domain/services/SmartHelpService.js';
 import type { ExternalResearchService } from './domain/services/ExternalResearchService.js';
 import type { CoachingService } from './domain/services/CoachingService.js';
@@ -108,6 +126,16 @@ export interface AppDependencies {
   cloudAuditRepository?: CloudAuditRepository;
   kbRagCopilotService?: KbRagCopilotService;
   centralHubAggregatorService?: CentralHubAggregatorService;
+  // F2B LogMeIn Operations endpoints
+  logmeinOperationsDashboardService?: LogmeinOperationsDashboardService;
+  logmeinAlarmRepository?: PostgresLogmeinAlarmRepository;
+  logmeinRuleTestService?: LogmeinRuleTestService;
+  logmeinLowDiskCheckService?: LogmeinLowDiskCheckService;
+  logmeinCoverageReportService?: LogmeinCoverageReportService;
+  // F4 Alarm Correlation
+  logmeinAlarmCorrelationService?: LogmeinAlarmCorrelationService;
+  // F5 Controlled Automation
+  controlledAutomationService?: ControlledAutomationService;
 }
 
 function createJsonParser(options: { limit?: string } = {}) {
@@ -344,6 +372,91 @@ export function createApp(dependencies: AppDependencies) {
         '/internal/glpi/central-hub',
         aiAuth,
         createCentralHubController(dependencies.centralHubAggregatorService),
+      );
+    }
+    // F2B — LogMeIn Operations read-only endpoints
+    if (
+      dependencies.logmeinOperationsDashboardService
+      && dependencies.logmeinReadonlyContextService
+    ) {
+      app.get(
+        '/internal/glpi/logmein/operations/dashboard',
+        aiAuth,
+        createLogmeinOperationsDashboardController({
+          dashboardService: dependencies.logmeinOperationsDashboardService,
+          contextService: dependencies.logmeinReadonlyContextService,
+        }),
+      );
+    }
+    if (dependencies.logmeinAlarmRepository) {
+      app.get(
+        '/internal/glpi/logmein/operations/alarm-history',
+        aiAuth,
+        createLogmeinAlarmHistoryController(dependencies.logmeinAlarmRepository),
+      );
+    }
+    if (dependencies.logmeinRuleTestService) {
+      app.post(
+        '/internal/glpi/logmein/operations/test-rule',
+        aiAuth,
+        createJsonParser(),
+        createLogmeinRuleTestController(dependencies.logmeinRuleTestService),
+      );
+    }
+    if (dependencies.logmeinLowDiskCheckService) {
+      app.post(
+        '/internal/glpi/logmein/operations/low-disk/dry-run',
+        aiAuth,
+        createJsonParser(),
+        createLogmeinLowDiskDryRunController(dependencies.logmeinLowDiskCheckService),
+      );
+    }
+    if (dependencies.logmeinCoverageReportService) {
+      app.get(
+        '/internal/glpi/logmein/operations/coverage',
+        aiAuth,
+        createLogmeinCoverageController(dependencies.logmeinCoverageReportService),
+      );
+    }
+    // F4 — Alarm Correlation (ALARM_CORRELATION_ENABLED=false default)
+    if (dependencies.logmeinAlarmCorrelationService) {
+      const correlationService = dependencies.logmeinAlarmCorrelationService;
+      app.get(
+        '/internal/glpi/logmein/operations/correlation',
+        aiAuth,
+        async (req, res): Promise<void> => {
+          try {
+            const q = req.query as Record<string, unknown>;
+            const windowMinutes = Math.max(1, Math.min(Number(q['window_minutes']) || 60, 10_080));
+            const limit = Math.max(1, Math.min(Number(q['limit']) || 20, 100));
+            const report = await correlationService.buildReport(windowMinutes, limit);
+            res.status(200).json({ ok: true, report });
+          } catch (err) {
+            res.status(500).json({
+              ok: false,
+              status: 'correlation_error',
+              message: 'Correlação de alarmes indisponível.',
+            });
+          }
+        },
+      );
+    }
+    // F5 — Controlled Automation advisory (CONTROLLED_AUTOMATION_ENABLED=false default)
+    if (dependencies.controlledAutomationService && dependencies.auditService) {
+      const jsonParser = createJsonParser();
+      app.post(
+        '/internal/glpi/automation/advisory',
+        aiAuth,
+        jsonParser,
+        createAutomationAdvisoryController(
+          dependencies.controlledAutomationService,
+          dependencies.auditService,
+        ),
+      );
+      app.get(
+        '/internal/glpi/automation/matrix',
+        aiAuth,
+        createAutomationMatrixController(dependencies.controlledAutomationService),
       );
     }
     if (dependencies.feedbackService) {
