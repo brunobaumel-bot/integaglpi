@@ -43,6 +43,7 @@ function makeHit(overrides: Partial<KbCandidateHit> = {}): KbCandidateHit {
     evidenceSummarySanitized: 'Procedimento validado em incidentes anteriores.',
     confidenceScore: 80,
     rawScore: 0.7,
+    enrichmentVersion: 0,
     ...overrides,
   };
 }
@@ -244,7 +245,7 @@ describe('KbEnrichmentService — F5 aplicação autorizada', () => {
     const repo = makeRepoMock();
     const svc = new KbEnrichmentService();
     const summary = await svc.enrichAndApplyBatch(repo as never, 5, { allowDeterministic: true });
-    expect(repo.listCandidatesForEnrichment).toHaveBeenCalledWith(5, 0);
+    expect(repo.listCandidatesForEnrichment).toHaveBeenCalledWith(5, 0, 1);
     expect(summary.processed).toBe(1);
     expect(summary.applied).toBe(1);
     expect(summary.items[0]).toMatchObject({ ok: true });
@@ -291,8 +292,25 @@ describe('KbEnrichmentService — F5 aplicação autorizada', () => {
     expect(repoSrc).toContain('WHERE id = $1');
     expect(repoSrc).toContain("structured_draft_json ? 'original_backup'");
     expect(repoSrc).toContain('ON CONFLICT (candidate_key) DO NOTHING');
-    expect(repoSrc).toContain('enrichment_version IS NULL');
     expect(repoSrc).not.toMatch(/DELETE\s+FROM/i);
+  });
+
+  it('re-enriquecimento v2: elegibilidade por maxVersion e backup ORIGINAL imutável', async () => {
+    const repoSrc = await readFile(
+      resolve(repoRoot, 'integration-service/src/repositories/postgres/PostgresKbCandidateSearchRepository.ts'),
+      'utf8',
+    );
+    // Elegibilidade parametrizada (v1 default; v2 só com --max-version 2).
+    expect(repoSrc).toContain('COALESCE(enrichment_version, 0) < $');
+    // No re-apply, somente {draft} é substituído — original_backup nunca é tocado.
+    expect(repoSrc).toMatch(/jsonb_set\(structured_draft_json, '\{draft\}'/);
+  });
+
+  it('versão incrementa a partir da versão do hit (v1 → v2)', async () => {
+    const svc = new KbEnrichmentService();
+    const v2hit = makeHit({ enrichmentVersion: 1 });
+    const result = await svc.buildEnrichedDraft(v2hit);
+    expect(result.enrichment_version).toBe(2);
   });
 });
 

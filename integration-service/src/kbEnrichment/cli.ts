@@ -26,6 +26,7 @@ interface CliOptions {
   windowDays: number;
   rollbackId: number | null;
   allowDeterministic: boolean;
+  maxVersion: number;
 }
 
 function parseArgs(args: string[]): CliOptions {
@@ -37,11 +38,15 @@ function parseArgs(args: string[]): CliOptions {
     windowDays: 30,
     rollbackId: null,
     allowDeterministic: false,
+    maxVersion: 1,
   };
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
       case '--allow-deterministic':
         options.allowDeterministic = true;
+        break;
+      case '--max-version':
+        options.maxVersion = Math.max(1, Math.min(5, Number.parseInt(args[++i] ?? '1', 10) || 1));
         break;
       case '--limit':
         options.limit = Math.max(1, Math.min(50, Number.parseInt(args[++i] ?? '10', 10) || 10));
@@ -105,7 +110,7 @@ async function main(): Promise<void> {
   }
 
   if (options.dryRun) {
-    const candidates = await repo.listCandidatesForEnrichment(options.limit, 0);
+    const candidates = await repo.listCandidatesForEnrichment(options.limit, 0, options.maxVersion);
     for (const hit of candidates) {
       const result = await service.buildEnrichedDraft(hit);
       console.log(JSON.stringify({
@@ -125,6 +130,7 @@ async function main(): Promise<void> {
   // --apply
   const summary = await service.enrichAndApplyBatch(repo, options.limit, {
     allowDeterministic: options.allowDeterministic,
+    maxVersion: options.maxVersion,
   });
   for (const item of summary.items) {
     console.log(JSON.stringify(item));

@@ -36,6 +36,8 @@ export interface KbCandidateHit {
   confidenceScore: number;
   /** Raw search relevance from ts_rank, normalised to [0,1]. */
   rawScore: number;
+  /** Versão de enriquecimento aplicada (0 = nunca enriquecido). */
+  enrichmentVersion: number;
 }
 
 export interface KbCandidateSearchRepository {
@@ -84,6 +86,8 @@ interface SearchRow {
   evidence_summary_sanitized: string;
   confidence_score: string;
   ts_score: string;
+  /** Presente apenas em listCandidatesForEnrichment; demais queries default 0. */
+  enrichment_version?: string;
 }
 
 function rowToHit(row: SearchRow, tsScore: number): KbCandidateHit {
@@ -102,6 +106,7 @@ function rowToHit(row: SearchRow, tsScore: number): KbCandidateHit {
     evidenceSummarySanitized: String(row.evidence_summary_sanitized ?? '').slice(0, 1000),
     confidenceScore: Math.max(0, Math.min(100, parseInt(row.confidence_score ?? '70', 10))),
     rawScore: normScore(tsScore),
+    enrichmentVersion: parseInt(row.enrichment_version ?? '0', 10) || 0,
   };
 }
 
@@ -249,12 +254,14 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
   // ── F5/F6 — Enriquecimento persistente (autorizado pelo operador 2026-06-10) ──
 
   /**
-   * Lista candidatos elegíveis para enriquecimento: ainda não enriquecidos
-   * (enrichment_version IS NULL) e que são fonte de busca local. Batch limitado
-   * (nunca global irrestrito) e ordenado por id para idempotência entre execuções.
+   * Lista candidatos elegíveis para enriquecimento até a versão alvo:
+   * COALESCE(enrichment_version,0) < maxVersion. maxVersion=1 mantém o
+   * comportamento original (apenas nunca enriquecidos); maxVersion=2 habilita a
+   * segunda rodada autorizada. Batch limitado e ordenado por id (idempotência).
    */
-  public async listCandidatesForEnrichment(limit = 10, offset = 0): Promise<KbCandidateHit[]> {
+  public async listCandidatesForEnrichment(limit = 10, offset = 0, maxVersion = 1): Promise<KbCandidateHit[]> {
     const k = Math.max(1, Math.min(50, limit));
+    const safeMaxVersion = Math.max(1, Math.min(5, maxVersion));
     const statusPlaceholders = SEARCHABLE_STATUSES.map((_, i) => `$${i + 1}`).join(', ');
 
     const result = await this.executor.query<SearchRow>(
@@ -267,17 +274,18 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
         recommended_procedure_json, checklist_json, tags_json,
         COALESCE(evidence_summary_sanitized, '') AS evidence_summary_sanitized,
         confidence_score::text,
-        '0'::text AS ts_score
+        '0'::text AS ts_score,
+        COALESCE(enrichment_version, 0)::text AS enrichment_version
       FROM ${KB_CANDIDATES_TABLE}
       WHERE status IN (${statusPlaceholders})
         AND COALESCE(title, '') NOT ILIKE '%Ajuda externa por IA%'
         AND COALESCE(article_type, '') NOT IN ('external_research', 'cloud_preview', 'external_ai')
         AND NOT (tags_json @> '["draft_gap_candidate"]'::jsonb)
-        AND enrichment_version IS NULL
+        AND COALESCE(enrichment_version, 0) < $${SEARCHABLE_STATUSES.length + 3}
       ORDER BY id ASC
       LIMIT $${SEARCHABLE_STATUSES.length + 1} OFFSET $${SEARCHABLE_STATUSES.length + 2}
       `,
-      [...SEARCHABLE_STATUSES, k, Math.max(0, offset)],
+      [...SEARCHABLE_STATUSES, k, Math.max(0, offset), safeMaxVersion],
     );
 
     return result.rows.map((r) => rowToHit(r, 0));
@@ -320,7 +328,13 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
           evidence_summary_sanitized = $9,
           source_tier = $10,
           content_markdown = $11,
-          structured_draft_json = $12::jsonb,
+          -- Re-enriquecimento (v2+): o original_backup da PRIMEIRA aplicação é
+          -- imutável — só o draft é atualizado. Rollback sempre volta ao original real.
+          structured_draft_json = CASE
+            WHEN structured_draft_json ? 'original_backup'
+              THEN jsonb_set(structured_draft_json, '{draft}', $12::jsonb->'draft')
+            ELSE $12::jsonb
+          END,
           original_hash = $13,
           enriched_hash = $14,
           enrichment_version = $15,

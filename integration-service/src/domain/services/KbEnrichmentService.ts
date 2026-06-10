@@ -252,7 +252,7 @@ export class KbEnrichmentService {
       source_kb_id: hit.id,
       original_hash: originalHash,
       enriched_hash: sha256(JSON.stringify(draft)),
-      enrichment_version: 1,
+      enrichment_version: (hit.enrichmentVersion ?? 0) + 1,
       gaps_detected: gaps,
       draft,
       original_snapshot: {
@@ -345,7 +345,7 @@ export class KbEnrichmentService {
   public async enrichAndApplyBatch(
     repo: PostgresKbCandidateSearchRepository,
     limit = 10,
-    options: { allowDeterministic?: boolean } = {},
+    options: { allowDeterministic?: boolean; maxVersion?: number } = {},
   ): Promise<{
     processed: number;
     applied: number;
@@ -353,7 +353,7 @@ export class KbEnrichmentService {
     items: Array<{ id: number; title: string; ok: boolean; gaps: number; error?: string }>;
   }> {
     const safeLimit = Math.max(1, Math.min(limit, 50));
-    const candidates = await repo.listCandidatesForEnrichment(safeLimit, 0);
+    const candidates = await repo.listCandidatesForEnrichment(safeLimit, 0, options.maxVersion ?? 1);
     const items: Array<{ id: number; title: string; ok: boolean; gaps: number; error?: string }> = [];
     let applied = 0;
     let failed = 0;
