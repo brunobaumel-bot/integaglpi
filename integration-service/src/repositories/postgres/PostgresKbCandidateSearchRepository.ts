@@ -245,4 +245,184 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
       return rowToHit(r, normalised);
     });
   }
+
+  // ── F5/F6 — Enriquecimento persistente (autorizado pelo operador 2026-06-10) ──
+
+  /**
+   * Lista candidatos elegíveis para enriquecimento: ainda não enriquecidos
+   * (enrichment_version IS NULL) e que são fonte de busca local. Batch limitado
+   * (nunca global irrestrito) e ordenado por id para idempotência entre execuções.
+   */
+  public async listCandidatesForEnrichment(limit = 10, offset = 0): Promise<KbCandidateHit[]> {
+    const k = Math.max(1, Math.min(50, limit));
+    const statusPlaceholders = SEARCHABLE_STATUSES.map((_, i) => `$${i + 1}`).join(', ');
+
+    const result = await this.executor.query<SearchRow>(
+      `
+      SELECT
+        id::text, candidate_key, title, article_type, category_suggestion,
+        COALESCE(problem_pattern, '') AS problem_pattern,
+        symptoms_json,
+        COALESCE(probable_cause, '') AS probable_cause,
+        recommended_procedure_json, checklist_json, tags_json,
+        COALESCE(evidence_summary_sanitized, '') AS evidence_summary_sanitized,
+        confidence_score::text,
+        '0'::text AS ts_score
+      FROM ${KB_CANDIDATES_TABLE}
+      WHERE status IN (${statusPlaceholders})
+        AND COALESCE(title, '') NOT ILIKE '%Ajuda externa por IA%'
+        AND COALESCE(article_type, '') NOT IN ('external_research', 'cloud_preview', 'external_ai')
+        AND NOT (tags_json @> '["draft_gap_candidate"]'::jsonb)
+        AND enrichment_version IS NULL
+      ORDER BY id ASC
+      LIMIT $${SEARCHABLE_STATUSES.length + 1} OFFSET $${SEARCHABLE_STATUSES.length + 2}
+      `,
+      [...SEARCHABLE_STATUSES, k, Math.max(0, offset)],
+    );
+
+    return result.rows.map((r) => rowToHit(r, 0));
+  }
+
+  /**
+   * Aplica o conteúdo ENRIQUECIDO ao candidato original (autorização explícita
+   * do operador). O conteúdo original completo é preservado em
+   * structured_draft_json.original_backup — rollback sempre possível.
+   * UPDATE parametrizado em linha única (WHERE id) — nunca em massa.
+   */
+  public async applyEnrichedContent(input: {
+    id: number;
+    title: string;
+    problemPattern: string;
+    symptoms: string[];
+    probableCause: string;
+    procedure: string[];
+    checklist: string[];
+    tags: string[];
+    evidenceSummary: string;
+    sourceTier: string;
+    contentMarkdown: string;
+    structuredDraft: Record<string, unknown>;
+    originalBackup: Record<string, unknown>;
+    originalHash: string;
+    enrichedHash: string;
+    enrichmentVersion: number;
+  }): Promise<boolean> {
+    const result = await this.executor.query<{ id: string }>(
+      `
+      UPDATE ${KB_CANDIDATES_TABLE}
+      SET title = $2,
+          problem_pattern = $3,
+          symptoms_json = $4::jsonb,
+          probable_cause = $5,
+          recommended_procedure_json = $6::jsonb,
+          checklist_json = $7::jsonb,
+          tags_json = $8::jsonb,
+          evidence_summary_sanitized = $9,
+          source_tier = $10,
+          content_markdown = $11,
+          structured_draft_json = $12::jsonb,
+          original_hash = $13,
+          enriched_hash = $14,
+          enrichment_version = $15,
+          source_kb_id = $1,
+          enriched_at = NOW(),
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING id::text
+      `,
+      [
+        input.id,
+        input.title.slice(0, 250),
+        input.problemPattern.slice(0, 500),
+        JSON.stringify(input.symptoms.slice(0, 12)),
+        input.probableCause.slice(0, 500),
+        JSON.stringify(input.procedure.slice(0, 15)),
+        JSON.stringify(input.checklist.slice(0, 12)),
+        JSON.stringify(input.tags.slice(0, 15)),
+        input.evidenceSummary.slice(0, 1000),
+        input.sourceTier,
+        input.contentMarkdown.slice(0, 12000),
+        JSON.stringify({ draft: input.structuredDraft, original_backup: input.originalBackup }),
+        input.originalHash,
+        input.enrichedHash,
+        input.enrichmentVersion,
+      ],
+    );
+    return result.rows.length > 0;
+  }
+
+  /**
+   * Reverte um enriquecimento aplicado usando o original_backup persistido.
+   */
+  public async rollbackEnrichment(id: number): Promise<boolean> {
+    const result = await this.executor.query<{ id: string }>(
+      `
+      UPDATE ${KB_CANDIDATES_TABLE}
+      SET title = COALESCE(structured_draft_json->'original_backup'->>'title', title),
+          problem_pattern = COALESCE(structured_draft_json->'original_backup'->>'problem_pattern', problem_pattern),
+          symptoms_json = COALESCE(structured_draft_json->'original_backup'->'symptoms', symptoms_json),
+          probable_cause = COALESCE(structured_draft_json->'original_backup'->>'probable_cause', probable_cause),
+          recommended_procedure_json = COALESCE(structured_draft_json->'original_backup'->'procedure', recommended_procedure_json),
+          checklist_json = COALESCE(structured_draft_json->'original_backup'->'checklist', checklist_json),
+          tags_json = COALESCE(structured_draft_json->'original_backup'->'tags', tags_json),
+          evidence_summary_sanitized = COALESCE(structured_draft_json->'original_backup'->>'evidence_summary', evidence_summary_sanitized),
+          content_markdown = COALESCE(structured_draft_json->'original_backup'->>'content_markdown', content_markdown),
+          enrichment_version = NULL,
+          enriched_hash = NULL,
+          enriched_at = NULL,
+          updated_at = NOW()
+      WHERE id = $1 AND structured_draft_json ? 'original_backup'
+      RETURNING id::text
+      `,
+      [id],
+    );
+    return result.rows.length > 0;
+  }
+
+  /**
+   * Lê content_markdown do candidato (não faz parte do hit de busca).
+   */
+  public async getContentMarkdown(id: number): Promise<string> {
+    const result = await this.executor.query<{ content_markdown: string }>(
+      `SELECT COALESCE(content_markdown, '') AS content_markdown FROM ${KB_CANDIDATES_TABLE} WHERE id = $1`,
+      [id],
+    );
+    return String(result.rows[0]?.content_markdown ?? '');
+  }
+
+  /**
+   * F6: insere um candidato de lacuna (draft_gap_candidate) com revisão humana.
+   * Idempotente por candidate_key (ON CONFLICT DO NOTHING). Nunca publicado.
+   */
+  public async insertGapCandidate(input: {
+    candidateKey: string;
+    title: string;
+    pattern: string;
+    occurrences: number;
+  }): Promise<boolean> {
+    const result = await this.executor.query<{ id: string }>(
+      `
+      INSERT INTO ${KB_CANDIDATES_TABLE} (
+        candidate_key, input_hash, status, article_type, title, content_markdown,
+        problem_pattern, symptoms_json, tags_json, category_suggestion,
+        evidence_summary_sanitized, confidence_score
+      ) VALUES (
+        $1, $2, 'draft_gap_candidate', 'checklist_diagnostico', $3, $4,
+        $5, '[]'::jsonb, '["draft_gap_candidate"]'::jsonb, 'Lacuna de KB',
+        $6, 10
+      )
+      ON CONFLICT (candidate_key) DO NOTHING
+      RETURNING id::text
+      `,
+      [
+        input.candidateKey,
+        input.candidateKey,
+        input.title.slice(0, 250),
+        `# Lacuna de KB detectada\n\nPadrão: ${input.pattern}\nOcorrências: ${input.occurrences}\n\nEste é um rascunho de lacuna — requer redação e revisão humana antes de qualquer uso.`,
+        `Lacuna recorrente sem cobertura local: ${input.pattern}`.slice(0, 500),
+        `Detectado pelo gap analysis (>= ${input.occurrences} buscas sem KB suficiente).`.slice(0, 1000),
+      ],
+    );
+    return result.rows.length > 0;
+  }
 }

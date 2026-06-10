@@ -143,13 +143,130 @@ describe('KbEnrichmentService — F5 draft enriquecido', () => {
     expect(result.draft.human_review_required).toBe(true);
   });
 
-  it('persistDraft retorna BLOCK_SCHEMA_REQUIRED com proposta aditiva (sem criar migration)', () => {
+  it('persistDraft (gate histórico) ainda documenta a proposta de schema', () => {
     const svc = new KbEnrichmentService();
     const r = svc.persistDraft();
-    expect(r.ok).toBe(false);
     expect(r.status).toBe('BLOCK_SCHEMA_REQUIRED');
     expect(r.migration_proposal.join('\n')).toContain('source_kb_id');
-    expect(r.migration_proposal.join('\n')).toContain('original_hash');
+  });
+});
+
+// ── F5: aplicação real autorizada (migration 052) ────────────────────────────
+
+describe('KbEnrichmentService — F5 aplicação autorizada', () => {
+  let flagBackup: boolean;
+
+  beforeEach(() => {
+    flagBackup = mutableEnv.KB_ENRICHMENT_ENABLED;
+    mutableEnv.KB_ENRICHMENT_ENABLED = true;
+  });
+
+  afterEach(() => {
+    mutableEnv.KB_ENRICHMENT_ENABLED = flagBackup;
+  });
+
+  function makeRepoMock() {
+    return {
+      listCandidatesForEnrichment: vi.fn().mockResolvedValue([makeHit()]),
+      applyEnrichedContent: vi.fn().mockResolvedValue(true),
+      rollbackEnrichment: vi.fn().mockResolvedValue(true),
+      getContentMarkdown: vi.fn().mockResolvedValue('# original markdown'),
+      insertGapCandidate: vi.fn().mockResolvedValue(true),
+      searchCandidates: vi.fn(),
+    };
+  }
+
+  it('migration 052 existe, é aditiva e usa NOT VALID no CHECK (boot seguro)', async () => {
+    const sql = await readFile(
+      resolve(repoRoot, 'integration-service/schema-migrations/052_kb_candidates_enrichment_traceability.sql'),
+      'utf8',
+    );
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS source_kb_id');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS original_hash');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS enriched_hash');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS structured_draft_json');
+    expect(sql).toContain('NOT VALID');
+    // Statements destrutivos (início de linha) — comentários de contrato permitidos.
+    expect(sql).not.toMatch(/^\s*(DROP TABLE|TRUNCATE|DELETE\s+FROM)/im);
+    expect(sql).not.toMatch(/glpi_tickets|glpi_users|glpi_knowbaseitems/);
+  });
+
+  it('flag off → applyEnrichment bloqueado (nada gravado)', async () => {
+    mutableEnv.KB_ENRICHMENT_ENABLED = false;
+    const repo = makeRepoMock();
+    const svc = new KbEnrichmentService();
+    const hit = makeHit();
+    const result = await svc.buildEnrichedDraft(hit);
+    const outcome = await svc.applyEnrichment(repo as never, hit, result);
+    expect(outcome.ok).toBe(false);
+    expect(repo.applyEnrichedContent).not.toHaveBeenCalled();
+  });
+
+  it('applyEnrichment grava com backup completo do original (rollback possível)', async () => {
+    const repo = makeRepoMock();
+    const svc = new KbEnrichmentService();
+    const hit = makeHit();
+    const result = await svc.buildEnrichedDraft(hit);
+    const outcome = await svc.applyEnrichment(repo as never, hit, result);
+    expect(outcome.ok).toBe(true);
+    const input = repo.applyEnrichedContent.mock.calls[0]![0] as Record<string, unknown>;
+    const backup = input['originalBackup'] as Record<string, unknown>;
+    expect(backup['title']).toBe(hit.title);
+    expect(backup['procedure']).toEqual(hit.recommendedProcedureJson);
+    expect(backup['content_markdown']).toBe('# original markdown');
+    expect(input['originalHash']).toBe(result.original_hash);
+    expect(input['enrichmentVersion']).toBe(1);
+  });
+
+  it('INFORMACAO_INDISPONIVEL nunca sobrescreve conteúdo original existente', async () => {
+    const repo = makeRepoMock();
+    const svc = new KbEnrichmentService(); // sem Ollama → campos novos = INDISPONIVEL
+    const hit = makeHit();
+    const result = await svc.buildEnrichedDraft(hit);
+    await svc.applyEnrichment(repo as never, hit, result);
+    const input = repo.applyEnrichedContent.mock.calls[0]![0] as Record<string, unknown>;
+    // symptoms/procedure/checklist preservados do original (draft tinha conteúdo real do hit).
+    expect(input['symptoms']).toEqual(hit.symptomsJson);
+    expect(input['procedure']).toEqual(hit.recommendedProcedureJson);
+  });
+
+  it('enrichAndApplyBatch respeita o limite e produz resumo por item', async () => {
+    const repo = makeRepoMock();
+    const svc = new KbEnrichmentService();
+    const summary = await svc.enrichAndApplyBatch(repo as never, 5);
+    expect(repo.listCandidatesForEnrichment).toHaveBeenCalledWith(5, 0);
+    expect(summary.processed).toBe(1);
+    expect(summary.applied).toBe(1);
+    expect(summary.items[0]).toMatchObject({ ok: true });
+  });
+
+  it('persistGapCandidates insere draft_gap_candidate idempotente', async () => {
+    mutableEnv.KB_GAP_ANALYSIS_ENABLED = true;
+    const executor = {
+      query: vi.fn().mockResolvedValue({
+        rows: [{ pattern: 'Micromed:application_not_opening:deterministic', occurrences: '5', first_seen: '2026-06-01', last_seen: '2026-06-09' }],
+      }),
+    };
+    const repo = makeRepoMock();
+    const svc = new KbEnrichmentService(null, executor as never);
+    const result = await svc.persistGapCandidates(repo as never, 30);
+    expect(result.detected).toBe(1);
+    expect(result.inserted).toBe(1);
+    const arg = repo.insertGapCandidate.mock.calls[0]![0] as Record<string, unknown>;
+    expect(String(arg['candidateKey'])).toMatch(/^gap-[a-f0-9]{24}$/);
+    mutableEnv.KB_GAP_ANALYSIS_ENABLED = false;
+  });
+
+  it('repositório: UPDATE em linha única, rollback usa original_backup, gap insert é ON CONFLICT DO NOTHING', async () => {
+    const repoSrc = await readFile(
+      resolve(repoRoot, 'integration-service/src/repositories/postgres/PostgresKbCandidateSearchRepository.ts'),
+      'utf8',
+    );
+    expect(repoSrc).toContain('WHERE id = $1');
+    expect(repoSrc).toContain("structured_draft_json ? 'original_backup'");
+    expect(repoSrc).toContain('ON CONFLICT (candidate_key) DO NOTHING');
+    expect(repoSrc).toContain('enrichment_version IS NULL');
+    expect(repoSrc).not.toMatch(/DELETE\s+FROM/i);
   });
 });
 

@@ -17,7 +17,8 @@
     "format": "prettier --write .",
     "test": "vitest run",
     "test:kb-regression": "vitest run tests/kbGoldenSet.test.ts",
-    "test:kb-ragas": "tsx tests/kbRagasHarness.ts"
+    "test:kb-ragas": "tsx tests/kbRagasHarness.ts",
+    "enrich:kb": "tsx src/kbEnrichment/cli.ts"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

@@ -9,10 +9,11 @@
  *   - Rastreabilidade: source_kb_id + original_hash + enriched_hash + version.
  *   - human_review_required: true — literal, imutável.
  *   - Campos sem evidência recebem 'INFORMACAO_INDISPONIVEL' (nunca inventa).
- *   - PERSISTÊNCIA: o schema atual de kb_candidates NÃO suporta os status do
- *     contrato (CHECK constraint) nem colunas de rastreabilidade dedicadas.
- *     persistDraft() retorna BLOCK_SCHEMA_REQUIRED com a proposta de migration
- *     aditiva — nenhuma migration é criada sem autorização explícita.
+ *   - PERSISTÊNCIA/APLICAÇÃO: AUTORIZADA pelo operador em 2026-06-10 (migration
+ *     052 aditiva). applyEnrichment() atualiza o candidato ORIGINAL com o
+ *     conteúdo enriquecido, preservando o original completo em
+ *     structured_draft_json.original_backup (rollback via rollbackEnrichment()).
+ *     persistDraft() permanece como referência histórica do gate de schema.
  *
  * F6 — Gap analysis:
  *   - Agrega eventos kb_rag_search com deterministic_fallback e zero KBs usadas
@@ -31,7 +32,7 @@ import { createHash } from 'node:crypto';
 import { env } from '../../config/env.js';
 import { piiGuard } from './KbRagCopilotService.js';
 import type { OllamaRagPort } from './KbRagCopilotService.js';
-import type { KbCandidateHit } from '../../repositories/postgres/PostgresKbCandidateSearchRepository.js';
+import type { KbCandidateHit, PostgresKbCandidateSearchRepository } from '../../repositories/postgres/PostgresKbCandidateSearchRepository.js';
 import type { SqlExecutor } from '../../infra/db/postgres.js';
 
 // ── F5 types ──────────────────────────────────────────────────────────────────
@@ -226,12 +227,14 @@ export class KbEnrichmentService {
     };
 
     // Enriquecimento opcional via Ollama LOCAL (flag-gated; nunca cloud).
+    // Autorizado a MELHORAR o conteúdo (sintomas/causas/passos/validação/contexto),
+    // sempre ancorado no original — rastreável e reversível via backup.
     if (env.KB_ENRICHMENT_ENABLED && this.ollamaPort !== null) {
       try {
         const enriched = await this.tryOllamaEnrichment(hit, draft);
         if (enriched !== null) {
           Object.assign(draft, enriched);
-          draft.confidence_notes += ' Campos complementados por IA local — validar na revisão humana.';
+          draft.confidence_notes += ' Campos complementados/melhorados por IA local — rastreável; rollback disponível.';
         }
       } catch {
         // Falha de IA nunca bloqueia o draft determinístico.
@@ -263,10 +266,169 @@ export class KbEnrichmentService {
   }
 
   /**
-   * PERSISTÊNCIA BLOQUEADA: o schema atual de kb_candidates tem CHECK constraint
-   * de status que não inclui draft_enriched/needs_review/ready_for_human_review,
-   * e não há colunas para source_kb_id/original_hash/enriched_hash/enrichment_version.
-   * Retorna a proposta de migration aditiva — criação só com autorização explícita.
+   * APLICA o enriquecimento ao candidato original no banco (autorização do
+   * operador em 2026-06-10 + migration 052). O original completo é gravado em
+   * structured_draft_json.original_backup ANTES da substituição — rollback
+   * disponível via repositório. 1 candidato por chamada — nunca em massa cega.
+   */
+  public async applyEnrichment(
+    repo: PostgresKbCandidateSearchRepository,
+    hit: KbCandidateHit,
+    result: EnrichmentResult,
+  ): Promise<{ ok: boolean; id: number; error?: string }> {
+    if (!env.KB_ENRICHMENT_ENABLED) {
+      return { ok: false, id: hit.id, error: 'KB_ENRICHMENT_ENABLED=false — aplicação desabilitada.' };
+    }
+
+    const d = result.draft;
+    const cleanList = (values: string[]): string[] =>
+      values.filter((v) => v !== INFO_UNAVAILABLE && v.trim() !== '');
+
+    // Merge: campos enriquecidos substituem; INFORMACAO_INDISPONIVEL preserva original.
+    const symptoms = cleanList(d.symptoms).length > 0 ? cleanList(d.symptoms) : hit.symptomsJson;
+    const procedure = cleanList(d.resolution_steps).length > 0 ? cleanList(d.resolution_steps) : hit.recommendedProcedureJson;
+    const checklist = cleanList(d.validation_steps).length > 0 ? cleanList(d.validation_steps) : hit.checklistJson;
+    const tags = Array.from(new Set([
+      ...hit.tagsJson,
+      ...cleanList(d.tags),
+      ...cleanList(d.aliases),
+      'enriched_v' + result.enrichment_version,
+    ]));
+    const probableCause = cleanList(d.likely_causes).join('; ') || hit.probableCause;
+
+    const originalContentMarkdown = await repo.getContentMarkdown(hit.id);
+    const contentMarkdown = this.renderEnrichedMarkdown(d, result);
+
+    const applied = await repo.applyEnrichedContent({
+      id: hit.id,
+      title: d.title || hit.title,
+      problemPattern: d.context !== INFO_UNAVAILABLE ? d.context : hit.problemPattern,
+      symptoms,
+      probableCause,
+      procedure,
+      checklist,
+      tags,
+      evidenceSummary: d.ai_hint !== INFO_UNAVAILABLE ? d.ai_hint : hit.evidenceSummarySanitized,
+      sourceTier: d.source_tier,
+      contentMarkdown,
+      structuredDraft: d as unknown as Record<string, unknown>,
+      originalBackup: {
+        title: hit.title,
+        problem_pattern: hit.problemPattern,
+        symptoms: hit.symptomsJson,
+        probable_cause: hit.probableCause,
+        procedure: hit.recommendedProcedureJson,
+        checklist: hit.checklistJson,
+        tags: hit.tagsJson,
+        evidence_summary: hit.evidenceSummarySanitized,
+        content_markdown: originalContentMarkdown,
+      },
+      originalHash: result.original_hash,
+      enrichedHash: result.enriched_hash,
+      enrichmentVersion: result.enrichment_version,
+    });
+
+    return applied
+      ? { ok: true, id: hit.id }
+      : { ok: false, id: hit.id, error: 'UPDATE não afetou nenhuma linha.' };
+  }
+
+  /**
+   * Batch CONTROLADO: enriquece e aplica até `limit` candidatos elegíveis
+   * (enrichment_version IS NULL). Nunca global irrestrito; resumo por item.
+   */
+  public async enrichAndApplyBatch(
+    repo: PostgresKbCandidateSearchRepository,
+    limit = 10,
+  ): Promise<{
+    processed: number;
+    applied: number;
+    failed: number;
+    items: Array<{ id: number; title: string; ok: boolean; gaps: number; error?: string }>;
+  }> {
+    const safeLimit = Math.max(1, Math.min(limit, 50));
+    const candidates = await repo.listCandidatesForEnrichment(safeLimit, 0);
+    const items: Array<{ id: number; title: string; ok: boolean; gaps: number; error?: string }> = [];
+    let applied = 0;
+    let failed = 0;
+
+    for (const hit of candidates) {
+      try {
+        const result = await this.buildEnrichedDraft(hit);
+        const outcome = await this.applyEnrichment(repo, hit, result);
+        items.push({
+          id: hit.id,
+          title: hit.title.slice(0, 80),
+          ok: outcome.ok,
+          gaps: result.gaps_detected.length,
+          ...(outcome.error !== undefined ? { error: outcome.error } : {}),
+        });
+        outcome.ok ? applied++ : failed++;
+      } catch (err) {
+        failed++;
+        items.push({
+          id: hit.id,
+          title: hit.title.slice(0, 80),
+          ok: false,
+          gaps: 0,
+          error: err instanceof Error ? err.message.slice(0, 160) : 'erro desconhecido',
+        });
+      }
+    }
+
+    return { processed: candidates.length, applied, failed, items };
+  }
+
+  /**
+   * F6: persiste lacunas recorrentes como draft_gap_candidate (revisão humana).
+   */
+  public async persistGapCandidates(
+    repo: PostgresKbCandidateSearchRepository,
+    windowDays = 30,
+  ): Promise<{ detected: number; inserted: number }> {
+    const gaps = await this.detectRecurringGaps(windowDays);
+    let inserted = 0;
+    for (const gap of gaps) {
+      const ok = await repo.insertGapCandidate({
+        candidateKey: 'gap-' + sha256(gap.pattern).slice(0, 24),
+        title: gap.suggested_title,
+        pattern: gap.pattern,
+        occurrences: gap.occurrences,
+      });
+      if (ok) inserted++;
+    }
+    return { detected: gaps.length, inserted };
+  }
+
+  private renderEnrichedMarkdown(d: EnrichedKbDraft, result: EnrichmentResult): string {
+    const list = (items: string[]): string =>
+      items.filter((i) => i !== INFO_UNAVAILABLE).map((i) => `- ${i}`).join('\n') || '- (a completar na revisão)';
+    return [
+      `# ${d.title}`,
+      '',
+      `> Enriquecido por IA local (v${result.enrichment_version}) — original preservado para rollback. Revisão humana recomendada.`,
+      '',
+      `**Sistema/Produto:** ${d.product_or_system}  `,
+      `**Categoria:** ${d.category} · **Tier:** ${d.source_tier}`,
+      '',
+      '## Contexto', d.context !== INFO_UNAVAILABLE ? d.context : '(a completar)',
+      '', '## Sintomas', list(d.symptoms),
+      '', '## Perguntas de triagem', list(d.triage_questions),
+      '', '## Causas prováveis', list(d.likely_causes),
+      '', '## Verificações (consultivas — execução manual)', list(d.commands_or_checks),
+      '', '## Resolução', list(d.resolution_steps),
+      '', '## Validação', list(d.validation_steps),
+      '', '## Rollback / saída segura', list(d.rollback_or_safe_exit),
+      '', '## Quando escalar', list(d.escalation_when),
+      '', '## Prevenção', list(d.prevention),
+      '', '## Falsos positivos conhecidos', list(d.known_false_positives),
+      '', `_${d.confidence_notes}_`,
+    ].join('\n');
+  }
+
+  /**
+   * Referência histórica do gate de schema (pré-autorização). A migration 052
+   * foi autorizada e criada em 2026-06-10 — use applyEnrichment().
    */
   public persistDraft(): PersistDraftResult {
     return {
@@ -368,17 +530,27 @@ export class KbEnrichmentService {
     base: EnrichedKbDraft,
   ): Promise<Partial<EnrichedKbDraft> | null> {
     if (this.ollamaPort === null) return null;
+    // Autorizado (2026-06-10) a MELHORAR o conteúdo existente: expandir sintomas,
+    // causas, passos, validação e contexto com conhecimento técnico do modelo,
+    // SEMPRE ancorado no artigo original. Original preservado em backup (rollback).
     const prompt = [
-      'Você enriquece um artigo de base de conhecimento INTERNO para revisão humana.',
-      'Use APENAS o conteúdo fornecido. Para campos sem evidência, use exatamente "INFORMACAO_INDISPONIVEL".',
-      'Nunca invente comandos ou causas. Sem PII. Responda APENAS JSON com as chaves:',
-      '{"aliases":[],"triage_questions":[],"incident_tree":[],"rollback_or_safe_exit":[],"escalation_when":[],"prevention":[],"known_false_positives":[]}',
+      'Você é um analista técnico sênior enriquecendo um artigo de base de conhecimento INTERNO de suporte.',
+      'Melhore e EXPANDA o conteúdo: complete sintomas, causas prováveis, passos de resolução (numerados e específicos), validação, triagem, rollback, escalonamento e prevenção.',
+      'Pode usar conhecimento técnico geral do produto/sistema para complementar, mas NUNCA contradiga o artigo original.',
+      'Comandos são SUGESTÃO consultiva (execução manual humana). Sem PII (nomes, telefones, e-mails, tokens).',
+      'Para um campo onde realmente não há nada útil a dizer, use exatamente "INFORMACAO_INDISPONIVEL".',
+      'Responda APENAS JSON válido com as chaves:',
+      '{"context":"","symptoms":[],"likely_causes":[],"resolution_steps":[],"validation_steps":[],"commands_or_checks":[],"ai_hint":"","aliases":[],"triage_questions":[],"incident_tree":[],"rollback_or_safe_exit":[],"escalation_when":[],"prevention":[],"known_false_positives":[]}',
       '',
+      '=== ARTIGO ORIGINAL ===',
       `Título: ${piiGuard(hit.title)}`,
-      `Sintomas: ${hit.symptomsJson.join('; ')}`,
-      `Causa: ${piiGuard(hit.probableCause)}`,
-      `Passos: ${hit.recommendedProcedureJson.join(' → ')}`,
+      `Categoria: ${hit.categorySuggestion}`,
+      `Sintomas: ${hit.symptomsJson.join('; ') || 'N/D'}`,
+      `Causa: ${piiGuard(hit.probableCause) || 'N/D'}`,
+      `Passos: ${hit.recommendedProcedureJson.join(' → ') || 'N/D'}`,
+      `Validação: ${hit.checklistJson.join('; ') || 'N/D'}`,
       `Contexto: ${base.context}`,
+      `Tags: ${hit.tagsJson.join(', ') || 'N/D'}`,
     ].join('\n');
 
     const raw = await this.ollamaPort.generateText(prompt, { temperature: 0.2 });
@@ -388,10 +560,33 @@ export class KbEnrichmentService {
       const parsed = JSON.parse(match[0]) as Record<string, unknown>;
       const arr = (v: unknown): string[] | undefined => {
         if (!Array.isArray(v)) return undefined;
-        const clean = v.filter((s): s is string => typeof s === 'string').map((s) => piiGuard(s)).slice(0, 8);
+        const clean = v
+          .filter((s): s is string => typeof s === 'string')
+          .map((s) => piiGuard(s).trim())
+          .filter((s) => s !== '' && s !== INFO_UNAVAILABLE)
+          .slice(0, 10);
         return clean.length > 0 ? clean : undefined;
       };
+      const str = (v: unknown): string | undefined => {
+        if (typeof v !== 'string') return undefined;
+        const clean = piiGuard(v).trim().slice(0, 600);
+        return clean !== '' && clean !== INFO_UNAVAILABLE ? clean : undefined;
+      };
       const out: Partial<EnrichedKbDraft> = {};
+      const context = str(parsed['context']);
+      if (context) out.context = context;
+      const symptoms = arr(parsed['symptoms']);
+      if (symptoms) out.symptoms = symptoms;
+      const causes = arr(parsed['likely_causes']);
+      if (causes) out.likely_causes = causes;
+      const resolution = arr(parsed['resolution_steps']);
+      if (resolution) out.resolution_steps = resolution;
+      const validation = arr(parsed['validation_steps']);
+      if (validation) out.validation_steps = validation;
+      const checks = arr(parsed['commands_or_checks']);
+      if (checks) out.commands_or_checks = checks;
+      const aiHint = str(parsed['ai_hint']);
+      if (aiHint) out.ai_hint = aiHint;
       const aliases = arr(parsed['aliases']);
       if (aliases) out.aliases = aliases;
       const triage = arr(parsed['triage_questions']);
