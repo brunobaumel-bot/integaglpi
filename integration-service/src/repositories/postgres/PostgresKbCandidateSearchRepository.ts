@@ -145,6 +145,7 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
       WHERE status IN (${statusPlaceholders})
         AND COALESCE(title, '') NOT ILIKE '%Ajuda externa por IA%'
         AND COALESCE(article_type, '') NOT IN ('external_research', 'cloud_preview', 'external_ai')
+        AND NOT (tags_json @> '["draft_gap_candidate"]'::jsonb)
         AND (
           setweight(to_tsvector('portuguese', COALESCE(problem_pattern,'') || ' ' || COALESCE(symptoms_json::text,'[]')), 'A') ||
           setweight(to_tsvector('portuguese', COALESCE(evidence_summary_sanitized,'')), 'B') ||
@@ -227,6 +228,7 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
         WHERE status IN (${statusPlaceholders})
           AND COALESCE(title, '') NOT ILIKE '%Ajuda externa por IA%'
           AND COALESCE(article_type, '') NOT IN ('external_research', 'cloud_preview', 'external_ai')
+          AND NOT (tags_json @> '["draft_gap_candidate"]'::jsonb)
       ) sub
       WHERE ${tokenConditions}
       ORDER BY ts_score DESC, confidence_score DESC

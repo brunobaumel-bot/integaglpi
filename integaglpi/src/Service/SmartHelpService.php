@@ -285,9 +285,25 @@ final class SmartHelpService
             error_log('[integaglpi][smart_help] native KB error: ' . mb_substr($e->getMessage(), 0, 180, 'UTF-8'));
         }
 
+        // F2 (kb_enrichment_and_search_optimization): RAG executado POR PROBLEMA
+        // quando o chamado tem 2+ problemas distintos (máx. 2 chamadas — custo Ollama).
+        // O melhor resultado (localResolved primeiro) vira o principal; os demais
+        // ficam em ragPerProblem para o painel exibir por problema.
         $ragResult = null;
+        $ragPerProblem = [];
         if ($wantLocalAiSuggestion) {
-            $ragResult = $this->buildLocalRagResult($ticketId, $searchContext);
+            $ragContexts = count($problems) >= 2 ? array_slice($problems, 0, 2) : [$searchContext];
+            foreach ($ragContexts as $pi => $ragContext) {
+                $r = $this->buildLocalRagResult($ticketId, $ragContext);
+                if ($r === null) {
+                    continue;
+                }
+                $r['problem_index'] = count($ragContexts) >= 2 ? $pi + 1 : null;
+                $ragPerProblem[] = $r;
+                if ($ragResult === null || (($r['localResolved'] ?? false) === true && ($ragResult['localResolved'] ?? false) !== true)) {
+                    $ragResult = $r;
+                }
+            }
             if ($ragResult !== null && ($ragResult['localResolved'] ?? false) === true) {
                 $localArticles = $ragResult['relatedArticles'];
             }
@@ -380,11 +396,62 @@ final class SmartHelpService
             ],
             'kbCoverage'         => $kbCoverage,
             'kb_coverage'        => $kbCoverage,
+            'problemProfiles'    => $this->buildProblemProfiles($problems !== [] ? $problems : [$searchContext]),
+            'ragPerProblem'      => array_map(static fn ($r) => [
+                'problem_index' => $r['problem_index'] ?? null,
+                'localResolved' => (bool) ($r['localResolved'] ?? false),
+                'kbsUsed'       => $r['kbsUsed'] ?? [],
+                'message'       => (string) ($r['message'] ?? ''),
+            ], $ragPerProblem),
+            'customResponse'     => is_array($ragResult['customResponse'] ?? null) ? $ragResult['customResponse'] : null,
             'schema044Status'    => $schema044Status,
             'degraded'          => !$nodeOk,
             'message'           => $message,
             'read_only'         => true,
         ];
+    }
+
+    /**
+     * F1 (kb_enrichment_and_search_optimization): perfil estruturado por problema,
+     * insumo limpo para Search Planner/RAG. Determinístico, sem PII, sem evidência
+     * inventada — campos sem dado ficam 'Não informado'.
+     *
+     * @param list<string> $problems
+     * @return list<array<string, mixed>>
+     */
+    private function buildProblemProfiles(array $problems): array
+    {
+        $profiles = [];
+        foreach (array_slice($problems, 0, 3) as $i => $problem) {
+            $clean = $this->sanitizeContext($problem);
+            if ($clean === '') {
+                continue;
+            }
+            $normalized = $this->normalizeForRelevance($clean);
+            $system = $this->inferSystemFromText($normalized);
+            if ($system === 'Não informado') {
+                $topic = $this->inferProblemTopic($normalized);
+                $system = $topic !== 'desconhecido' ? ucfirst($topic) : 'Não informado';
+            }
+            $evidence = $this->inferEvidenceFromText($clean);
+            $tokens = $this->technicalTokens($clean);
+            $profiles[] = [
+                'problem_id'      => $i + 1,
+                'sistema_afetado' => $system,
+                'sintomas'        => array_slice($tokens, 0, 6),
+                'evidencias'      => $evidence !== 'Não informada' ? [$evidence] : [],
+                'impacto'         => 'Não informado',
+                'escopo'          => 'Não informado',
+                'dados_faltantes' => array_values(array_filter([
+                    $evidence === 'Não informada' ? 'mensagem de erro exata' : null,
+                    'quando começou',
+                    'afeta um ou vários usuários',
+                ])),
+                'query_para_busca' => mb_substr($clean, 0, 200, 'UTF-8'),
+            ];
+        }
+
+        return $profiles;
     }
 
     /**
@@ -1141,6 +1208,9 @@ final class SmartHelpService
             'playbook' => $playbook,
             'kbsUsed' => $kbsUsed,
             'kbsScoreBreakdown' => is_array($rag['kbsScoreBreakdown'] ?? null) ? $rag['kbsScoreBreakdown'] : [],
+            // F3: resposta customizada complementar (Node CUSTOM_RESPONSE_ENABLED);
+            // KB fonte permanece visível em kb_sources — nunca substitui o original.
+            'customResponse' => is_array($rag['customResponse'] ?? null) ? $rag['customResponse'] : null,
             'message' => $localResolved ? '' : 'KB local insuficiente para resolver com segurança; use o playbook e valide com o cliente.',
         ];
     }
@@ -1459,6 +1529,38 @@ final class SmartHelpService
     }
 
     /**
+     * F4 (kb_enrichment_and_search_optimization): pós-processamento LOCAL da
+     * resposta cloud sanitizada via Ollama (endpoint technical-summary do Node).
+     * Circuit breaker contratual: timeout duro de 8s — em falha/timeout/PII a
+     * resposta original é devolvida intacta (nunca erro 500).
+     *
+     * ExternalResearchService delega para cá: aquele serviço não executa HTTP
+     * diretamente (invariante de hardening aiV41/externalResearchStatic).
+     */
+    public function polishCloudTextLocally(string $sanitizedCloudText, int $ticketId): string
+    {
+        $text = trim($sanitizedCloudText);
+        if ($text === '') {
+            return $sanitizedCloudText;
+        }
+
+        try {
+            $response = $this->request('POST', self::PATH_TECHNICAL_SUMMARY, [
+                'ticket_id' => $ticketId,
+                'context'   => mb_substr($text, 0, 3000, 'UTF-8'),
+            ], 8);
+            $polished = trim((string) ($response['technical_summary'] ?? $response['technicalSummary'] ?? ''));
+            if (($response['ok'] ?? false) === true && $polished !== '') {
+                return mb_substr($this->sanitizeContext($polished), 0, 2200, 'UTF-8') ?: $sanitizedCloudText;
+            }
+        } catch (\Throwable) {
+            // Circuit breaker: qualquer falha devolve a resposta cloud original.
+        }
+
+        return $sanitizedCloudText;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function getJson(string $path): array
@@ -1470,7 +1572,7 @@ final class SmartHelpService
      * @param array<string, mixed>|null $payload
      * @return array<string, mixed>
      */
-    private function request(string $method, string $path, ?array $payload): array
+    private function request(string $method, string $path, ?array $payload, ?int $timeoutSeconds = null): array
     {
         $base = rtrim($this->config->getIntegrationServiceUrl(), '/');
         $authKey = $this->config->getIntegrationAuthKey();
@@ -1490,7 +1592,7 @@ final class SmartHelpService
         $opts = [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_CUSTOMREQUEST  => $method,
-            CURLOPT_TIMEOUT        => self::TIMEOUT_SECONDS,
+            CURLOPT_TIMEOUT        => $timeoutSeconds !== null ? max(1, min($timeoutSeconds, 120)) : self::TIMEOUT_SECONDS,
             CURLOPT_SSL_VERIFYPEER => true,
         ];
         if ($payload !== null) {

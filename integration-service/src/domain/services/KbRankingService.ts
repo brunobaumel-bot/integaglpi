@@ -407,12 +407,18 @@ export class KbRankingService {
       /\b(ativacao|ativar|ativa|licenca|license)\b/.test(hitText)
       && /\bwindows\b/.test(hitText);
 
-    // AD-sync query must not return Windows activation KB
+    // Products with their own ecosystems — a query anchored on one of them must
+    // never surface a KB anchored on another (F2: AD sync nunca retorna Micromed).
+    const ISOLATED_PRODUCTS = ['micromed', 'veeam', 'synology', 'zabbix', 'nagios', 'fortinet', 'sophos'];
+    const hitIsolatedProducts = ISOLATED_PRODUCTS.filter((p) => hitText.includes(p));
+
+    // AD-sync query must not return Windows activation KB nor isolated-product KB
     const queryIsDirectorySync =
       /\b(active|directory|azure|entra|dominio|domain|ad)\b/.test(query)
       && /\b(sync|sincron|sincronizacao|sincronizando|replicacao|replicar)\b/.test(query);
     if (queryIsDirectorySync) {
       return hitIsWindowsActivation
+        || hitIsolatedProducts.length > 0
         || (/\bwindows\b/.test(hitText) && !/\b(active|directory|azure|entra|dominio|domain|ad|sync|sincron)\b/.test(hitText));
     }
 
@@ -424,14 +430,19 @@ export class KbRankingService {
       return /\b(active|directory|azure|entra|dominio|domain|ad|sync|sincron)\b/.test(hitText);
     }
 
-    // Specific-product query must not return Windows activation KB.
-    // Products that have their own ecosystems unrelated to Windows licensing.
-    const ISOLATED_PRODUCTS = ['micromed', 'veeam', 'synology', 'zabbix', 'nagios', 'fortinet', 'sophos'];
-    const queryHasIsolatedProduct = ISOLATED_PRODUCTS.some((p) =>
+    // Specific-product query must not return Windows activation KB nor a KB
+    // anchored on a DIFFERENT isolated product (micromed → nunca veeam/synology).
+    const queryIsolatedProducts = ISOLATED_PRODUCTS.filter((p) =>
       queryTokens.some((t) => t.includes(p)),
     );
-    if (queryHasIsolatedProduct && hitIsWindowsActivation) {
-      return true;
+    if (queryIsolatedProducts.length > 0) {
+      if (hitIsWindowsActivation) {
+        return true;
+      }
+      const hitHasDifferentProduct = hitIsolatedProducts.some((p) => !queryIsolatedProducts.includes(p));
+      if (hitHasDifferentProduct) {
+        return true;
+      }
     }
 
     // Plan-based negative domain exclusion (broader, structured by SearchPlan).

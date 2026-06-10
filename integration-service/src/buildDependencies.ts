@@ -68,6 +68,7 @@ import { FeedbackService } from './domain/services/FeedbackService.js';
 import { ExternalResearchService } from './domain/services/ExternalResearchService.js';
 import { SmartHelpService } from './domain/services/SmartHelpService.js';
 import { KbRagCopilotService } from './domain/services/KbRagCopilotService.js';
+import { KbCustomResponseService } from './domain/services/KbCustomResponseService.js';
 import type { KbSearchPort } from './domain/services/SmartHelpService.js';
 import { CoachingService } from './domain/services/CoachingService.js';
 import { HttpKbSearchPort } from './infra/http/HttpKbSearchPort.js';
@@ -458,7 +459,19 @@ export function buildDependencies() {
       await redisClient.set(key, value, 'EX', ttlSeconds);
     },
   };
-  const kbRagCopilotService = new KbRagCopilotService(kbRagSearchRepo, ollamaRagPort, ragAuditRepo, kbRagCache);
+  // F3 — resposta customizada complementar (CUSTOM_RESPONSE_ENABLED=false default;
+  // o serviço se auto-gateia e nunca substitui o KB original).
+  const kbCustomResponseService = new KbCustomResponseService(ollamaRagPort);
+  const kbRagCopilotService = new KbRagCopilotService(
+    kbRagSearchRepo,
+    ollamaRagPort,
+    ragAuditRepo,
+    kbRagCache,
+    undefined,
+    undefined,
+    undefined,
+    kbCustomResponseService,
+  );
 
   const logmeinReadonlyContextService = new LogmeinReadonlyContextService(
     {

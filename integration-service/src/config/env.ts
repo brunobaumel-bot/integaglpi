@@ -251,6 +251,31 @@ const envSchema = z.object({
     .union([z.literal('true'), z.literal('false')])
     .default('false')
     .transform((value) => value === 'true'),
+
+  // ── Flags KB enrichment / search optimization ───────────────────────────────
+  // PHASE: integaglpi_v9_kb_enrichment_and_search_optimization_001
+  // Todas default false; nunca publicam KB; revisão humana sempre obrigatória.
+
+  /** Enriquecimento de KB como draft revisável (nunca substitui o original). */
+  KB_ENRICHMENT_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Resposta customizada ao técnico baseada em KB (complementar, nunca substitui). */
+  CUSTOM_RESPONSE_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Análise de lacunas de KB a partir de rag_audit (threshold >= 3 ocorrências). */
+  KB_GAP_ANALYSIS_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Pós-processamento local (Ollama) da resposta cloud — circuit breaker 8s. */
+  CLOUD_POST_PROCESSING_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;

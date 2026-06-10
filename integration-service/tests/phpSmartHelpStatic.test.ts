@@ -1134,16 +1134,18 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
   it('KbRankingService blocks Windows activation KB for isolated-product queries', async () => {
     const svc = await read('integration-service/src/domain/services/KbRankingService.ts');
 
-    // hasDomainConflict contains the isolated-product exclusion rule
+    // hasDomainConflict contains the isolated-product exclusion rule.
+    // (kb_enrichment_and_search_optimization renomeou queryHasIsolatedProduct →
+    // queryIsolatedProducts ao generalizar a exclusão produto-cruzado.)
     expect(svc).toContain('ISOLATED_PRODUCTS');
     expect(svc).toContain("'micromed'");
-    expect(svc).toContain('queryHasIsolatedProduct');
+    expect(svc).toContain('queryIsolatedProducts');
     expect(svc).toContain('hitIsWindowsActivation');
     // The rule appears inside hasDomainConflict (not a separate gate)
     const fnStart = svc.indexOf('private hasDomainConflict');
     expect(fnStart).toBeGreaterThanOrEqual(0);
-    const fnBody = svc.slice(fnStart, fnStart + 2500);
+    const fnBody = svc.slice(fnStart, fnStart + 2800);
     expect(fnBody).toContain('ISOLATED_PRODUCTS');
-    expect(fnBody).toContain('queryHasIsolatedProduct');
+    expect(fnBody).toContain('queryIsolatedProducts');
   });
 });

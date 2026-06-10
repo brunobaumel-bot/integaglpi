@@ -7,6 +7,7 @@ namespace GlpiPlugin\Integaglpi\Service;
 use DateInterval;
 use DateTimeImmutable;
 use GlpiPlugin\Integaglpi\External\ExternalDatabase;
+use GlpiPlugin\Integaglpi\Plugin;
 use PDO;
 use RuntimeException;
 use Throwable;
@@ -1305,6 +1306,11 @@ final class ExternalResearchService
         try {
             $result = (new AiSecretVaultService($this->pluginConfigService))->completeProvider($provider, $model, $prompt, 30000, 900);
             $responseText = $this->sanitizeText((string) ($result['response_text'] ?? ''), 2200);
+            // F4: pós-processamento local opcional com circuit breaker de 8s —
+            // em timeout/falha a resposta cloud sanitizada segue como veio.
+            if ($responseText !== '') {
+                $responseText = $this->postProcessCloudResponse($responseText, (int) ($context['ticket_id'] ?? 0));
+            }
             if ($responseText === '' || $this->containsSensitiveData($responseText)) {
                 return [
                     'status' => 'invalid_response',
@@ -1361,10 +1367,94 @@ final class ExternalResearchService
             'Schema obrigatorio: ' . $schema,
             'Campos obrigatorios: diagnostico_provavel (string), perguntas_ao_cliente (array de strings), passos_tecnicos (array), riscos_cuidados (array), fontes_links_sugeridas (array de URLs/referencias), texto_resposta_cliente (string sem PII), candidato_kb (objeto: titulo, problema, resolucao array, adequado_para_kb bool), confidence (inteiro 0-100), limites_incertezas (string).',
             'confidence: 0 se insuficiente, 100 se altamente confiante. candidato_kb.adequado_para_kb: true somente se resolucao clara, reproducivel e sem PII.',
+            $this->buildStructuredCloudContext($context),
             'Resumo sanitizado:',
             (string) ($context['sanitized']['text'] ?? ''),
             $sourcesLine,
         ]), self::MAX_PROMPT_CHARS);
+    }
+
+    /**
+     * F4 (kb_enrichment_and_search_optimization): bloco de contexto ESTRUTURADO
+     * para a cloud — produto/sistema detectado, sintomas, dados faltantes, KBs
+     * locais consultadas sem resultado e tentativas já realizadas. Extraído do
+     * resumo SANITIZADO (PII Guard já aplicado) e de chaves opcionais do contexto.
+     *
+     * @param array<string, mixed> $context
+     */
+    private function buildStructuredCloudContext(array $context): string
+    {
+        $sanitized = (string) ($context['sanitized']['text'] ?? '');
+        $lines = ['Contexto estruturado (derivado do resumo sanitizado):'];
+
+        // Rótulos do resumo estruturado do Smart Help, quando presentes.
+        foreach ([
+            'Sistema afetado'  => '/Sistema afetado:\s*([^\n]{2,120})/iu',
+            'Sintomas'         => '/(?:Problema relatado|Sintomas?):\s*([^\n]{2,200})/iu',
+            'Dados faltantes'  => '/(?:Dados faltantes|Faltam):\s*([^\n]{2,200})/iu',
+            'Evidencia'        => '/Evid[eê]ncia\/erro:\s*([^\n]{2,200})/iu',
+        ] as $label => $pattern) {
+            if (preg_match($pattern, $sanitized, $m) === 1) {
+                $value = trim((string) $m[1]);
+                if ($value !== '' && mb_strtolower($value, 'UTF-8') !== 'não informado' && mb_strtolower($value, 'UTF-8') !== 'não informada') {
+                    $lines[] = '- ' . $label . ': ' . $this->sanitizeText($value, 200);
+                }
+            }
+        }
+
+        // KBs locais consultadas sem resultado (passadas pelo Smart Help, sem PII).
+        $kbsConsulted = is_array($context['local_kbs_consulted'] ?? null) ? $context['local_kbs_consulted'] : [];
+        if ($kbsConsulted !== []) {
+            $titles = array_slice(array_values(array_filter(array_map(
+                fn ($kb) => is_array($kb) ? $this->sanitizeText((string) ($kb['title'] ?? ''), 120) : $this->sanitizeText((string) $kb, 120),
+                $kbsConsulted
+            ))), 0, 5);
+            if ($titles !== []) {
+                $lines[] = '- KBs locais consultadas sem resultado suficiente: ' . implode('; ', $titles);
+            }
+        }
+
+        // Tentativas já realizadas pelo técnico (texto sanitizado, opcional).
+        $attempts = is_array($context['attempts_already_made'] ?? null) ? $context['attempts_already_made'] : [];
+        if ($attempts !== []) {
+            $clean = array_slice(array_values(array_filter(array_map(
+                fn ($a) => $this->sanitizeText((string) $a, 160),
+                $attempts
+            ))), 0, 5);
+            if ($clean !== []) {
+                $lines[] = '- Tentativas ja realizadas: ' . implode('; ', $clean);
+            }
+        }
+
+        return count($lines) > 1 ? implode("\n", $lines) : '';
+    }
+
+    /**
+     * F4: pós-processamento LOCAL opcional da resposta cloud (Ollama via Node).
+     * Circuit breaker: timeout duro de 8s — em timeout/falha, a resposta cloud
+     * sanitizada é exibida como veio (nunca erro 500). Flag default false.
+     *
+     * Delegado ao SmartHelpService::polishCloudTextLocally — este serviço não
+     * executa HTTP diretamente (invariante de hardening preservada).
+     */
+    private function postProcessCloudResponse(string $sanitizedCloudText, int $ticketId): string
+    {
+        $flag = strtolower(trim((string) Plugin::getRuntimeConfigValue('CLOUD_POST_PROCESSING_ENABLED')));
+        if ($flag !== 'true' && $flag !== '1') {
+            return $sanitizedCloudText;
+        }
+
+        try {
+            $polished = (new SmartHelpService($this->pluginConfigService))
+                ->polishCloudTextLocally($sanitizedCloudText, $ticketId);
+            if ($polished !== '' && !$this->containsSensitiveData($polished)) {
+                return $this->sanitizeText($polished, 2200);
+            }
+        } catch (Throwable) {
+            // Fall-through: resposta cloud sanitizada sem pós-processamento.
+        }
+
+        return $sanitizedCloudText;
     }
 
     /**

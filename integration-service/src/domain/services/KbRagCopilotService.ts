@@ -35,6 +35,7 @@ import { KbRankingService } from './KbRankingService.js';
 import type { KbClientContext, KbScoreBreakdown } from './KbRankingService.js';
 import { KbSearchPlannerService } from './KbSearchPlannerService.js';
 import type { SearchPlan } from './KbSearchPlannerService.js';
+import type { KbCustomResponseService, CustomTechnicianResponse } from './KbCustomResponseService.js';
 
 // Re-export for consumers (tests, controllers, buildDependencies)
 export type { KbCandidateSearchRepository, KbCandidateHit } from '../../repositories/postgres/PostgresKbCandidateSearchRepository.js';
@@ -161,6 +162,12 @@ export interface KbRagResult {
    * The playbook will contain a KB_INSUFFICIENT message to guide the technician.
    */
   kbInsufficient?: boolean;
+  /**
+   * F3 — resposta customizada COMPLEMENTAR ao KB original (CUSTOM_RESPONSE_ENABLED).
+   * null quando a flag está off ou não há KB fonte. O gate de confiança (<0.60)
+   * é aplicado dentro do KbCustomResponseService.
+   */
+  customResponse?: CustomTechnicianResponse | null;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -529,6 +536,7 @@ export class KbRagCopilotService {
     queryExpansionService?: QueryExpansionService,
     rankingService?: KbRankingService,
     plannerService?: KbSearchPlannerService,
+    private readonly customResponseService: KbCustomResponseService | null = null,
   ) {
     // Share ollamaPort with QueryExpansionService (structurally compatible)
     this.queryExpansionService = queryExpansionService ?? new QueryExpansionService(ollamaPort);
@@ -736,6 +744,23 @@ export class KbRagCopilotService {
       deterministicFallback = true;
     }
 
+    // 7b. F3 — resposta customizada complementar (flag-gated dentro do serviço;
+    // gate de confiança < 0.60 também aplicado lá; falha nunca quebra o playbook).
+    let customResponse: CustomTechnicianResponse | null = null;
+    if (this.customResponseService !== null) {
+      try {
+        customResponse = await this.customResponseService.buildCustomResponse(
+          safeQuery,
+          playbook,
+          articles,
+          kbsUsed,
+          searchPlan,
+        );
+      } catch {
+        customResponse = null;
+      }
+    }
+
     // 8. Audit — fire-and-forget; planSummary included via fireAudit helper on all paths
     fireAudit(kbsUsed.map((k) => k.id), kbsUsed.map((k) => k.score), localAiUsed, deterministicFallback);
 
@@ -751,6 +776,7 @@ export class KbRagCopilotService {
       localAiUsed,
       deterministicFallback,
       kbsFound: hits.length,
+      customResponse,
     };
   }
 
