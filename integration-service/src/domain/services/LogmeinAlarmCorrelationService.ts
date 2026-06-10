@@ -23,6 +23,7 @@ import type {
   PostgresLogmeinAlarmRepository,
   CorrelationAggregate,
 } from '../../repositories/postgres/PostgresLogmeinAlarmRepository.js';
+import { env } from '../../config/env.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -142,8 +143,7 @@ export class LogmeinAlarmCorrelationService {
     windowMinutes = DEFAULT_WINDOW_MINUTES,
     limit = DEFAULT_LIMIT,
   ): Promise<CorrelationReport> {
-    const featureFlagEnabled =
-      String(process.env['ALARM_CORRELATION_ENABLED'] ?? '').toLowerCase() === 'true';
+    const featureFlagEnabled = env.ALARM_CORRELATION_ENABLED;
 
     const safeWindow = Math.max(1, Math.min(windowMinutes, 10_080));
     const safeLimit = Math.max(1, Math.min(limit, 100));

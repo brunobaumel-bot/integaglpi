@@ -1,4 +1,4 @@
-/**
+﻿/**
  * LogMeIn Asset Matching — Static Unit Tests (F6)
  *
  * Validação de invariantes sem acesso externo:
@@ -22,6 +22,10 @@
  */
 
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { env } from '../src/config/env.js';
+
+// R2 (closure ressalvas): flag tipada em env.ts (default false); testes mutam o env parseado.
+const mutableEnv = env as unknown as { INVENTORY_RECONCILIATION_ENABLED: boolean };
 
 import {
   assessTagQuality,
@@ -242,11 +246,11 @@ describe('deriveSignals', () => {
 
 describe('LogmeinAssetMatchingService — invariantes absolutos', () => {
   beforeEach(() => {
-    delete process.env['INVENTORY_RECONCILIATION_ENABLED'];
+    mutableEnv.INVENTORY_RECONCILIATION_ENABLED = false;
   });
 
   afterEach(() => {
-    delete process.env['INVENTORY_RECONCILIATION_ENABLED'];
+    mutableEnv.INVENTORY_RECONCILIATION_ENABLED = false;
   });
 
   it('create_ticket === false em todo relatório (literal invariant)', () => {
@@ -263,14 +267,14 @@ describe('LogmeinAssetMatchingService — invariantes absolutos', () => {
   });
 
   it('feature_flag_enabled=false quando env não configurado', () => {
-    delete process.env['INVENTORY_RECONCILIATION_ENABLED'];
+    mutableEnv.INVENTORY_RECONCILIATION_ENABLED = false;
     const svc = makeService();
     const report = svc.buildReport([], new Map());
     expect(report.feature_flag_enabled).toBe(false);
   });
 
   it('feature_flag_enabled=true quando INVENTORY_RECONCILIATION_ENABLED=true', () => {
-    process.env['INVENTORY_RECONCILIATION_ENABLED'] = 'true';
+    mutableEnv.INVENTORY_RECONCILIATION_ENABLED = true;
     const svc = makeService();
     const report = svc.buildReport([], new Map());
     expect(report.feature_flag_enabled).toBe(true);

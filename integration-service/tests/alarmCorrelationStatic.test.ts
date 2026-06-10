@@ -22,6 +22,7 @@ import {
   type CorrelationGroup,
 } from '../src/domain/services/LogmeinAlarmCorrelationService.js';
 import type { CorrelationAggregate } from '../src/repositories/postgres/PostgresLogmeinAlarmRepository.js';
+import { env } from '../src/config/env.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -127,19 +128,17 @@ describe('deriveCorrelationReason — determinístico, sem PII', () => {
 // ── LogmeinAlarmCorrelationService ────────────────────────────────────────────
 
 describe('LogmeinAlarmCorrelationService — F4 invariants', () => {
-  let savedEnv: string | undefined;
+  // R2 (closure ressalvas): flag tipada em env.ts (default false).
+  const mutableEnv = env as unknown as { ALARM_CORRELATION_ENABLED: boolean };
+  let savedFlag: boolean;
 
   beforeEach(() => {
-    savedEnv = process.env['ALARM_CORRELATION_ENABLED'];
-    delete process.env['ALARM_CORRELATION_ENABLED'];
+    savedFlag = mutableEnv.ALARM_CORRELATION_ENABLED;
+    mutableEnv.ALARM_CORRELATION_ENABLED = false;
   });
 
   afterEach(() => {
-    if (savedEnv === undefined) {
-      delete process.env['ALARM_CORRELATION_ENABLED'];
-    } else {
-      process.env['ALARM_CORRELATION_ENABLED'] = savedEnv;
-    }
+    mutableEnv.ALARM_CORRELATION_ENABLED = savedFlag;
   });
 
   function makeRepo(aggregates: CorrelationAggregate[] = []) {
@@ -155,7 +154,7 @@ describe('LogmeinAlarmCorrelationService — F4 invariants', () => {
   });
 
   it('feature_flag_enabled=true quando ALARM_CORRELATION_ENABLED=true', async () => {
-    process.env['ALARM_CORRELATION_ENABLED'] = 'true';
+    mutableEnv.ALARM_CORRELATION_ENABLED = true;
     const svc = new LogmeinAlarmCorrelationService(makeRepo() as never);
     const report = await svc.buildReport();
     expect(report.feature_flag_enabled).toBe(true);

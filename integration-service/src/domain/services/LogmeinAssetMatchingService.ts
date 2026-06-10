@@ -30,6 +30,8 @@
  * Phase: integaglpi_v9_inventory_reconciliation_001 — F6
  */
 
+import { env } from '../../config/env.js';
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type MatchStatus =
@@ -326,8 +328,7 @@ export class LogmeinAssetMatchingService {
     }>,
     groupEntityMap: Map<string, number>,
   ): MatchReport {
-    const featureFlagEnabled =
-      String(process.env['INVENTORY_RECONCILIATION_ENABLED'] ?? '').toLowerCase() === 'true';
+    const featureFlagEnabled = env.INVENTORY_RECONCILIATION_ENABLED;
 
     const candidates = this.matchAll(hosts, groupEntityMap);
 

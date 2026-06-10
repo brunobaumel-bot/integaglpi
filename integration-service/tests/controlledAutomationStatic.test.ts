@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Controlled Automation — Static Unit Tests (F5)
  *
  * Validação de invariantes sem acesso externo:
@@ -17,6 +17,10 @@
  */
 
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { env } from '../src/config/env.js';
+
+// R2 (closure ressalvas): flag tipada em env.ts (default false); testes mutam o env parseado.
+const mutableEnv = env as unknown as { CONTROLLED_AUTOMATION_ENABLED: boolean };
 
 import {
   ControlledAutomationService,
@@ -57,12 +61,12 @@ describe('ControlledAutomationService — safety invariants absolutos', () => {
   ];
 
   beforeEach(() => {
-    process.env['CONTROLLED_AUTOMATION_ENABLED'] = 'true'; // test with feature on
+    mutableEnv.CONTROLLED_AUTOMATION_ENABLED = true; // test with feature on
     svc = makeService();
   });
 
   afterEach(() => {
-    delete process.env['CONTROLLED_AUTOMATION_ENABLED'];
+    mutableEnv.CONTROLLED_AUTOMATION_ENABLED = false;
   });
 
   it('real_execution_forbidden === true em TODAS as ações', () => {
@@ -117,25 +121,25 @@ describe('ControlledAutomationService — safety invariants absolutos', () => {
 
 describe('feature flag CONTROLLED_AUTOMATION_ENABLED', () => {
   afterEach(() => {
-    delete process.env['CONTROLLED_AUTOMATION_ENABLED'];
+    mutableEnv.CONTROLLED_AUTOMATION_ENABLED = false;
   });
 
   it('status === feature_disabled quando env não configurado', () => {
-    delete process.env['CONTROLLED_AUTOMATION_ENABLED'];
+    mutableEnv.CONTROLLED_AUTOMATION_ENABLED = false;
     const svc = makeService();
     const r = svc.generateAdvisory('suppress_alarm_rule');
     expect(r.status).toBe('feature_disabled');
   });
 
   it('status === feature_disabled quando CONTROLLED_AUTOMATION_ENABLED=false', () => {
-    process.env['CONTROLLED_AUTOMATION_ENABLED'] = 'false';
+    mutableEnv.CONTROLLED_AUTOMATION_ENABLED = false;
     const svc = makeService();
     const r = svc.generateAdvisory('suppress_alarm_rule');
     expect(r.status).toBe('feature_disabled');
   });
 
   it('invariantes de segurança mantidos mesmo no estado feature_disabled', () => {
-    delete process.env['CONTROLLED_AUTOMATION_ENABLED'];
+    mutableEnv.CONTROLLED_AUTOMATION_ENABLED = false;
     const svc = makeService();
     const r = svc.generateAdvisory('restart_logmein_agent');
     expect(r.real_execution_forbidden).toBe(true);
@@ -149,11 +153,11 @@ describe('feature flag CONTROLLED_AUTOMATION_ENABLED', () => {
 
 describe('BLOCKED_THIS_PHASE — não negociável', () => {
   beforeEach(() => {
-    process.env['CONTROLLED_AUTOMATION_ENABLED'] = 'true';
+    mutableEnv.CONTROLLED_AUTOMATION_ENABLED = true;
   });
 
   afterEach(() => {
-    delete process.env['CONTROLLED_AUTOMATION_ENABLED'];
+    mutableEnv.CONTROLLED_AUTOMATION_ENABLED = false;
   });
 
   for (const action of BLOCKED_ACTIONS) {
@@ -181,11 +185,11 @@ describe('BLOCKED_THIS_PHASE — não negociável', () => {
 
 describe('ADVISORY_ONLY — requer aprovação humana', () => {
   beforeEach(() => {
-    process.env['CONTROLLED_AUTOMATION_ENABLED'] = 'true';
+    mutableEnv.CONTROLLED_AUTOMATION_ENABLED = true;
   });
 
   afterEach(() => {
-    delete process.env['CONTROLLED_AUTOMATION_ENABLED'];
+    mutableEnv.CONTROLLED_AUTOMATION_ENABLED = false;
   });
 
   for (const action of ADVISORY_ONLY_ACTIONS) {
@@ -221,11 +225,11 @@ describe('ADVISORY_ONLY — requer aprovação humana', () => {
 
 describe('PREVIEW_ALLOWED — simulação sem efeitos', () => {
   beforeEach(() => {
-    process.env['CONTROLLED_AUTOMATION_ENABLED'] = 'true';
+    mutableEnv.CONTROLLED_AUTOMATION_ENABLED = true;
   });
 
   afterEach(() => {
-    delete process.env['CONTROLLED_AUTOMATION_ENABLED'];
+    mutableEnv.CONTROLLED_AUTOMATION_ENABLED = false;
   });
 
   for (const action of PREVIEW_ALLOWED_ACTIONS) {
@@ -256,11 +260,11 @@ describe('PREVIEW_ALLOWED — simulação sem efeitos', () => {
 
 describe('Signals — contexto no advisory', () => {
   beforeEach(() => {
-    process.env['CONTROLLED_AUTOMATION_ENABLED'] = 'true';
+    mutableEnv.CONTROLLED_AUTOMATION_ENABLED = true;
   });
 
   afterEach(() => {
-    delete process.env['CONTROLLED_AUTOMATION_ENABLED'];
+    mutableEnv.CONTROLLED_AUTOMATION_ENABLED = false;
   });
 
   it('alarmType passado via signals aparece no advisory text', () => {

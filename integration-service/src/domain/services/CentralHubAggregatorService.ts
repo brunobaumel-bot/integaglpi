@@ -192,7 +192,7 @@ export class CentralHubAggregatorService {
   // ── Private ─────────────────────────────────────────────────────────────────
 
   private async aggregate(): Promise<CentralHubSnapshot> {
-    const featureFlagEnabled = String(process.env['CENTRAL_HUB_ENABLED'] ?? '').toLowerCase() === 'true';
+    const featureFlagEnabled = env.CENTRAL_HUB_ENABLED;
 
     // All cards run in parallel with individual timeouts.
     const [saude, smartHelp, kbQuality, logmein, alarmes] = await Promise.all([

@@ -224,6 +224,33 @@ const envSchema = z.object({
    * PHASE: integaglpi_logmein_alarm_rules_and_auto_ticket_implementation_001
    */
   LOGMEIN_ALARM_WORKER_INTERVAL_SECONDS: z.coerce.number().int().min(30).max(3600).default(60),
+
+  // ── Flags V9 (tipadas; default false; nunca ativar sem gate humano) ────────
+  // PHASE: integaglpi_v9_closure_ressalvas_cleanup_001 — consolidação das flags
+  // que antes eram lidas direto de process.env nos serviços F3/F4/F5/F6.
+  // O valor informativo segue exposto nos payloads (feature_flag_enabled);
+  // os serviços continuam read-only independentemente do valor.
+
+  /** F3 Central Hub Operacional — UI read-only. */
+  CENTRAL_HUB_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** F4 Alarm Correlation — correlação determinística read-only. */
+  ALARM_CORRELATION_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** F5 Controlled Automation — advisory/preview only; execução real proibida em código. */
+  CONTROLLED_AUTOMATION_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** F6 Inventory Reconciliation — matching/preview read-only. */
+  INVENTORY_RECONCILIATION_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;

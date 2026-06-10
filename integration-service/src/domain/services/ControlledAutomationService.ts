@@ -24,6 +24,8 @@
  * Phase: integaglpi_v9_controlled_automation_001 — F5
  */
 
+import { env } from '../../config/env.js';
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type AutomationActionClass =
@@ -242,8 +244,7 @@ export class ControlledAutomationService {
     actionType: AutomationActionType,
     signals: AutomationSignals = {},
   ): AdvisoryResult {
-    const featureFlagEnabled =
-      String(process.env['CONTROLLED_AUTOMATION_ENABLED'] ?? '').toLowerCase() === 'true';
+    const featureFlagEnabled = env.CONTROLLED_AUTOMATION_ENABLED;
 
     if (!featureFlagEnabled) {
       return {

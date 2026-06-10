@@ -40,7 +40,7 @@ final class SupervisaoGroupMenu extends CommonDBTM
             return [];
         }
 
-        return [
+        $menu = [
             'title'            => self::getMenuName(),
             'is_multi_entries' => true,
             'central_supervisor' => [
@@ -48,12 +48,20 @@ final class SupervisaoGroupMenu extends CommonDBTM
                 'page'  => Plugin::getWebBasePath() . '/front/supervisor.command.php',
                 'icon'  => 'ti ti-layout-dashboard',
             ],
-            'central_hub' => [
+        ];
+
+        // R3 (closure ressalvas V9): o item do Hub usa o MESMO guard da página
+        // (CentralHubMenu::canView() == canSupervisorRead). Antes o item ficava
+        // visível para perfis que a página depois bloqueava.
+        if (CentralHubMenu::canView()) {
+            $menu['central_hub'] = [
                 'title' => __('Hub Operacional', 'glpiintegaglpi'),
                 'page'  => Plugin::getWebBasePath() . '/front/central_hub.php',
                 'icon'  => 'ti ti-layout-grid',
-            ],
-        ];
+            ];
+        }
+
+        return $menu;
     }
 
     public static function canView(): bool

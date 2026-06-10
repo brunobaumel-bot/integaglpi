@@ -184,6 +184,12 @@ production_ai_policy:
   manual_enable_gate: required
 ```
 
+> **R2 — Flags V9 tipadas (2026-06-10, `integaglpi_v9_closure_ressalvas_cleanup_001`):**
+> `CENTRAL_HUB_ENABLED`, `ALARM_CORRELATION_ENABLED`, `CONTROLLED_AUTOMATION_ENABLED`
+> e `INVENTORY_RECONCILIATION_ENABLED` agora são declaradas no schema tipado de
+> `integration-service/src/config/env.ts` (zod, default `false`). Os serviços leem
+> `env.<FLAG>` — não mais `process.env` cru. Defaults e gates abaixo permanecem válidos.
+
 ## V9 — Central Hub Operacional (`integaglpi_v9_central_hub_001`)
 
 PHASE: `integaglpi_v9_central_hub_001` — Updated: 2026-06-09

@@ -17,6 +17,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CentralHubAggregatorService } from '../src/domain/services/CentralHubAggregatorService.js';
 import type { CentralHubDeps, CentralHubSnapshot } from '../src/domain/services/CentralHubAggregatorService.js';
 import { createCentralHubController } from '../src/controllers/createCentralHubController.js';
+import { env } from '../src/config/env.js';
+import { readFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const phpRepoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 // ── Mock infra imports ────────────────────────────────────────────────────────
 
@@ -173,19 +179,18 @@ function mockReqRes() {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('CentralHubAggregatorService — F3_1', () => {
-  let originalEnv: string | undefined;
+  // R2 (closure ressalvas): flag agora é tipada em env.ts (default false).
+  // Os testes mutam o objeto env parseado em vez de process.env.
+  const mutableEnv = env as unknown as { CENTRAL_HUB_ENABLED: boolean };
+  let originalFlag: boolean;
 
   beforeEach(() => {
-    originalEnv = process.env['CENTRAL_HUB_ENABLED'];
-    delete process.env['CENTRAL_HUB_ENABLED'];
+    originalFlag = mutableEnv.CENTRAL_HUB_ENABLED;
+    mutableEnv.CENTRAL_HUB_ENABLED = false;
   });
 
   afterEach(() => {
-    if (originalEnv !== undefined) {
-      process.env['CENTRAL_HUB_ENABLED'] = originalEnv;
-    } else {
-      delete process.env['CENTRAL_HUB_ENABLED'];
-    }
+    mutableEnv.CENTRAL_HUB_ENABLED = originalFlag;
   });
 
   it('F3_1_01: buildSnapshot returns CentralHubSnapshot with correct shape', async () => {
@@ -227,14 +232,14 @@ describe('CentralHubAggregatorService — F3_1', () => {
   });
 
   it('F3_1_06: feature_flag_enabled is true when CENTRAL_HUB_ENABLED=true', async () => {
-    process.env['CENTRAL_HUB_ENABLED'] = 'true';
+    mutableEnv.CENTRAL_HUB_ENABLED = true;
     const svc = new CentralHubAggregatorService(makeDeps());
     const snapshot = await svc.buildSnapshot();
     expect(snapshot.feature_flag_enabled).toBe(true);
   });
 
   it('F3_1_07: feature_flag_enabled is false when CENTRAL_HUB_ENABLED=false', async () => {
-    process.env['CENTRAL_HUB_ENABLED'] = 'false';
+    mutableEnv.CENTRAL_HUB_ENABLED = false;
     const svc = new CentralHubAggregatorService(makeDeps());
     const snapshot = await svc.buildSnapshot();
     expect(snapshot.feature_flag_enabled).toBe(false);
@@ -506,5 +511,56 @@ describe('createCentralHubController — F3_2', () => {
 
     const jsonArg = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>;
     expect(jsonArg['create_ticket']).not.toBe(true);
+  });
+});
+
+// ── R3 (closure ressalvas): guard do menu == guard da página ─────────────────
+
+describe('Central Hub — menu guard alinhado com a página (R3)', () => {
+  it('item central_hub no SupervisaoGroupMenu é gateado por CentralHubMenu::canView()', async () => {
+    const menu = await readFile(
+      resolve(phpRepoRoot, 'integaglpi/src/SupervisaoGroupMenu.php'),
+      'utf8',
+    );
+    expect(menu).toContain('if (CentralHubMenu::canView())');
+    // O item só é adicionado dentro do guard.
+    const guardIdx = menu.indexOf('if (CentralHubMenu::canView())');
+    const itemIdx = menu.indexOf("'central_hub'");
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(itemIdx).toBeGreaterThan(guardIdx);
+  });
+
+  it('página central_hub.php continua exigindo requireSupervisorRead()', async () => {
+    const front = await readFile(
+      resolve(phpRepoRoot, 'integaglpi/front/central_hub.php'),
+      'utf8',
+    );
+    expect(front).toContain('Plugin::requireSupervisorRead()');
+  });
+
+  it('CentralHubMenu::canView() usa canSupervisorRead (mesmo predicado da página)', async () => {
+    const menuClass = await readFile(
+      resolve(phpRepoRoot, 'integaglpi/src/CentralHubMenu.php'),
+      'utf8',
+    );
+    expect(menuClass).toContain('Plugin::canSupervisorRead()');
+  });
+
+  it('flags V9 tipadas em env.ts com default false (R2)', async () => {
+    const envSrc = await readFile(
+      resolve(phpRepoRoot, 'integration-service/src/config/env.ts'),
+      'utf8',
+    );
+    for (const flag of [
+      'CENTRAL_HUB_ENABLED',
+      'ALARM_CORRELATION_ENABLED',
+      'CONTROLLED_AUTOMATION_ENABLED',
+      'INVENTORY_RECONCILIATION_ENABLED',
+    ]) {
+      const idx = envSrc.indexOf(`${flag}: z`);
+      expect(idx, flag).toBeGreaterThan(-1);
+      const block = envSrc.slice(idx, idx + 220);
+      expect(block, flag).toContain(".default('false')");
+    }
   });
 });

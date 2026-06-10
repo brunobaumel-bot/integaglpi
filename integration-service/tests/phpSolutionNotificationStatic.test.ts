@@ -20,8 +20,10 @@ describe('PHP solved-ticket notification source', () => {
     expect(notification).toContain('?int $previousTechnicianId = null');
     expect(notification).toContain('$previousKeyPart');
     expect(notification).toContain("'notify_ticket_assigned_' . $ticketId . '_' . $conversationId . '_' . $previousKeyPart . '_' . $technicianId");
-    expect(runtime).toContain('$conversationId,\n                $previousAssignedUserId');
-    expect(central).toContain('$conversationId,\n                $previousAssignedUserId');
+    // Line-ending agnostic (\r?\n): o checkout Windows usa CRLF nos PHP e a
+    // expectativa com \n literal falhava de forma ambiental, não funcional.
+    expect(runtime).toMatch(/\$conversationId,\r?\n\s+\$previousAssignedUserId/);
+    expect(central).toMatch(/\$conversationId,\r?\n\s+\$previousAssignedUserId/);
   });
 
   it('selects the latest pending ticket solution instead of an older processed solution', async () => {
