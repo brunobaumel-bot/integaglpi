@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use GlpiPlugin\Integaglpi\Plugin;
 use GlpiPlugin\Integaglpi\Service\LogmeinFieldMappingService;
+use GlpiPlugin\Integaglpi\Service\LogmeinGovernanceService;
 use GlpiPlugin\Integaglpi\Service\SecurityPermissionService;
 
 include '../../../inc/includes.php';
@@ -44,6 +45,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             $syncLocalIp = (bool) ($_POST['sync_local_ip'] ?? false);
             $dryRunResult = $service->dryRun($currentValues, [], $syncLocalIp);
+        } elseif ($action === 'sync_now') {
+            // D03: efetiva a sincronização read-only do catálogo LogMeIn a partir
+            // desta tela. Permissão + auditoria são verificadas dentro do serviço
+            // (RIGHT_MANAGE_LOGMEIN_MAPPING); CSRF já validado acima.
+            $flash = (new LogmeinGovernanceService())->syncReadonlyCatalog($userId);
         } else {
             $flash = [
                 'type'    => 'danger',
@@ -63,7 +69,7 @@ Html::header(
     __('Mapeamento de Campos LogMeIn → GLPI', 'glpiintegaglpi'),
     $_SERVER['PHP_SELF'],
     'plugins',
-    \GlpiPlugin\Integaglpi\GestaoGroupMenu::class
+    \GlpiPlugin\Integaglpi\LogmeinGroupMenu::class
 );
 
 include __DIR__ . '/../templates/logmein_fieldmapping.php';

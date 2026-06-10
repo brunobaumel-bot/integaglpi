@@ -565,7 +565,7 @@ final class LogmeinAlarmAdminService
      *
      * @return list<array<string, mixed>>
      */
-    public function searchHosts(string $query, string $groupId = '', int $limit = 50): array
+    public function searchHosts(string $query, string $groupId = '', int $limit = 50, int $entityId = 0): array
     {
         $limit = max(1, min($limit, 200));
         try {
@@ -580,6 +580,17 @@ final class LogmeinAlarmAdminService
             if (trim($groupId) !== '') {
                 $where[]             = 'logmein_group_external_id = :gid';
                 $params[':gid']      = trim($groupId);
+            }
+            if ($entityId > 0) {
+                // D05: hosts da entidade selecionada — candidato direto no cache OU
+                // grupo LogMeIn ativamente mapeado para a entidade em group_maps.
+                $where[] = '(glpi_entity_candidate_id = :eid
+                             OR logmein_group_external_id IN (
+                                  SELECT logmein_group_external_id
+                                    FROM glpi_plugin_integaglpi_logmein_group_maps
+                                   WHERE glpi_entity_id = :eid2 AND is_active = TRUE))';
+                $params[':eid']  = $entityId;
+                $params[':eid2'] = $entityId;
             }
 
             $whereClause = $where !== [] ? 'WHERE ' . implode(' AND ', $where) : '';
@@ -686,6 +697,80 @@ final class LogmeinAlarmAdminService
         }
 
         return true;
+    }
+
+    /**
+     * D07: filas/grupos técnicos do GLPI para o dropdown de auto-ticket.
+     * Lê glpi_groups via $DB (PHP plugin — Node nunca toca MariaDB).
+     *
+     * @return list<array{id: int, name: string}>
+     */
+    public function listItilGroups(): array
+    {
+        global $DB;
+        try {
+            if (!isset($DB) || !is_object($DB) || !method_exists($DB, 'request')) {
+                return [];
+            }
+            if (method_exists($DB, 'tableExists') && !$DB->tableExists('glpi_groups')) {
+                return [];
+            }
+            $out = [];
+            foreach ($DB->request([
+                'SELECT' => ['id', 'completename', 'name'],
+                'FROM'   => 'glpi_groups',
+                'WHERE'  => ['is_assign' => 1],
+                'ORDER'  => ['completename', 'name', 'id'],
+                'LIMIT'  => 300,
+            ]) as $row) {
+                $id = (int) ($row['id'] ?? 0);
+                if ($id <= 0) {
+                    continue;
+                }
+                $name = trim((string) ($row['completename'] ?? '')) ?: trim((string) ($row['name'] ?? ''));
+                $out[] = ['id' => $id, 'name' => $name !== '' ? $name : ('Grupo #' . $id)];
+            }
+            return $out;
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][logmein_alarm][itil_groups] ' . mb_substr($exception->getMessage(), 0, 180, 'UTF-8'));
+            return [];
+        }
+    }
+
+    /**
+     * D07: categorias ITIL do GLPI para o dropdown de auto-ticket.
+     *
+     * @return list<array{id: int, name: string}>
+     */
+    public function listItilCategories(): array
+    {
+        global $DB;
+        try {
+            if (!isset($DB) || !is_object($DB) || !method_exists($DB, 'request')) {
+                return [];
+            }
+            if (method_exists($DB, 'tableExists') && !$DB->tableExists('glpi_itilcategories')) {
+                return [];
+            }
+            $out = [];
+            foreach ($DB->request([
+                'SELECT' => ['id', 'completename', 'name'],
+                'FROM'   => 'glpi_itilcategories',
+                'ORDER'  => ['completename', 'name', 'id'],
+                'LIMIT'  => 500,
+            ]) as $row) {
+                $id = (int) ($row['id'] ?? 0);
+                if ($id <= 0) {
+                    continue;
+                }
+                $name = trim((string) ($row['completename'] ?? '')) ?: trim((string) ($row['name'] ?? ''));
+                $out[] = ['id' => $id, 'name' => $name !== '' ? $name : ('Categoria #' . $id)];
+            }
+            return $out;
+        } catch (Throwable $exception) {
+            error_log('[integaglpi][logmein_alarm][itil_categories] ' . mb_substr($exception->getMessage(), 0, 180, 'UTF-8'));
+            return [];
+        }
     }
 
     /**

@@ -291,7 +291,16 @@ final class AiSecretVaultService
             throw new AiCloudProviderException('cloud_provider_payload_too_large', $this->cloudProviderDiagnostics($provider, $model, 'cloud_provider_payload_too_large'));
         }
 
-        $secret = $this->decryptSecret((string) ($row['encrypted_secret'] ?? ''), $masterKey);
+        try {
+            $secret = $this->decryptSecret((string) ($row['encrypted_secret'] ?? ''), $masterKey);
+        } catch (RuntimeException $decryptError) {
+            // D10: chave mestra mudou ou payload corrompido — o segredo precisa ser
+            // regravado pelo operador. Nunca expõe valor/cifra; diagnóstico tipado.
+            throw new AiCloudProviderException(
+                'secret_decrypt_failed',
+                $this->cloudProviderDiagnostics($provider, $model, 'secret_decrypt_failed')
+            );
+        }
         $result = $this->callCompletionProvider(
             $provider,
             $model,

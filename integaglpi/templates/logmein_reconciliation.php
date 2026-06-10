@@ -79,6 +79,17 @@ $confidenceLabels = [
                     <i class="ti ti-info-circle me-1"></i>
                     <?= $escape(__('Nenhuma sessão remota sincronizada ainda. Execute a sincronização manual acima para popular o ledger de acessos remotos.', 'glpiintegaglpi')); ?>
                 </div>
+                <?php /* D09: diagnóstico acionável de fonte/filtros quando a fila vem vazia */ ?>
+                <?php if (is_array($reconDiagnostics ?? null) && ($reconDiagnostics['checks'] ?? []) !== []) { ?>
+                    <div class="alert alert-warning mt-2">
+                        <strong><i class="ti ti-stethoscope me-1"></i><?= $escape(__('Diagnóstico da conciliação', 'glpiintegaglpi')); ?></strong>
+                        <ul class="mb-0 mt-1 small">
+                            <?php foreach ($reconDiagnostics['checks'] as $check) { ?>
+                                <li><?= $escape($check); ?></li>
+                            <?php } ?>
+                        </ul>
+                    </div>
+                <?php } ?>
             <?php } ?>
         </div>
     </div>

@@ -216,7 +216,7 @@ function fmtAlarmDate(?string $ts): string {
                     </div>
                     <div>
                       <label class="form-label fw-bold"><?= __('Entidade GLPI', 'glpiintegaglpi') ?> *</label>
-                      <select name="glpi_entities_id" class="form-select form-select-sm" required <?= count($entities ?? []) === 0 ? 'disabled' : '' ?>>
+                      <select name="glpi_entities_id" id="createEntitySelect" class="form-select form-select-sm" required <?= count($entities ?? []) === 0 ? 'disabled' : '' ?>>
                         <option value=""><?= __('— selecionar entidade —', 'glpiintegaglpi') ?></option>
                         <?php foreach (($entities ?? []) as $entity): ?>
                           <option value="<?= (int) $entity['id'] ?>"><?= ealarm($entity['name']) ?> (#<?= (int) $entity['id'] ?>)</option>
@@ -243,22 +243,64 @@ function fmtAlarmDate(?string $ts): string {
               </div>
             </div>
 
-            <!-- ② Escopo / Alvos (info only no create; adiciona alvos após criar) -->
+            <!-- ② Escopo / Alvos — D05/D06: seleção de alvos JÁ na criação -->
             <div class="accordion-item">
               <h2 class="accordion-header">
                 <button class="accordion-button collapsed py-2" type="button"
                         data-bs-toggle="collapse" data-bs-target="#acc-scope">
                   <i class="ti ti-devices me-2 text-info"></i><strong><?= __('② Escopo / Alvos', 'glpiintegaglpi') ?></strong>
+                  <span class="badge bg-info ms-2" id="createTargetCount">0</span>
                 </button>
               </h2>
               <div id="acc-scope" class="accordion-collapse collapse" data-bs-parent="#newRuleAccordion">
                 <div class="accordion-body lm-acc-body">
-                  <div class="alert alert-light border small mb-0">
+                  <div class="alert alert-light border small mb-2">
                     <i class="ti ti-info-circle me-1"></i>
-                    <?= __('Alvos (dispositivos específicos, grupos LogMeIn) são adicionados após criar a regra. Sem alvos = avalia TODOS os hosts da entidade.', 'glpiintegaglpi') ?>
-                    <br><span class="text-muted">
-                      <?= __('Exclusões de alvos específicos requerem alteração de schema (coluna `excluded` em alarm_targets) — disponível em fase futura.', 'glpiintegaglpi') ?>
-                    </span>
+                    <?= __('Escolha os equipamentos por entidade, por grupo LogMeIn ou avulsos (busca global). Sem alvos = avalia TODOS os hosts da entidade.', 'glpiintegaglpi') ?>
+                  </div>
+
+                  <div class="btn-group btn-group-sm mb-2" role="group">
+                    <button type="button" class="btn btn-outline-primary active" id="ctMode-entity"
+                            onclick="lmCreateTargetMode('entity')">
+                      <i class="ti ti-building me-1"></i><?= __('Por entidade', 'glpiintegaglpi') ?>
+                    </button>
+                    <button type="button" class="btn btn-outline-primary" id="ctMode-group"
+                            onclick="lmCreateTargetMode('group')">
+                      <i class="ti ti-folders me-1"></i><?= __('Por grupo LogMeIn', 'glpiintegaglpi') ?>
+                    </button>
+                    <button type="button" class="btn btn-outline-primary" id="ctMode-global"
+                            onclick="lmCreateTargetMode('global')">
+                      <i class="ti ti-world-search me-1"></i><?= __('Avulso (busca global)', 'glpiintegaglpi') ?>
+                    </button>
+                  </div>
+
+                  <div id="ctPane-group" class="mb-2" style="display:none">
+                    <select id="ctGroupSelect" class="form-select form-select-sm">
+                      <option value=""><?= __('— selecionar grupo LogMeIn —', 'glpiintegaglpi') ?></option>
+                      <?php foreach (($groups ?? []) as $g): ?>
+                        <option value="<?= ealarm((string) $g['group_id']) ?>">
+                          <?= ealarm((string) $g['group_name']) ?> (<?= (int) $g['host_count'] ?> hosts)
+                        </option>
+                      <?php endforeach; ?>
+                    </select>
+                  </div>
+
+                  <div class="input-group input-group-sm mb-2">
+                    <input type="text" id="ctSearchInput" class="form-control"
+                           placeholder="<?= __('Filtrar por nome/tag (opcional)…', 'glpiintegaglpi') ?>">
+                    <button type="button" class="btn btn-primary" onclick="lmCreateTargetSearch()">
+                      <i class="ti ti-search me-1"></i><?= __('Buscar equipamentos', 'glpiintegaglpi') ?>
+                    </button>
+                  </div>
+                  <div class="form-text mb-1" id="ctSearchHint">
+                    <?= __('Modo entidade: usa a entidade selecionada na seção ①.', 'glpiintegaglpi') ?>
+                  </div>
+
+                  <div id="ctResults" class="list-group small mb-2" style="max-height:220px; overflow:auto;"></div>
+
+                  <div>
+                    <span class="fw-bold small"><?= __('Alvos selecionados:', 'glpiintegaglpi') ?></span>
+                    <div id="ctSelected" class="mt-1"></div>
                   </div>
                 </div>
               </div>
@@ -345,12 +387,34 @@ function fmtAlarmDate(?string $ts): string {
                   </div>
                   <div class="row g-3" id="ticketFieldsWrap" style="display:none">
                     <div class="col-md-6">
-                      <label class="form-label fw-bold"><?= __('Fila/Grupo GLPI (ID)', 'glpiintegaglpi') ?> *</label>
-                      <input type="number" name="glpi_group_id" class="form-control form-control-sm" min="1" placeholder="Ex: 10">
+                      <label class="form-label fw-bold"><?= __('Fila/Grupo GLPI', 'glpiintegaglpi') ?> *</label>
+                      <?php /* D07: dropdown real de grupos técnicos (is_assign=1) */ ?>
+                      <?php if (($itilGroups ?? []) !== []): ?>
+                        <select name="glpi_group_id" class="form-select form-select-sm">
+                          <option value=""><?= __('— selecionar fila/grupo —', 'glpiintegaglpi') ?></option>
+                          <?php foreach ($itilGroups as $ig): ?>
+                            <option value="<?= (int) $ig['id'] ?>"><?= ealarm($ig['name']) ?> (#<?= (int) $ig['id'] ?>)</option>
+                          <?php endforeach; ?>
+                        </select>
+                      <?php else: ?>
+                        <input type="number" name="glpi_group_id" class="form-control form-control-sm" min="1" placeholder="Ex: 10">
+                        <div class="form-text text-warning"><?= __('Nenhum grupo técnico carregado — informe o ID manualmente.', 'glpiintegaglpi') ?></div>
+                      <?php endif; ?>
                     </div>
                     <div class="col-md-6">
-                      <label class="form-label fw-bold"><?= __('Categoria GLPI (ID)', 'glpiintegaglpi') ?> *</label>
-                      <input type="number" name="glpi_itil_category_id" class="form-control form-control-sm" min="1" placeholder="Ex: 20">
+                      <label class="form-label fw-bold"><?= __('Categoria GLPI', 'glpiintegaglpi') ?> *</label>
+                      <?php /* D07: dropdown real de categorias ITIL */ ?>
+                      <?php if (($itilCategories ?? []) !== []): ?>
+                        <select name="glpi_itil_category_id" class="form-select form-select-sm">
+                          <option value=""><?= __('— selecionar categoria —', 'glpiintegaglpi') ?></option>
+                          <?php foreach ($itilCategories as $ic): ?>
+                            <option value="<?= (int) $ic['id'] ?>"><?= ealarm($ic['name']) ?> (#<?= (int) $ic['id'] ?>)</option>
+                          <?php endforeach; ?>
+                        </select>
+                      <?php else: ?>
+                        <input type="number" name="glpi_itil_category_id" class="form-control form-control-sm" min="1" placeholder="Ex: 20">
+                        <div class="form-text text-warning"><?= __('Nenhuma categoria carregada — informe o ID manualmente.', 'glpiintegaglpi') ?></div>
+                      <?php endif; ?>
                     </div>
                   </div>
                 </div>
@@ -982,6 +1046,131 @@ window.lmSelectHost = function (accordionId, btn) {
   if (nameEl) nameEl.value = hostname;
   if (addBtn) addBtn.style.display = '';
   if (lblEl)  lblEl.textContent = '<?= __('Adicionar:', 'glpiintegaglpi') ?> ' + hostname;
+};
+
+// ── D05/D06: seletor de alvos na CRIAÇÃO da regra ─────────────────────────────
+var _lmCtMode = 'entity';
+var _lmCtSelected = {}; // host_id -> hostname
+
+window.lmCreateTargetMode = function (mode) {
+  _lmCtMode = mode;
+  ['entity', 'group', 'global'].forEach(function (m) {
+    var b = document.getElementById('ctMode-' + m);
+    if (b) b.classList.toggle('active', m === mode);
+  });
+  var groupPane = document.getElementById('ctPane-group');
+  if (groupPane) groupPane.style.display = (mode === 'group') ? '' : 'none';
+  var hint = document.getElementById('ctSearchHint');
+  if (hint) {
+    hint.textContent = mode === 'entity'
+      ? '<?= __('Modo entidade: usa a entidade selecionada na seção ①.', 'glpiintegaglpi') ?>'
+      : (mode === 'group'
+        ? '<?= __('Modo grupo: lista os hosts do grupo LogMeIn escolhido.', 'glpiintegaglpi') ?>'
+        : '<?= __('Modo avulso: busca global por nome/tag, sem filtro de entidade.', 'glpiintegaglpi') ?>');
+  }
+  var res = document.getElementById('ctResults');
+  if (res) res.innerHTML = '';
+};
+
+window.lmCreateTargetSearch = function () {
+  var q = (document.getElementById('ctSearchInput') || { value: '' }).value.trim();
+  var url = window.location.pathname + '?action=search_hosts&q=' + encodeURIComponent(q);
+  if (_lmCtMode === 'entity') {
+    var entSel = document.getElementById('createEntitySelect');
+    var eid = entSel ? entSel.value : '';
+    if (!eid) {
+      var res0 = document.getElementById('ctResults');
+      if (res0) res0.innerHTML = '<div class="list-group-item text-warning small py-1">'
+        + '<?= __('Selecione a Entidade GLPI na seção ① antes de buscar.', 'glpiintegaglpi') ?></div>';
+      return;
+    }
+    url += '&entity_id=' + encodeURIComponent(eid);
+  } else if (_lmCtMode === 'group') {
+    var gSel = document.getElementById('ctGroupSelect');
+    var gid = gSel ? gSel.value : '';
+    if (!gid) {
+      var res1 = document.getElementById('ctResults');
+      if (res1) res1.innerHTML = '<div class="list-group-item text-warning small py-1">'
+        + '<?= __('Selecione um grupo LogMeIn.', 'glpiintegaglpi') ?></div>';
+      return;
+    }
+    url += '&group_id=' + encodeURIComponent(gid);
+  }
+  fetch(url, { credentials: 'same-origin' })
+    .then(function (r) { return r.json(); })
+    .then(function (data) { lmCtRenderResults(data.hosts || []); })
+    .catch(function () {});
+};
+
+function lmCtRenderResults(hosts) {
+  var container = document.getElementById('ctResults');
+  if (!container) return;
+  if (hosts.length === 0) {
+    container.innerHTML = '<div class="list-group-item text-muted small py-1">'
+      + '<?= __('Nenhum dispositivo encontrado para o filtro atual.', 'glpiintegaglpi') ?></div>';
+    return;
+  }
+  var html = '';
+  hosts.forEach(function (h) {
+    var statusColor = h.status === 'online' ? 'success' : (h.status === 'offline' ? 'danger' : 'secondary');
+    var tag = h.equipment_tag ? ' [' + lmEsc(h.equipment_tag) + ']' : '';
+    var entity = h.glpi_entity_name ? ' · ' + lmEsc(h.glpi_entity_name) : '';
+    var selected = !!_lmCtSelected[h.host_id];
+    html += '<button type="button" class="list-group-item list-group-item-action py-1 small'
+          + (selected ? ' active' : '') + '"'
+          + ' data-host-id="' + lmEsc(h.host_id) + '"'
+          + ' data-hostname="' + lmEsc(h.hostname) + '"'
+          + ' onclick="lmCtToggle(this)">'
+          + '<span class="badge bg-' + lmEsc(statusColor) + ' me-2" style="width:10px;height:10px;display:inline-block;border-radius:50%"></span>'
+          + lmEsc(h.hostname) + tag + ' — ' + lmEsc(h.group_name || '') + entity
+          + '</button>';
+  });
+  container.innerHTML = html;
+}
+
+window.lmCtToggle = function (btn) {
+  var hostId = btn.getAttribute('data-host-id') || '';
+  var hostname = btn.getAttribute('data-hostname') || hostId;
+  if (!hostId) return;
+  if (_lmCtSelected[hostId]) {
+    delete _lmCtSelected[hostId];
+    btn.classList.remove('active');
+  } else {
+    _lmCtSelected[hostId] = hostname;
+    btn.classList.add('active');
+  }
+  lmCtRenderSelected();
+};
+
+function lmCtRenderSelected() {
+  var box = document.getElementById('ctSelected');
+  var form = document.querySelector('#createRulePanel form');
+  if (!box || !form) return;
+  // Remove hidden inputs antigos e badges.
+  form.querySelectorAll('input[name="target_hosts[]"]').forEach(function (el) { el.remove(); });
+  var ids = Object.keys(_lmCtSelected);
+  var html = '';
+  ids.forEach(function (id) {
+    var name = _lmCtSelected[id];
+    html += '<span class="badge bg-primary me-1 mb-1">' + lmEsc(name)
+          + ' <a href="#" class="text-white ms-1" onclick="lmCtRemove(\'' + lmEsc(id) + '\');return false;">×</a></span>';
+    var input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = 'target_hosts[]';
+    input.value = id + '||' + name;
+    form.appendChild(input);
+  });
+  box.innerHTML = ids.length ? html
+    : '<span class="text-muted small"><?= __('Nenhum alvo selecionado — a regra avaliará todos os hosts da entidade.', 'glpiintegaglpi') ?></span>';
+  var badge = document.getElementById('createTargetCount');
+  if (badge) badge.textContent = String(ids.length);
+}
+
+window.lmCtRemove = function (hostId) {
+  delete _lmCtSelected[hostId];
+  lmCtRenderSelected();
+  var btn = document.querySelector('#ctResults [data-host-id="' + hostId + '"]');
+  if (btn) btn.classList.remove('active');
 };
 
 // ── Dry-run per rule ──────────────────────────────────────────────────────────

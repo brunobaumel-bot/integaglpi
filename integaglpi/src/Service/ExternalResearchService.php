@@ -844,7 +844,7 @@ final class ExternalResearchService
                     'type' => 'warning',
                     'message' => sprintf(
                         __('Pesquisa cloud não concluída: %s. Nenhum dado bruto foi enviado ou salvo.', 'glpiintegaglpi'),
-                        (string) ($cloudResult['error_type'] ?? 'provider_unavailable')
+                        $this->friendlyCloudErrorLabel((string) ($cloudResult['error_type'] ?? 'provider_unavailable'))
                     ),
                     'preview' => $context,
                     'research_result' => [
@@ -2148,6 +2148,24 @@ final class ExternalResearchService
             || preg_match('/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b|\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/', $text) === 1
             || preg_match('/\bBearer\s+[A-Za-z0-9._~+\/=-]{12,}\b/i', $text) === 1
             || preg_match('/(password|senha|token|bearer|api[_-]?key|app_secret|secret)\s*[:=]\s*\S+/i', $text) === 1;
+    }
+
+    /**
+     * D10: converte error_type técnico em orientação acionável para o operador,
+     * sem expor valor de segredo, cifra ou chave mestra.
+     */
+    private function friendlyCloudErrorLabel(string $errorType): string
+    {
+        $map = [
+            'secret_decrypt_failed' => __('o segredo do provedor não pôde ser descriptografado (a chave mestra do Secret Vault provavelmente mudou). Regrave o segredo em IA > Configurações > Secret Vault e tente novamente', 'glpiintegaglpi'),
+            'secret_vault_locked' => __('o Secret Vault está bloqueado (INTEGAGLPI_AI_VAULT_MASTER_KEY ausente no ambiente). Configure a chave mestra e regrave o segredo', 'glpiintegaglpi'),
+            'cloud_provider_missing_secret' => __('nenhum segredo ativo cadastrado para este provedor. Cadastre em IA > Configurações > Secret Vault', 'glpiintegaglpi'),
+            'secret_not_configured' => __('nenhum segredo ativo cadastrado para este provedor. Cadastre em IA > Configurações > Secret Vault', 'glpiintegaglpi'),
+            'secret_vault_table_missing' => __('tabela do Secret Vault ausente — execute as migrations da integração', 'glpiintegaglpi'),
+            'cloud_provider_unauthorized' => __('o provedor recusou o segredo (401/403) — confirme a chave de API e regrave-a no Secret Vault', 'glpiintegaglpi'),
+        ];
+
+        return $map[$errorType] ?? $errorType;
     }
 
     private function normalizeErrorType(string $value): string

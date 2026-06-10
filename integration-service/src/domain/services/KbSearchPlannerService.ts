@@ -246,6 +246,23 @@ const INTENT_PATTERNS: ReadonlyArray<{ intent: Intent; patterns: readonly RegExp
   },
 ];
 
+// ── Intent-specific boost terms ───────────────────────────────────────────────
+
+/**
+ * D11: additional boost terms injected when a product anchor is combined with a
+ * specific intent. Improves recall for intent-specific articles
+ * (e.g. "Micromed não abre" → startup/inicializacao/processo).
+ */
+const INTENT_BOOST_TERMS: Record<Intent, readonly string[]> = {
+  application_not_opening: ['inicializar', 'startup', 'abre', 'inicia', 'travado', 'inicializacao', 'executar', 'processo'],
+  identity_sync:           ['delta', 'replicacao', 'sincronizacao', 'ciclo', 'erro'],
+  backup_restore:          ['restore', 'arquivo', 'recuperar', 'job', 'validacao'],
+  server_slow:             ['cpu', 'memoria', 'disco', 'processo', 'consumo'],
+  network_issue:           ['porta', 'bloqueio', 'timeout', 'conexao', 'acesso'],
+  license_activation:      ['chave', 'produto', 'kms', 'slmgr', 'licenca'],
+  generic:                 [],
+};
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** PII guard (inlined to avoid circular dep with KbRagCopilotService). */
@@ -386,7 +403,7 @@ export class KbSearchPlannerService {
       domain: anchor.domain,
       symptoms: [],
       mustTerms: [...anchor.mustTerms],
-      boostTerms: [...anchor.boostTerms],
+      boostTerms: [...new Set([...anchor.boostTerms, ...INTENT_BOOST_TERMS[intent]])],
       negativeTerms: [...anchor.negativeTerms],
       negativeDomains: [...anchor.negativeDomains],
       sourceTiersAllowed: [anchor.sourceTier, 'tier_2_operational_kb'],

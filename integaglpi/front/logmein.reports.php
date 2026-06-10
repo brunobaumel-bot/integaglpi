@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use GlpiPlugin\Integaglpi\GestaoGroupMenu;
+use GlpiPlugin\Integaglpi\LogmeinGroupMenu;
 use GlpiPlugin\Integaglpi\Plugin;
 use GlpiPlugin\Integaglpi\Service\LogmeinGovernanceService;
 
@@ -45,7 +45,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $report = $service->buildOperationalReports($_GET);
 $csrfToken = Plugin::getCsrfToken();
 
-Html::header(__('Relatórios LogMeIn read-only', 'glpiintegaglpi'), $_SERVER['PHP_SELF'], 'plugins', GestaoGroupMenu::class);
+Html::header(__('Relatórios LogMeIn read-only', 'glpiintegaglpi'), $_SERVER['PHP_SELF'], 'plugins', LogmeinGroupMenu::class);
 
 include __DIR__ . '/../templates/logmein_reports.php';
 

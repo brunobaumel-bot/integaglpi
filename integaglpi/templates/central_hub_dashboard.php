@@ -55,7 +55,6 @@ $nullFloat = static fn (mixed $v, int $dec = 1): string =>
 
 <div class="container-fluid integaglpi-central-hub py-3">
 
-    {{/* ── Header ──────────────────────────────────────────────────────────── */}}
     <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-4">
         <div>
             <h2 class="mb-1"><?= $e(__('Hub Operacional', 'glpiintegaglpi')); ?></h2>
@@ -79,7 +78,6 @@ $nullFloat = static fn (mixed $v, int $dec = 1): string =>
     </div>
 
     <?php if (!$ok && $error !== null): ?>
-        {{/* ── Global error ──────────────────────────────────────────────── */}}
         <div class="alert alert-danger" role="alert">
             <strong><?= $e(__('Hub indisponível', 'glpiintegaglpi')); ?></strong>
             <?= $e(__('O integration-service retornou um erro. Verifique os logs.', 'glpiintegaglpi')); ?>
@@ -89,7 +87,6 @@ $nullFloat = static fn (mixed $v, int $dec = 1): string =>
 
         <div class="row g-3">
 
-            {{/* ── Card 1: Saúde HML ───────────────────────────────────────── */}}
             <div class="col-12 col-lg-6 col-xl-4">
                 <div class="card h-100 shadow-sm">
                     <div class="card-header d-flex justify-content-between align-items-center">
@@ -161,7 +158,6 @@ $nullFloat = static fn (mixed $v, int $dec = 1): string =>
                 </div>
             </div>
 
-            {{/* ── Card 2: Smart Help ──────────────────────────────────────── */}}
             <div class="col-12 col-lg-6 col-xl-4">
                 <div class="card h-100 shadow-sm">
                     <div class="card-header d-flex justify-content-between align-items-center">
@@ -217,7 +213,6 @@ $nullFloat = static fn (mixed $v, int $dec = 1): string =>
                 </div>
             </div>
 
-            {{/* ── Card 3: KB Quality ──────────────────────────────────────── */}}
             <div class="col-12 col-lg-6 col-xl-4">
                 <div class="card h-100 shadow-sm">
                     <div class="card-header d-flex justify-content-between align-items-center">
@@ -273,7 +268,6 @@ $nullFloat = static fn (mixed $v, int $dec = 1): string =>
                 </div>
             </div>
 
-            {{/* ── Card 4: LogMeIn ─────────────────────────────────────────── */}}
             <div class="col-12 col-lg-6 col-xl-6">
                 <div class="card h-100 shadow-sm">
                     <div class="card-header d-flex justify-content-between align-items-center">
@@ -349,7 +343,6 @@ $nullFloat = static fn (mixed $v, int $dec = 1): string =>
                 </div>
             </div>
 
-            {{/* ── Card 5: Alarmes ─────────────────────────────────────────── */}}
             <div class="col-12 col-lg-12 col-xl-6">
                 <div class="card h-100 shadow-sm">
                     <div class="card-header d-flex justify-content-between align-items-center">
@@ -410,9 +403,7 @@ $nullFloat = static fn (mixed $v, int $dec = 1): string =>
                 </div>
             </div>
 
-        </div>{{/* end .row */}}
-
-        {{/* ── Footer note ──────────────────────────────────────────────────── */}}
+        </div>
         <?php if ($readonlyNote !== ''): ?>
             <div class="mt-3 text-muted small text-center">
                 <i class="ti ti-shield-check me-1"></i>
@@ -420,6 +411,5 @@ $nullFloat = static fn (mixed $v, int $dec = 1): string =>
             </div>
         <?php endif; ?>
 
-    <?php endif; ?>{{/* end !$ok error branch */}}
-
-</div>{{/* end .container-fluid */}}
+    <?php endif; ?>
+</div>

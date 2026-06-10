@@ -17,7 +17,11 @@ if (!Plugin::canRead()) {
     Html::displayRightError();
 }
 
-$canWrite = Plugin::canUpdate() || SecurityPermissionService::isSecurityAdmin();
+// D08: Super-Admin/perfis com Config>Atualizar nunca devem ser bloqueados.
+// Usuários sem nenhum dos três direitos continuam bloqueados (read-only).
+$canWrite = Plugin::canUpdate()
+    || SecurityPermissionService::isSecurityAdmin()
+    || Session::haveRight('config', UPDATE);
 $service  = new LogmeinAlarmAdminService();
 $flash    = null;
 
@@ -29,9 +33,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['action']) && $_GET['act
         echo json_encode(['ok' => false, 'hosts' => []], JSON_UNESCAPED_UNICODE);
         exit;
     }
-    $q       = mb_substr(trim((string) ($_GET['q'] ?? '')), 0, 100, 'UTF-8');
-    $groupId = trim((string) ($_GET['group_id'] ?? ''));
-    $hosts   = $service->searchHosts($q, $groupId, 100);
+    $q        = mb_substr(trim((string) ($_GET['q'] ?? '')), 0, 100, 'UTF-8');
+    $groupId  = trim((string) ($_GET['group_id'] ?? ''));
+    // D05: filtrar hosts pela entidade GLPI selecionada (candidato direto ou grupo mapeado).
+    $entityId = max(0, (int) ($_GET['entity_id'] ?? 0));
+    $hosts    = $service->searchHosts($q, $groupId, 100, $entityId);
     echo json_encode(['ok' => true, 'hosts' => $hosts], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }
@@ -69,7 +75,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['action']) && $_GET['act
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!$canWrite) {
-        $flash = ['type' => 'danger', 'message' => __('Permissão insuficiente.', 'glpiintegaglpi')];
+        $flash = ['type' => 'danger', 'message' => __('Permissão insuficiente: requer direito de atualização do plugin, perfil de segurança ou Config > Atualizar.', 'glpiintegaglpi')];
     } elseif (!Plugin::isCsrfValid($_POST)) {
         $flash = ['type' => 'danger', 'message' => __('Token CSRF inválido. Recarregue a página.', 'glpiintegaglpi')];
     } else {
@@ -77,9 +83,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($action === 'create_rule') {
             $result = $service->createRule($_POST);
-            $flash  = $result['ok']
-                ? ['type' => 'success', 'message' => __('Regra criada com sucesso (desabilitada por padrão).', 'glpiintegaglpi')]
-                : ['type' => 'danger',  'message' => implode(' | ', $result['errors'])];
+            if ($result['ok']) {
+                // D06: alvos escolhidos ainda na criação (entidade/grupo/avulso).
+                // Formato de cada item: "<host_id>||<hostname>".
+                $targetsAdded  = 0;
+                $targetsFailed = 0;
+                $rawTargets    = $_POST['target_hosts'] ?? [];
+                if (is_array($rawTargets) && ($result['rule_id'] ?? null) !== null) {
+                    foreach (array_slice($rawTargets, 0, 200) as $rawTarget) {
+                        $parts    = explode('||', (string) $rawTarget, 2);
+                        $hostId   = trim($parts[0] ?? '');
+                        $hostname = trim($parts[1] ?? $hostId);
+                        if ($hostId === '') {
+                            continue;
+                        }
+                        $added = $service->addTarget((string) $result['rule_id'], $hostId, $hostname);
+                        $added['ok'] ? $targetsAdded++ : $targetsFailed++;
+                    }
+                }
+                $msg = __('Regra criada com sucesso (desabilitada por padrão).', 'glpiintegaglpi');
+                if ($targetsAdded > 0) {
+                    $msg .= ' ' . sprintf(__('%d alvo(s) adicionado(s).', 'glpiintegaglpi'), $targetsAdded);
+                }
+                if ($targetsFailed > 0) {
+                    $msg .= ' ' . sprintf(__('%d alvo(s) falharam — adicione manualmente.', 'glpiintegaglpi'), $targetsFailed);
+                }
+                $flash = ['type' => 'success', 'message' => $msg];
+            } else {
+                $flash = ['type' => 'danger', 'message' => implode(' | ', $result['errors'])];
+            }
 
         } elseif ($action === 'toggle_enabled') {
             $id      = trim((string) ($_POST['rule_id'] ?? ''));
@@ -130,6 +162,9 @@ $autoTicketTypes = LogmeinAlarmAdminService::getAutoTicketTypes();
 $unsupportedTypes = LogmeinAlarmAdminService::getUnsupportedTypes();
 $groups       = $schemaReady ? $service->listGroups() : [];
 $entities     = $schemaReady ? $service->listEntities() : [];
+// D07: dropdowns reais de fila/grupo técnico e categoria ITIL (lidos do GLPI via $DB).
+$itilGroups     = $service->listItilGroups();
+$itilCategories = $service->listItilCategories();
 
 // Load targets and stats for each rule (keyed by rule_id)
 $ruleIds     = array_column($rules, 'id');

@@ -852,7 +852,8 @@ describe('PHP Smart Help consumer + native KB search (static safety)', () => {
     expect(svc).toContain('[url removida]');
     // Idempotent prose: strips existing labels and de-duplicates sentences.
     expect(svc).toContain('function stripSummaryBoilerplate');
-    expect(svc).toContain('Problema relatado|Contexto t[eé]cnico|Pr[oó]xima a[cç][aã]o sugerida');
+    // D11 extended the label list (multi-problem + structured-field labels are also stripped).
+    expect(svc).toContain('Problema relatado|Problemas relatados|Contexto t[eé]cnico|Pr[oó]xima a[cç][aã]o sugerida');
     // buildTechnicalSummary uses the boilerplate strip (no double "Problema relatado:").
     expect(svc).toMatch(/buildTechnicalSummary[\s\S]*stripSummaryBoilerplate/);
     // AI summary output is also constrained to the summary-only contract before reaching the textarea.

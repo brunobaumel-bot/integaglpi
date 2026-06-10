@@ -69,10 +69,21 @@ $targetTypeLabels = [
         <i class="ti ti-list-details me-1"></i>
         <?= __('Mapeamento de Campos LogMeIn → GLPI', 'glpiintegaglpi') ?>
       </h5>
-      <button class="btn btn-outline-secondary btn-sm" type="button"
-              data-bs-toggle="collapse" data-bs-target="#dryRunPanel">
-        <i class="ti ti-player-play me-1"></i><?= __('Preview / Dry-run', 'glpiintegaglpi') ?>
-      </button>
+      <div class="d-flex gap-2">
+        <?php /* D03: efetiva a sincronização read-only do catálogo LogMeIn (CSRF + permissão + auditoria no serviço). */ ?>
+        <form method="POST" action="" class="d-inline m-0"
+              onsubmit="return confirm('<?= __('Executar a sincronização LogMeIn agora? Operação read-only: nenhum ativo GLPI é alterado.', 'glpiintegaglpi') ?>')">
+          <?= \GlpiPlugin\Integaglpi\Plugin::renderCsrfToken() ?>
+          <input type="hidden" name="action" value="sync_now">
+          <button class="btn btn-primary btn-sm" type="submit">
+            <i class="ti ti-refresh me-1"></i><?= __('Sincronizar agora', 'glpiintegaglpi') ?>
+          </button>
+        </form>
+        <button class="btn btn-outline-secondary btn-sm" type="button"
+                data-bs-toggle="collapse" data-bs-target="#dryRunPanel">
+          <i class="ti ti-player-play me-1"></i><?= __('Preview / Dry-run', 'glpiintegaglpi') ?>
+        </button>
+      </div>
     </div>
 
     <div class="card-body p-0">

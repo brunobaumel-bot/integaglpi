@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use GlpiPlugin\Integaglpi\GestaoGroupMenu;
+use GlpiPlugin\Integaglpi\LogmeinGroupMenu;
 use GlpiPlugin\Integaglpi\Plugin;
 use GlpiPlugin\Integaglpi\Service\IntegrationServiceClient;
 use GlpiPlugin\Integaglpi\Service\PluginConfigService;
@@ -359,7 +359,53 @@ if ($apiBase !== '' && $apiKey !== '') {
     $queueError = __('Integration-service não configurado (INTEGRATION_SERVICE_API_KEY ausente).', 'glpiintegaglpi');
 }
 
-Html::header(__('Conciliação de Acessos Remotos LogMeIn', 'glpiintegaglpi'), $_SERVER['PHP_SELF'], 'plugins', GestaoGroupMenu::class);
+// ── D09: diagnóstico acionável quando a fila vem vazia ────────────────────────
+// Read-only: 1 GET extra sem filtros para separar "ledger vazio" de "filtros
+// escondendo itens". Nunca expõe token/PSK/credencial.
+$reconDiagnostics = null;
+if ($apiBase !== '' && $apiKey !== '') {
+    $diagTotalAll = null;
+    try {
+        $chD = curl_init($apiBase . '/internal/glpi/logmein/reconciliation/queue?limit=1&page=1');
+        curl_setopt_array($chD, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPGET        => true,
+            CURLOPT_HTTPHEADER     => ['Authorization: Bearer ' . $apiKey, 'Accept: application/json'],
+            CURLOPT_TIMEOUT        => 8,
+            CURLOPT_SSL_VERIFYPEER => true,
+        ]);
+        $bodyD = curl_exec($chD);
+        $codeD = (int) curl_getinfo($chD, CURLINFO_HTTP_CODE);
+        curl_close($chD);
+        if ($codeD === 200 && is_string($bodyD)) {
+            $decodedD = json_decode($bodyD, true);
+            if (is_array($decodedD)) {
+                $diagTotalAll = (int) ($decodedD['total'] ?? 0);
+            }
+        }
+    } catch (\Throwable) {
+        // Diagnóstico é best-effort; nunca quebra a página.
+    }
+
+    $hasFilters = $filterStatus !== '' || $filterEntity > 0;
+    $checks = [];
+    if ($diagTotalAll !== null) {
+        $checks[] = sprintf(__('Total de itens no ledger (sem filtros): %d.', 'glpiintegaglpi'), $diagTotalAll);
+        if ($diagTotalAll > 0 && $hasFilters) {
+            $checks[] = __('Há itens no ledger — os filtros de status/entidade atuais estão escondendo os resultados. Use "Limpar".', 'glpiintegaglpi');
+        }
+        if ($diagTotalAll === 0) {
+            $checks[] = __('Ledger vazio: a sincronização ainda não importou sessões. Acione "Sincronizar" acima.', 'glpiintegaglpi');
+            $checks[] = __('Se o sync conclui mas continua vazio: o relatório da API LogMeIn cobre uma janela limitada — acessos de ontem/hoje só aparecem após novo sync; confirme também LOGMEIN_INTEGRATION_ENABLED=true e LOGMEIN_RECONCILIATION habilitado no integration-service (.env HML).', 'glpiintegaglpi');
+            $checks[] = __('Sessões sem ticket correspondente entram como "no_ticket_found" — se nem isso aparece, a fonte (relatório LogMeIn) não retornou sessões para o período.', 'glpiintegaglpi');
+        }
+    } else {
+        $checks[] = __('Não foi possível consultar o total do ledger (integration-service indisponível?).', 'glpiintegaglpi');
+    }
+    $reconDiagnostics = ['total_all' => $diagTotalAll, 'checks' => $checks];
+}
+
+Html::header(__('Conciliação de Acessos Remotos LogMeIn', 'glpiintegaglpi'), $_SERVER['PHP_SELF'], 'plugins', LogmeinGroupMenu::class);
 
 include __DIR__ . '/../templates/logmein_reconciliation.php';
 

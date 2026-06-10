@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use GlpiPlugin\Integaglpi\GestaoGroupMenu;
+use GlpiPlugin\Integaglpi\LogmeinGroupMenu;
 use GlpiPlugin\Integaglpi\Plugin;
 use GlpiPlugin\Integaglpi\Service\LogmeinGovernanceService;
 use GlpiPlugin\Integaglpi\Service\SecurityPermissionService;
@@ -52,7 +52,7 @@ $inventoryQualityReport = $service->getInventoryQualityReport();
 $healthSummary = $service->getHealthSummary();
 $featureEnabled = $service->isFeatureEnabled();
 
-Html::header(__('Mapeamento LogMeIn read-only', 'glpiintegaglpi'), $_SERVER['PHP_SELF'], 'plugins', GestaoGroupMenu::class);
+Html::header(__('Mapeamento LogMeIn read-only', 'glpiintegaglpi'), $_SERVER['PHP_SELF'], 'plugins', LogmeinGroupMenu::class);
 
 include __DIR__ . '/../templates/logmein_mapping.php';
 

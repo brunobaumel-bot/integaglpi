@@ -234,26 +234,53 @@ final class SmartHelpService
         $schema044Status = self::migration044SchemaStatus();
 
         // 1. Local native KB search (PHP-side fallback; never leaves the page; no cloud).
+        // D11: quando há múltiplos problemas distintos, a KB é buscada POR PROBLEMA
+        // e cada artigo carrega o índice do problema a que se refere. Problemas sem
+        // artigo confiável são marcados como KB_INSUFFICIENT — nunca se assume que a
+        // KB de um problema resolve o outro.
         $localArticles = [];
         $searchContext = $technicalSummary !== '' ? $technicalSummary : $summary;
+        $problems = $this->extractProblemsForSearch($summary);
+        $searchContexts = count($problems) >= 2 ? $problems : [$searchContext];
+        $kbCoverage = [];
         try {
             $native = new NativeKnowledgeBaseService();
-            foreach ($native->searchVisibleArticles($searchContext, 5) as $a) {
-                $relevance = $this->evaluateKbRelevance($searchContext, $a);
-                if ($relevance === null || (float) $relevance['confidence'] < self::MIN_KB_DISPLAY_CONFIDENCE) {
-                    continue;
+            foreach ($searchContexts as $pi => $problemContext) {
+                $problemHasKb = false;
+                foreach ($native->searchVisibleArticles($problemContext, 5) as $a) {
+                    $relevance = $this->evaluateKbRelevance($problemContext, $a);
+                    if ($relevance === null || (float) $relevance['confidence'] < self::MIN_KB_DISPLAY_CONFIDENCE) {
+                        continue;
+                    }
+                    $problemHasKb = true;
+                    $localArticles[] = [
+                        'glpiKnowbaseitemId' => (int) ($a['article_id'] ?? 0),
+                        'title'              => (string) ($a['title'] ?? ''),
+                        'confidence'         => (float) $relevance['confidence'],
+                        'category'           => (string) ($a['category'] ?? ''),
+                        'excerpt'            => (string) ($a['excerpt'] ?? ''),
+                        'internal_url'       => (string) ($a['internal_url'] ?? ''),
+                        'source_label'       => (string) ($a['source_label'] ?? 'Base de Conhecimento GLPI'),
+                        'confidence_reason'  => (string) $relevance['reason'],
+                        'problem_index'      => count($searchContexts) >= 2 ? $pi + 1 : null,
+                    ];
                 }
-                $localArticles[] = [
-                    'glpiKnowbaseitemId' => (int) ($a['article_id'] ?? 0),
-                    'title'              => (string) ($a['title'] ?? ''),
-                    'confidence'         => (float) $relevance['confidence'],
-                    'category'           => (string) ($a['category'] ?? ''),
-                    'excerpt'            => (string) ($a['excerpt'] ?? ''),
-                    'internal_url'       => (string) ($a['internal_url'] ?? ''),
-                    'source_label'       => (string) ($a['source_label'] ?? 'Base de Conhecimento GLPI'),
-                    'confidence_reason'  => (string) $relevance['reason'],
+                $kbCoverage[] = [
+                    'problem_index' => $pi + 1,
+                    'problem'       => mb_substr($problemContext, 0, 160, 'UTF-8'),
+                    'status'        => $problemHasKb ? 'KB_FOUND' : 'KB_INSUFFICIENT',
                 ];
             }
+            // Dedupe por artigo (mesmo artigo pode atender mais de um problema).
+            $seenArticleIds = [];
+            $localArticles = array_values(array_filter($localArticles, static function ($a) use (&$seenArticleIds) {
+                $id = (int) ($a['glpiKnowbaseitemId'] ?? 0);
+                if ($id > 0 && isset($seenArticleIds[$id])) {
+                    return false;
+                }
+                $seenArticleIds[$id] = true;
+                return true;
+            }));
         } catch (\Throwable $e) {
             error_log('[integaglpi][smart_help] native KB error: ' . mb_substr($e->getMessage(), 0, 180, 'UTF-8'));
         }
@@ -310,6 +337,18 @@ final class SmartHelpService
                 : 'Nenhum artigo local de alta confiança. Use o checklist e as perguntas sugeridas para diagnosticar.';
         }
 
+        // D11: quando há múltiplos problemas, informa explicitamente quais ficaram
+        // sem cobertura de KB (KB_INSUFFICIENT) em vez de fingir resposta única.
+        $insufficient = array_values(array_filter($kbCoverage, static fn ($c) => ($c['status'] ?? '') === 'KB_INSUFFICIENT'));
+        if (count($kbCoverage) >= 2 && $insufficient !== []) {
+            $labels = array_map(
+                static fn ($c) => sprintf('problema %d ("%s…")', (int) $c['problem_index'], mb_substr((string) $c['problem'], 0, 60, 'UTF-8')),
+                $insufficient
+            );
+            $message = trim($message . ' KB_INSUFFICIENT para ' . implode(' e ', $labels)
+                . '. Colete a mensagem de erro exata de cada problema e trate-os separadamente.');
+        }
+
         $localSuggestion = is_array($ragResult['localSuggestion'] ?? null) ? $ragResult['localSuggestion'] : null;
         if (!$localResolved && $wantLocalAiSuggestion && $localSuggestion === null) {
             $localSuggestion = $this->localAiSuggestion($ticketId, $technicalSummary !== '' ? $technicalSummary : $summary);
@@ -339,11 +378,30 @@ final class SmartHelpService
                 'label' => $ragResult !== null ? 'KB local / RAG do IntegraGLPI' : 'Base de Conhecimento GLPI local',
                 'node_endpoint' => 'GLPI_KB_SEARCH_URL',
             ],
+            'kbCoverage'         => $kbCoverage,
+            'kb_coverage'        => $kbCoverage,
             'schema044Status'    => $schema044Status,
             'degraded'          => !$nodeOk,
             'message'           => $message,
             'read_only'         => true,
         ];
+    }
+
+    /**
+     * D11: reaproveita o pipeline de limpeza do resumo para obter os problemas
+     * distintos do cliente, prontos para busca de KB individual.
+     *
+     * @return list<string>
+     */
+    private function extractProblemsForSearch(string $summary): array
+    {
+        $extracted = $this->extractClientOnlyContext($this->stripSummaryBoilerplate($summary));
+        $clean = $this->sanitizeContext($extracted !== '' ? $extracted : $summary);
+        if ($clean === '') {
+            return [];
+        }
+
+        return $this->splitDistinctProblems($clean);
     }
 
     /**
@@ -523,7 +581,7 @@ final class SmartHelpService
     private function stripSummaryBoilerplate(string $text): string
     {
         // Drop leading structural labels anywhere they appear (idempotency).
-        $text = preg_replace('/(?:^|\n|\.\s*)\s*(?:Problema relatado|Contexto t[eé]cnico|Pr[oó]xima a[cç][aã]o sugerida)\s*:\s*/iu', ' ', $text) ?? $text;
+        $text = preg_replace('/(?:^|\n|\.\s*)\s*(?:Problema relatado|Problemas relatados|Contexto t[eé]cnico|Pr[oó]xima a[cç][aã]o sugerida|Sistema afetado|Evid[eê]ncia\/erro|Impacto|Escopo|Dados faltantes)\s*:\s*/iu', ' ', $text) ?? $text;
         $text = preg_replace('/\s+/u', ' ', $text) ?? $text;
         $text = trim($text);
 
@@ -664,6 +722,13 @@ final class SmartHelpService
             );
         }
 
+        // D11: múltiplos problemas distintos viram blocos separados — nunca um
+        // resumo único confuso misturando sistemas diferentes.
+        $problems = $this->splitDistinctProblems($clean);
+        if (count($problems) >= 2) {
+            return $this->multiProblemSummary($problems);
+        }
+
         $sentences = preg_split('/(?<=[.!?])\s+/u', $clean) ?: [$clean];
         $prose = trim(implode(' ', array_slice($sentences, 0, 2)));
         $prose = preg_replace('/\b(?:Para solucionar|Solução|Procedimento|Base de Conhecimento|consulte o artigo)[^.?!]*(?:[.?!]|$)/iu', '', $prose) ?? $prose;
@@ -678,8 +743,110 @@ final class SmartHelpService
             $this->inferEvidenceFromText($clean),
             'Não informado',
             'Não informado',
-            ['mensagem de erro exata', 'impacto', 'escopo', 'quando começou']
+            ['qual é a mensagem de erro exata?', 'qual o impacto para o usuário?', 'afeta um ou vários usuários?', 'quando o problema começou?']
         );
+    }
+
+    /**
+     * D11: separa o contexto do cliente em problemas tecnicamente distintos.
+     * Determinístico: divide por sentenças/quebras e agrupa por sistema inferido.
+     * Dois segmentos só são considerados problemas distintos quando apontam para
+     * sistemas diferentes (ex.: Micromed × Internet/Rede) — perguntas, saudações
+     * e complementos do mesmo assunto permanecem no mesmo bloco.
+     *
+     * @return list<string> 1..3 problemas (texto original sanitizado de cada bloco)
+     */
+    private function splitDistinctProblems(string $clean): array
+    {
+        $segments = preg_split('/(?<=[.!?])\s+|\s*[;\n]\s*/u', $clean) ?: [$clean];
+        $segments = array_values(array_filter(array_map('trim', $segments), static fn ($s) => $s !== ''));
+        if (count($segments) < 2) {
+            return [$clean];
+        }
+
+        $blocks = [];
+        foreach ($segments as $segment) {
+            $system = $this->inferProblemTopic($this->normalizeForRelevance($segment));
+            $lastKey = array_key_last($blocks);
+            if ($lastKey !== null && ($system === 'desconhecido' || $blocks[$lastKey]['topic'] === $system)) {
+                // Mesmo assunto (ou sem sinal novo): agrega ao bloco anterior.
+                $blocks[$lastKey]['text'] .= ' ' . $segment;
+                if ($blocks[$lastKey]['topic'] === 'desconhecido' && $system !== 'desconhecido') {
+                    $blocks[$lastKey]['topic'] = $system;
+                }
+                continue;
+            }
+            $blocks[] = ['topic' => $system, 'text' => $segment];
+        }
+
+        // Só trata como multi-problema quando há 2+ tópicos REALMENTE distintos.
+        $topics = array_values(array_unique(array_filter(
+            array_column($blocks, 'topic'),
+            static fn ($t) => $t !== 'desconhecido'
+        )));
+        if (count($topics) < 2) {
+            return [$clean];
+        }
+
+        return array_slice(array_map(static fn ($b) => trim($b['text']), $blocks), 0, 3);
+    }
+
+    /**
+     * Tópico técnico de um segmento para fins de separação de problemas.
+     * Mais granular que inferSystemFromText: inclui rede/internet/impressão.
+     */
+    private function inferProblemTopic(string $normalized): string
+    {
+        $topics = [
+            'micromed'   => '/\bmicromed\b/u',
+            'rede'       => '/\b(internet|rede|wifi|wi-fi|conex[aã]o|nenhum site|sites? n[aã]o abre|navega[cç][aã]o)\b/u',
+            'ad'         => '/\b(active directory|azure|entra|dominio|domain)\b/u',
+            'windows'    => '/\bwindows\b/u',
+            'office'     => '/\b(word|excel|outlook|office)\b/u',
+            'impressao'  => '/\b(impressora|imprimir|impress[aã]o)\b/u',
+            'email'      => '/\b(e-?mail|correio)\b/u',
+            'logmein'    => '/\blogmein\b/u',
+        ];
+        foreach ($topics as $topic => $pattern) {
+            if (preg_match($pattern, $normalized) === 1) {
+                return $topic;
+            }
+        }
+
+        return 'desconhecido';
+    }
+
+    /**
+     * D11: resumo estruturado para 2+ problemas distintos. Cada problema tem seu
+     * próprio sistema/evidência/dados faltantes — sem inventar evidência e sem
+     * misturar placeholders com conteúdo relatado.
+     *
+     * @param list<string> $problems
+     */
+    private function multiProblemSummary(array $problems): string
+    {
+        $parts = ['Problemas relatados: ' . count($problems) . ' (tratar separadamente)'];
+        foreach ($problems as $i => $problem) {
+            $n = $i + 1;
+            $normalized = $this->normalizeForRelevance($problem);
+            $system = $this->inferSystemFromText($normalized);
+            if ($system === 'Não informado') {
+                $system = ucfirst($this->inferProblemTopic($normalized));
+                $system = $system === 'Desconhecido' ? 'Não informado' : $system;
+            }
+            $evidence = $this->inferEvidenceFromText($problem);
+            $parts[] = sprintf(
+                "%d) Problema: %s | Sistema: %s | Evidência: %s | Faltam: %s",
+                $n,
+                $this->summaryField(mb_substr($problem, 0, 180, 'UTF-8')),
+                $system,
+                $evidence,
+                'mensagem de erro exata? quando começou? afeta mais alguém?'
+            );
+        }
+        $parts[] = 'Dica: buscar KB separadamente para cada problema.';
+
+        return mb_substr(implode("\n", $parts), 0, 900, 'UTF-8');
     }
 
     private function extractClientOnlyContext(string $text): string
