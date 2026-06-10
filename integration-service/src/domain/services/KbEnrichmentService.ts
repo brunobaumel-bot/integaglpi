@@ -72,6 +72,8 @@ export interface EnrichedKbDraft {
 export interface EnrichmentResult {
   ok: boolean;
   status: EnrichedDraftStatus;
+  /** true somente quando a IA local contribuiu de fato (Ollama respondeu e parseou). */
+  ai_enriched: boolean;
   /** ID do candidato original (preservado, nunca alterado). */
   source_kb_id: number;
   original_hash: string;
@@ -229,12 +231,14 @@ export class KbEnrichmentService {
     // Enriquecimento opcional via Ollama LOCAL (flag-gated; nunca cloud).
     // Autorizado a MELHORAR o conteúdo (sintomas/causas/passos/validação/contexto),
     // sempre ancorado no original — rastreável e reversível via backup.
+    let aiEnriched = false;
     if (env.KB_ENRICHMENT_ENABLED && this.ollamaPort !== null) {
       try {
         const enriched = await this.tryOllamaEnrichment(hit, draft);
         if (enriched !== null) {
           Object.assign(draft, enriched);
           draft.confidence_notes += ' Campos complementados/melhorados por IA local — rastreável; rollback disponível.';
+          aiEnriched = true;
         }
       } catch {
         // Falha de IA nunca bloqueia o draft determinístico.
@@ -244,6 +248,7 @@ export class KbEnrichmentService {
     return {
       ok: true,
       status: env.KB_ENRICHMENT_ENABLED ? 'ready_for_human_review' : 'needs_review',
+      ai_enriched: aiEnriched,
       source_kb_id: hit.id,
       original_hash: originalHash,
       enriched_hash: sha256(JSON.stringify(draft)),
@@ -340,6 +345,7 @@ export class KbEnrichmentService {
   public async enrichAndApplyBatch(
     repo: PostgresKbCandidateSearchRepository,
     limit = 10,
+    options: { allowDeterministic?: boolean } = {},
   ): Promise<{
     processed: number;
     applied: number;
@@ -355,6 +361,20 @@ export class KbEnrichmentService {
     for (const hit of candidates) {
       try {
         const result = await this.buildEnrichedDraft(hit);
+        // Guard de elegibilidade: sem contribuição REAL da IA, aplicar marcaria o
+        // candidato como enriquecido (enrichment_version=1) e o tiraria da fila
+        // para sempre — sem ganho de conteúdo. Pula por padrão (Ollama offline).
+        if (!result.ai_enriched && options.allowDeterministic !== true) {
+          failed++;
+          items.push({
+            id: hit.id,
+            title: hit.title.slice(0, 80),
+            ok: false,
+            gaps: result.gaps_detected.length,
+            error: 'ollama_indisponivel — apply pulado para preservar elegibilidade (use --allow-deterministic para forçar)',
+          });
+          continue;
+        }
         const outcome = await this.applyEnrichment(repo, hit, result);
         items.push({
           id: hit.id,

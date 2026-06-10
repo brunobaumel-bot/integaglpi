@@ -25,6 +25,7 @@ interface CliOptions {
   gaps: boolean;
   windowDays: number;
   rollbackId: number | null;
+  allowDeterministic: boolean;
 }
 
 function parseArgs(args: string[]): CliOptions {
@@ -35,9 +36,13 @@ function parseArgs(args: string[]): CliOptions {
     gaps: false,
     windowDays: 30,
     rollbackId: null,
+    allowDeterministic: false,
   };
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
+      case '--allow-deterministic':
+        options.allowDeterministic = true;
+        break;
       case '--limit':
         options.limit = Math.max(1, Math.min(50, Number.parseInt(args[++i] ?? '10', 10) || 10));
         break;
@@ -118,7 +123,9 @@ async function main(): Promise<void> {
   }
 
   // --apply
-  const summary = await service.enrichAndApplyBatch(repo, options.limit);
+  const summary = await service.enrichAndApplyBatch(repo, options.limit, {
+    allowDeterministic: options.allowDeterministic,
+  });
   for (const item of summary.items) {
     console.log(JSON.stringify(item));
   }

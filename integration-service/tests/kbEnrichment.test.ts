@@ -230,14 +230,40 @@ describe('KbEnrichmentService — F5 aplicação autorizada', () => {
     expect(input['procedure']).toEqual(hit.recommendedProcedureJson);
   });
 
-  it('enrichAndApplyBatch respeita o limite e produz resumo por item', async () => {
+  it('enrichAndApplyBatch SEM contribuição de IA pula o apply (preserva elegibilidade)', async () => {
+    const repo = makeRepoMock();
+    const svc = new KbEnrichmentService(); // sem Ollama → ai_enriched=false
+    const summary = await svc.enrichAndApplyBatch(repo as never, 5);
+    expect(summary.processed).toBe(1);
+    expect(summary.applied).toBe(0);
+    expect(repo.applyEnrichedContent).not.toHaveBeenCalled();
+    expect(summary.items[0]!.error).toContain('ollama_indisponivel');
+  });
+
+  it('enrichAndApplyBatch com allowDeterministic aplica mesmo sem IA', async () => {
     const repo = makeRepoMock();
     const svc = new KbEnrichmentService();
-    const summary = await svc.enrichAndApplyBatch(repo as never, 5);
+    const summary = await svc.enrichAndApplyBatch(repo as never, 5, { allowDeterministic: true });
     expect(repo.listCandidatesForEnrichment).toHaveBeenCalledWith(5, 0);
     expect(summary.processed).toBe(1);
     expect(summary.applied).toBe(1);
     expect(summary.items[0]).toMatchObject({ ok: true });
+  });
+
+  it('com IA respondendo, ai_enriched=true e o apply procede', async () => {
+    const repo = makeRepoMock();
+    const ollama = {
+      generateText: vi.fn().mockResolvedValue(JSON.stringify({
+        symptoms: ['Sintoma expandido pela IA'],
+        likely_causes: ['Causa detalhada'],
+        resolution_steps: ['1. Passo melhorado'],
+      })),
+    };
+    const svc = new KbEnrichmentService(ollama);
+    const summary = await svc.enrichAndApplyBatch(repo as never, 5);
+    expect(summary.applied).toBe(1);
+    const input = repo.applyEnrichedContent.mock.calls[0]![0] as Record<string, unknown>;
+    expect(input['symptoms']).toEqual(['Sintoma expandido pela IA']);
   });
 
   it('persistGapCandidates insere draft_gap_candidate idempotente', async () => {
