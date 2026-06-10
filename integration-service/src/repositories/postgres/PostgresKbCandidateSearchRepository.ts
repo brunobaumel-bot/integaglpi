@@ -421,7 +421,9 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
         problem_pattern, symptoms_json, tags_json, category_suggestion,
         evidence_summary_sanitized, confidence_score
       ) VALUES (
-        $1, $2, 'draft_gap_candidate', 'checklist_diagnostico', $3, $4,
+        -- status 'suggested' (aceito por TODA versão do CHECK); a tag
+        -- draft_gap_candidate carrega a semântica e exclui da busca local.
+        $1, $2, 'suggested', 'checklist_diagnostico', $3, $4,
         $5, '[]'::jsonb, '["draft_gap_candidate"]'::jsonb, 'Lacuna de KB',
         $6, 10
       )
