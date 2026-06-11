@@ -131,8 +131,8 @@ PHASE: `integaglpi_v9_kb_quality_001` — Updated: 2026-06-09
 
 | Flag | Default seguro | Domínio | Efeito | Gate mínimo |
 | --- | --- | --- | --- | --- |
-| `FEEDBACK_RANKING_ENABLED` | `false` | KB ranking | `false`: ranking puro (lexical + field weights). `true`: aplica multiplicador não-punitivo (0.80–1.20) por helpfulness score Laplace-smoothed. Caller aplica threshold `MIN_VOTES_FOR_RANKING`. | Smoke local + Cursor review + `npm run test:kb-regression` verde |
-| `RERANKER_ENABLED` | `false` | KB cross-encoder | `false`: sem re-ranking (latência mínima). `true`: re-ranking dos top-5 candidatos via Ollama cross-encoder local. Timeout 1500ms/inferência; fallback para ranking original em timeout. | Ollama instalado + smoke latência + Cursor review |
+| `FEEDBACK_RANKING_ENABLED` | `false` | KB ranking | `false`: ranking puro (lexical + field weights) — caminho legado byte-idêntico. `true`: KbRagCopilotService busca bias agregado via FeedbackService.getRankingBiasMap (threshold 3 votos) e aplica multiplicador não-punitivo (0.80–1.20) por helpfulness Laplace-smoothed no rankHits(). Tipada em env.ts (wiring runtime: integaglpi_v9_kb_ui_rendering_and_ranking_wiring_001). | Smoke local + Cursor review + `npm run test:kb-regression` verde |
+| `RERANKER_ENABLED` | `false` | KB cross-encoder | `false`: reranker NÃO é instanciado (nunca no caminho crítico) e o campo `reranker` fica AUSENTE do payload. `true`: KbRerankerService instanciado em buildDependencies (Ollama local via AI_SUPERVISOR_BASE_URL) e aplicado APÓS o gate de confiança (KB_INSUFFICIENT inalterado); timeout 1500ms/inferência; falha/timeout → ordem original. Observabilidade (R2): payload expõe `reranker {applied, model, maxInferenceMs, note}` e `kbsScoreBreakdown[].rerankerScore` real do cross-encoder (nunca inventado). Tipada em env.ts. | Ollama instalado + smoke latência + Cursor review |
 
 Regras:
 - Ambas as flags OFF = comportamento pré-V9 preservado (nenhuma regressão).
@@ -194,6 +194,14 @@ PHASE: `integaglpi_v9_kb_enrichment_and_search_optimization_001` — Updated: 20
 | `CUSTOM_RESPONSE_ENABLED` | `false` | Resposta customizada ao técnico | `false`: customResponse=null. `true`: orientação contextual COMPLEMENTAR ao KB original; gate de confiança < 0.60 nunca chama Ollama. | Cursor review + smoke HML |
 | `KB_GAP_ANALYSIS_ENABLED` | `false` | Análise de lacunas de KB | `false`: lista vazia. `true`: agrega rag_audit (KB_INSUFFICIENT) por plan_summary, threshold >= 3 ocorrências; gera draft_gap_candidate com revisão humana. | Cursor review |
 | `CLOUD_POST_PROCESSING_ENABLED` | `false` | Pós-processamento cloud | `false`: resposta cloud sanitizada exibida como veio. `true`: polimento via Ollama local com circuit breaker de 8s (timeout → resposta original, nunca 500). | Cursor review + consentimento cloud já existente |
+
+### V9 — UI rendering + ranking wiring (integaglpi_v9_kb_ui_rendering_and_ranking_wiring_001)
+
+Atualizado: 2026-06-11. Sem flag nova nesta fase além da tipagem de `FEEDBACK_RANKING_ENABLED`/`RERANKER_ENABLED` (acima, seção KB Quality):
+
+- UI: `ticket_ai_panel.js` renderiza `customResponse` ("Sugestão IA contextualizada" + badge "Revise antes de aplicar" + kb_sources sempre visíveis), `problemProfiles` (seção por problema), `kbCoverage` (badges KB_FOUND/KB_INSUFFICIENT) e `ragPerProblem`. `kb_smart_help_widget.php` renderiza `customResponse` no fluxo KB RAG.
+- `CUSTOM_RESPONSE_ENABLED=false` → backend envia `customResponse=null` → bloco ausente; demais seções são aditivas e read-only (comportamento legado preservado).
+- Nada é enviado ao cliente; KB original/KBs usadas permanecem sempre visíveis; comandos são texto consultivo.
 
 Regras (ABSOLUTAS): nenhuma flag publica KB; original nunca é substituído/apagado;
 persistência de draft enriquecido BLOQUEADA até migration aditiva autorizada

@@ -276,6 +276,21 @@ const envSchema = z.object({
     .union([z.literal('true'), z.literal('false')])
     .default('false')
     .transform((value) => value === 'true'),
+
+  // ── Flags KB ranking wiring (F2.2/F2.3 runtime) ────────────────────────────
+  // PHASE: integaglpi_v9_kb_ui_rendering_and_ranking_wiring_001
+  // Default false: comportamento legado idêntico quando desligadas.
+
+  /** Feedback útil/não útil influencia o ranking (bias agregado, não-punitivo 0.80–1.20). */
+  FEEDBACK_RANKING_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /** Reranker cross-encoder Ollama local pós-ranking (timeout/fallback preservados). */
+  RERANKER_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;

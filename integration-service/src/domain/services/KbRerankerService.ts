@@ -74,15 +74,29 @@ export class KbRerankerService {
   private readonly logger = pino({ name: 'KbRerankerService' });
   private readonly ollamaPort: number;
   private readonly model: string;
+  private readonly baseUrl: string;
 
   /**
    * @param ollamaPort  Ollama port (default 11434). Null = service instantiated
    *                    but will always return fallback (used in unit tests).
    * @param model       Ollama model to use. Default: 'qwen3.6:latest'.
+   * @param baseUrl     Optional full Ollama base URL (runtime wiring — HML may
+   *                    use a non-loopback host). When set, takes precedence over
+   *                    ollamaPort for URL construction. '' / null keeps the
+   *                    legacy 127.0.0.1:<port> behavior intact.
    */
-  constructor(ollamaPort: number | null = 11434, model = 'qwen3.6:latest') {
+  constructor(ollamaPort: number | null = 11434, model = 'qwen3.6:latest', baseUrl: string | null = null) {
     this.ollamaPort = ollamaPort ?? 0;
     this.model = model;
+    const trimmed = (baseUrl ?? '').trim().replace(/\/+$/, '');
+    this.baseUrl = trimmed !== ''
+      ? trimmed
+      : (this.ollamaPort > 0 ? `http://127.0.0.1:${this.ollamaPort}` : '');
+  }
+
+  /** R2 (observabilidade): nome do modelo local — metadado não sensível. */
+  public get modelName(): string {
+    return this.model;
   }
 
   /**
@@ -105,9 +119,9 @@ export class KbRerankerService {
     const candidates = hits.slice(0, MAX_RERANK_CANDIDATES);
     const rest = hits.slice(MAX_RERANK_CANDIDATES);
 
-    if (this.ollamaPort === 0) {
-      // Instantiated with null port (test mode) — always fallback
-      this.logger.debug({ correlationId }, 'KbRerankerService: ollamaPort=null, returning fallback');
+    if (this.baseUrl === '') {
+      // Instantiated with null port and no baseUrl (test mode) — always fallback
+      this.logger.debug({ correlationId }, 'KbRerankerService: no Ollama endpoint, returning fallback');
       return this.buildFallback(hits, correlationId, false);
     }
 
@@ -194,7 +208,7 @@ export class KbRerankerService {
     const prompt = RELEVANCE_PROMPT(query, hit.hit.title, excerpt);
 
     try {
-      const resp = await fetch(`http://127.0.0.1:${this.ollamaPort}/api/generate`, {
+      const resp = await fetch(`${this.baseUrl}/api/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: this.model, prompt, stream: false }),

@@ -32,10 +32,12 @@
 import type { KbCandidateSearchRepository, KbCandidateHit } from '../../repositories/postgres/PostgresKbCandidateSearchRepository.js';
 import { QueryExpansionService } from './QueryExpansionService.js';
 import { KbRankingService } from './KbRankingService.js';
-import type { KbClientContext, KbScoreBreakdown } from './KbRankingService.js';
+import type { KbClientContext, KbFeedbackBias, KbScoreBreakdown, RankedKbHit } from './KbRankingService.js';
 import { KbSearchPlannerService } from './KbSearchPlannerService.js';
 import type { SearchPlan } from './KbSearchPlannerService.js';
 import type { KbCustomResponseService, CustomTechnicianResponse } from './KbCustomResponseService.js';
+import type { KbRerankerService } from './KbRerankerService.js';
+import { env } from '../../config/env.js';
 
 // Re-export for consumers (tests, controllers, buildDependencies)
 export type { KbCandidateSearchRepository, KbCandidateHit } from '../../repositories/postgres/PostgresKbCandidateSearchRepository.js';
@@ -84,6 +86,19 @@ export interface KbRagCachePort {
   set(key: string, value: string, ttlSeconds: number): Promise<void>;
 }
 
+/**
+ * F2.2 runtime wiring — port para o bias agregado de feedback.
+ * Implementado por FeedbackService.getRankingBiasMap (agregado, não-punitivo,
+ * NUNCA identifica técnico individual). Chamado SOMENTE quando
+ * FEEDBACK_RANKING_ENABLED=true; null → ranking idêntico ao legado.
+ */
+export interface FeedbackRankingBiasPort {
+  getRankingBiasMap(
+    targets: Array<{ candidateKey: string; kbCandidateId: number | null }>,
+    minVotes?: number,
+  ): Promise<KbFeedbackBias | null>;
+}
+
 // ── Domain types ──────────────────────────────────────────────────────────────
 
 export interface KbRagInput {
@@ -115,6 +130,24 @@ export interface KbScoreEntry {
     titleMatch: boolean;
     contextBoost: boolean;
   };
+  /**
+   * R2 (observabilidade) — score real do cross-encoder [0,1] quando o reranker
+   * avaliou este artigo. Ausente com RERANKER_ENABLED=false ou em fallback.
+   * Nunca inventado: vem exclusivamente de RerankedKbHit.rerankerScore.
+   */
+  rerankerScore?: number;
+}
+
+/** R2 — metadado não sensível do reranker (presente SÓ com RERANKER_ENABLED=true). */
+export interface RerankerMeta {
+  /** true quando a ordem final veio do cross-encoder; false = fallback/ordem original. */
+  applied: boolean;
+  /** Modelo Ollama local usado (nome do modelo apenas — sem URL/credencial). */
+  model: string | null;
+  /** Latência da inferência mais lenta (ms). Null quando nenhuma inferência ocorreu. */
+  maxInferenceMs: number | null;
+  /** Nota curta para a UI quando fallback (ex.: 'fallback — ordem original'). */
+  note: string | null;
 }
 
 /**
@@ -152,6 +185,12 @@ export interface KbRagResult {
   deterministicFallback: boolean;
   kbsFound: number;
   error?: string;
+  /**
+   * R2 — metadado do reranker. PRESENTE somente quando RERANKER_ENABLED=true e
+   * o serviço está instanciado; ausente (undefined) com flag off — payload
+   * legado byte-idêntico.
+   */
+  reranker?: RerankerMeta;
   /**
    * The SearchPlan used for this search (for UI/audit transparency).
    * Populated whenever KbSearchPlannerService succeeds.
@@ -537,6 +576,10 @@ export class KbRagCopilotService {
     rankingService?: KbRankingService,
     plannerService?: KbSearchPlannerService,
     private readonly customResponseService: KbCustomResponseService | null = null,
+    /** F2.2 runtime — bias agregado de feedback (usado SÓ com FEEDBACK_RANKING_ENABLED=true). */
+    private readonly feedbackBiasPort: FeedbackRankingBiasPort | null = null,
+    /** F2.3 runtime — reranker local (usado SÓ com RERANKER_ENABLED=true; fallback garantido). */
+    private readonly rerankerService: KbRerankerService | null = null,
   ) {
     // Share ollamaPort with QueryExpansionService (structurally compatible)
     this.queryExpansionService = queryExpansionService ?? new QueryExpansionService(ollamaPort);
@@ -652,7 +695,19 @@ export class KbRagCopilotService {
     }
 
     // 6. Hybrid reranking (with plan for must_terms / negative_domains hard filters)
-    const ranked = this.rankingService.rankHits(hits, queryTokens, input.clientContext, topK, searchPlan);
+    // F2.2 runtime — bias agregado de feedback, SOMENTE com flag ligada.
+    // Falha ou flag off → feedbackBias=null → rankHits idêntico ao legado.
+    let feedbackBias: KbFeedbackBias | null = null;
+    if (env.FEEDBACK_RANKING_ENABLED && this.feedbackBiasPort !== null) {
+      try {
+        feedbackBias = await this.feedbackBiasPort.getRankingBiasMap(
+          hits.map((h) => ({ candidateKey: h.candidateKey, kbCandidateId: h.id })),
+        );
+      } catch {
+        feedbackBias = null; // nunca bloqueia o ranking
+      }
+    }
+    const ranked = this.rankingService.rankHits(hits, queryTokens, input.clientContext, topK, searchPlan, feedbackBias);
 
     // 6a. Source tier filter — enforces sourceTiersAllowed from SearchPlan.
     // tier_1 always beats tier_3 even when tier_3 has higher raw score.
@@ -709,18 +764,72 @@ export class KbRagCopilotService {
       }
     }
 
-    const kbsUsed: KbUsed[] = tieredRanked.map(({ hit, breakdown }) => ({
+    // 6c. F2.3 runtime — reranker cross-encoder local, SOMENTE com RERANKER_ENABLED=true.
+    // Roda APÓS o gate de confiança (KB_INSUFFICIENT não é afetado pelo reranker).
+    // Qualquer falha/timeout → ordem original preservada (fallback dentro do serviço
+    // e try/catch aqui como segunda camada). Nunca cloud; Ollama local apenas.
+    let finalRanked: RankedKbHit[] = tieredRanked;
+    // R2 — scores reais do cross-encoder por artigo (nunca inventados) + metadado.
+    const rerankerScoreById = new Map<number, number>();
+    let rerankerMeta: RerankerMeta | undefined;
+    if (env.RERANKER_ENABLED && this.rerankerService !== null && tieredRanked.length > 1) {
+      try {
+        const rerankResult = await this.rerankerService.rerank(
+          tieredRanked,
+          safeQuery,
+          queryHash.slice(0, 16),
+        );
+        if (rerankResult.reranked && rerankResult.hits.length === tieredRanked.length) {
+          finalRanked = rerankResult.hits;
+          for (const h of rerankResult.hits) {
+            if (h.rerankerScore !== null) {
+              rerankerScoreById.set(h.hit.id, h.rerankerScore);
+            }
+          }
+          rerankerMeta = {
+            applied: true,
+            model: this.rerankerService.modelName,
+            maxInferenceMs: rerankResult.maxInferenceMs,
+            note: null,
+          };
+        } else {
+          rerankerMeta = {
+            applied: false,
+            model: this.rerankerService.modelName,
+            maxInferenceMs: rerankResult.maxInferenceMs,
+            note: rerankResult.ollamaUnavailable
+              ? 'fallback — Ollama indisponível; ordem original preservada'
+              : 'fallback — ordem original preservada',
+          };
+        }
+      } catch {
+        finalRanked = tieredRanked; // fallback absoluto — ordem original
+        rerankerMeta = {
+          applied: false,
+          model: this.rerankerService.modelName,
+          maxInferenceMs: null,
+          note: 'fallback — erro no reranker; ordem original preservada',
+        };
+      }
+    }
+
+    const kbsUsed: KbUsed[] = finalRanked.map(({ hit, breakdown }) => ({
       id: hit.id,
       title: hit.title,
       category: hit.categorySuggestion,
       score: breakdown.total,
     }));
 
-    const kbsScoreBreakdown: KbScoreEntry[] = tieredRanked.map(({ hit, breakdown }) =>
-      scoreBreakdownToEntry(hit.id, hit.title, breakdown),
-    );
+    const kbsScoreBreakdown: KbScoreEntry[] = finalRanked.map(({ hit, breakdown }) => {
+      const entry = scoreBreakdownToEntry(hit.id, hit.title, breakdown);
+      const rerankerScore = rerankerScoreById.get(hit.id);
+      if (rerankerScore !== undefined) {
+        entry.rerankerScore = rerankerScore;
+      }
+      return entry;
+    });
 
-    const articles = tieredRanked.map(({ hit }) => hit);
+    const articles = finalRanked.map(({ hit }) => hit);
 
     // 7. Local AI generation
     let localAiUsed = false;
@@ -777,6 +886,8 @@ export class KbRagCopilotService {
       deterministicFallback,
       kbsFound: hits.length,
       customResponse,
+      // R2 — undefined com flag off (campo ausente no JSON; legado intacto).
+      ...(rerankerMeta !== undefined ? { reranker: rerankerMeta } : {}),
     };
   }
 

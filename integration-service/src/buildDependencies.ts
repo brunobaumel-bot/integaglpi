@@ -68,6 +68,7 @@ import { FeedbackService } from './domain/services/FeedbackService.js';
 import { ExternalResearchService } from './domain/services/ExternalResearchService.js';
 import { SmartHelpService } from './domain/services/SmartHelpService.js';
 import { KbRagCopilotService } from './domain/services/KbRagCopilotService.js';
+import { KbRerankerService } from './domain/services/KbRerankerService.js';
 import { KbCustomResponseService } from './domain/services/KbCustomResponseService.js';
 import type { KbSearchPort } from './domain/services/SmartHelpService.js';
 import { CoachingService } from './domain/services/CoachingService.js';
@@ -462,6 +463,11 @@ export function buildDependencies() {
   // F3 — resposta customizada complementar (CUSTOM_RESPONSE_ENABLED=false default;
   // o serviço se auto-gateia e nunca substitui o KB original).
   const kbCustomResponseService = new KbCustomResponseService(ollamaRagPort);
+  // F2.3 runtime wiring — reranker local SÓ instanciado com RERANKER_ENABLED=true
+  // e Ollama configurado. null → caminho legado intacto (nunca no caminho crítico).
+  const kbRerankerService = env.RERANKER_ENABLED && ollamaBaseUrl !== ''
+    ? new KbRerankerService(null, kbRagModel, ollamaBaseUrl)
+    : null;
   const kbRagCopilotService = new KbRagCopilotService(
     kbRagSearchRepo,
     ollamaRagPort,
@@ -471,6 +477,10 @@ export function buildDependencies() {
     undefined,
     undefined,
     kbCustomResponseService,
+    // F2.2 runtime wiring — bias agregado não-punitivo; o serviço só o consulta
+    // com FEEDBACK_RANKING_ENABLED=true (flag off → ranking idêntico ao legado).
+    feedbackService,
+    kbRerankerService,
   );
 
   const logmeinReadonlyContextService = new LogmeinReadonlyContextService(

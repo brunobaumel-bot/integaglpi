@@ -69,3 +69,21 @@ padrão e exigirão BLOCK em auditorias futuras, salvo exceção explícita pré
 4. **Backlog pós-V9** (manutenção, sem Fase 8): curto-circuito opcional dos serviços
    F4/F6 com flag false; limpeza cosmética `buildReason`; reavaliação de vector
    search somente pelos critérios do ADR-004.
+
+---
+
+## Cleanup final das ressalvas LOW/INFO do Cursor Review UI + Wiring
+
+PHASE: `integaglpi_v9_final_ressalvas_cleanup_001` — Updated: 2026-06-11
+
+| Ressalva | Severidade | Tratamento |
+| --- | --- | --- |
+| R1 — feedback bias N+1 | LOW | RESOLVIDA: `PostgresKbFeedbackRepository.getBulkHelpfulness()` (1 query `GROUP BY kb_candidate_id` sobre `ANY($1::bigint[])`, cap 50, sem technician_id); `FeedbackService.getRankingBiasMap` usa bulk com feature-detect (mocks/implementações sem o método caem no caminho por item). |
+| R2 — observabilidade reranker | LOW | RESOLVIDA: payload ganha `reranker` opcional (`applied`, `model`, `maxInferenceMs`, `note`) e `kbsScoreBreakdown[].rerankerScore` real do cross-encoder (nunca inventado). Campo AUSENTE com `RERANKER_ENABLED=false` — payload legado byte-idêntico. KB_INSUFFICIENT e fallback inalterados. |
+| R3 — widget customResponse aninhado | INFO | RESOLVIDA: bloco movido para card IRMÃO do rag-card principal no `kb_smart_help_widget.php`; escH, KBs fonte e badge "Revise antes de aplicar" preservados. |
+| R4 — ragPerProblem só com 2+ | INFO | RESOLVIDA: renderiza com 1+ entrada — 1 problema usa bloco compacto "Detalhe RAG do problema" (anti-duplicação); 2+ mantém seção por problema. |
+| R5 — smoke visual D08 | LOW | DOCUMENTADA: cenários S1.1–S1.3 (perfil autorizado e sem direito) em `docs/roadmap_v9_hml_smoke_checklist.md`. Nenhuma permissão alterada. |
+| R6 — smoke HML final | OPERATIONAL | DOCUMENTADA: checklist completo S1–S6 em `docs/roadmap_v9_hml_smoke_checklist.md`, incluindo obrigação de restaurar flags para `false` (S6). Execução manual em HML; produção segue bloqueada. |
+
+O pacote de enriquecimento/Ollama permanece intocado em
+`stash@{0}: kb-enrichment-ollama-tuning` (contrato próprio futuro).

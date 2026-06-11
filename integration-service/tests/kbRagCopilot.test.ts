@@ -593,3 +593,424 @@ describe('KbRagCopilotService', () => {
     expect(result.kbsUsed[0]!.id).toBe(6);
   });
 });
+
+// ── V9 — wiring runtime de feedback bias e reranker ──────────────────────────
+// Phase: integaglpi_v9_kb_ui_rendering_and_ranking_wiring_001
+// Flags default false: comportamento legado byte-idêntico quando desligadas.
+
+import { beforeEach, afterEach } from 'vitest';
+import { env } from '../src/config/env.js';
+import { KbRankingService } from '../src/domain/services/KbRankingService.js';
+import type { KbFeedbackBias } from '../src/domain/services/KbRankingService.js';
+import type { KbRerankerService, RerankerResult } from '../src/domain/services/KbRerankerService.js';
+import type { FeedbackRankingBiasPort } from '../src/domain/services/KbRagCopilotService.js';
+import { FeedbackService } from '../src/domain/services/FeedbackService.js';
+import type { KbFeedbackRepository } from '../src/repositories/postgres/PostgresKbFeedbackRepository.js';
+
+const mutableEnv = env as unknown as {
+  FEEDBACK_RANKING_ENABLED: boolean;
+  RERANKER_ENABLED: boolean;
+};
+
+function makeTwoHits(): KbCandidateHit[] {
+  return [
+    makeHit({ id: 11, candidateKey: 'kb-micromed-a', title: 'Micromed não abre — permissão' }),
+    makeHit({
+      id: 12,
+      candidateKey: 'kb-micromed-b',
+      title: 'Micromed não abre — proxy',
+      tagsJson: ['micromed', 'proxy'],
+      symptomsJson: ['Sistema não abre', 'Proxy bloqueando'],
+    }),
+  ];
+}
+
+function makeBiasPort(bias: KbFeedbackBias | null): FeedbackRankingBiasPort & { calls: unknown[][] } {
+  const calls: unknown[][] = [];
+  return {
+    calls,
+    getRankingBiasMap: vi.fn(async (...args: unknown[]) => {
+      calls.push(args);
+      return bias;
+    }),
+  };
+}
+
+function makeRerankerMock(result: RerankerResult | 'throw'): KbRerankerService {
+  return {
+    rerank: vi.fn(async () => {
+      if (result === 'throw') {
+        throw new Error('RERANK_FAIL');
+      }
+      return result;
+    }),
+  } as unknown as KbRerankerService;
+}
+
+describe('V9 wiring — FEEDBACK_RANKING_ENABLED', () => {
+  let savedFeedback: boolean;
+  let savedReranker: boolean;
+
+  beforeEach(() => {
+    savedFeedback = mutableEnv.FEEDBACK_RANKING_ENABLED;
+    savedReranker = mutableEnv.RERANKER_ENABLED;
+    mutableEnv.FEEDBACK_RANKING_ENABLED = false;
+    mutableEnv.RERANKER_ENABLED = false;
+  });
+
+  afterEach(() => {
+    mutableEnv.FEEDBACK_RANKING_ENABLED = savedFeedback;
+    mutableEnv.RERANKER_ENABLED = savedReranker;
+  });
+
+  it('flag=false → biasPort NUNCA é consultado (comportamento legado)', async () => {
+    const biasPort = makeBiasPort({ byKey: new Map([['kb-micromed-a', 1.0]]), appliedMinVotes: 3 });
+    const svc = new KbRagCopilotService(
+      makeSearchRepo(makeTwoHits()), null, nullAudit, null,
+      undefined, undefined, undefined, null, biasPort, null,
+    );
+    const result = await svc.generatePlaybook({ query: 'micromed não abre' });
+
+    expect(result.ok).toBe(true);
+    expect(biasPort.getRankingBiasMap).not.toHaveBeenCalled();
+  });
+
+  it('flag=true → biasPort consultado com candidateKey + kbCandidateId e bias passado ao rankHits', async () => {
+    mutableEnv.FEEDBACK_RANKING_ENABLED = true;
+    const bias: KbFeedbackBias = { byKey: new Map([['kb-micromed-a', 0.95]]), appliedMinVotes: 3 };
+    const biasPort = makeBiasPort(bias);
+    const rankingService = new KbRankingService();
+    const rankSpy = vi.spyOn(rankingService, 'rankHits');
+
+    const svc = new KbRagCopilotService(
+      makeSearchRepo(makeTwoHits()), null, nullAudit, null,
+      undefined, rankingService, undefined, null, biasPort, null,
+    );
+    const result = await svc.generatePlaybook({ query: 'micromed não abre' });
+
+    expect(result.ok).toBe(true);
+    expect(biasPort.getRankingBiasMap).toHaveBeenCalledTimes(1);
+    const targets = biasPort.calls[0]![0] as Array<{ candidateKey: string; kbCandidateId: number }>;
+    expect(targets.map((t) => t.candidateKey)).toContain('kb-micromed-a');
+    expect(targets.map((t) => t.kbCandidateId)).toContain(11);
+    // bias chega ao rankHits como 6º argumento
+    expect(rankSpy).toHaveBeenCalled();
+    expect(rankSpy.mock.calls[0]![5]).toBe(bias);
+  });
+
+  it('flag=true + biasPort lança → ranking segue sem bias (nunca bloqueia)', async () => {
+    mutableEnv.FEEDBACK_RANKING_ENABLED = true;
+    const biasPort: FeedbackRankingBiasPort = {
+      getRankingBiasMap: vi.fn(async () => {
+        throw new Error('DB_DOWN');
+      }),
+    };
+    const svc = new KbRagCopilotService(
+      makeSearchRepo(makeTwoHits()), null, nullAudit, null,
+      undefined, undefined, undefined, null, biasPort, null,
+    );
+    const result = await svc.generatePlaybook({ query: 'micromed não abre' });
+
+    expect(result.ok).toBe(true);
+    expect(result.kbsUsed.length).toBeGreaterThan(0);
+  });
+});
+
+describe('V9 wiring — RERANKER_ENABLED', () => {
+  let savedFeedback: boolean;
+  let savedReranker: boolean;
+
+  beforeEach(() => {
+    savedFeedback = mutableEnv.FEEDBACK_RANKING_ENABLED;
+    savedReranker = mutableEnv.RERANKER_ENABLED;
+    mutableEnv.FEEDBACK_RANKING_ENABLED = false;
+    mutableEnv.RERANKER_ENABLED = false;
+  });
+
+  afterEach(() => {
+    mutableEnv.FEEDBACK_RANKING_ENABLED = savedFeedback;
+    mutableEnv.RERANKER_ENABLED = savedReranker;
+  });
+
+  it('flag=false → reranker NUNCA é chamado (nunca no caminho crítico)', async () => {
+    const reranker = makeRerankerMock('throw');
+    const svc = new KbRagCopilotService(
+      makeSearchRepo(makeTwoHits()), null, nullAudit, null,
+      undefined, undefined, undefined, null, null, reranker,
+    );
+    const result = await svc.generatePlaybook({ query: 'micromed não abre' });
+
+    expect(result.ok).toBe(true);
+    expect(reranker.rerank).not.toHaveBeenCalled();
+  });
+
+  it('flag=true → reranker chamado e a NOVA ordem é usada em kbsUsed', async () => {
+    mutableEnv.RERANKER_ENABLED = true;
+    const hits = makeTwoHits();
+    // Captura a ordem que o ranking nativo produziria (sem reranker injetado).
+    const probe = new KbRagCopilotService(makeSearchRepo(hits), null, nullAudit);
+    const nativeOrder = (await probe.generatePlaybook({ query: 'micromed não abre' })).kbsUsed.map((k) => k.id);
+    expect(nativeOrder.length).toBe(2);
+
+    const rerankerImpl = {
+      rerank: vi.fn(async (ranked: Array<{ hit: KbCandidateHit; breakdown: unknown }>) => ({
+        hits: [...ranked].reverse().map((r) => ({ ...r, rerankerScore: 0.9, reranked: true })),
+        reranked: true,
+        ollamaUnavailable: false,
+        maxInferenceMs: 100,
+      })),
+    } as unknown as KbRerankerService;
+
+    const svc = new KbRagCopilotService(
+      makeSearchRepo(hits), null, nullAudit, null,
+      undefined, undefined, undefined, null, null, rerankerImpl,
+    );
+    const result = await svc.generatePlaybook({ query: 'micromed não abre' });
+
+    expect(result.ok).toBe(true);
+    expect(rerankerImpl.rerank).toHaveBeenCalledTimes(1);
+    expect(result.kbsUsed.map((k) => k.id)).toEqual([...nativeOrder].reverse());
+  });
+
+  it('flag=true + reranker lança → ordem original preservada (fallback absoluto)', async () => {
+    mutableEnv.RERANKER_ENABLED = true;
+    const hits = makeTwoHits();
+    const probe = new KbRagCopilotService(makeSearchRepo(hits), null, nullAudit);
+    const nativeOrder = (await probe.generatePlaybook({ query: 'micromed não abre' })).kbsUsed.map((k) => k.id);
+
+    const reranker = makeRerankerMock('throw');
+    const svc = new KbRagCopilotService(
+      makeSearchRepo(hits), null, nullAudit, null,
+      undefined, undefined, undefined, null, null, reranker,
+    );
+    const result = await svc.generatePlaybook({ query: 'micromed não abre' });
+
+    expect(result.ok).toBe(true);
+    expect(reranker.rerank).toHaveBeenCalledTimes(1);
+    expect(result.kbsUsed.map((k) => k.id)).toEqual(nativeOrder);
+  });
+});
+
+describe('V9 wiring — FeedbackService.getRankingBiasMap (agregado, não-punitivo)', () => {
+  function makeFeedbackRepo(votes: Record<number, { helpful: number; notHelpful: number }>): KbFeedbackRepository {
+    return {
+      recordVote: vi.fn(async () => { /* no-op */ }),
+      getHelpfulness: vi.fn(async (target: { kbCandidateId?: number | null }) => {
+        const v = votes[target.kbCandidateId ?? 0] ?? { helpful: 0, notHelpful: 0 };
+        const total = v.helpful + v.notHelpful;
+        return {
+          kbCandidateId: target.kbCandidateId ?? null,
+          glpiKnowbaseitemId: null,
+          helpfulCount: v.helpful,
+          notHelpfulCount: v.notHelpful,
+          totalVotes: total,
+          helpfulRatio: total > 0 ? v.helpful / total : 0,
+          score: (v.helpful + 1) / (total + 2), // Laplace
+        };
+      }),
+      getAggregatedByCategory: vi.fn(async () => []),
+    } as unknown as KbFeedbackRepository;
+  }
+
+  it('artigo abaixo do threshold de votos é EXCLUÍDO (um voto negativo nunca penaliza)', async () => {
+    const svc = new FeedbackService(makeFeedbackRepo({ 11: { helpful: 0, notHelpful: 1 } }));
+    const bias = await svc.getRankingBiasMap([{ candidateKey: 'kb-a', kbCandidateId: 11 }], 3);
+    expect(bias).toBeNull();
+  });
+
+  it('artigo com votos suficientes entra no mapa com score Laplace [0,1]', async () => {
+    const svc = new FeedbackService(makeFeedbackRepo({ 11: { helpful: 4, notHelpful: 1 } }));
+    const bias = await svc.getRankingBiasMap([{ candidateKey: 'kb-a', kbCandidateId: 11 }], 3);
+    expect(bias).not.toBeNull();
+    expect(bias!.byKey.get('kb-a')).toBeCloseTo(5 / 7, 4);
+    expect(bias!.appliedMinVotes).toBe(3);
+  });
+
+  it('falha de leitura → artigo excluído (neutro); mapa vazio → null', async () => {
+    const repo = {
+      recordVote: vi.fn(async () => { /* no-op */ }),
+      getHelpfulness: vi.fn(async () => {
+        throw new Error('READ_FAIL');
+      }),
+      getAggregatedByCategory: vi.fn(async () => []),
+    } as unknown as KbFeedbackRepository;
+    const svc = new FeedbackService(repo);
+    const bias = await svc.getRankingBiasMap([{ candidateKey: 'kb-a', kbCandidateId: 11 }], 3);
+    expect(bias).toBeNull();
+  });
+
+  it('saída contém apenas candidateKey → score agregado (sem technician_id)', async () => {
+    const svc = new FeedbackService(makeFeedbackRepo({ 11: { helpful: 5, notHelpful: 0 } }));
+    const bias = await svc.getRankingBiasMap([{ candidateKey: 'kb-a', kbCandidateId: 11 }], 3);
+    const json = JSON.stringify({ keys: [...bias!.byKey.keys()], minVotes: bias!.appliedMinVotes });
+    expect(json).not.toMatch(/technician/i);
+  });
+
+  // R1 (v9_final_ressalvas_cleanup): caminho bulk — sem N+1 quando o repo suporta.
+  it('R1: repo com getBulkHelpfulness → UMA chamada bulk, zero getHelpfulness (sem N+1)', async () => {
+    const getBulkHelpfulness = vi.fn(async (ids: number[]) => {
+      const map = new Map();
+      for (const id of ids) {
+        map.set(id, {
+          kbCandidateId: id,
+          glpiKnowbaseitemId: null,
+          helpfulCount: 4,
+          notHelpfulCount: 0,
+          totalVotes: 4,
+          helpfulRatio: 1,
+          score: 5 / 6,
+        });
+      }
+      return map;
+    });
+    const getHelpfulness = vi.fn(async () => {
+      throw new Error('NUNCA deve ser chamado quando bulk existe');
+    });
+    const repo = {
+      recordVote: vi.fn(async () => { /* no-op */ }),
+      getHelpfulness,
+      getBulkHelpfulness,
+      getAggregatedByCategory: vi.fn(async () => []),
+    } as unknown as KbFeedbackRepository;
+
+    const svc = new FeedbackService(repo);
+    const bias = await svc.getRankingBiasMap(
+      [
+        { candidateKey: 'kb-a', kbCandidateId: 11 },
+        { candidateKey: 'kb-b', kbCandidateId: 12 },
+        { candidateKey: 'kb-c', kbCandidateId: 13 },
+      ],
+      3,
+    );
+
+    expect(getBulkHelpfulness).toHaveBeenCalledTimes(1);
+    expect(getBulkHelpfulness).toHaveBeenCalledWith([11, 12, 13]);
+    expect(getHelpfulness).not.toHaveBeenCalled();
+    expect(bias).not.toBeNull();
+    expect(bias!.byKey.size).toBe(3);
+    expect(bias!.byKey.get('kb-b')).toBeCloseTo(5 / 6, 4);
+  });
+
+  it('R1: bulk respeita threshold — artigo com totalVotes < minVotes fica fora do mapa', async () => {
+    const repo = {
+      recordVote: vi.fn(async () => { /* no-op */ }),
+      getHelpfulness: vi.fn(),
+      getBulkHelpfulness: vi.fn(async () => new Map([[11, {
+        kbCandidateId: 11,
+        glpiKnowbaseitemId: null,
+        helpfulCount: 1,
+        notHelpfulCount: 0,
+        totalVotes: 1,
+        helpfulRatio: 1,
+        score: 2 / 3,
+      }]])),
+      getAggregatedByCategory: vi.fn(async () => []),
+    } as unknown as KbFeedbackRepository;
+
+    const svc = new FeedbackService(repo);
+    const bias = await svc.getRankingBiasMap([{ candidateKey: 'kb-a', kbCandidateId: 11 }], 3);
+    expect(bias).toBeNull();
+  });
+});
+
+// ── R2 — observabilidade do reranker no payload ───────────────────────────────
+
+describe('R2 — reranker metadata no payload (opcional, sem inventar score)', () => {
+  let savedReranker: boolean;
+
+  beforeEach(() => {
+    savedReranker = mutableEnv.RERANKER_ENABLED;
+    mutableEnv.RERANKER_ENABLED = false;
+  });
+
+  afterEach(() => {
+    mutableEnv.RERANKER_ENABLED = savedReranker;
+  });
+
+  it('flag=false → campo reranker AUSENTE do payload (legado byte-idêntico)', async () => {
+    const svc = new KbRagCopilotService(makeSearchRepo(makeTwoHits()), null, nullAudit);
+    const result = await svc.generatePlaybook({ query: 'micromed não abre' });
+    expect(result.ok).toBe(true);
+    expect(result.reranker).toBeUndefined();
+    expect('reranker' in result).toBe(false);
+  });
+
+  it('flag=true + rerank OK → reranker.applied=true, model exposto, rerankerScore real no breakdown', async () => {
+    mutableEnv.RERANKER_ENABLED = true;
+    const hits = makeTwoHits();
+    const rerankerImpl = {
+      modelName: 'qwen-test-model',
+      rerank: vi.fn(async (ranked: Array<{ hit: KbCandidateHit; breakdown: unknown }>) => ({
+        hits: ranked.map((r, i) => ({ ...r, rerankerScore: i === 0 ? 0.91 : 0.42, reranked: true })),
+        reranked: true,
+        ollamaUnavailable: false,
+        maxInferenceMs: 230,
+      })),
+    } as unknown as KbRerankerService;
+
+    const svc = new KbRagCopilotService(
+      makeSearchRepo(hits), null, nullAudit, null,
+      undefined, undefined, undefined, null, null, rerankerImpl,
+    );
+    const result = await svc.generatePlaybook({ query: 'micromed não abre' });
+
+    expect(result.ok).toBe(true);
+    expect(result.reranker).toBeDefined();
+    expect(result.reranker!.applied).toBe(true);
+    expect(result.reranker!.model).toBe('qwen-test-model');
+    expect(result.reranker!.maxInferenceMs).toBe(230);
+    expect(result.reranker!.note).toBeNull();
+    // Score REAL do cross-encoder propagado — nunca inventado.
+    const scores = result.kbsScoreBreakdown.map((e) => e.rerankerScore);
+    expect(scores).toContain(0.91);
+    expect(scores).toContain(0.42);
+  });
+
+  it('flag=true + fallback do serviço → applied=false com note; sem rerankerScore inventado', async () => {
+    mutableEnv.RERANKER_ENABLED = true;
+    const hits = makeTwoHits();
+    const rerankerImpl = {
+      modelName: 'qwen-test-model',
+      rerank: vi.fn(async (ranked: Array<{ hit: KbCandidateHit; breakdown: unknown }>) => ({
+        hits: ranked.map((r) => ({ ...r, rerankerScore: null, reranked: false })),
+        reranked: false,
+        ollamaUnavailable: true,
+        maxInferenceMs: null,
+      })),
+    } as unknown as KbRerankerService;
+
+    const svc = new KbRagCopilotService(
+      makeSearchRepo(hits), null, nullAudit, null,
+      undefined, undefined, undefined, null, null, rerankerImpl,
+    );
+    const result = await svc.generatePlaybook({ query: 'micromed não abre' });
+
+    expect(result.ok).toBe(true);
+    expect(result.reranker!.applied).toBe(false);
+    expect(result.reranker!.note).toMatch(/fallback/i);
+    expect(result.kbsScoreBreakdown.every((e) => e.rerankerScore === undefined)).toBe(true);
+  });
+
+  it('flag=true + throw → applied=false, ordem original, note de erro', async () => {
+    mutableEnv.RERANKER_ENABLED = true;
+    const hits = makeTwoHits();
+    const probe = new KbRagCopilotService(makeSearchRepo(hits), null, nullAudit);
+    const nativeOrder = (await probe.generatePlaybook({ query: 'micromed não abre' })).kbsUsed.map((k) => k.id);
+
+    const rerankerImpl = {
+      modelName: 'qwen-test-model',
+      rerank: vi.fn(async () => { throw new Error('BOOM'); }),
+    } as unknown as KbRerankerService;
+
+    const svc = new KbRagCopilotService(
+      makeSearchRepo(hits), null, nullAudit, null,
+      undefined, undefined, undefined, null, null, rerankerImpl,
+    );
+    const result = await svc.generatePlaybook({ query: 'micromed não abre' });
+
+    expect(result.ok).toBe(true);
+    expect(result.kbsUsed.map((k) => k.id)).toEqual(nativeOrder);
+    expect(result.reranker!.applied).toBe(false);
+    expect(result.reranker!.note).toMatch(/erro|fallback/i);
+  });
+});

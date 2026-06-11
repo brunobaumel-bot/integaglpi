@@ -3,6 +3,7 @@ import type {
   KbFeedbackRepository,
   KbFeedbackVote,
 } from '../../repositories/postgres/PostgresKbFeedbackRepository.js';
+import type { KbFeedbackBias } from './KbRankingService.js';
 
 export interface FeedbackVoteInput {
   kbCandidateId?: number | null;
@@ -121,6 +122,76 @@ export class FeedbackService {
       return Number((0.5 + h.score).toFixed(4));
     } catch {
       return 1.0; // neutral on error — never penalize due to a read failure
+    }
+  }
+
+  /**
+   * F2.2 runtime wiring (FEEDBACK_RANKING_ENABLED) — bulk bias map for rankHits().
+   *
+   * Builds the KbFeedbackBias map consumed by KbRankingService.applyFeedbackBias:
+   *   candidateKey → Laplace-smoothed helpfulness score [0, 1].
+   *
+   * Invariants:
+   *   - Aggregated counts only — technician identity is NEVER read or exposed.
+   *   - Articles below `minVotes` total votes are EXCLUDED (a single negative
+   *     vote never penalises) — non-punitive by construction.
+   *   - Any read failure → article excluded (neutral); total failure → null
+   *     (caller falls back to ranking WITHOUT bias — identical to flag off).
+   *   - Returns null when no article qualifies, so the legacy path stays byte-identical.
+   */
+  public async getRankingBiasMap(
+    targets: Array<{ candidateKey: string; kbCandidateId: number | null }>,
+    minVotes = 3,
+  ): Promise<KbFeedbackBias | null> {
+    try {
+      const valid = targets
+        .slice(0, 20)
+        .map((t) => ({ candidateKey: t.candidateKey, id: this.normalizeId(t.kbCandidateId) }))
+        .filter((t): t is { candidateKey: string; id: number } => t.candidateKey !== '' && t.id !== null);
+      if (valid.length === 0) {
+        return null;
+      }
+
+      const byKey = new Map<string, number>();
+
+      // R1 (v9_final_ressalvas_cleanup): caminho bulk — UMA query para todos os
+      // candidatos quando o repositório suporta. Feature-detect mantém o contrato
+      // com mocks/implementações sem o método (fallback por item abaixo).
+      if (typeof this.repository.getBulkHelpfulness === 'function') {
+        const bulk = await this.repository.getBulkHelpfulness(valid.map((t) => t.id));
+        for (const target of valid) {
+          const h = bulk.get(target.id);
+          if (h !== undefined && h.totalVotes >= minVotes) {
+            byKey.set(target.candidateKey, h.score);
+          }
+        }
+      } else {
+        const entries = await Promise.all(
+          valid.map(async (target) => {
+            try {
+              const h = await this.repository.getHelpfulness({ kbCandidateId: target.id });
+              if (h.totalVotes < minVotes) {
+                return null;
+              }
+              return [target.candidateKey, h.score] as const;
+            } catch {
+              return null; // neutral — never penalize due to a read failure
+            }
+          }),
+        );
+        for (const entry of entries) {
+          if (entry !== null) {
+            byKey.set(entry[0], entry[1]);
+          }
+        }
+      }
+
+      if (byKey.size === 0) {
+        return null;
+      }
+      return { byKey, appliedMinVotes: minVotes };
+    } catch {
+      return null;
     }
   }
 

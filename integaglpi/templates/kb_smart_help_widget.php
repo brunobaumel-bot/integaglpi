@@ -332,6 +332,59 @@ $addNoteUrl    = htmlspecialchars($addNoteUrl ?? '', ENT_QUOTES, 'UTF-8');
 
         html += '</div>'; // close rag-card
 
+        // V9 (kb_ui_rendering / R3 cleanup): Sugestão IA contextualizada como
+        // bloco IRMÃO do rag-card principal (não aninhado) — COMPLEMENTAR ao
+        // playbook e às KBs acima (nunca substitui; KB fonte sempre listada junto).
+        // Com CUSTOM_RESPONSE_ENABLED=false o backend envia customResponse=null
+        // e este bloco não aparece (comportamento legado preservado).
+        var cr = data.customResponse || null;
+        if (cr && typeof cr === 'object' && cr.guidance) {
+            var crg = cr.guidance;
+            var crConf = Math.round((Number(cr.nivel_de_confianca || 0) || 0) * 100);
+            html += '<div class="rag-card js-rag-custom-response" style="border-left:3px solid #0d6efd;">';
+            html += '<div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">';
+            html += '<strong>💡 Sugestão IA contextualizada</strong>';
+            html += '<span class="rag-badge badge-det" style="background:#dc3545;color:#fff;">Revise antes de aplicar</span>';
+            html += '<span class="rag-conf">confiança: ' + crConf + '% · '
+                + (cr.mode === 'customized' ? 'IA local' : 'determinística') + '</span>';
+            html += '</div>';
+            html += '<div class="rag-warn" style="margin:.4rem 0;">Complementa o KB original — nunca o substitui. '
+                + 'Uso interno do técnico; nada é enviado ao cliente.</div>';
+            if (cr.gate_message) {
+                html += '<div class="rag-warn">' + escH(String(cr.gate_message)) + '</div>';
+            }
+            var crSections = [
+                { key: 'sintomas_identificados', label: '🔴 Sintomas identificados' },
+                { key: 'hipoteses_por_camada', label: '🔬 Hipóteses por camada' },
+                { key: 'perguntas_de_triagem', label: '❓ Perguntas de triagem' },
+                { key: 'verificacoes_consultivas', label: '🛠️ Verificações consultivas (execução manual)' },
+                { key: 'resolucao_sugerida', label: '✅ Resolução sugerida' },
+                { key: 'validacao', label: '☑️ Validação' },
+                { key: 'escalonamento', label: '📤 Escalonamento' },
+                { key: 'riscos_rollback', label: '⚠️ Riscos / rollback' },
+            ];
+            if (crg.causa_provavel) {
+                html += '<div class="rag-section"><h4>🔍 Causa provável</h4><p>' + escH(String(crg.causa_provavel)) + '</p></div>';
+            }
+            crSections.forEach(function (s) {
+                var val = crg[s.key];
+                if (!Array.isArray(val) || val.length === 0) { return; }
+                html += '<div class="rag-section"><h4>' + escH(s.label) + '</h4><ul>'
+                    + val.map(function (v) { return '<li>' + escH(String(v)) + '</li>'; }).join('')
+                    + '</ul></div>';
+            });
+            var crSources = Array.isArray(cr.kb_sources) ? cr.kb_sources : [];
+            if (crSources.length > 0) {
+                html += '<div style="margin-top:.5rem;"><strong style="font-size:.85em;">KBs fonte (sempre visíveis):</strong> ';
+                html += crSources.map(function (k) {
+                    var scoreStr = k.score ? ' (' + Math.round(k.score * 100) + '%)' : '';
+                    return '<span class="rag-badge badge-candidate">' + escH(k.title || 'KB#' + k.id) + scoreStr + '</span>';
+                }).join(' ');
+                html += '</div>';
+            }
+            html += '</div>'; // close js-rag-custom-response (bloco irmão do rag-card)
+        }
+
         // Build plain text for copy / private note
         var noteText = buildNoteText(pb, kbs, aiUsed);
         html += '<div class="rag-card">';

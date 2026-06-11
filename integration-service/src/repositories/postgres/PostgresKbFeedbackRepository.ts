@@ -32,6 +32,13 @@ export interface KbFeedbackRepository {
   getHelpfulness(target: { kbCandidateId?: number | null; glpiKnowbaseitemId?: number | null }): Promise<KbArticleHelpfulness>;
   /** Aggregated helpfulness by category — never returns technician identities. */
   getAggregatedByCategory(limit: number): Promise<Array<{ category: string; helpfulCount: number; notHelpfulCount: number; helpfulRatio: number }>>;
+  /**
+   * R1 (v9_final_ressalvas_cleanup): bulk helpfulness em UMA query (elimina N+1
+   * do feedback bias). Opcional para compatibilidade com mocks/implementações
+   * legadas — FeedbackService faz feature-detect e cai no caminho por item.
+   * Agregado apenas; NUNCA retorna technician_id.
+   */
+  getBulkHelpfulness?(kbCandidateIds: number[]): Promise<Map<number, KbArticleHelpfulness>>;
 }
 
 /** Laplace-smoothed helpful ratio so a single vote does not dominate ranking. */
@@ -116,6 +123,56 @@ export class PostgresKbFeedbackRepository implements KbFeedbackRepository {
       helpfulRatio: totalVotes > 0 ? Number((helpfulCount / totalVotes).toFixed(4)) : 0,
       score: helpfulnessScore(helpfulCount, notHelpfulCount),
     };
+  }
+
+  /**
+   * R1: helpfulness agregado de vários candidatos em UMA query parametrizada.
+   * GROUP BY kb_candidate_id sobre ANY($1::bigint[]) — sem N+1, sem technician_id.
+   * Cap defensivo de 50 ids (o caller já limita a topK*2 ≤ 10).
+   */
+  public async getBulkHelpfulness(kbCandidateIds: number[]): Promise<Map<number, KbArticleHelpfulness>> {
+    const ids = Array.from(new Set(
+      kbCandidateIds.filter((id) => Number.isInteger(id) && id > 0),
+    )).slice(0, 50);
+    const result = new Map<number, KbArticleHelpfulness>();
+    if (ids.length === 0) {
+      return result;
+    }
+
+    const rows = await this.executor.query<{
+      kb_candidate_id: string;
+      helpful_count: string;
+      not_helpful_count: string;
+    }>(
+      `
+        SELECT
+          kb_candidate_id::text,
+          COUNT(*) FILTER (WHERE helpful = TRUE)::text  AS helpful_count,
+          COUNT(*) FILTER (WHERE helpful = FALSE)::text AS not_helpful_count
+        FROM ${HELPFULNESS_TABLE}
+        WHERE kb_candidate_id = ANY($1::bigint[])
+        GROUP BY kb_candidate_id
+      `,
+      [ids],
+    );
+
+    for (const row of rows.rows) {
+      const id = parseInt(row.kb_candidate_id, 10);
+      const helpfulCount = parseInt(row.helpful_count, 10) || 0;
+      const notHelpfulCount = parseInt(row.not_helpful_count, 10) || 0;
+      const totalVotes = helpfulCount + notHelpfulCount;
+      result.set(id, {
+        kbCandidateId: id,
+        glpiKnowbaseitemId: null,
+        helpfulCount,
+        notHelpfulCount,
+        totalVotes,
+        helpfulRatio: totalVotes > 0 ? Number((helpfulCount / totalVotes).toFixed(4)) : 0,
+        score: helpfulnessScore(helpfulCount, notHelpfulCount),
+      });
+    }
+
+    return result;
   }
 
   public async getAggregatedByCategory(
