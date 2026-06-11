@@ -363,6 +363,41 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
     return result.rows.map((r) => rowToHit(r, 0));
   }
 
+  /**
+   * Candidatos elegíveis para reescrita F3 (16 seções) — todos os KBs operacionais
+   * ainda sem versão final (enrichment_version < 6).
+   */
+  public async listContentRewriteCandidates(limit = 50, offset = 0): Promise<KbCandidateHit[]> {
+    const k = Math.max(1, Math.min(50, limit));
+    const statusPlaceholders = AGENT_ENRICHMENT_STATUSES.map((_, i) => `$${i + 1}`).join(', ');
+
+    const result = await this.executor.query<SearchRow>(
+      `
+      SELECT
+        id::text, candidate_key, title, article_type, category_suggestion,
+        COALESCE(problem_pattern, '') AS problem_pattern,
+        symptoms_json,
+        COALESCE(probable_cause, '') AS probable_cause,
+        recommended_procedure_json, checklist_json, tags_json,
+        COALESCE(evidence_summary_sanitized, '') AS evidence_summary_sanitized,
+        confidence_score::text,
+        '0'::text AS ts_score,
+        COALESCE(enrichment_version, 0)::text AS enrichment_version
+      FROM ${KB_CANDIDATES_TABLE}
+      WHERE status IN (${statusPlaceholders})
+        AND COALESCE(title, '') NOT ILIKE '%Ajuda externa por IA%'
+        AND COALESCE(article_type, '') NOT IN ('external_research', 'cloud_preview', 'external_ai')
+        AND NOT (tags_json @> '["draft_gap_candidate"]'::jsonb)
+        AND COALESCE(enrichment_version, 0) < 6
+      ORDER BY id ASC
+      LIMIT $${AGENT_ENRICHMENT_STATUSES.length + 1} OFFSET $${AGENT_ENRICHMENT_STATUSES.length + 2}
+      `,
+      [...AGENT_ENRICHMENT_STATUSES, k, Math.max(0, offset)],
+    );
+
+    return result.rows.map((r) => rowToHit(r, 0));
+  }
+
   /** Carrega um candidato por id (enriquecimento agente / rollback pontual). */
   public async getCandidateById(id: number): Promise<KbCandidateHit | null> {
     const result = await this.executor.query<SearchRow>(
@@ -510,6 +545,68 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
     pattern: string;
     occurrences: number;
   }): Promise<boolean> {
+    const safePattern = input.pattern.trim().slice(0, 500);
+    const safeOccurrences = Math.max(0, Math.trunc(input.occurrences));
+    const gapContent = [
+      `# ${input.title.slice(0, 250)}`,
+      '',
+      '## 1. Objetivo',
+      'Documentar uma lacuna recorrente detectada pela auditoria de busca local para reduzir escalonamentos evitaveis.',
+      '',
+      '## 2. Quando usar',
+      `Use quando o chamado corresponder ao padrao recorrente: ${safePattern}.`,
+      '',
+      '## 3. Sintomas reportados',
+      '- Preencher apos revisao humana com sintomas objetivos e sem dados pessoais.',
+      '',
+      '## 4. Causas provaveis',
+      '- Preencher apos revisao tecnica.',
+      '',
+      '## 5. Diagnostico inicial',
+      '- Confirmar ambiente, impacto, mensagem de erro e evidencias disponiveis.',
+      '',
+      '## 6. Checklist de triagem',
+      '- Validar reproducao.',
+      '- Validar escopo: usuario, estacao, servico ou unidade.',
+      '- Registrar evidencias tecnicas no chamado.',
+      '',
+      '## 7. Procedimento recomendado',
+      '- Redigir passo a passo apos validacao tecnica.',
+      '',
+      '## 8. Validacao',
+      '- Confirmar com o usuario se o problema foi resolvido.',
+      '- Registrar o resultado no chamado.',
+      '',
+      '## 9. Perguntas ao cliente',
+      '- Quando comecou?',
+      '- Qual mensagem exata aparece?',
+      '- O problema ocorre com outros usuarios ou equipamentos?',
+      '',
+      '## 10. Quando escalar',
+      '- Escalar quando houver indisponibilidade ampla, risco de seguranca ou ausencia de permissao tecnica.',
+      '',
+      '## 11. Riscos e cuidados',
+      '- Nao expor credenciais, tokens, dados pessoais ou payloads brutos.',
+      '',
+      '## 12. Evidencias esperadas',
+      '- Print sanitizado, horario, hostname ou patrimonio quando autorizado.',
+      '',
+      '## 13. Como registrar no GLPI',
+      '- Usar titulo curto, categoria correta e historico objetivo.',
+      '',
+      '## 14. Variacoes conhecidas',
+      '- Preencher conforme novos casos forem revisados.',
+      '',
+      '## 15. Pendencias de revisao humana',
+      '- Converter este rascunho em KB definitivo antes de habilitar uso operacional.',
+      '',
+      '## 16. Metadados',
+      `- Origem: gap analysis de KB_INSUFFICIENT.`,
+      `- Ocorrencias detectadas: ${safeOccurrences}.`,
+      '- Status: draft_gap_candidate.',
+      '- Publicacao: manual, nunca automatica.',
+    ].join('\n');
+
     const result = await this.executor.query<{ id: string }>(
       `
       INSERT INTO ${KB_CANDIDATES_TABLE} (
@@ -530,9 +627,9 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
         input.candidateKey,
         input.candidateKey,
         input.title.slice(0, 250),
-        `# Lacuna de KB detectada\n\nPadrão: ${input.pattern}\nOcorrências: ${input.occurrences}\n\nEste é um rascunho de lacuna — requer redação e revisão humana antes de qualquer uso.`,
-        `Lacuna recorrente sem cobertura local: ${input.pattern}`.slice(0, 500),
-        `Detectado pelo gap analysis (>= ${input.occurrences} buscas sem KB suficiente).`.slice(0, 1000),
+        gapContent,
+        `Lacuna recorrente sem cobertura local: ${safePattern}`.slice(0, 500),
+        `Detectado pelo gap analysis (>= ${safeOccurrences} buscas sem KB suficiente).`.slice(0, 1000),
       ],
     );
     return result.rows.length > 0;

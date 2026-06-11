@@ -34,6 +34,7 @@ describe('KbContentRewriteService — F3 16 seções', () => {
     expect(markdown).toContain('## 1. Resumo executivo');
     expect(markdown).toContain('## 16. Metadados para IA e busca');
     expect(markdown).toContain('Quando NÃO usar');
+    expect(markdown).not.toContain('seguir procedimento consultivo no ambiente do cliente');
     expect(draft.must_terms).toContain('vpn');
     expect(draft.human_review_required).toBe(true);
   });

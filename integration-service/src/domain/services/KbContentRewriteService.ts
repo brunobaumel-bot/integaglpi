@@ -98,20 +98,76 @@ function buildNegativeTerms(scenario: string): string[] {
   return map[scenario] ?? ['micromed', 'synology'];
 }
 
+const SCENARIO_PRODUCT: Partial<Record<string, string>> = {
+  micromed: 'Micromed',
+  backup_restore: 'Synology NAS / Backup',
+  vpn_connect_fail: 'VPN / Acesso remoto',
+  vpn_password: 'VPN / Acesso remoto',
+  vpn_resource_access: 'VPN / Acesso remoto',
+  office_activation: 'Microsoft Office / M365',
+  outlook_issue: 'Microsoft Outlook / M365',
+  ad_sync: 'Active Directory / Azure AD',
+  network_share: 'Compartilhamento de arquivos',
+  printer: 'Impressão',
+  internet_connectivity: 'Rede / Conectividade',
+  windows_server: 'Windows Server',
+  critical_incident: 'Infraestrutura / Serviços críticos',
+};
+
+function resolveProduct(inferred: string, scenario: string): string {
+  return SCENARIO_PRODUCT[scenario] ?? inferred;
+}
+
+function buildActionTitle(product: string, suffix: string): string {
+  const p = product.trim();
+  const s = suffix.trim();
+  const pNorm = p.toLowerCase();
+  const sNorm = s.toLowerCase();
+  if (sNorm.startsWith(pNorm) || sNorm.includes(pNorm)) return s.slice(0, 200);
+  if (pNorm.includes(sNorm.split(' ')[0] ?? '')) return s.slice(0, 200);
+  return `${p} — ${s}`.slice(0, 200);
+}
+
+function cleanAliases(aliases: string[]): string[] {
+  return aliases.filter(
+    (a) =>
+      a !== INFO_UNAVAILABLE
+      && !/^enriched_v\d+$/i.test(a.trim())
+      && !a.toLowerCase().includes('microsoft office / m365 — micromed'),
+  );
+}
+
+function formatResolutionStep(step: string, index: number): string {
+  const stripped = step.replace(/^\d+\.\s*/, '').trim();
+  const numbered = step.match(/^\d+\./) ? step : `${index + 1}. ${stripped}`;
+  const howTo =
+    stripped.length >= 20
+      ? stripped
+      : 'Executar a ação descrita no passo com o usuário ou via acesso remoto aprovado.';
+  const evidence =
+    stripped.toLowerCase().includes('valid')
+    || stripped.toLowerCase().includes('confirm')
+    || stripped.toLowerCase().includes('test')
+      ? stripped
+      : 'Registrar print/log do resultado e atualizar o ticket.';
+  return `${numbered}\n   * **Como executar:** ${howTo}\n   * **Evidência esperada:** ${evidence}`;
+}
+
 export function buildKbContentRewrite(raw: AgentCandidateRecord): KbContentRewriteResult {
   const assessment_before = assessKbEffectiveness(raw);
   const scenario = detectKbScenario(raw);
   const playbook = getQualityPlaybook(scenario);
   const base = enrichAgentCandidate(raw);
-  const product = base.product_or_system ?? INFO_UNAVAILABLE;
+  const product = resolveProduct(base.product_or_system ?? INFO_UNAVAILABLE, scenario);
   const sourceTier = inferSourceTier(String(raw.category ?? raw.categorySuggestion ?? ''), product);
   const difficulty = inferDifficulty(scenario);
   const prerequisites = buildPrerequisites(scenario);
   const mustTerms = buildMustTerms(product, scenario);
   const negativeTerms = buildNegativeTerms(scenario);
   const forbidden = base.known_false_positives ?? [];
+  const aliases = cleanAliases(base.aliases ?? []);
 
-  const actionTitle = `${product} — ${playbook.titleSuffix}`;
+  const actionTitle = buildActionTitle(product, playbook.titleSuffix);
   const whenToUse = [
     ...playbook.symptoms.slice(0, 4),
     ...(base.symptoms ?? []).slice(0, 3),
@@ -134,7 +190,7 @@ export function buildKbContentRewrite(raw: AgentCandidateRecord): KbContentRewri
     `**Categoria GLPI sugerida:** ${base.category ?? INFO_UNAVAILABLE}  `,
     `**Source Tier:** ${sourceTier}  `,
     `**Nível de dificuldade:** ${difficulty}  `,
-    `**Aliases / termos de busca:** ${(base.aliases ?? []).join(', ')}  `,
+    `**Aliases / termos de busca:** ${aliases.join(', ')}  `,
     `**Tags:** ${(base.tags ?? []).join(', ')}  `,
     `**Forbidden terms:** ${forbidden.concat(negativeTerms).join(', ')}  `,
     '',
@@ -182,10 +238,7 @@ export function buildKbContentRewrite(raw: AgentCandidateRecord): KbContentRewri
     '',
     '## 10. Passo a passo técnico de resolução',
     '',
-    ...((base.resolution_steps ?? []) as string[]).map((step, i) => {
-      const n = step.match(/^\d+\./) ? step : `${i + 1}. ${step}`;
-      return `${n}\n   * **Como executar:** seguir procedimento consultivo no ambiente do cliente.\n   * **Evidência esperada:** sintoma reproduzido ou eliminado; registrar no ticket.`;
-    }),
+    ...((base.resolution_steps ?? []) as string[]).map((step, i) => formatResolutionStep(step, i)),
     '',
     '## 11. Verificações e diagnóstico',
     '',
@@ -211,7 +264,7 @@ export function buildKbContentRewrite(raw: AgentCandidateRecord): KbContentRewri
     '## 16. Metadados para IA e busca',
     '',
     `* **product_or_system:** ${product}`,
-    `* **aliases:** ${(base.aliases ?? []).join(', ')}`,
+    `* **aliases:** ${aliases.join(', ')}`,
     `* **symptoms:** ${(base.symptoms ?? []).slice(0, 5).join('; ')}`,
     `* **must_terms:** ${mustTerms.join(', ')}`,
     `* **negative_terms:** ${negativeTerms.join(', ')}`,
@@ -234,7 +287,7 @@ export function buildKbContentRewrite(raw: AgentCandidateRecord): KbContentRewri
     product_or_system: product,
     source_tier: sourceTier,
     category: base.category ?? INFO_UNAVAILABLE,
-    aliases: base.aliases ?? [INFO_UNAVAILABLE],
+    aliases: aliases.length > 0 ? aliases : [INFO_UNAVAILABLE],
     symptoms: base.symptoms ?? [INFO_UNAVAILABLE],
     tags: base.tags ?? [],
     ai_hint: base.ai_hint ?? INFO_UNAVAILABLE,

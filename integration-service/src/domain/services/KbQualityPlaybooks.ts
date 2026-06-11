@@ -61,6 +61,19 @@ function textBlob(r: AgentCandidateRecord): string {
 export function detectKbScenario(r: AgentCandidateRecord): KbScenario {
   const t = textBlob(r);
   if (t.includes('micromed')) return 'micromed';
+  if (
+    t.includes('vpn')
+    || t.includes('forticlient')
+    || t.includes('openvpn')
+    || t.includes('wireguard')
+    || (t.includes('acesso remoto') && !t.includes('compartilh'))
+  ) {
+    if (t.includes('senha') || t.includes('password') || t.includes('esqueci')) return 'vpn_password';
+    if (t.includes('diretorio') || t.includes('compartilh') || t.includes('servidor de arquivos')) {
+      return 'vpn_resource_access';
+    }
+    return 'vpn_connect_fail';
+  }
   if (t.includes('synology') || (t.includes('hyper backup') && t.includes('restaur'))) return 'backup_restore';
   if (t.includes('backup') || t.includes('veeam') || t.includes('restauracao') || t.includes('restore')) {
     return 'backup_restore';
@@ -72,13 +85,6 @@ export function detectKbScenario(r: AgentCandidateRecord): KbScenario {
     || t.includes('sincronizacao hibr')
   ) {
     return 'ad_sync';
-  }
-  if (t.includes('vpn') || (t.includes('acesso remoto') && !t.includes('compartilh'))) {
-    if (t.includes('senha') || t.includes('password') || t.includes('esqueci')) return 'vpn_password';
-    if (t.includes('diretorio') || t.includes('compartilh') || t.includes('servidor de arquivos')) {
-      return 'vpn_resource_access';
-    }
-    return 'vpn_connect_fail';
   }
   if (t.includes('pfsense') || (t.includes('firewall') && t.includes('internet')) || t.includes('link caiu')) {
     return 'internet_connectivity';

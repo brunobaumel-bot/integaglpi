@@ -608,6 +608,7 @@ export class KbEnrichmentService {
     result.ai_enriched = true;
     result.status = 'ready_for_human_review';
     result.enriched_hash = sha256(JSON.stringify({ ...result.draft, markdown: rewrite.markdown.slice(0, 500) }));
+    result.enrichment_version = Math.max(5, (hit.enrichmentVersion ?? 0) + 1);
 
     const outcome = await this.applyEnrichment(repo, hit, result, { contentMarkdown: rewrite.markdown });
     return {
@@ -676,6 +677,38 @@ export class KbEnrichmentService {
     }
 
     return { processed: ids.length, applied, failed, items };
+  }
+
+  /** F3: reescrita completa dos candidatos elegíveis, em lotes seguros. */
+  public async applyContentRewriteAll(
+    repo: PostgresKbCandidateSearchRepository,
+    batchSize = 50,
+  ): Promise<{ processed: number; applied: number; failed: number; batches: number }> {
+    const safeBatch = Math.max(1, Math.min(batchSize, 50));
+    let processed = 0;
+    let applied = 0;
+    let failed = 0;
+    let batches = 0;
+
+    for (;;) {
+      const hits = await repo.listContentRewriteCandidates(safeBatch, 0);
+      if (hits.length === 0) break;
+
+      const summary = await this.applyContentRewriteBatch(
+        repo,
+        hits.map((hit) => hit.id),
+      );
+      processed += summary.processed;
+      applied += summary.applied;
+      failed += summary.failed;
+      batches++;
+
+      if (summary.applied === 0 && summary.failed === hits.length) {
+        break;
+      }
+    }
+
+    return { processed, applied, failed, batches };
   }
 
   /**

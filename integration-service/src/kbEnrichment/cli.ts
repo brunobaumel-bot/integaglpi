@@ -25,6 +25,8 @@ interface CliOptions {
   apply: boolean;
   dryRun: boolean;
   gaps: boolean;
+  all: boolean;
+  generateCandidates: boolean;
   windowDays: number;
   rollbackId: number | null;
   allowDeterministic: boolean;
@@ -41,6 +43,8 @@ function parseArgs(args: string[]): CliOptions {
     apply: false,
     dryRun: false,
     gaps: false,
+    all: false,
+    generateCandidates: false,
     windowDays: 30,
     rollbackId: null,
     allowDeterministic: false,
@@ -54,6 +58,18 @@ function parseArgs(args: string[]): CliOptions {
     switch (args[i]) {
       case '--apply-content-rewrite':
         options.apply = true;
+        break;
+      case '--all':
+        options.all = true;
+        break;
+      case '--format-16-sections':
+      case '--backup-originals':
+        // Explicit contract flags for operators; behavior is already enforced by
+        // KbContentRewriteService + applyEnrichedContent original_backup.
+        break;
+      case '--generate-candidates':
+        options.generateCandidates = true;
+        options.gaps = true;
         break;
       case '--ids':
         options.contentRewriteIds = (args[++i] ?? '')
@@ -103,6 +119,9 @@ function parseArgs(args: string[]): CliOptions {
   if (!options.apply && !options.dryRun && !options.gaps && options.rollbackId === null && options.bundleFile === null && !options.applyAgentAll && !options.applyAgentQuality && options.contentRewriteIds.length === 0) {
     throw new Error('Informe --dry-run, --apply, --apply-agent-all, --apply-agent-quality, --apply-content-rewrite --ids, --gaps, --rollback <id> ou --bundle-file <path>.');
   }
+  if (options.all && !options.apply) {
+    throw new Error('--all só é aceito com uma ação explícita de aplicação.');
+  }
   return options;
 }
 
@@ -142,6 +161,12 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (options.apply && options.all) {
+    const summary = await service.applyContentRewriteAll(repo, options.limit);
+    console.log(JSON.stringify({ mode: 'apply-content-rewrite-all', ...summary }));
+    return;
+  }
+
   if (options.applyAgentQuality) {
     const summary = await service.applyAgentQualityRewriteAll(repo, options.limit);
     console.log(JSON.stringify({ mode: 'apply-agent-quality', ...summary }));
@@ -175,7 +200,10 @@ async function main(): Promise<void> {
 
   if (options.gaps) {
     const result = await service.persistGapCandidates(repo, options.windowDays);
-    console.log(JSON.stringify({ gap_analysis: result }));
+    console.log(JSON.stringify({
+      mode: options.generateCandidates ? 'gaps-generate-candidates' : 'gaps',
+      gap_analysis: result,
+    }));
     return;
   }
 
