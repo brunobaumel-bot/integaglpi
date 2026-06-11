@@ -12,6 +12,8 @@
  * sem WhatsApp; sem ticket; sem publicação de KB GLPI nativa.
  */
 
+import { readFileSync } from 'node:fs';
+
 import { postgresPool } from '../infra/db/postgres.js';
 import { env } from '../config/env.js';
 import { OllamaClient } from '../ai/OllamaClient.js';
@@ -27,6 +29,10 @@ interface CliOptions {
   rollbackId: number | null;
   allowDeterministic: boolean;
   maxVersion: number;
+  bundleFile: string | null;
+  applyAgentAll: boolean;
+  applyAgentQuality: boolean;
+  contentRewriteIds: number[];
 }
 
 function parseArgs(args: string[]): CliOptions {
@@ -39,9 +45,33 @@ function parseArgs(args: string[]): CliOptions {
     rollbackId: null,
     allowDeterministic: false,
     maxVersion: 1,
+    bundleFile: null,
+    applyAgentAll: false,
+    applyAgentQuality: false,
+    contentRewriteIds: [],
   };
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
+      case '--apply-content-rewrite':
+        options.apply = true;
+        break;
+      case '--ids':
+        options.contentRewriteIds = (args[++i] ?? '')
+          .split(',')
+          .map((v) => Number.parseInt(v.trim(), 10))
+          .filter((n) => Number.isFinite(n) && n > 0);
+        break;
+      case '--apply-agent-all':
+        options.applyAgentAll = true;
+        options.apply = true;
+        break;
+      case '--apply-agent-quality':
+        options.applyAgentQuality = true;
+        options.apply = true;
+        break;
+      case '--bundle-file':
+        options.bundleFile = args[++i] ?? null;
+        break;
       case '--allow-deterministic':
         options.allowDeterministic = true;
         break;
@@ -70,8 +100,8 @@ function parseArgs(args: string[]): CliOptions {
         throw new Error(`Argumento desconhecido: ${args[i]}`);
     }
   }
-  if (!options.apply && !options.dryRun && !options.gaps && options.rollbackId === null) {
-    throw new Error('Informe --dry-run, --apply, --gaps ou --rollback <id>.');
+  if (!options.apply && !options.dryRun && !options.gaps && options.rollbackId === null && options.bundleFile === null && !options.applyAgentAll && !options.applyAgentQuality && options.contentRewriteIds.length === 0) {
+    throw new Error('Informe --dry-run, --apply, --apply-agent-all, --apply-agent-quality, --apply-content-rewrite --ids, --gaps, --rollback <id> ou --bundle-file <path>.');
   }
   return options;
 }
@@ -100,6 +130,46 @@ async function main(): Promise<void> {
   if (options.rollbackId !== null) {
     const ok = await repo.rollbackEnrichment(options.rollbackId);
     console.log(JSON.stringify({ rollback_id: options.rollbackId, ok }));
+    return;
+  }
+
+  if (options.contentRewriteIds.length > 0) {
+    const summary = await service.applyContentRewriteBatch(repo, options.contentRewriteIds.slice(0, 50));
+    for (const item of summary.items) {
+      console.log(JSON.stringify(item));
+    }
+    console.log(JSON.stringify({ mode: 'apply-content-rewrite', ...summary }));
+    return;
+  }
+
+  if (options.applyAgentQuality) {
+    const summary = await service.applyAgentQualityRewriteAll(repo, options.limit);
+    console.log(JSON.stringify({ mode: 'apply-agent-quality', ...summary }));
+    return;
+  }
+
+  if (options.applyAgentAll) {
+    const summary = await service.applyAgentEnrichmentAll(repo, options.limit, options.maxVersion);
+    console.log(JSON.stringify({ mode: 'apply-agent-all', ...summary }));
+    return;
+  }
+
+  if (options.bundleFile !== null) {
+    const raw = readFileSync(options.bundleFile, 'utf8');
+    const records = JSON.parse(raw) as unknown;
+    if (!Array.isArray(records)) {
+      throw new Error('Bundle deve ser JSON array.');
+    }
+    const summary = await service.applyAgentBundle(repo, records as never);
+    for (const item of summary.items) {
+      console.log(JSON.stringify(item));
+    }
+    console.log(JSON.stringify({
+      processed: summary.processed,
+      applied: summary.applied,
+      failed: summary.failed,
+      mode: 'agent-bundle',
+    }));
     return;
   }
 

@@ -34,6 +34,9 @@ import { piiGuard } from './KbRagCopilotService.js';
 import type { OllamaRagPort } from './KbRagCopilotService.js';
 import type { KbCandidateHit, PostgresKbCandidateSearchRepository } from '../../repositories/postgres/PostgresKbCandidateSearchRepository.js';
 import type { SqlExecutor } from '../../infra/db/postgres.js';
+import { enrichAgentCandidate, type AgentCandidateRecord } from './AgentKbEnricher.js';
+import { buildKbContentRewrite } from './KbContentRewriteService.js';
+import { assessKbEffectiveness } from './KbEffectivenessAuditor.js';
 
 // ── F5 types ──────────────────────────────────────────────────────────────────
 
@@ -280,6 +283,7 @@ export class KbEnrichmentService {
     repo: PostgresKbCandidateSearchRepository,
     hit: KbCandidateHit,
     result: EnrichmentResult,
+    options: { contentMarkdown?: string } = {},
   ): Promise<{ ok: boolean; id: number; error?: string }> {
     if (!env.KB_ENRICHMENT_ENABLED) {
       return { ok: false, id: hit.id, error: 'KB_ENRICHMENT_ENABLED=false — aplicação desabilitada.' };
@@ -302,7 +306,7 @@ export class KbEnrichmentService {
     const probableCause = cleanList(d.likely_causes).join('; ') || hit.probableCause;
 
     const originalContentMarkdown = await repo.getContentMarkdown(hit.id);
-    const contentMarkdown = this.renderEnrichedMarkdown(d, result);
+    const contentMarkdown = options.contentMarkdown ?? this.renderEnrichedMarkdown(d, result);
 
     const applied = await repo.applyEnrichedContent({
       id: hit.id,
@@ -397,6 +401,281 @@ export class KbEnrichmentService {
     }
 
     return { processed: candidates.length, applied, failed, items };
+  }
+
+  /**
+   * Aplica enriquecimento produzido por agente externo (Cursor), sem Ollama.
+   * Mesmo contrato de backup/rollback; marca ai_enriched=true para auditoria.
+   */
+  public async applyAgentEnrichment(
+    repo: PostgresKbCandidateSearchRepository,
+    hit: KbCandidateHit,
+    agentPatch: Partial<EnrichedKbDraft>,
+  ): Promise<{ ok: boolean; id: number; error?: string }> {
+    const result = await this.buildEnrichedDraft(hit);
+    Object.assign(result.draft, agentPatch);
+    result.draft.confidence_notes =
+      (agentPatch.confidence_notes ?? result.draft.confidence_notes)
+      + ' Enriquecimento agente externo — substitui Ollama local.';
+    result.ai_enriched = true;
+    result.enriched_hash = sha256(JSON.stringify(result.draft));
+    result.status = 'ready_for_human_review';
+    return this.applyEnrichment(repo, hit, result);
+  }
+
+  /** Batch a partir de bundle JSON [{ id, enrichment? }] ou record completo. */
+  public async applyAgentBundle(
+    repo: PostgresKbCandidateSearchRepository,
+    records: AgentCandidateRecord[],
+  ): Promise<{
+    processed: number;
+    applied: number;
+    failed: number;
+    items: Array<{ id: number; title: string; ok: boolean; error?: string }>;
+  }> {
+    const items: Array<{ id: number; title: string; ok: boolean; error?: string }> = [];
+    let applied = 0;
+    let failed = 0;
+
+    for (const record of records) {
+      const id = Number(record.id);
+      if (!Number.isFinite(id) || id <= 0) {
+        failed++;
+        items.push({ id: 0, title: '', ok: false, error: 'id inválido' });
+        continue;
+      }
+      try {
+        const hit = await repo.getCandidateById(id);
+        if (hit === null) {
+          failed++;
+          items.push({ id, title: '', ok: false, error: 'candidato não encontrado' });
+          continue;
+        }
+        const patch = record.enrichment
+          ? (record.enrichment as Partial<EnrichedKbDraft>)
+          : enrichAgentCandidate(record);
+        const outcome = await this.applyAgentEnrichment(repo, hit, patch);
+        items.push({
+          id,
+          title: hit.title.slice(0, 80),
+          ok: outcome.ok,
+          ...(outcome.error !== undefined ? { error: outcome.error } : {}),
+        });
+        outcome.ok ? applied++ : failed++;
+      } catch (err) {
+        failed++;
+        items.push({
+          id,
+          title: String(record.title ?? '').slice(0, 80),
+          ok: false,
+          error: err instanceof Error ? err.message.slice(0, 160) : 'erro desconhecido',
+        });
+      }
+    }
+
+    return { processed: records.length, applied, failed, items };
+  }
+
+  /** Enriquece e aplica todos os elegíveis via agente (sem Ollama), em lotes. */
+  public async applyAgentEnrichmentAll(
+    repo: PostgresKbCandidateSearchRepository,
+    batchSize = 50,
+    maxVersion = 2,
+  ): Promise<{ processed: number; applied: number; failed: number; batches: number }> {
+    const safeBatch = Math.max(1, Math.min(batchSize, 50));
+    let processed = 0;
+    let applied = 0;
+    let failed = 0;
+    let batches = 0;
+
+    for (;;) {
+      const hits = await repo.listAgentEnrichmentCandidates(safeBatch, 0, maxVersion);
+      if (hits.length === 0) break;
+
+      const records: AgentCandidateRecord[] = hits.map((hit) => ({
+        id: hit.id,
+        title: hit.title,
+        problemPattern: hit.problemPattern,
+        symptomsJson: hit.symptomsJson,
+        probableCause: hit.probableCause,
+        recommendedProcedureJson: hit.recommendedProcedureJson,
+        checklistJson: hit.checklistJson,
+        tagsJson: hit.tagsJson,
+        categorySuggestion: hit.categorySuggestion,
+        evidenceSummarySanitized: hit.evidenceSummarySanitized,
+        enrichment: enrichAgentCandidate({
+          id: hit.id,
+          title: hit.title,
+          problemPattern: hit.problemPattern,
+          symptomsJson: hit.symptomsJson,
+          probableCause: hit.probableCause,
+          recommendedProcedureJson: hit.recommendedProcedureJson,
+          checklistJson: hit.checklistJson,
+          tagsJson: hit.tagsJson,
+          categorySuggestion: hit.categorySuggestion,
+          evidenceSummarySanitized: hit.evidenceSummarySanitized,
+        }),
+      }));
+
+      const summary = await this.applyAgentBundle(repo, records);
+      processed += summary.processed;
+      applied += summary.applied;
+      failed += summary.failed;
+      batches++;
+      if (hits.length < safeBatch) break;
+    }
+
+    return { processed, applied, failed, batches };
+  }
+
+  /** Reescreve KBs v1/v2 com playbooks operacionais acionáveis (→ v3). */
+  public async applyAgentQualityRewriteAll(
+    repo: PostgresKbCandidateSearchRepository,
+    batchSize = 50,
+  ): Promise<{ processed: number; applied: number; failed: number; batches: number }> {
+    const safeBatch = Math.max(1, Math.min(batchSize, 50));
+    let processed = 0;
+    let applied = 0;
+    let failed = 0;
+    let batches = 0;
+
+    for (;;) {
+      const hits = await repo.listQualityRewriteCandidates(safeBatch, 0);
+      if (hits.length === 0) break;
+
+      const records: AgentCandidateRecord[] = hits.map((hit) => ({
+        id: hit.id,
+        title: hit.title,
+        problemPattern: hit.problemPattern,
+        symptomsJson: hit.symptomsJson,
+        probableCause: hit.probableCause,
+        recommendedProcedureJson: hit.recommendedProcedureJson,
+        checklistJson: hit.checklistJson,
+        tagsJson: hit.tagsJson,
+        categorySuggestion: hit.categorySuggestion,
+        evidenceSummarySanitized: hit.evidenceSummarySanitized,
+        enrichment: enrichAgentCandidate({
+          id: hit.id,
+          title: hit.title,
+          problemPattern: hit.problemPattern,
+          symptomsJson: hit.symptomsJson,
+          probableCause: hit.probableCause,
+          recommendedProcedureJson: hit.recommendedProcedureJson,
+          checklistJson: hit.checklistJson,
+          tagsJson: hit.tagsJson,
+          categorySuggestion: hit.categorySuggestion,
+          evidenceSummarySanitized: hit.evidenceSummarySanitized,
+        }),
+      }));
+
+      const summary = await this.applyAgentBundle(repo, records);
+      processed += summary.processed;
+      applied += summary.applied;
+      failed += summary.failed;
+      batches++;
+      if (hits.length < safeBatch) break;
+    }
+
+    return { processed, applied, failed, batches };
+  }
+
+  /** F3: reescrita 16 seções para KBs prioritários (draft aplicado com backup). */
+  public async applyContentRewrite(
+    repo: PostgresKbCandidateSearchRepository,
+    hit: KbCandidateHit,
+  ): Promise<{
+    ok: boolean;
+    id: number;
+    error?: string;
+    assessment_before: ReturnType<typeof assessKbEffectiveness>;
+    scenario: string;
+  }> {
+    const rewrite = buildKbContentRewrite({
+      id: hit.id,
+      title: hit.title,
+      problemPattern: hit.problemPattern,
+      symptomsJson: hit.symptomsJson,
+      probableCause: hit.probableCause,
+      recommendedProcedureJson: hit.recommendedProcedureJson,
+      checklistJson: hit.checklistJson,
+      tagsJson: hit.tagsJson,
+      categorySuggestion: hit.categorySuggestion,
+      evidenceSummarySanitized: hit.evidenceSummarySanitized,
+    });
+
+    const result = await this.buildEnrichedDraft(hit);
+    Object.assign(result.draft, rewrite.draft);
+    result.ai_enriched = true;
+    result.status = 'ready_for_human_review';
+    result.enriched_hash = sha256(JSON.stringify({ ...result.draft, markdown: rewrite.markdown.slice(0, 500) }));
+
+    const outcome = await this.applyEnrichment(repo, hit, result, { contentMarkdown: rewrite.markdown });
+    return {
+      ...outcome,
+      assessment_before: rewrite.assessment_before,
+      scenario: rewrite.scenario,
+    };
+  }
+
+  public async applyContentRewriteBatch(
+    repo: PostgresKbCandidateSearchRepository,
+    ids: number[],
+  ): Promise<{
+    processed: number;
+    applied: number;
+    failed: number;
+    items: Array<{
+      id: number;
+      title: string;
+      ok: boolean;
+      status_antes: string;
+      scenario: string;
+      error?: string;
+    }>;
+  }> {
+    const items: Array<{
+      id: number;
+      title: string;
+      ok: boolean;
+      status_antes: string;
+      scenario: string;
+      error?: string;
+    }> = [];
+    let applied = 0;
+    let failed = 0;
+
+    for (const id of ids) {
+      const hit = await repo.getCandidateById(id);
+      if (hit === null) {
+        failed++;
+        items.push({ id, title: '', ok: false, status_antes: 'N/A', scenario: '', error: 'nao encontrado' });
+        continue;
+      }
+      try {
+        const outcome = await this.applyContentRewrite(repo, hit);
+        items.push({
+          id,
+          title: hit.title.slice(0, 80),
+          ok: outcome.ok,
+          status_antes: outcome.assessment_before.status,
+          scenario: outcome.scenario,
+          ...(outcome.error !== undefined ? { error: outcome.error } : {}),
+        });
+        outcome.ok ? applied++ : failed++;
+      } catch (err) {
+        failed++;
+        items.push({
+          id,
+          title: hit.title.slice(0, 80),
+          ok: false,
+          status_antes: 'ERRO',
+          scenario: '',
+          error: err instanceof Error ? err.message.slice(0, 160) : 'erro',
+        });
+      }
+    }
+
+    return { processed: ids.length, applied, failed, items };
   }
 
   /**

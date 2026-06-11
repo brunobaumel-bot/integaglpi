@@ -1,0 +1,158 @@
+VERDICT: IMPLEMENTED
+PHASE_ID: integaglpi_v9_kb_content_rewrite_quality_001
+
+KB_ANALISADOS:
+  - kb_id: 5
+    source: kb_candidates
+    titulo: "Microsoft Office / M365 — falha de ativação"
+    produto_sistema: Microsoft Office / M365
+    status_antes: PARCIAL
+    status_depois: NEEDS_HUMAN_REVIEW
+    draft_status: ready_for_human_review
+    prioridade: ALTA
+    golden_set_ref: "g06-06-licenca-slmgr / Office activation"
+    acoes:
+      - "Reescrita F3 16 seções + metadados must/forbidden"
+    secoes_alteradas:
+      - passo_a_passo_tecnico
+      - pre_requisitos
+      - quando_nao_usar
+      - validacao
+      - metadados_ia
+    justificativa: "Evidências históricas de reparo online/M365 convertidas em passos executáveis."
+    riscos:
+      - "Validar canal de reinstalação Office corporativo no ambiente real"
+
+  - kb_id: 125
+    source: kb_candidates
+    titulo: "VPN — falha ao conectar"
+    produto_sistema: VPN / Acesso remoto
+    status_antes: PARCIAL
+    status_depois: NEEDS_HUMAN_REVIEW
+    draft_status: ready_for_human_review
+    prioridade: ALTA
+    golden_set_ref: "VPN / conectividade"
+    acoes:
+      - "Playbook vpn_connect_fail com 8 passos numerados"
+    secoes_alteradas:
+      - sintomas
+      - causa_provavel
+      - passo_a_passo
+      - triagem
+      - escalonamento
+    justificativa: "Substituído template genérico por diagnóstico VPN consultivo."
+    riscos:
+      - "Confirmar cliente VPN padrão (FortiClient vs OpenVPN) na revisão humana"
+
+  - kb_id: 186
+    source: kb_candidates
+    titulo: "Micromed — aplicação não abre"
+    produto_sistema: Micromed
+    status_antes: PARCIAL
+    status_depois: NEEDS_HUMAN_REVIEW
+    draft_status: ready_for_human_review
+    prioridade: ALTA
+    golden_set_ref: "g06-01-micromed-nao-abre"
+    acoes:
+      - "Playbook micromed + forbidden_terms anti-Windows/synology"
+    justificativa: "Alinhado ao Golden Set — evita falso positivo com ativação Windows."
+
+  - kb_id: 223
+    source: kb_candidates
+    titulo: "Synology NAS — backup e restauração"
+    produto_sistema: Synology NAS
+    status_antes: PARCIAL
+    status_depois: NEEDS_HUMAN_REVIEW
+    draft_status: ready_for_human_review
+    prioridade: ALTA
+    golden_set_ref: "g06-03-synology-restore"
+    acoes:
+      - "Playbook backup_restore granular"
+
+  - kb_id: 233
+    source: kb_candidates
+    titulo: "Backup — falha por acesso simultâneo"
+    produto_sistema: Backup / Veeam
+    status_antes: PARCIAL
+    status_depois: NEEDS_HUMAN_REVIEW
+    draft_status: ready_for_human_review
+    prioridade: ALTA
+    golden_set_ref: "g06-04-backup-arquivo-em-uso"
+
+  - kb_id: 286
+    source: kb_candidates
+    titulo: "Active Directory — Azure AD Connect sync"
+    produto_sistema: Active Directory
+    status_antes: PARCIAL
+    status_depois: NEEDS_HUMAN_REVIEW
+    draft_status: ready_for_human_review
+    prioridade: ALTA
+    golden_set_ref: "g06-02-ad-sync"
+
+  - kb_id: 17
+    source: kb_candidates
+    titulo: "Impressão — falha de impressão"
+    produto_sistema: Impressão
+    status_antes: PARCIAL
+    status_depois: NEEDS_HUMAN_REVIEW
+    draft_status: ready_for_human_review
+    prioridade: MEDIA
+
+  - kb_id: 298
+    source: kb_candidates
+    titulo: "Rede — internet/firewall pfSense"
+    produto_sistema: Rede / Conectividade
+    status_antes: PARCIAL
+    status_depois: NEEDS_HUMAN_REVIEW
+    draft_status: ready_for_human_review
+    prioridade: ALTA
+
+INVENTARIO_HML:
+  kb_candidates_total: 255
+  kb_articles_total: 0
+  elegiveis_reescrita_restantes: 247
+  nota: "Lote inicial 8/255 — demais KBs v3 aguardam mesma passagem F3"
+
+BACKUP_AND_TRACEABILITY:
+  original_preserved: true
+  original_hash: "sha256 por candidato em glpi_plugin_integaglpi_kb_candidates.original_hash"
+  enriched_hash: "sha256 por candidato em enriched_hash"
+  diff_available: true
+  source_kb_id: "self-reference id"
+  human_review_required: true
+  auto_publish: false
+
+SAFETY_CONFIRMATION:
+  production_touched: false
+  schema_changed: false
+  migration_created: false
+  node_mariadb_access: false
+  kb_auto_published: false
+  kb_original_deleted: false
+  kb_original_overwritten_without_review: false
+  whatsapp_sent: false
+  ticket_created: false
+  remote_command_executed: false
+  pii_detected: false
+  cloud_called: false
+  qdrant_used: false
+  pgvector_used: false
+
+TESTES:
+  golden_set_pass: true
+  kb_regression: "63/63 golden set tests"
+  tsc: clean
+  npm_test: "1802/1802 passed"
+  php_lint: "nao alterado PHP nesta fase"
+  forbidden_grep: "sem auto_publish/sendWhatsApp em paths novos"
+  pii_scan: "placeholders <USUARIO>/<DOMINIO>; sem telefones reais nos drafts"
+  diff_check: clean
+
+BLOCKERS: []
+
+NEXT_STEP:
+  ready_for_cursor_review: true
+  ready_for_human_review: true
+  ready_for_hml_smoke: true
+  ready_for_production: false
+  reason: "Revisar títulos finais dos 8 KBs e expandir F3 aos 247 restantes após aprovação humana do lote piloto"

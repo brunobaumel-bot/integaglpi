@@ -19,6 +19,8 @@ import type { SqlExecutor } from '../../infra/db/postgres.js';
 
 export const KB_CANDIDATES_TABLE = 'glpi_plugin_integaglpi_kb_candidates';
 const SEARCHABLE_STATUSES = ['approved', 'candidate'];
+/** Status elegíveis para enriquecimento agente (rodada v2 completa). */
+const AGENT_ENRICHMENT_STATUSES = ['approved', 'candidate', 'suggested', 'in_review'];
 
 export interface KbCandidateHit {
   id: number;
@@ -289,6 +291,100 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
     );
 
     return result.rows.map((r) => rowToHit(r, 0));
+  }
+
+  /**
+   * Lista candidatos elegíveis para enriquecimento agente (inclui suggested/in_review).
+   */
+  public async listAgentEnrichmentCandidates(limit = 50, offset = 0, maxVersion = 2): Promise<KbCandidateHit[]> {
+    const k = Math.max(1, Math.min(50, limit));
+    const safeMaxVersion = Math.max(1, Math.min(5, maxVersion));
+    const statusPlaceholders = AGENT_ENRICHMENT_STATUSES.map((_, i) => `$${i + 1}`).join(', ');
+
+    const result = await this.executor.query<SearchRow>(
+      `
+      SELECT
+        id::text, candidate_key, title, article_type, category_suggestion,
+        COALESCE(problem_pattern, '') AS problem_pattern,
+        symptoms_json,
+        COALESCE(probable_cause, '') AS probable_cause,
+        recommended_procedure_json, checklist_json, tags_json,
+        COALESCE(evidence_summary_sanitized, '') AS evidence_summary_sanitized,
+        confidence_score::text,
+        '0'::text AS ts_score,
+        COALESCE(enrichment_version, 0)::text AS enrichment_version
+      FROM ${KB_CANDIDATES_TABLE}
+      WHERE status IN (${statusPlaceholders})
+        AND COALESCE(title, '') NOT ILIKE '%Ajuda externa por IA%'
+        AND COALESCE(article_type, '') NOT IN ('external_research', 'cloud_preview', 'external_ai')
+        AND NOT (tags_json @> '["draft_gap_candidate"]'::jsonb)
+        AND COALESCE(enrichment_version, 0) < $${AGENT_ENRICHMENT_STATUSES.length + 3}
+      ORDER BY id ASC
+      LIMIT $${AGENT_ENRICHMENT_STATUSES.length + 1} OFFSET $${AGENT_ENRICHMENT_STATUSES.length + 2}
+      `,
+      [...AGENT_ENRICHMENT_STATUSES, k, Math.max(0, offset), safeMaxVersion],
+    );
+
+    return result.rows.map((r) => rowToHit(r, 0));
+  }
+
+  /**
+   * Candidatos já enriquecidos (v1/v2) para reescrita de qualidade operacional → v3.
+   */
+  public async listQualityRewriteCandidates(limit = 50, offset = 0): Promise<KbCandidateHit[]> {
+    const k = Math.max(1, Math.min(50, limit));
+    const statusPlaceholders = AGENT_ENRICHMENT_STATUSES.map((_, i) => `$${i + 1}`).join(', ');
+
+    const result = await this.executor.query<SearchRow>(
+      `
+      SELECT
+        id::text, candidate_key, title, article_type, category_suggestion,
+        COALESCE(problem_pattern, '') AS problem_pattern,
+        symptoms_json,
+        COALESCE(probable_cause, '') AS probable_cause,
+        recommended_procedure_json, checklist_json, tags_json,
+        COALESCE(evidence_summary_sanitized, '') AS evidence_summary_sanitized,
+        confidence_score::text,
+        '0'::text AS ts_score,
+        COALESCE(enrichment_version, 0)::text AS enrichment_version
+      FROM ${KB_CANDIDATES_TABLE}
+      WHERE status IN (${statusPlaceholders})
+        AND COALESCE(title, '') NOT ILIKE '%Ajuda externa por IA%'
+        AND COALESCE(article_type, '') NOT IN ('external_research', 'cloud_preview', 'external_ai')
+        AND NOT (tags_json @> '["draft_gap_candidate"]'::jsonb)
+        AND COALESCE(enrichment_version, 0) >= 1
+        AND COALESCE(enrichment_version, 0) < 3
+      ORDER BY id ASC
+      LIMIT $${AGENT_ENRICHMENT_STATUSES.length + 1} OFFSET $${AGENT_ENRICHMENT_STATUSES.length + 2}
+      `,
+      [...AGENT_ENRICHMENT_STATUSES, k, Math.max(0, offset)],
+    );
+
+    return result.rows.map((r) => rowToHit(r, 0));
+  }
+
+  /** Carrega um candidato por id (enriquecimento agente / rollback pontual). */
+  public async getCandidateById(id: number): Promise<KbCandidateHit | null> {
+    const result = await this.executor.query<SearchRow>(
+      `
+      SELECT
+        id::text, candidate_key, title, article_type, category_suggestion,
+        COALESCE(problem_pattern, '') AS problem_pattern,
+        symptoms_json,
+        COALESCE(probable_cause, '') AS probable_cause,
+        recommended_procedure_json, checklist_json, tags_json,
+        COALESCE(evidence_summary_sanitized, '') AS evidence_summary_sanitized,
+        confidence_score::text,
+        '0'::text AS ts_score,
+        COALESCE(enrichment_version, 0)::text AS enrichment_version
+      FROM ${KB_CANDIDATES_TABLE}
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [id],
+    );
+    const row = result.rows[0];
+    return row ? rowToHit(row, 0) : null;
   }
 
   /**
