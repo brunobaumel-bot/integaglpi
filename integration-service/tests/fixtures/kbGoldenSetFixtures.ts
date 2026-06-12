@@ -371,8 +371,8 @@ export const GOLDEN_SET_EXPANSION: readonly GoldenSetQuery[] = [
     id: 'f21-09-teams-nao-abre',
     query: 'microsoft teams nao inicia na maquina do usuario',
     expected: {
-      product: null,               // 'microsoft teams' não é alias do M365 anchor
-      source_tier: 'tier_1_product_specific', // generic plan inclui tier_1 em sourceTiersAllowed
+      product: 'Microsoft Teams',
+      source_tier: 'tier_1_product_specific',
       min_confidence: 0.60,
       primary_kb: 'kb-m365-teams-nao-abre',
       category: 'Cloud / Microsoft 365',

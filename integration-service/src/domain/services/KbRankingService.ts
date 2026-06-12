@@ -133,7 +133,11 @@ const TIER_1_PRODUCT_TERMS: readonly string[] = [
   // NAS/backup appliance
   'synology', 'veeam',
   // Cloud productivity suite
-  'microsoft 365', 'm365', 'office 365',
+  'microsoft 365', 'm365', 'office 365', 'teams', 'microsoft teams', 'onedrive', 'sharepoint',
+  // Security and desktop peripherals with dedicated operational KBs
+  'antivirus', 'defender', 'scanner', 'twain', 'wia',
+  // Business apps and desktop network access
+  'odbc', 'dsn', 'erp', 'software financeiro', 'wifi', 'wi-fi', 'wireless',
   // Security / monitoring
   'zabbix', 'nagios', 'fortinet', 'sophos',
 ];
@@ -150,7 +154,7 @@ const AUTOMATION_TIER_PATTERNS =
  * Checked ONLY when no tier_1 product term matches.
  */
 const OPERATIONAL_TIER_PATTERNS =
-  /\b(backup|restore|firewall|proxy|pfsense|servidor|dns|vpn|email|exchange|storage|sincronizacao|replicacao)\b/i;
+  /\b(backup|restore|firewall|proxy|pfsense|servidor|dns|vpn|email|exchange|storage|sincronizacao|replicacao|permissao|compartilhamento|ntfs|smb|rede|wifi|wi-fi|scanner|odbc|erp)\b/i;
 
 /** Lower number = higher priority in mixed-tier result sets. */
 const TIER_PRIORITY: Record<SourceTier, number> = {
@@ -407,10 +411,39 @@ export class KbRankingService {
       /\b(ativacao|ativar|ativa|licenca|license)\b/.test(hitText)
       && /\bwindows\b/.test(hitText);
 
-    // Products with their own ecosystems — a query anchored on one of them must
-    // never surface a KB anchored on another (F2: AD sync nunca retorna Micromed).
-    const ISOLATED_PRODUCTS = ['micromed', 'veeam', 'synology', 'zabbix', 'nagios', 'fortinet', 'sophos'];
-    const hitIsolatedProducts = ISOLATED_PRODUCTS.filter((p) => hitText.includes(p));
+    // Product ecosystems with their own KBs — a query anchored on one ECOSYSTEM
+    // must never surface a KB anchored on another (F2: AD sync nunca retorna
+    // Micromed). Termos do MESMO grupo nunca se excluem entre si: um KB
+    // "OneDrive / SharePoint" é um só ecossistema (M365 collab), e "ERP / ODBC /
+    // DSN" é um só domínio de negócio — a versão em lista plana tratava cada
+    // termo como produto isolado e o próprio KB alvo se autoexcluía
+    // (smoke real HML: onedrive_sync e erp_odbc com hit recuperado e top3 vazio).
+    const ISOLATED_PRODUCT_GROUPS: readonly (readonly string[])[] = [
+      ['micromed'],
+      ['veeam'],
+      ['synology'],
+      ['zabbix'],
+      ['nagios'],
+      ['fortinet'],
+      ['sophos'],
+      // M365 collaboration — Teams/OneDrive/SharePoint compartilham o stack.
+      ['teams', 'onedrive', 'sharepoint'],
+      ['defender'],
+      ['scanner'],
+      // Aplicações de negócio locais — ERP/ODBC/DSN são o mesmo domínio.
+      ['odbc', 'erp', 'dsn'],
+      ['wifi'],
+    ];
+    const groupIndexesIn = (matchesTerm: (term: string) => boolean): Set<number> => {
+      const indexes = new Set<number>();
+      ISOLATED_PRODUCT_GROUPS.forEach((group, index) => {
+        if (group.some(matchesTerm)) {
+          indexes.add(index);
+        }
+      });
+      return indexes;
+    };
+    const hitGroups = groupIndexesIn((term) => hitText.includes(term));
 
     // AD-sync query must not return Windows activation KB nor isolated-product KB
     const queryIsDirectorySync =
@@ -418,7 +451,7 @@ export class KbRankingService {
       && /\b(sync|sincron|sincronizacao|sincronizando|replicacao|replicar)\b/.test(query);
     if (queryIsDirectorySync) {
       return hitIsWindowsActivation
-        || hitIsolatedProducts.length > 0
+        || hitGroups.size > 0
         || (/\bwindows\b/.test(hitText) && !/\b(active|directory|azure|entra|dominio|domain|ad|sync|sincron)\b/.test(hitText));
     }
 
@@ -430,18 +463,20 @@ export class KbRankingService {
       return /\b(active|directory|azure|entra|dominio|domain|ad|sync|sincron)\b/.test(hitText);
     }
 
-    // Specific-product query must not return Windows activation KB nor a KB
-    // anchored on a DIFFERENT isolated product (micromed → nunca veeam/synology).
-    const queryIsolatedProducts = ISOLATED_PRODUCTS.filter((p) =>
-      queryTokens.some((t) => t.includes(p)),
+    // Ecosystem-anchored query must not return Windows activation KB nor a KB
+    // anchored on a DIFFERENT ecosystem (micromed → nunca veeam/synology;
+    // onedrive → teams/sharepoint OK por serem o mesmo grupo M365).
+    const queryGroups = groupIndexesIn((term) =>
+      queryTokens.some((t) => t.includes(term)),
     );
-    if (queryIsolatedProducts.length > 0) {
+    if (queryGroups.size > 0) {
       if (hitIsWindowsActivation) {
         return true;
       }
-      const hitHasDifferentProduct = hitIsolatedProducts.some((p) => !queryIsolatedProducts.includes(p));
-      if (hitHasDifferentProduct) {
-        return true;
+      for (const groupIndex of hitGroups) {
+        if (!queryGroups.has(groupIndex)) {
+          return true;
+        }
       }
     }
 

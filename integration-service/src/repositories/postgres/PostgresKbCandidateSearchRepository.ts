@@ -15,10 +15,16 @@
  * Read-only. No ticket mutation. No cloud. No MariaDB.
  */
 
+import { env } from '../../config/env.js';
 import type { SqlExecutor } from '../../infra/db/postgres.js';
+import {
+  KB_SEARCH_BASE_STATUSES,
+  resolveKbSearchableStatuses,
+} from './kbSearchStatusPolicy.js';
 
 export const KB_CANDIDATES_TABLE = 'glpi_plugin_integaglpi_kb_candidates';
-const SEARCHABLE_STATUSES = ['approved', 'candidate'];
+/** Enrichment listing — never includes needs_review preview. */
+const ENRICHMENT_SEARCH_STATUSES = [...KB_SEARCH_BASE_STATUSES];
 /** Status elegíveis para enriquecimento agente (rodada v2 completa). */
 const AGENT_ENRICHMENT_STATUSES = ['approved', 'candidate', 'suggested', 'in_review'];
 
@@ -113,7 +119,19 @@ function rowToHit(row: SearchRow, tsScore: number): KbCandidateHit {
 }
 
 export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRepository {
-  public constructor(private readonly executor: SqlExecutor) {}
+  private readonly searchableStatuses: readonly string[];
+
+  public constructor(
+    private readonly executor: SqlExecutor,
+    searchableStatuses?: readonly string[],
+  ) {
+    this.searchableStatuses = searchableStatuses ?? resolveKbSearchableStatuses(env);
+  }
+
+  /** Exposed for tests and smoke diagnostics — not for mutation. */
+  public getSearchableStatuses(): readonly string[] {
+    return [...this.searchableStatuses];
+  }
 
   public async searchCandidates(query: string, topK: number): Promise<KbCandidateHit[]> {
     const clean = String(query ?? '').trim();
@@ -121,7 +139,8 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
       return [];
     }
     const k = Math.max(1, Math.min(20, topK));
-    const statusPlaceholders = SEARCHABLE_STATUSES.map((_, i) => `$${i + 2}`).join(', ');
+    const statuses = this.searchableStatuses;
+    const statusPlaceholders = statuses.map((_, i) => `$${i + 2}`).join(', ');
 
     // Primary: full-text search using Portuguese dictionary with field weights
     const ftsResult = await this.executor.query<SearchRow>(
@@ -160,9 +179,9 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
           setweight(to_tsvector('portuguese', COALESCE(title,'') || ' ' || COALESCE(category_suggestion,'')), 'D')
         ) @@ plainto_tsquery('portuguese', $1)
       ORDER BY ts_score DESC, confidence_score DESC
-      LIMIT $${SEARCHABLE_STATUSES.length + 2}
+      LIMIT $${statuses.length + 2}
       `,
-      [clean, ...SEARCHABLE_STATUSES, k],
+      [clean, ...statuses, k],
     );
 
     if (ftsResult.rows.length > 0) {
@@ -170,10 +189,14 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
     }
 
     // Fallback: ILIKE across all key fields (handles terms not in Portuguese dictionary)
-    return this.ilikeSearch(clean, k);
+    return this.ilikeSearch(clean, k, statuses);
   }
 
-  private async ilikeSearch(query: string, topK: number): Promise<KbCandidateHit[]> {
+  private async ilikeSearch(
+    query: string,
+    topK: number,
+    statuses: readonly string[] = this.searchableStatuses,
+  ): Promise<KbCandidateHit[]> {
     // Build tokens (max 5 significant tokens from the query)
     const tokens = query
       .toLowerCase()
@@ -186,7 +209,7 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
       return [];
     }
 
-    const statusPlaceholders = SEARCHABLE_STATUSES.map((_, i) => `$${tokens.length + i + 1}`).join(', ');
+    const statusPlaceholders = statuses.map((_, i) => `$${tokens.length + i + 1}`).join(', ');
 
     // Build ILIKE condition: each token against concatenated searchable text
     const tokenConditions = tokens
@@ -205,7 +228,7 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
 
     const params: unknown[] = [
       ...tokens.map((t) => `%${t}%`),
-      ...SEARCHABLE_STATUSES,
+      ...statuses,
       topK,
     ];
 
@@ -239,7 +262,7 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
       ) sub
       WHERE ${tokenConditions}
       ORDER BY ts_score DESC, confidence_score DESC
-      LIMIT $${tokens.length + SEARCHABLE_STATUSES.length + 1}
+      LIMIT $${tokens.length + statuses.length + 1}
       `,
       params,
     );
@@ -264,7 +287,7 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
   public async listCandidatesForEnrichment(limit = 10, offset = 0, maxVersion = 1): Promise<KbCandidateHit[]> {
     const k = Math.max(1, Math.min(50, limit));
     const safeMaxVersion = Math.max(1, Math.min(5, maxVersion));
-    const statusPlaceholders = SEARCHABLE_STATUSES.map((_, i) => `$${i + 1}`).join(', ');
+    const statusPlaceholders = ENRICHMENT_SEARCH_STATUSES.map((_, i) => `$${i + 1}`).join(', ');
 
     const result = await this.executor.query<SearchRow>(
       `
@@ -283,11 +306,11 @@ export class PostgresKbCandidateSearchRepository implements KbCandidateSearchRep
         AND COALESCE(title, '') NOT ILIKE '%Ajuda externa por IA%'
         AND COALESCE(article_type, '') NOT IN ('external_research', 'cloud_preview', 'external_ai')
         AND NOT (tags_json @> '["draft_gap_candidate"]'::jsonb)
-        AND COALESCE(enrichment_version, 0) < $${SEARCHABLE_STATUSES.length + 3}
+        AND COALESCE(enrichment_version, 0) < $${ENRICHMENT_SEARCH_STATUSES.length + 3}
       ORDER BY id ASC
-      LIMIT $${SEARCHABLE_STATUSES.length + 1} OFFSET $${SEARCHABLE_STATUSES.length + 2}
+      LIMIT $${ENRICHMENT_SEARCH_STATUSES.length + 1} OFFSET $${ENRICHMENT_SEARCH_STATUSES.length + 2}
       `,
-      [...SEARCHABLE_STATUSES, k, Math.max(0, offset), safeMaxVersion],
+      [...ENRICHMENT_SEARCH_STATUSES, k, Math.max(0, offset), safeMaxVersion],
     );
 
     return result.rows.map((r) => rowToHit(r, 0));

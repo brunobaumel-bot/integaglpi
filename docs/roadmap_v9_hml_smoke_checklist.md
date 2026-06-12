@@ -103,6 +103,18 @@ Pré-requisito: Ollama HML acessível (socat → 10.8.0.10:11434 ativo). Ativar 
 
 ---
 
+## S7 — KB operational search (needs_review preview + smoke real)
+
+Flag temporária: `KB_SEARCH_INCLUDE_NEEDS_REVIEW_HML_ONLY=true` (somente HML; produção nunca inclui `needs_review`).
+
+| # | Cenário | Passos | Resultado esperado |
+| --- | --- | --- | --- |
+| S7.1 | Simulação local | `npm test -- tests/kbOperationalSearchSmoke.test.ts` (bloco SIMULATION) | PASS; relatório `tmp/kb_operational_search_simulation.yaml` com `source=mock_simulation` |
+| S7.2 | Smoke real HML | Deploy dist fix002 no container `glpi-integaglpi-integration`; `env KB_SEARCH_INCLUDE_NEEDS_REVIEW_HML_ONLY=true AI_PILOT_ENVIRONMENT=homologation node /tmp/kbOperationalSearchSmokeReal.mjs` (ou `npx tsx scripts/kbOperationalSearchSmokeReal.ts` com Postgres HML) | Relatório `tmp/kb_operational_search_smoke_real.yaml` com `source=postgres_hml_real`; 10 queries; top-3 validado |
+| S7.3 | Restaurar flag | `KB_SEARCH_INCLUDE_NEEDS_REVIEW_HML_ONLY=false` + restart integration | Busca volta a `approved`+`candidate` apenas |
+
+---
+
 ## Resultado
 
 | Bloco | Status | Executor | Data | Evidência |
@@ -113,6 +125,7 @@ Pré-requisito: Ollama HML acessível (socat → 10.8.0.10:11434 ativo). Ativar 
 | S4 (feedback bias) | PENDENTE | | | |
 | S5 (reranker) | PENDENTE | | | |
 | S6 (encerramento) | PENDENTE | | | |
+| S7 (KB search smoke) | PARCIAL (8/10 top3) | Codex fix_002 | 2026-06-11 | tmp/kb_operational_search_smoke_real.yaml |
 
 Fechamento `DONE_COM_RESSALVAS` do V9 exige S1–S6 verdes (ou ressalva formal
 registrada em `roadmap_v9_closure_ressalvas.md` para item reprovado/adiado).

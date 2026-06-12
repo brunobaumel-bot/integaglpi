@@ -271,6 +271,14 @@ const envSchema = z.object({
     .union([z.literal('true'), z.literal('false')])
     .default('false')
     .transform((value) => value === 'true'),
+  /**
+   * Preview HML: inclui needs_review na busca operacional local (Postgres).
+   * Default false. Em produção (NODE_ENV/AI_PILOT_ENVIRONMENT) nunca inclui needs_review.
+   */
+  KB_SEARCH_INCLUDE_NEEDS_REVIEW_HML_ONLY: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
   /** Pós-processamento local (Ollama) da resposta cloud — circuit breaker 8s. */
   CLOUD_POST_PROCESSING_ENABLED: z
     .union([z.literal('true'), z.literal('false')])

@@ -193,6 +193,7 @@ PHASE: `integaglpi_v9_kb_enrichment_and_search_optimization_001` — Updated: 20
 | `KB_ENRICHMENT_ENABLED` | `false` | Enriquecimento de KB (draft) | `false`: draft determinístico sem Ollama (needs_review). `true`: IA local complementa campos (ready_for_human_review). NUNCA publica; original sempre preservado. | Cursor review + revisão humana obrigatória |
 | `CUSTOM_RESPONSE_ENABLED` | `false` | Resposta customizada ao técnico | `false`: customResponse=null. `true`: orientação contextual COMPLEMENTAR ao KB original; gate de confiança < 0.60 nunca chama Ollama. | Cursor review + smoke HML |
 | `KB_GAP_ANALYSIS_ENABLED` | `false` | Análise de lacunas de KB | `false`: lista vazia. `true`: agrega rag_audit (KB_INSUFFICIENT) por plan_summary, threshold >= 3 ocorrências; gera draft_gap_candidate com revisão humana. | Cursor review |
+| `KB_SEARCH_INCLUDE_NEEDS_REVIEW_HML_ONLY` | `false` | Busca operacional KB (Postgres) | `false`: apenas approved+candidate. `true`: em HML/test/homologation inclui needs_review na preview; **produção nunca inclui** mesmo se flag ligada. | Cursor review + smoke real HML (`scripts/kbOperationalSearchSmokeReal.ts`) |
 | `CLOUD_POST_PROCESSING_ENABLED` | `false` | Pós-processamento cloud | `false`: resposta cloud sanitizada exibida como veio. `true`: polimento via Ollama local com circuit breaker de 8s (timeout → resposta original, nunca 500). | Cursor review + consentimento cloud já existente |
 
 ### V9 — UI rendering + ranking wiring (integaglpi_v9_kb_ui_rendering_and_ranking_wiring_001)

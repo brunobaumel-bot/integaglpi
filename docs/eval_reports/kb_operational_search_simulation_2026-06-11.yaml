@@ -1,0 +1,16 @@
+phase_id: integaglpi_v9_kb_operational_search_effectiveness_fix_002
+source: mock_simulation
+environment: local_ci
+generated_at: "2026-06-11"
+notes:
+  - "SIMULATION ONLY — planner + rankHits com hits mockados; NÃO usa Postgres searchCandidates."
+  - "Para smoke real HML ver tmp/kb_operational_search_smoke_real.yaml (source=postgres_hml_real)."
+  - "Relatório legado tmp/kb_operational_search_smoke.yaml foi substituído por este arquivo e pelo real."
+summary:
+  queries_tested: 6
+  passed_planner: 6
+  isolation_tests: 2
+  failed: 0
+  critical_false_positives: []
+test_file: integration-service/tests/kbOperationalSearchSmoke.test.ts
+describe_block: "KB operational search — planner/ranking SIMULATION"

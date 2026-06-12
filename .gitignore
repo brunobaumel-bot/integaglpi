@@ -28,3 +28,7 @@ vendor/
 .claude
 .claude_old/
 CLAUDE.md
+
+# Scratch/artifacts dir — nunca versionar (scripts de geração, tarballs de deploy,
+# SQL/MD de KB já aplicados, relatórios de smoke). Evidência canônica vai para docs/eval_reports/.
+tmp/
