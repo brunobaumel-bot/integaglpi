@@ -1,7 +1,7 @@
 # Roadmap V10 — IntegraGLPI: do Copiloto à IA Autônoma Atendendo
 
-PHASE: `integaglpi_v10_roadmap_001` — Versão FINAL: 2026-06-12 (rev. 2)
-Status: **VERSÃO FINAL — aguardando aprovação do operador + commit manual para virar SSOT congelado**
+PHASE: `integaglpi_v10_roadmap_001` — Versão FINAL: 2026-06-12 (rev. 4)
+Status: **M0 DOCUMENTAL FECHADO COMO `DONE_COM_RESSALVAS` — V10-1 depende de GO manual explícito do operador**
 Antecessor: Roadmap V9 (`CODE_CLOSE_COM_RESSALVAS`)
 Insumos: auditoria multi-perspectiva verificada em código (36 claims, 2026-06-12) +
 arbitragem de 4 propostas externas de roadmap (seção 8).
@@ -32,7 +32,7 @@ dentro das fases M4–M7, cada relaxamento com gate humano, métrica e reversão
 | I5 | **Confiança abaixo do limiar = humano** | `KB_INSUFFICIENT` ou confidence score < limiar da categoria → handoff, nunca chute. |
 | I6 | **Identidade transparente** | A IA sempre se identifica como assistente virtual; jamais simula ser humana. |
 | I7 | **Identity-First Guard** | Nenhum fluxo de segurança (reset, liberação de acesso) sem validação de identidade reforçada (fator adicional fora do WhatsApp). **Credencial/senha NUNCA trafega por WhatsApp.** |
-| I8 | **Blast radius limitado** | Mutação autônoma de ticket restrita a: criar, followup, solução, `solved` após confirmação do usuário. Nunca `closed` direto, nunca exclusão, nunca mudança de entidade/prioridade/ativo. |
+| I8 | **Blast radius limitado** | Mutação autônoma de ticket restrita a: criar, followup, solução, `solved` após confirmação do usuário. **Proibido mesmo em N5/N6:** `closed` direto, exclusão, mudança de entidade/prioridade/ativo/grupo, reatribuição de técnico, merge de tickets, publicação de KB nativa, reset/liberação sem Identity-First Guard (I7) + canal seguro de entrega. |
 | I9 | **Auditoria imutável** | Toda decisão da IA registrada: entrada, KB usada, confiança, resposta, resultado, intervenções. |
 | I10 | **Aprendizado curado** | A IA melhora via curadoria humana de KB, anchors, prompts e feedback agregado. **Sem retraining autônomo de modelo**; sem deriva não supervisionada. |
 | I11 | **PII Guard sempre** | Mascaramento antes de qualquer contexto chegar ao LLM, em todos os níveis. |
@@ -122,11 +122,35 @@ GATES_DE_PROMOCAO:
     - incidente_severidade_alta: "categoria volta automaticamente ao nivel anterior e exige recertificacao"
 ```
 
+### Diagrama — escada N1→N6
+
+```mermaid
+flowchart LR
+  N1["N1 Copiloto\n(humano executa)"] --> N2["N2 Supervisora\n(monitora operação)"]
+  N2 --> N3["N3 Atendente Tier-0\n(triagem + deflexão)"]
+  N3 --> N4["N4 Shadow Mode\n(IA propõe, humano aprova)"]
+  N4 --> N5["N5 Autônoma\n(categoria certificada)"]
+  N5 --> N6["N6 Ações\n(runbooks + Identity Guard)"]
+  KS["AI_AUTONOMY_KILL_SWITCH"] -.-> N1
+```
+
 ---
 
 ## 3. M0 / P0 — Fechamento total do V9 (pré-requisito absoluto)
 
 `integaglpi_v10_m0_v9_closure_001` · **Nenhuma fase do V10 inicia antes do M0 = DONE.**
+
+**Fechamento documental M0 — 2026-06-12**
+
+| Item | Resultado |
+| --- | --- |
+| Deploy formal HML Git-backed | PASS — HML em `18e16f2`; `3c099a8` ancestral confirmado; build Docker formal do `integration-service` |
+| Hot-patch | Eliminado como estado final; restart preserva `kbSearchStatusPolicy` e `ISOLATED_PRODUCT_GROUPS` no `dist` |
+| Smoke RAG real | PASS — `postgres_hml_real`, 10/10 queries, 10/10 top-1, 0 falhas |
+| Flag `KB_SEARCH_INCLUDE_NEEDS_REVIEW_HML_ONLY` | OFF em repouso; usada somente na linha do comando do smoke |
+| Disco HML | 95% -> 71% via `docker image prune -f`; volumes/backups preservados |
+| Produção | Intocada |
+| Ressalvas aceitas | S1-S6 não reexecutados nesta fase documental; stashes antigos apenas classificados; relatório de smoke arquivado |
 
 Inventário exaustivo das pendências do V9 (estado em 2026-06-12):
 
@@ -136,33 +160,33 @@ Inventário exaustivo das pendências do V9 (estado em 2026-06-12):
 | --- | --- | --- |
 | A1 | **Commit do pacote fix_002** (busca operacional): flag `KB_SEARCH_INCLUDE_NEEDS_REVIEW_HML_ONLY` + `kbSearchStatusPolicy.ts` + statuses dinâmicos no repositório + smoke real/simulação + testes + fixtures + docs | Cursor review CLOSE → commit manual (1 fase = 1 commit) |
 | A2 | **Commit do fix de ranking** (grupos de ecossistema `ISOLATED_PRODUCT_GROUPS` que levou o smoke de 8/10 a 10/10): `KbRankingService.ts` + 3 testes de regressão + `phpSmartHelpStatic` atualizado | Idem — pode compor o mesmo changeset do A1 se o Cursor aceitar como fase única de busca operacional |
-| A3 | **Commit deste roadmap** (`docs/roadmap_v10.md`) após aprovação do operador | Roadmap vira SSOT congelado |
-| A4 | **Stash `kb-enrichment-ollama-tuning`** (`stash@{0}`: OllamaClient options + KbEnrichmentService + teste) | Contrato próprio: aplicar+revisar+commit OU descartar com registro em `roadmap_v9_closure_ressalvas.md` |
-| A5 | **Stash `pre-v9-hml-close`** (`stash@{1}`) e stashes antigos | Decisão registrada: recuperar ou descartar formalmente |
-| A6 | **Artefatos `tmp/` untracked** (kb_*.sql/md já aplicados, tarballs de deploy, relatórios) | Relatórios canônicos (`kb_operational_search_smoke_real.yaml` 10/10) arquivados em `docs/eval_reports/`; SQL/MD de KB arquivados ou descartados com registro; tarballs apagados; nada de `tmp/` entra em commit sem decisão |
+| A3 | **Commit deste roadmap** (`docs/roadmap_v10.md`) após aprovação do operador | FECHADO no M0 documental: roadmap atualizado para `DONE_COM_RESSALVAS`; V10-1 ainda exige GO manual |
+| A4 | **Stash `kb-enrichment-ollama-tuning`** (`stash@{0}`: OllamaClient options + KbEnrichmentService + teste) | CLASSIFICADO SOMENTE — não aplicado e não apagado; decisão binária fica para contrato próprio pós-M0 |
+| A5 | **Stash `pre-v9-hml-close`** (`stash@{1}`) e stashes antigos | CLASSIFICADO SOMENTE — nenhum stash aplicado/apagado no M0 documental |
+| A6 | **Artefatos `tmp/` untracked** (kb_*.sql/md já aplicados, tarballs de deploy, relatórios) | FECHADO para smoke RAG: relatório canônico arquivado em `docs/eval_reports/kb_operational_search_smoke_real_2026-06-12.yaml`; tarballs continuam fora do commit |
 | A7 | `docs/eval_reports/ragas_*.json` e `reranker_benchmark_*.json` untracked "por decisão" | Decisão final registrada (commitar como evidência ou manter untracked documentado) |
 
 ### P0-B · Deploy e ambiente HML
 
 | ID | Pendência | Critério de conclusão |
 | --- | --- | --- |
-| B1 | **Deploy formal do integration-service em HML** — hoje o container roda dist **hot-patched** (`KbRankingService.js` e fix002 copiados manualmente); um restart reverte o código | Imagem versionada build→test→deploy; pipeline documentado; fim do hot-patch |
-| B2 | **Re-execução do smoke real 10/10 PÓS-deploy formal** | `kb_operational_search_smoke_real.yaml` regenerado com `source=postgres_hml_real`, 10/10, a partir da imagem oficial |
-| B3 | **Boot limpo** | Restart do container sem crash loop; migrations 050/052 idempotentes confirmadas |
-| B4 | **Flags restauradas** | `KB_SEARCH_INCLUDE_NEEDS_REVIEW_HML_ONLY=false` e demais flags V9 `false` no estado de repouso; `/health` ok |
-| B5 | **Disco HML ~87%** | Limpeza de imagens docker antigas (nunca `docker system prune -a`); registrado |
+| B1 | **Deploy formal do integration-service em HML** | PASS — fonte Git restaurada por bundle; HML `HEAD=18e16f2`; imagem Docker rebuildada sem `docker cp` como deploy final |
+| B2 | **Re-execução do smoke real 10/10 PÓS-deploy formal** | PASS — `docs/eval_reports/kb_operational_search_smoke_real_2026-06-12.yaml`, `source=postgres_hml_real`, 10/10 top-1 |
+| B3 | **Boot limpo** | PASS — restart sem crash loop; `/health` ok; fix presente no `dist` após restart |
+| B4 | **Flags restauradas** | PASS — `KB_SEARCH_INCLUDE_NEEDS_REVIEW_HML_ONLY` não permanece true em `.env`, compose ou env do container |
+| B5 | **Disco HML ~87%** | PASS — 95% -> 71% com `docker image prune -f`; sem `docker system prune -a`, sem volumes/backups |
 
 ### P0-C · Smoke HML final (checklist S1–S7)
 
 | ID | Pendência | Critério de conclusão |
 | --- | --- | --- |
-| C1 | **S1** — Saúde Técnica com perfil autorizado e sem direito (D08) | Evidências (prints) S1.1–S1.3 verdes |
-| C2 | **S2** — Smart Help com flags off (legado byte-idêntico) | S2.1–S2.3 verdes |
-| C3 | **S3** — `CUSTOM_RESPONSE_ENABLED=true` (1 problema, multi-problema, KB_INSUFFICIENT, gate de confiança, nada ao cliente, widget irmão) | S3.1–S3.6 verdes |
-| C4 | **S4** — `FEEDBACK_RANKING_ENABLED=true` (threshold 3 votos, sem technician_id, query bulk única) | S4.1–S4.5 verdes |
-| C5 | **S5** — `RERANKER_ENABLED=true` (metadado, fallback Ollama off, KB_INSUFFICIENT intacto, flag off) | S5.1–S5.4 verdes |
-| C6 | **S6** — Encerramento (flags false, health, boot, sem resíduo, evidências) | S6.1–S6.5 verdes |
-| C7 | **S7** — KB operational search (simulação + smoke real + restauração da flag) | S7.1–S7.3 verdes (S7.2 coincide com B2) |
+| C1 | **S1** — Saúde Técnica com perfil autorizado e sem direito (D08) | RESSALVA ACEITA — não reexecutado nesta fase documental |
+| C2 | **S2** — Smart Help com flags off (legado byte-idêntico) | RESSALVA ACEITA — não reexecutado nesta fase documental |
+| C3 | **S3** — `CUSTOM_RESPONSE_ENABLED=true` | RESSALVA ACEITA — não reexecutado nesta fase documental |
+| C4 | **S4** — `FEEDBACK_RANKING_ENABLED=true` | RESSALVA ACEITA — não reexecutado nesta fase documental |
+| C5 | **S5** — `RERANKER_ENABLED=true` | RESSALVA ACEITA — não reexecutado nesta fase documental |
+| C6 | **S6** — Encerramento | PASS parcial no escopo M0 — flags/rest/health/boot validados; demais itens mantidos como ressalva operacional |
+| C7 | **S7** — KB operational search | PASS — smoke real HML pós-deploy formal 10/10 top-1; flag restaurada |
 
 ### P0-D · Base de conhecimento
 
@@ -177,13 +201,14 @@ Inventário exaustivo das pendências do V9 (estado em 2026-06-12):
 
 | ID | Pendência | Critério de conclusão |
 | --- | --- | --- |
-| E1 | Atualizar `roadmap_v9_closure_ressalvas.md` com o resultado do smoke S1–S7 e decisões A4–A7 | Documento reflete o estado final |
-| E2 | **Declarar V9 = `DONE_COM_RESSALVAS`** | Registro formal com data e evidências |
-| E3 | **Congelar baseline V10** dos KPIs da seção 6 (CSAT, reabertura, SLA, TPR, KB_FOUND) | Commit manual revisado (mesma regra do `baseline.json`) |
-| E4 | Aprovação formal deste roadmap pelo operador | Status muda para SSOT |
+| E1 | Atualizar documentação M0 com o resultado do smoke S1–S7 e decisões A4–A7 | FECHADO neste roadmap/checklist; `roadmap_v9_closure_ressalvas.md` permanece fora da allowlist desta fase |
+| E2 | **Declarar V9 = `DONE_COM_RESSALVAS`** | FECHADO — registro formal com data e evidência RAG HML 10/10 |
+| E3 | **Congelar baseline V10** dos KPIs da seção 6 | FECHADO — `docs/baseline_v10_kpis.json` criado com métricas conhecidas e nulos auditáveis para KPIs ainda sem medição M0 |
+| E4 | Aprovação formal deste roadmap pelo operador | PENDENTE — V10-1 depende de GO manual explícito |
 
-**Gate de saída do M0:** todas as linhas A–E concluídas · produção intocada ·
-nenhuma flag ligada em repouso · smoke 10/10 a partir de deploy formal.
+**Gate de saída do M0 documental:** `DONE_COM_RESSALVAS` · produção intocada ·
+nenhuma flag ligada em repouso · smoke 10/10 a partir de deploy formal ·
+V10-1 bloqueado até GO manual explícito do operador.
 
 ---
 
@@ -215,8 +240,11 @@ copiloto inline ≥ 60% dos técnicos ativos; notificação de claim ativa e med
   KB_INSUFFICIENT, **uso da IA (sugestões aceitas vs apagadas, por técnico/chamado)**,
   top assuntos recorrentes, dead letter, alarmes LogMeIn correlacionados.
 - **Alertas proativos internos** (e-mail/notificação GLPI — nunca WhatsApp ao
-  cliente): SLA amarelo, chamado parado, deterioração de cliente (risk engine),
-  fila acima da capacidade.
+  cliente): SLA amarelo, chamado parado, deterioração de cliente, fila acima da
+  capacidade. **Risk engine exposto:** cards no cockpit agregando
+  `AiOnlineSupervisorAlertService` + `risk_scores` (score 0–100, tendência,
+  conversas/tickets em alerta) com drilldown para Monitor Online — reutilizar
+  worker e repositório existentes, sem novo motor.
 - **Relatório periódico automático** (export CSV/PDF agendado) — gap real confirmado.
 - **Sugestão de incidente maior**: agrupamento de chamados/conversas similares
   (estende o padrão da correlação F4 para tickets; read-only, humano decide).
@@ -240,7 +268,6 @@ curto; nunca query pesada no PHP.
   **Alvo: zero mensagem morta sem tratamento.**
 - Healthcheck consolidado incluindo **Ollama**; latência p95 por endpoint;
   endpoint de métricas read-only (formato Prometheus-compatível).
-- **Estimativa de fila para o usuário** ("você é o 3º; previsão ~N min").
 - Pipeline de deploy único build→test→imagem→HML→prod manual (consolida B1 do M0).
 
 **Racional:** IA autônoma sem observabilidade é cega; M3 torna M4–M6 auditáveis
@@ -266,15 +293,35 @@ ENTENDER, não para resolver):
 
 **Workstream 4B — Deflexão tier-0** (antes da abertura do ticket):
 
-1. Problema classificado em categoria da **allowlist tier-0** (inicial: 5–10
-   categorias com KB `approved` — Teams login, OneDrive sync, impressora/scanner,
-   Wi-Fi, senha) E confiança ≥ limiar.
+**Allowlist tier-0 inicial (contrato de fase M4 — base smoke 10/10 HML):**
+
+| query_id | KB alvo | Categoria operacional | Justificativa |
+| --- | --- | --- | --- |
+| `teams_login` | 307 | Microsoft Teams — login/cache | Smoke top1; KB operacional v2 |
+| `antivirus_fp` | 310 | Antivírus — falso positivo | Smoke top1 |
+| `ntfs_share` | 308 | Permissão NTFS / pasta compartilhada | Smoke top1 |
+| `onedrive_sync` | 314 | OneDrive / SharePoint sync | Smoke top1; ranking M365 corrigido |
+| `scanner_twain` | 312 | Scanner / TWAIN | Smoke top1 |
+| `erp_odbc` | 313 | ERP / ODBC / DSN | Smoke top1; ranking ERP/ODBC corrigido |
+| `wifi_desktop` | 315 | Wi-Fi / adaptador wireless | Smoke top1 |
+| `backup_synology` | 223 | Backup Synology / restauração | Smoke top1 |
+| `office_m365` | 215 | Office M365 / licenciamento | Smoke top1 (216 alternativa top1) |
+| `micromed_app` | 306 | Micromed — aplicativo | Smoke top1; isolamento cross-grupo validado |
+
+Pré-requisito gate N2→N3: KBs acima com status **`approved`** (D2). Confiança mínima
+por categoria definida no contrato `integaglpi_v10_m4_ai_attendant_001` (default sugerido:
+ranking top1 + score ≥ limiar configurável, nunca abaixo do gate Smart Help).
+
+1. Problema classificado em categoria da **allowlist tier-0** acima E confiança ≥ limiar.
 2. IA envia a orientação da KB (texto ancorado, sem geração livre) + botões
    `[Resolveu ✅] [Quero um técnico 👤]`.
 3. `Resolveu` → deflexão registrada (sem ticket) + CSAT. `Quero um técnico` ou
    silêncio → fluxo humano com chamado **já enriquecido** ("KB tentada: X").
 4. `KB_INSUFFICIENT`/baixa confiança → nem oferece; direto ao humano.
 5. Máx. 1 tentativa de deflexão por conversa; nunca em fila VIP/contrato crítico.
+6. **Estimativa de fila para o usuário** ("você é o 3º; previsão ~N min") — exposta
+   no fluxo WhatsApp quando tier-0 não resolve e antes do handoff humano (contagem
+   read-only da fila PostgreSQL + TPR médio rolling).
 
 Métricas novas: `% atendidos inicialmente pela IA`, `deflection_rate`,
 `false_resolution_rate` (reaberto ≤ 72h pós "Resolveu").
@@ -306,10 +353,17 @@ Para **categorias certificadas individualmente** (gate N4→N5):
 - IA atende end-to-end: entende → responde com KB → acompanha → confirma
   resolução com o usuário → registra solução no ticket → dispara CSAT.
   **Sem aprovação prévia.** Blast radius do invariante I8.
-- **Quarentena de intervenção (modo piloto):** durante a fase assistida, cada
-  resposta autônoma pode aguardar uma janela curta (ex.: 15 min) em que o
-  supervisor pode interceptar antes do envio; a janela cai a zero conforme a
-  amostragem de revisão (100% → 25% → 5%) comprova estabilidade.
+- **Quarentena de intervenção (modo piloto) — mecanismo técnico:**
+  - Estado Postgres `conversation_runtime.autonomy_hold_until` (timestamp) +
+    `autonomy_review_sample_rate` (100/25/5) por categoria certificada.
+  - Resposta autônoma gerada → gravada em `ai_autonomy_pending_outbound` (novo
+    registro auditável) → **não** chama outbound imediato se `now < hold_until`.
+  - Cockpit M2/M6: fila "Pendências IA" com polling 15s (mesmo padrão Monitor
+    Online); botão supervisor `[Interceptar]` → claim humano + cancela pending.
+  - Job `AutonomyHoldReleaseWorker`: quando `hold_until` expira sem interceptação,
+    dispara outbound via `OutboundMessageService` (único caminho de envio).
+  - Amostragem 100%→25%→5%: reduz `hold_until` duration e `review_sample_rate`
+    por categoria após gates N5_estavel; kill switch I3 zera fila pending.
 - Cockpit em tempo real: conversas autônomas ativas, taxa de sucesso,
   intervenções, score médio; **claim humano assume qualquer conversa na hora**.
 - Fail-safe I4 ativo: LLM fora do ar → mensagem estática + fila humana.
@@ -362,8 +416,10 @@ Para **categorias certificadas individualmente** (gate N4→N5):
 | KB_FOUND rate | rag_audit | ≥ 80% |
 | Latência de dashboards | M3 | < 2s |
 
-Baseline congelado no fechamento do M0 (E3) — commit manual revisado, mesma
-regra do `baseline.json`.
+Baseline congelado no fechamento do M0 (E3) em **`docs/baseline_v10_kpis.json`**
+— commit manual revisado; mesma regra de não auto-modificação de
+`docs/eval_reports/baseline.json`. Flags V10 documentadas em
+`docs/feature_flags_matrix.md` § V10 (default `false`).
 
 ---
 
@@ -410,6 +466,8 @@ gamificação opcional de técnicos.
 | --- | --- | --- |
 | 2026-06-12 | Objetivo final declarado: IA autônoma atendendo. Invioláveis de autonomia do V9 reclassificados de "absolutos" para "default, relaxáveis por categoria certificada via gates M4–M6". | Operador |
 | 2026-06-12 | Versão final do roadmap consolidando auditoria de código + arbitragem de 4 propostas externas; P0/M0 definido como fechamento exaustivo do V9. | — (aguarda aprovação) |
+| 2026-06-12 | Rev. 3: refinamentos P0 (flags matrix, allowlist tier-0, stashes A4/A5, artefato baseline_v10_kpis.json, I8 expandido, quarentena M6, risk engine no cockpit). | Cursor auditoria multi-perspectiva |
+| 2026-06-12 | Rev. 4: M0 documental fechado como `DONE_COM_RESSALVAS` após deploy formal HML Git-backed, smoke RAG real 10/10 top-1 e restauração de flag. | Codex M0 documental closure |
 
 > Este documento vira **SSOT congelado do V10** após: (1) aprovação explícita do
 > operador; (2) commit manual revisado (item A3 do M0). Até lá, o SSOT vigente

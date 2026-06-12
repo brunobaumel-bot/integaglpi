@@ -1,11 +1,17 @@
 # Roadmap V9 — Checklist de Smoke HML Final
 
-PHASE: `integaglpi_v9_final_ressalvas_cleanup_001` — Updated: 2026-06-11
+PHASE: `integaglpi_v9_final_ressalvas_cleanup_001` — Updated: 2026-06-12
 
 Checklist operacional para o smoke HML final do V9 antes do fechamento
 `DONE_COM_RESSALVAS`. Execução **manual**, somente em HOMOLOGAÇÃO
 (`glpi-integaglpi-*`; NUNCA `prod-*`). Nenhum item deste checklist autoriza
 deploy em produção, alteração de `.env` permanente ou publicação de KB.
+
+**Fechamento M0 documental:** `DONE_COM_RESSALVAS` em 2026-06-12. O deploy formal
+HML foi executado a partir de fonte Git-backed em `18e16f2`; o smoke RAG real
+registrou `postgres_hml_real`, 10/10 queries, 10/10 top-1 e 0 falhas. S1-S5
+permanecem como ressalvas operacionais aceitas porque não foram reexecutados
+nesta fase documental. V10-1 continua bloqueado até GO manual do operador.
 
 **Regras gerais do smoke:**
 
@@ -119,13 +125,14 @@ Flag temporária: `KB_SEARCH_INCLUDE_NEEDS_REVIEW_HML_ONLY=true` (somente HML; p
 
 | Bloco | Status | Executor | Data | Evidência |
 | --- | --- | --- | --- | --- |
-| S1 (D08) | PENDENTE | | | |
-| S2 (flag off) | PENDENTE | | | |
-| S3 (customResponse) | PENDENTE | | | |
-| S4 (feedback bias) | PENDENTE | | | |
-| S5 (reranker) | PENDENTE | | | |
-| S6 (encerramento) | PENDENTE | | | |
-| S7 (KB search smoke) | PARCIAL (8/10 top3) | Codex fix_002 | 2026-06-11 | tmp/kb_operational_search_smoke_real.yaml |
+| S1 (D08) | RESSALVA ACEITA | Codex M0 documental | 2026-06-12 | Não reexecutado nesta fase documental; sem autorização para alterar permissões/runtime |
+| S2 (flag off) | RESSALVA ACEITA | Codex M0 documental | 2026-06-12 | Não reexecutado nesta fase documental; flags permanentes preservadas |
+| S3 (customResponse) | RESSALVA ACEITA | Codex M0 documental | 2026-06-12 | Não reexecutado nesta fase documental; sem envio WhatsApp/ticket mutation |
+| S4 (feedback bias) | RESSALVA ACEITA | Codex M0 documental | 2026-06-12 | Não reexecutado nesta fase documental; sem alteração de ranking/runtime |
+| S5 (reranker) | RESSALVA ACEITA | Codex M0 documental | 2026-06-12 | Não reexecutado nesta fase documental; sem alteração de provider/Ollama |
+| S6 (encerramento) | PASS PARCIAL M0 | Codex M0 formal deploy | 2026-06-12 | Health OK pós-restart; flag `KB_SEARCH_INCLUDE_NEEDS_REVIEW_HML_ONLY` OFF em repouso; produção intocada |
+| S7 (KB search smoke) | PASS (10/10 top1 pós-deploy formal) | Codex M0 formal deploy | 2026-06-12 | `docs/eval_reports/kb_operational_search_smoke_real_2026-06-12.yaml` |
 
-Fechamento `DONE_COM_RESSALVAS` do V9 exige S1–S6 verdes (ou ressalva formal
-registrada em `roadmap_v9_closure_ressalvas.md` para item reprovado/adiado).
+Fechamento `DONE_COM_RESSALVAS` do V9 foi declarado no M0 documental com S1-S5
+como ressalvas aceitas, S6 parcial no escopo de flags/health/boot e S7 PASS real.
+V10-1 exige GO manual explícito do operador.

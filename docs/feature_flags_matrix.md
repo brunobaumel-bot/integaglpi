@@ -1,7 +1,6 @@
 # Feature Flags Matrix - IntegraGLPI V7
 
-Phase: `integaglpi_v8_final_governance_lgpd_readiness_and_release_gate_001`
-Updated: 2026-06-04
+Phase: `integaglpi_v10_roadmap_001` — Updated: 2026-06-12 (rev. 3)
 
 ## Rule
 
@@ -336,3 +335,36 @@ Regras de decisão (KEEP_CURRENT_SEARCH):
 - `baseline.json` NUNCA é auto-modificado por automação — atualização exige commit manual revisado após smoke HML.
 - ADR completo: `docs/architecture/adr_004_vector_search_decision.md`
 - Relatório de avaliação: `docs/eval_reports/vector_search_gate_2026-06-09.md`
+
+---
+
+## V10 — Autonomia controlada (integaglpi_v10_roadmap_001)
+
+PHASE: `integaglpi_v10_roadmap_001` — Updated: 2026-06-12 (rev. 4)
+Roadmap: `docs/roadmap_v10.md` — **flags abaixo nascem `false`; produção exige gate humano + Cursor review.**
+
+| Flag | Default seguro | Domínio | Comportamento | Gate mínimo |
+| --- | --- | --- | --- | --- |
+| `KB_SEARCH_INCLUDE_NEEDS_REVIEW_HML_ONLY` | `false` | Busca operacional KB (Postgres) | `false`: apenas `approved`+`candidate`. `true`: em HML/test/homologation inclui `needs_review` na preview; **produção nunca inclui** mesmo se flag ligada. | M0 smoke + Cursor review |
+| `AI_TRIAGE_ATTENDANT_ENABLED` | `false` | M4 — Atendente de triagem (N3) | `false`: FSM legado. `true`: classificação de intenção + coleta guiada + chamado enriquecido; **sem** resolução autônoma. | M0 DONE + M2 cockpit + M3 observabilidade + D2 KBs approved |
+| `TIER0_DEFLECTION_ENABLED` | `false` | M4 — Deflexão tier-0 (N3) | `false`: sem deflexão pré-ticket. `true`: FAQ ancorada em KB `approved` + botões Resolveu/Técnico; allowlist em `roadmap_v10.md` § M4. | Idem M4 + smoke deflexão HML |
+| `SUPERVISED_RESOLUTION_ENABLED` | `false` | M5 — Shadow Mode (N4) | `false`: Copiloto draft only. `true`: fila de aprovação na Central; envio WhatsApp **só** após clique técnico. | Gates N3→N4 + zero incidente PII |
+| `AUTONOMOUS_ATTENDANCE_ENABLED` | `false` | M6 — Autonomia global (N5) | `false`: sem envio autônomo. `true`: permite autonomia **somente** para categorias em `autonomous_categories`. | Gate N4→N5 por categoria + piloto 30–45d HML |
+| `AUTONOMOUS_CATEGORIES` | `[]` (vazio) | M6 — Allowlist por categoria | Lista JSON/array de categorias certificadas individualmente. Vazia = nenhuma autonomia mesmo com flag global true. | Certificação métrica por categoria |
+| `AI_AUTONOMY_KILL_SWITCH` | `false` | Kill switch global (I3) | `true`: força retorno imediato ao modo N1 (copiloto); cancela pending outbound autônomo; **não** requer deploy. | Operador/supervisor — toggle auditado |
+
+Regras V10 (ABSOLUTAS enquanto flags off):
+- Flags V10 **não existem em `env.ts` até a fase que as implementa** — esta matriz é contrato antecipado.
+- Nenhuma flag V10 ligada em produção sem: M0 DONE, Cursor CLOSE, smoke HML, restauração documentada.
+- `AI_AUTONOMY_KILL_SWITCH=true` tem precedência sobre todas as flags de autonomia.
+- Tier-0 e autonomia **nunca** em fila VIP/contrato crítico (hardcoded no contrato M4/M6).
+- Credencial/senha **nunca** via WhatsApp (I7) — independente de flags.
+- Referência completa: invariantes I1–I12 em `docs/roadmap_v10.md` § 0.
+
+### Registro M0 — 2026-06-12
+
+- `KB_SEARCH_INCLUDE_NEEDS_REVIEW_HML_ONLY=true` foi usado somente na linha do comando do smoke RAG HML.
+- Evidência: `docs/eval_reports/kb_operational_search_smoke_real_2026-06-12.yaml`.
+- Resultado: `postgres_hml_real`, 10 queries, 10 top-1 corretos, 0 falhas.
+- Repouso confirmado: flag não permaneceu `true` em `.env`, compose ou ambiente do container.
+- Produção permaneceu intocada; nenhuma flag V10 foi ativada em produção.

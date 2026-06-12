@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.0",
+  "phase": "integaglpi_v10_m0_documental_closure_001",
+  "deliverable": "E3",
+  "status": "FROZEN_DONE_COM_RESSALVAS",
+  "roadmap": "docs/roadmap_v10.md",
+  "reference_baseline_kb_search": "docs/eval_reports/baseline.json",
+  "m0_smoke_report": "docs/eval_reports/kb_operational_search_smoke_real_2026-06-12.yaml",
+  "frozen_at_m0": "2026-06-12",
+  "committed_at": "2026-06-12",
+  "committed_by": "Codex M0 documental closure",
+  "environment": "HML",
+  "measurement_window_days": 30,
+  "status_notes": [
+    "M0 fechado como DONE_COM_RESSALVAS.",
+    "V10-1 depende de GO manual explicito do operador.",
+    "KPIs ainda nao medidos no M0 permanecem null para evitar baseline fabricado.",
+    "KB_SEARCH_INCLUDE_NEEDS_REVIEW_HML_ONLY foi usada somente no comando do smoke e ficou desligada em repouso."
+  ],
+  "known_m0_evidence": {
+    "hml_head": "18e16f2",
+    "required_ancestor_commit": "3c099a8",
+    "rag_smoke_source": "postgres_hml_real",
+    "rag_queries_tested": 10,
+    "rag_passed_top3": 10,
+    "rag_top1_correct": 10,
+    "rag_failed": 0,
+    "rag_critical_false_positives": 0,
+    "hml_disk_use_before_pct": 95,
+    "hml_disk_use_after_pct": 71,
+    "production_touched": false,
+    "kb_auto_published": false,
+    "kb_auto_promoted": false
+  },
+  "kpis": {
+    "csat_average": null,
+    "reopen_rate_pct": null,
+    "sla_compliance_pct": null,
+    "first_response_time_median_minutes": null,
+    "kb_found_rate_pct": null,
+    "deflection_rate_pct": null,
+    "ai_initial_handling_pct": null,
+    "copilot_inline_adoption_pct": null,
+    "dashboard_p95_latency_ms": null,
+    "rag_smoke_top1_correct_pct": 100,
+    "rag_smoke_failed": 0
+  },
+  "targets_v10_exit": {
+    "csat_average_min": 4.3,
+    "reopen_rate_max_pct": 8,
+    "sla_compliance_min_pct": 95,
+    "first_response_improvement_pct": 40,
+    "kb_found_rate_min_pct": 80,
+    "deflection_rate_min_pct": 25,
+    "ai_initial_handling_min_pct": 50,
+    "copilot_inline_adoption_min_pct": 60,
+    "dashboard_p95_max_ms": 2000
+  },
+  "tolerance_note": "Comparar evolucao V10 contra este snapshot; nao confundir com baseline de busca KB docs/eval_reports/baseline.json. Este arquivo nao deve ser auto-modificado."
+}

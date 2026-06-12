@@ -1,10 +1,35 @@
 # Prompt Contract — Engineering Workflow
 
-**Version:** 2.0  
-**Last Updated:** 2026-05-28  
+**Version:** 3.1
+**Last Updated:** 2026-06-12
 **Project:** IntegraGLPI — GLPI 11 + WhatsApp Cloud API + IA Local  
-**Roadmap:** V5 — Ciclo completo F0–F4 fechado; F5 registrado como backlog V6  
+**Roadmap:** **V10** — `docs/roadmap_v10.md` (sucessor do V9 `DONE_COM_RESSALVAS`; SSOT congelado após commit A3 do M0)
 **Status:** Official
+
+---
+
+## Roadmap V10 — Objetivo e SSOT
+
+**Objetivo final declarado:** IA autônoma atendendo e resolvendo chamados, por escalada
+controlada N1→N6 (ver `docs/roadmap_v10.md` § 0–2).
+
+| Macro | Nível IA | Gate de entrada |
+| --- | --- | --- |
+| M0 | — | Fechamento V9 (pré-requisito absoluto) |
+| M1 | N1 pleno | M0 `DONE_COM_RESSALVAS` + GO manual explícito do operador |
+| M2 | N2 | M1 |
+| M3 | — (fundação) | M1 (paralelo com M2) |
+| M4 | N3 | M2 + M3 + D2 KBs approved |
+| M5 | N4 Shadow | Gates N3→N4 |
+| M6 | N5 (objetivo) | Gates N4→N5 **por categoria** |
+| M7 | N6 (horizonte) | N5 estável 90d |
+
+**Invariantes permanentes I1–I12:** `docs/roadmap_v10.md` § 0 — nunca violar em fase.
+
+**Flags V10:** `docs/feature_flags_matrix.md` § V10 — default `false`; nascem em código
+somente na fase que as implementa.
+
+**Baseline KPIs V10:** `docs/baseline_v10_kpis.json` — congelado no M0-E3 com valores conhecidos e nulos auditáveis para KPIs ainda não medidos.
 
 ---
 
@@ -19,7 +44,7 @@ Este documento define o padrão oficial de prompts, handoffs, revisões e govern
 | `integration-service/` | TypeScript/Node.js | Webhooks Meta, FSM, IA local, outbound, jobs, quality |
 | `infra/` | Docker + PostgreSQL | Bootstrap, schema, migrations |
 
-## Roadmap V5 — Estado Final (2026-05-28)
+## Roadmap V5 — Estado Final (2026-05-28) — histórico
 
 | Fase | ID | Status | Ressalvas aceitas |
 |------|----|--------|-------------------|
@@ -31,6 +56,14 @@ Este documento define o padrão oficial de prompts, handoffs, revisões e govern
 | F5 | `integaglpi_future_integrations_readonly_gold_001` | BACKLOG_V6 | LogMeIn/Zabbix/ERP/n8n/Omnichannel diferidos; smokes estáticos S-F5-01/02/03 confirmados |
 | Final | `integaglpi_docs_contract_sync_001` | EXECUTADO | Este documento |
 
+## Roadmap V9 — Fechamento (2026-06-12)
+
+Status: **`DONE_COM_RESSALVAS`** após M0 documental — ver checklist S1–S7 em `docs/roadmap_v9_hml_smoke_checklist.md` e evidência `docs/eval_reports/kb_operational_search_smoke_real_2026-06-12.yaml`.
+
+## Roadmap V10 — Ativo (2026-06-12)
+
+SSOT: **`docs/roadmap_v10.md`**. Nenhuma fase V10 (M1+) inicia antes de **GO manual explícito do operador** após M0 `DONE_COM_RESSALVAS`.
+
 ## Single Source of Truth
 Este arquivo é a **fonte oficial e mais atualizada**.  
 As instruções salvas no ChatGPT (globais e por projeto) são cópias cacheadas e devem ser sincronizadas sempre que este arquivo for alterado.
@@ -40,12 +73,14 @@ Todo prompt deve seguir este formato:
 ROLE:
 TASK:
 PHASE_ID:
+TARGET_MATURITY_LEVEL:   # N1–N6 ou — (infra/M0)
 MISSION:
 CURRENT_STATE:
 SCOPE:
 ALLOWLIST:
 FORBIDDEN:
 SAFETY_FLAGS:
+PROMOTION_GATE_VALIDATION:   # métricas que autorizam autonomia (V10)
 INPUTS:
 REQUIRED_ACTION:
 OUTPUT_SCHEMA:
@@ -219,4 +254,4 @@ Qualquer evolução deste contrato deve ser feita através de fase documental ap
 
 ---
 
-**End of Document — Roadmap V5 Closed 2026-05-28**
+**End of Document — Roadmap V10 sync 2026-06-12 (V5/V9 histórico preservado acima)**
