@@ -62,6 +62,7 @@ export interface InactivityTrackingRepository {
   findDueCandidates(limit: number): Promise<InactivityTrackingRecord[]>;
   findProfileCollectionReminderCandidates(
     reminderCutoff: Date,
+    secondReminderCutoff: Date,
     autocloseCutoff: Date,
     limit: number,
   ): Promise<ProfileCollectionReminderCandidate[]>;

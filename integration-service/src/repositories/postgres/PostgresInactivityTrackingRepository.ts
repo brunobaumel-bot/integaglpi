@@ -151,6 +151,7 @@ export class PostgresInactivityTrackingRepository implements InactivityTrackingR
 
   public async findProfileCollectionReminderCandidates(
     reminderCutoff: Date,
+    secondReminderCutoff: Date,
     autocloseCutoff: Date,
     limit: number,
   ): Promise<ProfileCollectionReminderCandidate[]> {
@@ -177,6 +178,8 @@ export class PostgresInactivityTrackingRepository implements InactivityTrackingR
         FROM ${DATABASE_TABLES.conversations}
         WHERE status IN ('collecting_contact_profile', 'awaiting_entity_selection')
           AND (glpi_ticket_id IS NULL OR glpi_ticket_id = 0)
+          AND COALESCE(profile_collection_state->>'attention_required', 'false') <> 'true'
+          AND profile_collection_state->>'preticket_timeout_attempted_at' IS NULL
           AND (
             (
               status = 'collecting_contact_profile'
@@ -187,18 +190,35 @@ export class PostgresInactivityTrackingRepository implements InactivityTrackingR
           )
           AND last_message_at <= $1
           AND (
-            last_message_at <= $2
+            last_message_at <= $3
             OR profile_collection_state->>'profile_reminder_sent_at' IS NULL
             OR profile_collection_state->>'profile_reminder_sent_for_step'
               IS DISTINCT FROM CASE
                 WHEN status = 'awaiting_entity_selection' THEN 'awaiting_entity_selection'
                 ELSE COALESCE(profile_collection_state->>'step', '')
               END
+            OR (
+              last_message_at <= $2
+              AND profile_collection_state->>'profile_reminder_sent_at' IS NOT NULL
+              AND profile_collection_state->>'profile_reminder_sent_for_step'
+                IS NOT DISTINCT FROM CASE
+                  WHEN status = 'awaiting_entity_selection' THEN 'awaiting_entity_selection'
+                  ELSE COALESCE(profile_collection_state->>'step', '')
+                END
+              AND (
+                profile_collection_state->>'profile_reminder_2_sent_at' IS NULL
+                OR profile_collection_state->>'profile_reminder_2_sent_for_step'
+                  IS DISTINCT FROM CASE
+                    WHEN status = 'awaiting_entity_selection' THEN 'awaiting_entity_selection'
+                    ELSE COALESCE(profile_collection_state->>'step', '')
+                  END
+              )
+            )
           )
         ORDER BY last_message_at ASC, updated_at ASC
-        LIMIT $3
+        LIMIT $4
       `,
-      [reminderCutoff, autocloseCutoff, limit],
+      [reminderCutoff, secondReminderCutoff, autocloseCutoff, limit],
     );
 
     return result.rows.map((row) => ({
@@ -363,13 +383,13 @@ export class PostgresInactivityTrackingRepository implements InactivityTrackingR
           profile_collection_state = COALESCE(profile_collection_state, '{}'::jsonb)
             || jsonb_build_object(
               'preticket_timeout_ticket_opened_at', $3::text,
-              'preticket_timeout_ticket_id', $2::bigint
+              'preticket_timeout_ticket_id', $6::bigint
             ),
           updated_at = NOW()
         WHERE id = $1
           AND (glpi_ticket_id IS NULL OR glpi_ticket_id = 0)
       `,
-      [conversationId, ticketId, openedAt.toISOString(), glpiEntityId, glpiEntityName],
+      [conversationId, ticketId, openedAt.toISOString(), glpiEntityId, glpiEntityName, ticketId],
     );
   }
 

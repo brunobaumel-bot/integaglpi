@@ -370,8 +370,14 @@ export class InactivityAutomationService {
   private async processProfileCollectionReminderCandidates(limit: number): Promise<void> {
     const now = this.nowProvider();
     const reminderCutoff = new Date(now.getTime() - PRETICKET_REMINDER_1_MINUTES * 60_000);
+    const secondReminderCutoff = new Date(now.getTime() - PRETICKET_REMINDER_2_MINUTES * 60_000);
     const autocloseCutoff = new Date(now.getTime() - PRETICKET_TICKET_OPEN_MINUTES * 60_000);
-    const candidates = await this.repository.findProfileCollectionReminderCandidates(reminderCutoff, autocloseCutoff, limit);
+    const candidates = await this.repository.findProfileCollectionReminderCandidates(
+      reminderCutoff,
+      secondReminderCutoff,
+      autocloseCutoff,
+      limit,
+    );
     await this.recordProfileDiagnostic(null, 'checked', {
       reason: candidates.length > 0 ? 'profile_collection_candidates_found' : 'profile_collection_no_candidates',
       checkedCount: candidates.length,

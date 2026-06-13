@@ -7,6 +7,7 @@ import {
   type InactivityConfig,
 } from '../src/domain/services/InactivityAutomationService.js';
 import { GlpiRequestError } from '../src/errors/GlpiRequestError.js';
+import { PostgresInactivityTrackingRepository } from '../src/repositories/postgres/PostgresInactivityTrackingRepository.js';
 import type {
   InactivityTrackingRecord,
   InactivityTrackingRepository,
@@ -40,6 +41,20 @@ function makeRecord(overrides: Partial<InactivityTrackingRecord> = {}): Inactivi
     updatedAt: minutesAgo(124),
     ...overrides,
   };
+}
+
+function currentProfileStep(candidate: ProfileCollectionReminderCandidate): string {
+  if (candidate.conversationStatus === 'awaiting_entity_selection') {
+    return 'awaiting_entity_selection';
+  }
+
+  const step = candidate.profileCollectionState.step;
+  return typeof step === 'string' ? step.trim() : '';
+}
+
+function profileField(candidate: ProfileCollectionReminderCandidate, field: string): string | null {
+  const value = candidate.profileCollectionState[field];
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
 }
 
 const config: InactivityConfig = {
@@ -77,8 +92,44 @@ class FakeRepository implements InactivityTrackingRepository {
     return [...this.records.values()];
   }
 
-  public async findProfileCollectionReminderCandidates(): Promise<ProfileCollectionReminderCandidate[]> {
-    return this.profileReminderCandidates;
+  public async findProfileCollectionReminderCandidates(
+    reminderCutoff: Date,
+    secondReminderCutoff: Date,
+    autocloseCutoff: Date,
+  ): Promise<ProfileCollectionReminderCandidate[]> {
+    return this.profileReminderCandidates.filter((candidate) => {
+      const step = currentProfileStep(candidate);
+      if (!step || step === 'complete') {
+        return false;
+      }
+      if (candidate.conversationStatus !== 'collecting_contact_profile' && candidate.conversationStatus !== 'awaiting_entity_selection') {
+        return false;
+      }
+      if (candidate.profileCollectionState.attention_required === true) {
+        return false;
+      }
+      if (profileField(candidate, 'preticket_timeout_attempted_at') || profileField(candidate, 'preticket_timeout_ticket_id')) {
+        return false;
+      }
+      if (candidate.lastMessageAt.getTime() > reminderCutoff.getTime()) {
+        return false;
+      }
+      if (candidate.lastMessageAt.getTime() <= autocloseCutoff.getTime()) {
+        return true;
+      }
+
+      const firstReminderForStep = profileField(candidate, 'profile_reminder_sent_for_step') === step
+        && profileField(candidate, 'profile_reminder_sent_at') !== null;
+      if (!firstReminderForStep) {
+        return true;
+      }
+
+      return candidate.lastMessageAt.getTime() <= secondReminderCutoff.getTime()
+        && (
+          profileField(candidate, 'profile_reminder_2_sent_at') === null
+          || profileField(candidate, 'profile_reminder_2_sent_for_step') !== step
+        );
+    });
   }
 
   public async findByConversationId(conversationId: string): Promise<InactivityTrackingRecord | null> {
@@ -102,8 +153,23 @@ class FakeRepository implements InactivityTrackingRepository {
     step: string,
     sentAt: Date,
   ): Promise<boolean> {
+    if (!this.profileReminderMarkResult) {
+      return false;
+    }
+    const candidate = this.profileReminderCandidates.find((item) => item.conversationId === conversationId);
+    if (!candidate || currentProfileStep(candidate) !== step) {
+      return false;
+    }
+    if (profileField(candidate, 'profile_reminder_sent_at') && profileField(candidate, 'profile_reminder_sent_for_step') === step) {
+      return false;
+    }
+    candidate.profileCollectionState = {
+      ...candidate.profileCollectionState,
+      profile_reminder_sent_at: sentAt.toISOString(),
+      profile_reminder_sent_for_step: step,
+    };
     this.profileRemindersMarked.push({ conversationId, step, sentAt });
-    return this.profileReminderMarkResult;
+    return true;
   }
 
   public async markProfileCollectionSecondReminderSent(
@@ -111,8 +177,23 @@ class FakeRepository implements InactivityTrackingRepository {
     step: string,
     sentAt: Date,
   ): Promise<boolean> {
+    if (!this.profileReminderMarkResult) {
+      return false;
+    }
+    const candidate = this.profileReminderCandidates.find((item) => item.conversationId === conversationId);
+    if (!candidate || currentProfileStep(candidate) !== step) {
+      return false;
+    }
+    if (profileField(candidate, 'profile_reminder_2_sent_at') && profileField(candidate, 'profile_reminder_2_sent_for_step') === step) {
+      return false;
+    }
+    candidate.profileCollectionState = {
+      ...candidate.profileCollectionState,
+      profile_reminder_2_sent_at: sentAt.toISOString(),
+      profile_reminder_2_sent_for_step: step,
+    };
     this.profileSecondRemindersMarked.push({ conversationId, step, sentAt });
-    return this.profileReminderMarkResult;
+    return true;
   }
 
   public async tryReserveProfileCollectionTimeout(
@@ -120,8 +201,23 @@ class FakeRepository implements InactivityTrackingRepository {
     step: string,
     attemptedAt: Date,
   ): Promise<boolean> {
+    if (!this.profileTimeoutReservationResult) {
+      return false;
+    }
+    const candidate = this.profileReminderCandidates.find((item) => item.conversationId === conversationId);
+    if (!candidate || currentProfileStep(candidate) !== step) {
+      return false;
+    }
+    if (profileField(candidate, 'preticket_timeout_attempted_at') && profileField(candidate, 'preticket_timeout_for_step') === step) {
+      return false;
+    }
+    candidate.profileCollectionState = {
+      ...candidate.profileCollectionState,
+      preticket_timeout_attempted_at: attemptedAt.toISOString(),
+      preticket_timeout_for_step: step,
+    };
     this.profileTimeoutReserved.push({ conversationId, step, attemptedAt });
-    return this.profileTimeoutReservationResult;
+    return true;
   }
 
   public async markProfileCollectionTicketOpened(
@@ -132,6 +228,14 @@ class FakeRepository implements InactivityTrackingRepository {
     _entityName: string | null,
   ): Promise<void> {
     this.profileTicketsOpened.push({ conversationId, ticketId, entityId });
+    const candidate = this.profileReminderCandidates.find((item) => item.conversationId === conversationId);
+    if (candidate) {
+      candidate.conversationStatus = 'open';
+      candidate.profileCollectionState = {
+        ...candidate.profileCollectionState,
+        preticket_timeout_ticket_id: String(ticketId),
+      };
+    }
   }
 
   public async markProfileCollectionAttentionRequired(
@@ -140,6 +244,15 @@ class FakeRepository implements InactivityTrackingRepository {
     _detectedAt: Date,
   ): Promise<void> {
     this.profileAttentionRequired.push({ conversationId, step: reason, reason });
+    const candidate = this.profileReminderCandidates.find((item) => item.conversationId === conversationId);
+    if (candidate) {
+      candidate.profileCollectionState = {
+        ...candidate.profileCollectionState,
+        attention_required: true,
+        attention_reason: reason,
+        attention_required_at: _detectedAt.toISOString(),
+      };
+    }
   }
 
   public async cancelProfileCollectionConversation(
@@ -976,5 +1089,182 @@ describe('InactivityAutomationService', () => {
       idempotencyKey: 'preticket_timeout_ticket_opened:profile-conv-timeout:asking_reason:2026-05-15T14:54:00.000Z',
     }), expect.objectContaining({ correlationId: expect.any(String) }));
     expect(repository.preticketCancelled).toEqual([]);
+  });
+
+  it('sends the second pre-ticket reminder at three minutes and does not repeat it', async () => {
+    const repository = new FakeRepository();
+    repository.profileReminderCandidates = [{
+      conversationId: 'profile-conv-second-reminder',
+      phoneE164: '+5511777766666',
+      conversationStatus: 'collecting_contact_profile',
+      profileCollectionState: {
+        step: 'asking_reason',
+        profile_reminder_sent_at: minutesAgo(2).toISOString(),
+        profile_reminder_sent_for_step: 'asking_reason',
+      },
+      contactId: 'contact-second',
+      queueId: null,
+      glpiEntityId: 55,
+      glpiEntityName: 'Empresa HML',
+      lastMessageAt: minutesAgo(4),
+      updatedAt: minutesAgo(4),
+    }];
+    const outbound = {
+      send: vi.fn(),
+      sendProfileCollectionReminder: vi.fn().mockResolvedValue({
+        httpStatus: 201,
+        body: {
+          status: 'sent',
+          message_id: 'wamid.preticket.second',
+          conversation_id: 'profile-conv-second-reminder',
+          postgres_message_row_id: 'row-profile-second',
+          idempotent: false,
+        },
+      }),
+    };
+    const messageConfigurationService = {
+      resolveSendPlan: vi.fn().mockResolvedValue({
+        eventKey: 'preticket_reminder_2',
+        sendType: 'text',
+        text: 'Segundo lembrete.',
+        active: true,
+        shouldSend: true,
+        reason: null,
+        templateName: null,
+        language: 'pt_BR',
+        buttons: [],
+        listOptions: [],
+      }),
+      recordAutomationEvent: vi.fn().mockResolvedValue(undefined),
+      recordInactivityJobEvent: vi.fn().mockResolvedValue(undefined),
+    };
+    const service = new InactivityAutomationService(
+      repository,
+      outbound,
+      { getTicketStatus: vi.fn(), solveTicketByInactivity: vi.fn() } as never,
+      null,
+      config,
+      () => baseNow,
+      messageConfigurationService as never,
+    );
+
+    await service.runOnce();
+    await service.runOnce();
+
+    expect(repository.profileSecondRemindersMarked).toEqual([{
+      conversationId: 'profile-conv-second-reminder',
+      step: 'asking_reason',
+      sentAt: baseNow,
+    }]);
+    expect(outbound.sendProfileCollectionReminder).toHaveBeenCalledTimes(1);
+    expect(outbound.sendProfileCollectionReminder).toHaveBeenCalledWith(expect.objectContaining({
+      eventKey: 'preticket_reminder_2',
+      idempotencyKey: 'preticket_reminder_2:profile-conv-second-reminder:asking_reason:2026-05-15T14:56:00.000Z',
+    }), expect.objectContaining({ correlationId: expect.any(String) }));
+    expect(repository.profileTicketsOpened).toEqual([]);
+    expect(repository.profileAttentionRequired).toEqual([]);
+  });
+
+  it('does not repeat pre-ticket timeout creation or notice after state is persisted', async () => {
+    const repository = new FakeRepository();
+    repository.profileReminderCandidates = [{
+      conversationId: 'profile-conv-timeout-idempotent',
+      phoneE164: '+5511777766666',
+      conversationStatus: 'collecting_contact_profile',
+      profileCollectionState: {
+        step: 'asking_reason',
+        last_problem_summary: 'word nao abre',
+      },
+      contactId: 'contact-timeout-idempotent',
+      queueId: 7,
+      glpiEntityId: 55,
+      glpiEntityName: 'Empresa HML',
+      lastMessageAt: minutesAgo(6),
+      updatedAt: minutesAgo(6),
+    }];
+    const outbound = {
+      send: vi.fn(),
+      sendProfileCollectionReminder: vi.fn().mockResolvedValue({
+        httpStatus: 201,
+        body: {
+          status: 'sent',
+          message_id: 'wamid.preticket.opened',
+          conversation_id: 'profile-conv-timeout-idempotent',
+          postgres_message_row_id: 'row-profile-opened',
+          idempotent: false,
+        },
+      }),
+    };
+    const glpiClient = {
+      getTicketStatus: vi.fn(),
+      solveTicketByInactivity: vi.fn(),
+      createTicket: vi.fn().mockResolvedValue(654),
+    };
+    const messageConfigurationService = {
+      resolveSendPlan: vi.fn().mockResolvedValue({
+        eventKey: 'preticket_timeout_ticket_opened',
+        sendType: 'text',
+        text: 'Chamado aberto por timeout.',
+        active: true,
+        shouldSend: true,
+        reason: null,
+        templateName: null,
+        language: 'pt_BR',
+        buttons: [],
+        listOptions: [],
+      }),
+      recordAutomationEvent: vi.fn().mockResolvedValue(undefined),
+      recordInactivityJobEvent: vi.fn().mockResolvedValue(undefined),
+    };
+    const service = new InactivityAutomationService(
+      repository,
+      outbound,
+      glpiClient as never,
+      null,
+      config,
+      () => baseNow,
+      messageConfigurationService as never,
+    );
+
+    await service.runOnce();
+    await service.runOnce();
+
+    expect(glpiClient.createTicket).toHaveBeenCalledTimes(1);
+    expect(repository.profileTimeoutReserved).toHaveLength(1);
+    expect(repository.profileTicketsOpened).toEqual([{
+      conversationId: 'profile-conv-timeout-idempotent',
+      ticketId: 654,
+      entityId: 55,
+    }]);
+    expect(outbound.sendProfileCollectionReminder).toHaveBeenCalledTimes(1);
+  });
+
+  it('selects second profile reminder candidates with a dedicated cutoff', async () => {
+    const executor = { query: vi.fn().mockResolvedValue({ rows: [] }) };
+    const repository = new PostgresInactivityTrackingRepository(executor as never);
+    const reminderCutoff = minutesAgo(1);
+    const secondReminderCutoff = minutesAgo(3);
+    const autocloseCutoff = minutesAgo(5);
+
+    await repository.findProfileCollectionReminderCandidates(reminderCutoff, secondReminderCutoff, autocloseCutoff, 25);
+
+    const [sql, params] = executor.query.mock.calls[0] as [string, unknown[]];
+    expect(params).toEqual([reminderCutoff, secondReminderCutoff, autocloseCutoff, 25]);
+    expect(sql).toContain('last_message_at <= $2');
+    expect(sql).toContain('last_message_at <= $3');
+    expect(sql).toContain("profile_reminder_2_sent_at");
+    expect(sql).toContain("profile_collection_state->>'preticket_timeout_attempted_at' IS NULL");
+  });
+
+  it('persists timeout ticket id using a distinct SQL placeholder for JSON payload', async () => {
+    const executor = { query: vi.fn().mockResolvedValue({ rowCount: 1, rows: [] }) };
+    const repository = new PostgresInactivityTrackingRepository(executor as never);
+
+    await repository.markProfileCollectionTicketOpened('profile-conv-sql', 321, baseNow, 55, 'Empresa HML');
+
+    const [sql, params] = executor.query.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain('glpi_ticket_id = $2');
+    expect(sql).toContain("'preticket_timeout_ticket_id', $6::bigint");
+    expect(params).toEqual(['profile-conv-sql', 321, baseNow.toISOString(), 55, 'Empresa HML', 321]);
   });
 });
