@@ -110,8 +110,10 @@ class FakeMessageRepository implements MessageRepository {
     return this.messagesById.get(messageId) ?? null;
   }
 
-  public async findByIdempotencyKey(): Promise<InboundMessage | null> {
-    return null;
+  public idempotencyKeyLookup = new Map<string, InboundMessage>();
+
+  public async findByIdempotencyKey(key: string): Promise<InboundMessage | null> {
+    return this.idempotencyKeyLookup.get(key) ?? null;
   }
 
   public async findByConversationId(_conversationId: string, _limit?: number): Promise<InboundMessage[]> {
@@ -4343,6 +4345,12 @@ describe('InboundWebhookService', () => {
       text: { body: '1 - aprovar' },
     } as never;
 
+    // Simulate that the solution approval interactive message was sent for this conversation
+    messageRepository.idempotencyKeyLookup.set(
+      'notify_ticket_solved_1234_conv-solved_interactive',
+      { ...messageRepository.reservedMessage!, id: 'outbound-sol-1', messageId: 'wamid.sol-sent' },
+    );
+
     const service = makeInboundService(
       webhookEventRepository,
       messageRepository,
@@ -4658,6 +4666,12 @@ describe('InboundWebhookService', () => {
       type: 'text',
       text: { body: '12' },
     } as never;
+
+    // Simulate that the solution approval interactive message was sent for this conversation
+    messageRepository.idempotencyKeyLookup.set(
+      'notify_ticket_solved_1234_conv-solved_interactive',
+      { ...messageRepository.reservedMessage!, id: 'outbound-sol-2', messageId: 'wamid.sol-sent-2' },
+    );
 
     const service = makeInboundService(
       webhookEventRepository,

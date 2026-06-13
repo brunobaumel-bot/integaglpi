@@ -2825,6 +2825,25 @@ export class InboundWebhookService {
       return true;
     }
 
+    // Only intercept if the bot actually sent a solution approval interactive message.
+    // If the message was suppressed (e.g. inactivity autoclose) or never triggered,
+    // the client is unaware of the 1/2 prompt — fall through to new-ticket flow.
+    const approvalKey = `notify_ticket_solved_${input.ticketId}_${input.conversation.id}_interactive`;
+    const approvalMessageSent = await this.messageRepository.findByIdempotencyKey(approvalKey);
+    if (approvalMessageSent === null) {
+      logger.info(
+        {
+          ticket_id: input.ticketId,
+          conversation_id: input.conversation.id,
+          correlation_id: input.correlationId,
+          idempotency_key: approvalKey,
+          event_type: 'solution_approval_not_sent_skip',
+        },
+        '[integration-service][solution][SOLUTION_APPROVAL_NOT_SENT_SKIP]',
+      );
+      return false;
+    }
+
     const ticket = await this.glpiClient.getTicket(input.ticketId);
     if (ticket.status !== GLPI_STATUS_SOLVED) {
       logger.info(
