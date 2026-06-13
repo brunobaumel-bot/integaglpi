@@ -6,6 +6,7 @@ import type {
   InactivityTrackingRecord,
   InactivityTrackingRepository,
   InactivityTrackingStatus,
+  PendingCsatTimeoutCandidate,
   ProfileCollectionReminderCandidate,
   TrackOutboundActivityInput,
 } from '../contracts/InactivityTrackingRepository.js';
@@ -165,6 +166,10 @@ export class PostgresInactivityTrackingRepository implements InactivityTrackingR
         SELECT
           id,
           phone_e164,
+          contact_id,
+          queue_id,
+          glpi_entity_id,
+          glpi_entity_name,
           status,
           COALESCE(profile_collection_state, '{}'::jsonb) AS profile_collection_state,
           last_message_at,
@@ -199,6 +204,10 @@ export class PostgresInactivityTrackingRepository implements InactivityTrackingR
     return result.rows.map((row) => ({
       conversationId: row.id,
       phoneE164: row.phone_e164,
+      contactId: String((row as { contact_id?: unknown }).contact_id ?? ''),
+      queueId: asNumber((row as { queue_id?: number | string | null }).queue_id ?? null),
+      glpiEntityId: asNumber((row as { glpi_entity_id?: number | string | null }).glpi_entity_id ?? null),
+      glpiEntityName: (row as { glpi_entity_name?: string | null }).glpi_entity_name ?? null,
       conversationStatus: row.status,
       profileCollectionState: row.profile_collection_state ?? {},
       lastMessageAt: row.last_message_at instanceof Date ? row.last_message_at : new Date(String(row.last_message_at)),
@@ -268,6 +277,122 @@ export class PostgresInactivityTrackingRepository implements InactivityTrackingR
     );
 
     return (result.rowCount ?? 0) > 0;
+  }
+
+  public async markProfileCollectionSecondReminderSent(
+    conversationId: string,
+    step: string,
+    sentAt: Date,
+  ): Promise<boolean> {
+    const result = await this.executor.query(
+      `
+        UPDATE ${DATABASE_TABLES.conversations}
+        SET
+          profile_collection_state = COALESCE(profile_collection_state, '{}'::jsonb)
+            || jsonb_build_object(
+              'profile_reminder_2_sent_at', $3::text,
+              'profile_reminder_2_sent_for_step', $2::text
+            ),
+          updated_at = NOW()
+        WHERE id = $1
+          AND status IN ('collecting_contact_profile', 'awaiting_entity_selection')
+          AND (glpi_ticket_id IS NULL OR glpi_ticket_id = 0)
+          AND CASE
+            WHEN status = 'awaiting_entity_selection' THEN 'awaiting_entity_selection'
+            ELSE COALESCE(profile_collection_state->>'step', '')
+          END = $2
+          AND (
+            profile_collection_state->>'profile_reminder_2_sent_at' IS NULL
+            OR profile_collection_state->>'profile_reminder_2_sent_for_step' IS DISTINCT FROM $2
+          )
+      `,
+      [conversationId, step, sentAt.toISOString()],
+    );
+
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  public async tryReserveProfileCollectionTimeout(
+    conversationId: string,
+    step: string,
+    attemptedAt: Date,
+  ): Promise<boolean> {
+    const result = await this.executor.query(
+      `
+        UPDATE ${DATABASE_TABLES.conversations}
+        SET
+          profile_collection_state = COALESCE(profile_collection_state, '{}'::jsonb)
+            || jsonb_build_object(
+              'preticket_timeout_attempted_at', $3::text,
+              'preticket_timeout_for_step', $2::text
+            ),
+          updated_at = NOW()
+        WHERE id = $1
+          AND status IN ('collecting_contact_profile', 'awaiting_entity_selection')
+          AND (glpi_ticket_id IS NULL OR glpi_ticket_id = 0)
+          AND CASE
+            WHEN status = 'awaiting_entity_selection' THEN 'awaiting_entity_selection'
+            ELSE COALESCE(profile_collection_state->>'step', '')
+          END = $2
+          AND (
+            profile_collection_state->>'preticket_timeout_attempted_at' IS NULL
+            OR profile_collection_state->>'preticket_timeout_for_step' IS DISTINCT FROM $2
+          )
+      `,
+      [conversationId, step, attemptedAt.toISOString()],
+    );
+
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  public async markProfileCollectionTicketOpened(
+    conversationId: string,
+    ticketId: number,
+    openedAt: Date,
+    glpiEntityId: number,
+    glpiEntityName: string | null,
+  ): Promise<void> {
+    await this.executor.query(
+      `
+        UPDATE ${DATABASE_TABLES.conversations}
+        SET
+          glpi_ticket_id = $2,
+          glpi_entity_id = $4,
+          glpi_entity_name = COALESCE($5, glpi_entity_name),
+          status = 'open',
+          profile_collection_state = COALESCE(profile_collection_state, '{}'::jsonb)
+            || jsonb_build_object(
+              'preticket_timeout_ticket_opened_at', $3::text,
+              'preticket_timeout_ticket_id', $2::bigint
+            ),
+          updated_at = NOW()
+        WHERE id = $1
+          AND (glpi_ticket_id IS NULL OR glpi_ticket_id = 0)
+      `,
+      [conversationId, ticketId, openedAt.toISOString(), glpiEntityId, glpiEntityName],
+    );
+  }
+
+  public async markProfileCollectionAttentionRequired(
+    conversationId: string,
+    reason: string,
+    occurredAt: Date,
+  ): Promise<void> {
+    await this.executor.query(
+      `
+        UPDATE ${DATABASE_TABLES.conversations}
+        SET
+          profile_collection_state = COALESCE(profile_collection_state, '{}'::jsonb)
+            || jsonb_build_object(
+              'attention_required', true,
+              'attention_reason', $2::text,
+              'attention_required_at', $3::text
+            ),
+          updated_at = NOW()
+        WHERE id = $1
+      `,
+      [conversationId, reason.slice(0, 200), occurredAt.toISOString()],
+    );
   }
 
   public async cancelProfileCollectionConversation(
@@ -371,6 +496,118 @@ export class PostgresInactivityTrackingRepository implements InactivityTrackingR
         WHERE conversation_id = $1
       `,
       [conversationId, reason.slice(0, 500)],
+    );
+  }
+
+  public async findPendingCsatTimeoutCandidates(cutoff: Date, limit: number): Promise<PendingCsatTimeoutCandidate[]> {
+    const result = await this.executor.query<{
+      id: string;
+      conversation_id: string;
+      ticket_id: number | string;
+      phone_e164: string;
+      created_at: Date | string;
+      latest_inbound_at: Date | string | null;
+    }>(
+      `
+        SELECT
+          approve.id,
+          approve.conversation_id,
+          approve.ticket_id,
+          approve.phone_e164,
+          approve.created_at,
+          activity.latest_inbound_at
+        FROM ${DATABASE_TABLES.solutionActions} approve
+        JOIN ${DATABASE_TABLES.conversations} c ON c.id = approve.conversation_id
+        LEFT JOIN LATERAL (
+          SELECT MAX(created_at) FILTER (WHERE direction = 'inbound') AS latest_inbound_at
+          FROM ${DATABASE_TABLES.messages}
+          WHERE conversation_id = approve.conversation_id
+        ) activity ON TRUE
+        WHERE approve.action = 'approve'
+          AND approve.status = 'success'
+          AND approve.csat_rating IS NULL
+          AND approve.created_at <= $1
+          AND approve.csat_timeout_closed_at IS NULL
+          AND approve.csat_timeout_close_attempted_at IS NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM ${DATABASE_TABLES.solutionActions} csat
+            WHERE csat.ticket_id = approve.ticket_id
+              AND csat.conversation_id = approve.conversation_id
+              AND csat.action = 'approve'
+              AND csat.status = 'success'
+              AND csat.csat_rating IS NOT NULL
+              AND csat.created_at >= approve.created_at
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM ${DATABASE_TABLES.solutionActions} reopen
+            WHERE reopen.ticket_id = approve.ticket_id
+              AND reopen.conversation_id = approve.conversation_id
+              AND reopen.action = 'reopen'
+              AND reopen.status = 'success'
+              AND reopen.created_at > approve.created_at
+          )
+        ORDER BY approve.created_at ASC
+        LIMIT $2
+      `,
+      [cutoff, limit],
+    );
+
+    return result.rows.map((row) => ({
+      solutionActionId: row.id,
+      conversationId: row.conversation_id,
+      ticketId: Number(row.ticket_id),
+      phoneE164: row.phone_e164,
+      createdAt: row.created_at instanceof Date ? row.created_at : new Date(String(row.created_at)),
+      latestInboundAt: row.latest_inbound_at === null
+        ? null
+        : row.latest_inbound_at instanceof Date
+          ? row.latest_inbound_at
+          : new Date(String(row.latest_inbound_at)),
+    }));
+  }
+
+  public async tryReserveCsatTimeoutClose(solutionActionId: string, attemptedAt: Date): Promise<boolean> {
+    const result = await this.executor.query(
+      `
+        UPDATE ${DATABASE_TABLES.solutionActions}
+        SET csat_timeout_close_attempted_at = COALESCE(csat_timeout_close_attempted_at, $2),
+            csat_timeout_skip_reason = NULL,
+            updated_at = NOW()
+        WHERE id = $1
+          AND csat_timeout_close_attempted_at IS NULL
+          AND csat_timeout_closed_at IS NULL
+          AND csat_rating IS NULL
+      `,
+      [solutionActionId, attemptedAt],
+    );
+
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  public async markCsatTimeoutClosed(solutionActionId: string, closedAt: Date): Promise<void> {
+    await this.executor.query(
+      `
+        UPDATE ${DATABASE_TABLES.solutionActions}
+        SET csat_timeout_closed_at = COALESCE(csat_timeout_closed_at, $2),
+            csat_timeout_skip_reason = NULL,
+            updated_at = NOW()
+        WHERE id = $1
+      `,
+      [solutionActionId, closedAt],
+    );
+  }
+
+  public async markCsatTimeoutSkipped(solutionActionId: string, reason: string): Promise<void> {
+    await this.executor.query(
+      `
+        UPDATE ${DATABASE_TABLES.solutionActions}
+        SET csat_timeout_skip_reason = $2,
+            updated_at = NOW()
+        WHERE id = $1
+      `,
+      [solutionActionId, reason.slice(0, 200)],
     );
   }
 

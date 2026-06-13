@@ -14,6 +14,7 @@ export interface OperationalIntegrityAuditResult {
   mediaWithoutInfo: number;
   invalidConversationStates: number;
   staleAwaitingQueueSelection: number;
+  inboundLimboMessages: number;
 }
 
 interface CountRow {
@@ -33,6 +34,15 @@ type StaleAwaitingQueueSelectionRow = {
   last_inbound_at: string | Date | null;
 };
 
+type InboundLimboMessageRow = {
+  message_id: string;
+  conversation_id: string;
+  glpi_ticket_id: string | null;
+  conversation_status: string;
+  message_created_at: string | Date;
+  conversation_last_message_at: string | Date | null;
+};
+
 export class OperationalIntegrityAuditService {
   public constructor(
     private readonly executor: SqlExecutor,
@@ -50,12 +60,14 @@ export class OperationalIntegrityAuditService {
     const mediaWithoutInfo = await this.auditMediaWithoutInfo(since, limit, correlationId);
     const invalidConversationStates = await this.auditInvalidConversationStates(limit, correlationId);
     const staleAwaitingQueueSelection = await this.auditStaleAwaitingQueueSelection(since, limit, correlationId);
+    const inboundLimboMessages = await this.auditInboundLimboMessages(since, limit, correlationId);
 
     return {
       orphanMessages,
       mediaWithoutInfo,
       invalidConversationStates,
       staleAwaitingQueueSelection,
+      inboundLimboMessages,
     };
   }
 
@@ -180,6 +192,52 @@ export class OperationalIntegrityAuditService {
           inbound_messages_count: Number(row.inbound_messages_count ?? 0),
           last_inbound_at: row.last_inbound_at,
           remediation: 'manual_queue_selection_required',
+        },
+      });
+    }
+
+    return result.rowCount ?? result.rows.length;
+  }
+
+  private async auditInboundLimboMessages(since: Date, limit: number, correlationId: string): Promise<number> {
+    const result = await this.executor.query<InboundLimboMessageRow>(
+      `
+        SELECT
+          m.message_id,
+          m.conversation_id,
+          c.glpi_ticket_id,
+          c.status AS conversation_status,
+          m.created_at AS message_created_at,
+          c.last_message_at AS conversation_last_message_at
+        FROM ${DATABASE_TABLES.messages} m
+        JOIN ${DATABASE_TABLES.conversations} c ON c.id = m.conversation_id
+        WHERE m.created_at >= $1
+          AND m.direction = 'inbound'
+          AND (
+            c.status IN ('closed', 'solved', 'cancelled')
+            OR c.last_message_at < (m.created_at - INTERVAL '30 seconds')
+          )
+        ORDER BY m.created_at DESC
+        LIMIT $2
+      `,
+      [since, limit],
+    );
+
+    for (const row of result.rows) {
+      this.auditService.recordAuditEventFireAndForget({
+        correlationId,
+        conversationId: row.conversation_id,
+        ticketId: row.glpi_ticket_id === null ? null : Number(row.glpi_ticket_id),
+        messageId: row.message_id,
+        eventType: 'LIMBO_DETECTED',
+        status: 'pending',
+        severity: 'warning',
+        source: 'OperationalIntegrityAuditService',
+        payload: {
+          conversation_status: row.conversation_status,
+          message_created_at: row.message_created_at,
+          conversation_last_message_at: row.conversation_last_message_at,
+          remediation: 'human_attention_required',
         },
       });
     }

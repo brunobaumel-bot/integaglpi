@@ -27,6 +27,14 @@ describe('OperationalIntegrityAuditService', () => {
           updated_at: new Date('2026-05-14T10:00:00.000Z'),
           inbound_messages_count: '2',
           last_inbound_at: new Date('2026-05-14T10:10:00.000Z'),
+        }]))
+        .mockResolvedValueOnce(queryResult([{
+          message_id: 'wamid.limbo',
+          conversation_id: 'conv-closed',
+          glpi_ticket_id: '123',
+          conversation_status: 'closed',
+          message_created_at: new Date('2026-05-14T11:00:00.000Z'),
+          conversation_last_message_at: new Date('2026-05-14T10:00:00.000Z'),
         }])),
     };
     const auditService = {
@@ -44,6 +52,7 @@ describe('OperationalIntegrityAuditService', () => {
       mediaWithoutInfo: 1,
       invalidConversationStates: 1,
       staleAwaitingQueueSelection: 1,
+      inboundLimboMessages: 1,
     });
     expect(auditService.recordAuditEventFireAndForget).toHaveBeenCalledWith(
       expect.objectContaining({ eventType: 'ORPHAN_MESSAGE', messageId: 'wamid.orphan' }),
@@ -63,7 +72,20 @@ describe('OperationalIntegrityAuditService', () => {
         }),
       }),
     );
-    expect(executor.query).toHaveBeenCalledTimes(4);
+    expect(auditService.recordAuditEventFireAndForget).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: 'LIMBO_DETECTED',
+        conversationId: 'conv-closed',
+        ticketId: 123,
+        messageId: 'wamid.limbo',
+        status: 'pending',
+        payload: expect.objectContaining({
+          conversation_status: 'closed',
+          remediation: 'human_attention_required',
+        }),
+      }),
+    );
+    expect(executor.query).toHaveBeenCalledTimes(5);
     for (const call of vi.mocked(executor.query).mock.calls) {
       expect(call[0].trim().toUpperCase()).toMatch(/^SELECT\b/);
     }

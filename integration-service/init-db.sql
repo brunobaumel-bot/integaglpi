@@ -218,6 +218,9 @@ CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_solution_actions (
   final_ticket_status INTEGER NULL,
   csat_rating TEXT NULL,
   supervisor_review_required BOOLEAN NOT NULL DEFAULT FALSE,
+  csat_timeout_close_attempted_at TIMESTAMPTZ NULL,
+  csat_timeout_closed_at TIMESTAMPTZ NULL,
+  csat_timeout_skip_reason TEXT NULL,
   error_code TEXT NULL,
   error_message TEXT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -240,11 +243,21 @@ ON glpi_plugin_integaglpi_solution_actions (action_key);
 
 ALTER TABLE public.glpi_plugin_integaglpi_solution_actions
   ADD COLUMN IF NOT EXISTS csat_rating TEXT NULL,
-  ADD COLUMN IF NOT EXISTS supervisor_review_required BOOLEAN NOT NULL DEFAULT FALSE;
+  ADD COLUMN IF NOT EXISTS supervisor_review_required BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS csat_timeout_close_attempted_at TIMESTAMPTZ NULL,
+  ADD COLUMN IF NOT EXISTS csat_timeout_closed_at TIMESTAMPTZ NULL,
+  ADD COLUMN IF NOT EXISTS csat_timeout_skip_reason TEXT NULL;
 
 CREATE INDEX IF NOT EXISTS glpi_intega_solution_actions_csat_idx
   ON public.glpi_plugin_integaglpi_solution_actions (ticket_id, csat_rating)
   WHERE csat_rating IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS glpi_intega_solution_actions_csat_timeout_idx
+  ON public.glpi_plugin_integaglpi_solution_actions (created_at, ticket_id, conversation_id)
+  WHERE action = 'approve'
+    AND status = 'success'
+    AND csat_rating IS NULL
+    AND csat_timeout_closed_at IS NULL;
 
 -- Baseline espelhando schema-migrations/006 a 010 (idempotente no startup).
 CREATE TABLE IF NOT EXISTS public.glpi_plugin_integaglpi_entity_selection_attempts (

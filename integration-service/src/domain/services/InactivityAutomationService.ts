@@ -6,6 +6,7 @@ import type {
   ProfileCollectionReminderCandidate,
   InactivityTrackingRecord,
   InactivityTrackingRepository,
+  PendingCsatTimeoutCandidate,
 } from '../../repositories/contracts/InactivityTrackingRepository.js';
 import type { OutboundMessageService } from './OutboundMessageService.js';
 import type { AuditService } from './AuditService.js';
@@ -64,16 +65,30 @@ const AUTOCLOSE_TEXT =
 const AUTOCLOSE_WARNING_TEXT = 'Este atendimento poderá ser encerrado automaticamente se não houver resposta.';
 const PROFILE_COLLECTION_REMINDER_EVENT_KEY = 'profile_collection_reminder';
 const PRETICKET_REMINDER_EVENT_KEY = 'preticket_reminder';
+const PRETICKET_REMINDER_2_EVENT_KEY = 'preticket_reminder_2';
 const PRETICKET_AUTOCLOSE_EVENT_KEY = 'preticket_autoclose';
+const PRETICKET_TIMEOUT_TICKET_OPENED_EVENT_KEY = 'preticket_timeout_ticket_opened';
 const PRETICKET_REMINDER_TEXT =
   'Ainda precisamos confirmar algumas informações para continuar seu atendimento. Por favor, responda as perguntas pendentes para seguirmos. Se quiser encerrar, digite cancelar a qualquer momento.';
+const PRETICKET_REMINDER_1_MINUTES = 1;
+const PRETICKET_REMINDER_2_MINUTES = 3;
+const PRETICKET_TICKET_OPEN_MINUTES = 5;
+const PRETICKET_REMINDER_1_TEXT =
+  'Olá! Para continuarmos seu atendimento, por favor responda às informações solicitadas.';
+const PRETICKET_REMINDER_2_TEXT =
+  'Ainda estou aguardando seu retorno. Se você não conseguir responder agora, vou abrir o chamado com as informações já recebidas.';
+const PRETICKET_TIMEOUT_TICKET_OPENED_TEXT =
+  'Como não recebi novas informações, abri o chamado com os dados disponíveis. Nossa equipe dará continuidade ao atendimento.';
 const PRETICKET_AUTOCLOSE_TEXT =
   'Como não tivemos retorno, encerramos este pré-atendimento sem abrir chamado. Se precisar, inicie um novo atendimento.';
 const PRETICKET_TIMEOUT_REASON = 'preticket_timeout';
 export const TECHNICIAN_ACTIVITY_GUARD_MINUTES = 120;
 const DEFAULT_REMINDER_MINUTES: [number, number, number] = [15, 20, 25];
 const AUTOCLOSE_REASON = 'Encerrado por falta de retorno do usuário';
+const CSAT_TIMEOUT_CLOSE_REASON = 'Fechado automaticamente sem avaliação do usuário após 12h sem resposta ao CSAT.';
+const CSAT_TIMEOUT_HOURS = 12;
 const SOLVED_STATUS = 5;
+const CLOSED_STATUS = 6;
 
 function minutesBetween(start: Date, end: Date): number {
   return Math.max(0, (end.getTime() - start.getTime()) / 60_000);
@@ -274,7 +289,7 @@ export class InactivityAutomationService {
   public constructor(
     private readonly repository: InactivityTrackingRepository,
     private readonly outboundMessageService: Pick<OutboundMessageService, 'send' | 'sendProfileCollectionReminder'>,
-    private readonly glpiClient: Pick<GlpiClient, 'getTicketStatus' | 'solveTicketByInactivity'> & Partial<Pick<GlpiClient, 'getTicket'>>,
+    private readonly glpiClient: Pick<GlpiClient, 'getTicketStatus' | 'solveTicketByInactivity'> & Partial<Pick<GlpiClient, 'getTicket' | 'createTicket'>>,
     private readonly auditService: AuditService | null,
     private readonly config: InactivityConfig,
     private readonly nowProvider: () => Date = () => new Date(),
@@ -345,16 +360,17 @@ export class InactivityAutomationService {
       for (const candidate of candidates) {
         await this.processCandidate(candidate, effectiveConfig);
       }
-      await this.processProfileCollectionReminderCandidates(limit, effectiveConfig);
+      await this.processProfileCollectionReminderCandidates(limit);
+      await this.processCsatTimeoutCandidates(limit);
     } finally {
       this.isRunning = false;
     }
   }
 
-  private async processProfileCollectionReminderCandidates(limit: number, config: InactivityConfig): Promise<void> {
+  private async processProfileCollectionReminderCandidates(limit: number): Promise<void> {
     const now = this.nowProvider();
-    const reminderCutoff = new Date(now.getTime() - config.reminderMinutes[0] * 60_000);
-    const autocloseCutoff = new Date(now.getTime() - config.autocloseMinutes * 60_000);
+    const reminderCutoff = new Date(now.getTime() - PRETICKET_REMINDER_1_MINUTES * 60_000);
+    const autocloseCutoff = new Date(now.getTime() - PRETICKET_TICKET_OPEN_MINUTES * 60_000);
     const candidates = await this.repository.findProfileCollectionReminderCandidates(reminderCutoff, autocloseCutoff, limit);
     await this.recordProfileDiagnostic(null, 'checked', {
       reason: candidates.length > 0 ? 'profile_collection_candidates_found' : 'profile_collection_no_candidates',
@@ -363,13 +379,12 @@ export class InactivityAutomationService {
     });
 
     for (const candidate of candidates) {
-      await this.processProfileCollectionReminderCandidate(candidate, config);
+      await this.processProfileCollectionReminderCandidate(candidate);
     }
   }
 
   private async processProfileCollectionReminderCandidate(
     candidate: ProfileCollectionReminderCandidate,
-    config: InactivityConfig,
   ): Promise<void> {
     const step = normalizeProfileCollectionStep(candidate.profileCollectionState, candidate.conversationStatus);
     if (!step || step === 'complete') {
@@ -379,61 +394,76 @@ export class InactivityAutomationService {
 
     const correlationId = createCorrelationId();
     const elapsedMinutes = minutesBetween(candidate.lastMessageAt, this.nowProvider());
-    if (elapsedMinutes >= config.autocloseMinutes) {
-      await this.cancelPreTicketByInactivity(candidate, step, correlationId);
+    if (elapsedMinutes >= PRETICKET_TICKET_OPEN_MINUTES) {
+      await this.openPreTicketByInactivity(candidate, step, correlationId);
       return;
     }
 
+    if (elapsedMinutes >= PRETICKET_REMINDER_2_MINUTES) {
+      await this.sendPreTicketReminder(candidate, step, correlationId, {
+        eventKey: PRETICKET_REMINDER_2_EVENT_KEY,
+        fallbackText: PRETICKET_REMINDER_2_TEXT,
+        marker: 'second',
+      });
+      return;
+    }
+
+    await this.sendPreTicketReminder(candidate, step, correlationId, {
+      eventKey: PRETICKET_REMINDER_EVENT_KEY,
+      fallbackText: PRETICKET_REMINDER_1_TEXT,
+      marker: 'first',
+    });
+  }
+
+  private async sendPreTicketReminder(
+    candidate: ProfileCollectionReminderCandidate,
+    step: string,
+    correlationId: string,
+    reminder: { eventKey: string; fallbackText: string; marker: 'first' | 'second' },
+  ): Promise<void> {
     const windowOpen = this.nowProvider().getTime() - candidate.lastMessageAt.getTime() < 24 * 60 * 60 * 1000;
     const sendPlan = await this.resolveInactivitySendPlan(
-      PRETICKET_REMINDER_EVENT_KEY,
+      reminder.eventKey,
       windowOpen,
-      PRETICKET_REMINDER_TEXT,
+      reminder.fallbackText,
     );
-    await this.recordProfileDiagnostic(candidate, 'eligible', { reason: 'profile_collection_reminder_due' });
+    await this.recordProfileDiagnostic(candidate, 'eligible', { reason: `${reminder.eventKey}_due` });
     await this.recordProfileDiagnostic(candidate, 'planned', {
-      eventKey: PRETICKET_REMINDER_EVENT_KEY,
+      eventKey: reminder.eventKey,
       reason: sendPlan.reason,
     });
     await this.messageConfigurationService?.recordAutomationEvent({
       conversationId: candidate.conversationId,
       phoneE164: candidate.phoneE164,
-      eventKey: PRETICKET_REMINDER_EVENT_KEY,
+      eventKey: reminder.eventKey,
       status: 'planned',
       reason: sendPlan.reason,
     });
 
-    const reserved = await this.repository.markProfileCollectionReminderSent(
-      candidate.conversationId,
-      step,
-      this.nowProvider(),
-    );
+    const reserved = reminder.marker === 'first'
+      ? await this.repository.markProfileCollectionReminderSent(candidate.conversationId, step, this.nowProvider())
+      : await this.repository.markProfileCollectionSecondReminderSent(candidate.conversationId, step, this.nowProvider());
     if (!reserved) {
-      await this.recordProfileDiagnostic(candidate, 'skipped', { reason: 'profile_collection_reminder_already_marked' });
+      await this.recordProfileDiagnostic(candidate, 'skipped', { reason: `${reminder.eventKey}_already_marked` });
       this.recordProfileAudit(candidate, 'PRETICKET_REMINDER_SKIPPED', 'ignored', correlationId, {
-        reason: 'profile_collection_reminder_already_marked',
+        reason: `${reminder.eventKey}_already_marked`,
         profile_step: step,
       });
       return;
     }
 
-    const idempotencyKey = `preticket_reminder:${candidate.conversationId}:${step}:${candidate.lastMessageAt.toISOString()}`;
+    const idempotencyKey = `${reminder.eventKey}:${candidate.conversationId}:${step}:${candidate.lastMessageAt.toISOString()}`;
     if (!sendPlan.shouldSend) {
       await this.recordProfileDiagnostic(candidate, 'skipped', {
-        eventKey: PRETICKET_REMINDER_EVENT_KEY,
+        eventKey: reminder.eventKey,
         reason: sendPlan.reason ?? 'not_sent_by_rule',
       });
       await this.messageConfigurationService?.recordAutomationEvent({
         conversationId: candidate.conversationId,
         phoneE164: candidate.phoneE164,
-        eventKey: PRETICKET_REMINDER_EVENT_KEY,
+        eventKey: reminder.eventKey,
         status: 'not_sent_by_rule',
         reason: sendPlan.reason ?? 'not_sent_by_rule',
-      });
-      this.recordProfileAudit(candidate, 'PROFILE_COLLECTION_REMINDER_NOT_SENT_BY_RULE', 'ignored', correlationId, {
-        reason: sendPlan.reason ?? 'not_sent_by_rule',
-        profile_step: step,
-        idempotency_key: idempotencyKey,
       });
       this.recordProfileAudit(candidate, 'PRETICKET_REMINDER_SKIPPED', 'ignored', correlationId, {
         reason: sendPlan.reason ?? 'not_sent_by_rule',
@@ -454,19 +484,19 @@ export class InactivityAutomationService {
         buttons: sendPlan.buttons,
         listOptions: sendPlan.listOptions,
         idempotencyKey,
-        eventKey: PRETICKET_REMINDER_EVENT_KEY,
+        eventKey: reminder.eventKey,
         profileStep: step,
       }, { correlationId });
       if (result.body.status !== 'sent') {
         await this.recordProfileDiagnostic(candidate, 'failed', {
-          eventKey: PRETICKET_REMINDER_EVENT_KEY,
+          eventKey: reminder.eventKey,
           reason: result.body.error_code,
           metaErrorMessageSanitized: result.body.message.slice(0, 500),
         });
         await this.messageConfigurationService?.recordAutomationEvent({
           conversationId: candidate.conversationId,
           phoneE164: candidate.phoneE164,
-          eventKey: PRETICKET_REMINDER_EVENT_KEY,
+          eventKey: reminder.eventKey,
           status: 'failed',
           errorCode: result.body.error_code,
           errorMessageSanitized: result.body.message.slice(0, 500),
@@ -479,29 +509,31 @@ export class InactivityAutomationService {
       }
 
       await this.recordProfileDiagnostic(candidate, 'sent', {
-        eventKey: PRETICKET_REMINDER_EVENT_KEY,
+        eventKey: reminder.eventKey,
         messageId: result.body.message_id,
         deliveryStatus: 'sent',
       });
       await this.messageConfigurationService?.recordAutomationEvent({
         conversationId: candidate.conversationId,
         phoneE164: candidate.phoneE164,
-        eventKey: PRETICKET_REMINDER_EVENT_KEY,
+        eventKey: reminder.eventKey,
         status: 'sent',
         messageId: result.body.message_id,
       });
       this.recordProfileAudit(candidate, 'PROFILE_COLLECTION_REMINDER_SENT', 'success', correlationId, {
         profile_step: step,
         idempotency_key: idempotencyKey,
+        reminder_marker: reminder.marker,
       });
       this.recordProfileAudit(candidate, 'PRETICKET_REMINDER_DISPATCHED', 'success', correlationId, {
         profile_step: step,
         idempotency_key: idempotencyKey,
+        reminder_marker: reminder.marker,
       });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       await this.recordProfileDiagnostic(candidate, 'failed', {
-        eventKey: PRETICKET_REMINDER_EVENT_KEY,
+        eventKey: reminder.eventKey,
         reason: 'profile_collection_reminder_failed',
         metaErrorMessageSanitized: message.slice(0, 500),
       });
@@ -518,6 +550,127 @@ export class InactivityAutomationService {
         error_message: message.slice(0, 500),
       });
     }
+  }
+
+  private async openPreTicketByInactivity(
+    candidate: ProfileCollectionReminderCandidate,
+    step: string,
+    correlationId: string,
+  ): Promise<void> {
+    const reserved = await this.repository.tryReserveProfileCollectionTimeout(
+      candidate.conversationId,
+      step,
+      this.nowProvider(),
+    );
+    if (!reserved) {
+      await this.recordProfileDiagnostic(candidate, 'skipped', { reason: 'preticket_timeout_already_reserved' });
+      return;
+    }
+
+    if (
+      typeof candidate.glpiEntityId !== 'number'
+      || !Number.isInteger(candidate.glpiEntityId)
+      || candidate.glpiEntityId <= 0
+      || typeof this.glpiClient.createTicket !== 'function'
+    ) {
+      await this.repository.markProfileCollectionAttentionRequired(
+        candidate.conversationId,
+        'preticket_timeout_missing_entity',
+        this.nowProvider(),
+      );
+      await this.recordProfileDiagnostic(candidate, 'skipped', {
+        eventKey: PRETICKET_TIMEOUT_TICKET_OPENED_EVENT_KEY,
+        reason: 'preticket_timeout_missing_entity',
+      });
+      this.recordProfileAudit(candidate, 'PRETICKET_TIMEOUT_ATTENTION_REQUIRED', 'ignored', correlationId, {
+        profile_step: step,
+        reason: 'preticket_timeout_missing_entity',
+      });
+      return;
+    }
+
+    try {
+      const ticketId = await this.glpiClient.createTicket({
+        title: buildPreTicketTimeoutTitle(candidate.profileCollectionState),
+        content: buildPreTicketTimeoutContent(candidate.profileCollectionState),
+        requesterPhone: candidate.phoneE164,
+        requesterName: extractProfileString(candidate.profileCollectionState, ['requester_name', 'company_name_raw', 'name']),
+        entitiesId: candidate.glpiEntityId,
+        assignedUserId: null,
+        assignedGroupId: null,
+        requesterUserId: null,
+        itilcategoriesId: null,
+        glpiFormId: null,
+      }, { timeoutMs: 30_000 });
+
+      await this.repository.markProfileCollectionTicketOpened(
+        candidate.conversationId,
+        ticketId,
+        this.nowProvider(),
+        candidate.glpiEntityId,
+        candidate.glpiEntityName,
+      );
+      await this.recordProfileDiagnostic(candidate, 'sent', {
+        eventKey: PRETICKET_TIMEOUT_TICKET_OPENED_EVENT_KEY,
+        reason: 'ticket_opened_by_preticket_timeout',
+      });
+      this.recordProfileAudit(candidate, 'PRETICKET_TIMEOUT_TICKET_OPENED', 'success', correlationId, {
+        profile_step: step,
+        ticket_id: ticketId,
+        glpi_entity_id: candidate.glpiEntityId,
+      });
+      await this.sendPreTicketTimeoutNotice(candidate, step, correlationId);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.repository.markProfileCollectionAttentionRequired(
+        candidate.conversationId,
+        'preticket_timeout_ticket_create_failed',
+        this.nowProvider(),
+      );
+      await this.recordProfileDiagnostic(candidate, 'failed', {
+        eventKey: PRETICKET_TIMEOUT_TICKET_OPENED_EVENT_KEY,
+        reason: 'preticket_timeout_ticket_create_failed',
+        metaErrorMessageSanitized: message.slice(0, 500),
+      });
+      this.recordProfileAudit(candidate, 'PRETICKET_TIMEOUT_TICKET_OPEN_FAILED', 'failed', correlationId, {
+        profile_step: step,
+        error_message: message.slice(0, 500),
+      });
+    }
+  }
+
+  private async sendPreTicketTimeoutNotice(
+    candidate: ProfileCollectionReminderCandidate,
+    step: string,
+    correlationId: string,
+  ): Promise<void> {
+    const windowOpen = this.nowProvider().getTime() - candidate.lastMessageAt.getTime() < 24 * 60 * 60 * 1000;
+    const sendPlan = await this.resolveInactivitySendPlan(
+      PRETICKET_TIMEOUT_TICKET_OPENED_EVENT_KEY,
+      windowOpen,
+      PRETICKET_TIMEOUT_TICKET_OPENED_TEXT,
+    );
+    if (!sendPlan.shouldSend) {
+      await this.recordProfileDiagnostic(candidate, 'skipped', {
+        eventKey: PRETICKET_TIMEOUT_TICKET_OPENED_EVENT_KEY,
+        reason: sendPlan.reason ?? 'not_sent_by_rule',
+      });
+      return;
+    }
+
+    await this.outboundMessageService.sendProfileCollectionReminder({
+      conversationId: candidate.conversationId,
+      phoneE164: candidate.phoneE164,
+      text: sendPlan.text,
+      messageType: sendPlan.sendType === 'internal_only' ? 'text' : sendPlan.sendType,
+      templateName: sendPlan.templateName,
+      language: sendPlan.language,
+      buttons: sendPlan.buttons,
+      listOptions: sendPlan.listOptions,
+      idempotencyKey: `${PRETICKET_TIMEOUT_TICKET_OPENED_EVENT_KEY}:${candidate.conversationId}:${step}:${candidate.lastMessageAt.toISOString()}`,
+      eventKey: PRETICKET_TIMEOUT_TICKET_OPENED_EVENT_KEY,
+      profileStep: step,
+    }, { correlationId });
   }
 
   private async cancelPreTicketByInactivity(
@@ -643,6 +796,59 @@ export class InactivityAutomationService {
       profile_step: step,
       close_reason: PRETICKET_TIMEOUT_REASON,
       csat_suppressed: true,
+    });
+  }
+
+  private async processCsatTimeoutCandidates(limit: number): Promise<void> {
+    const cutoff = new Date(this.nowProvider().getTime() - CSAT_TIMEOUT_HOURS * 60 * 60 * 1000);
+    const candidates = await this.repository.findPendingCsatTimeoutCandidates(cutoff, limit);
+    for (const candidate of candidates) {
+      await this.processCsatTimeoutCandidate(candidate);
+    }
+  }
+
+  private async processCsatTimeoutCandidate(candidate: PendingCsatTimeoutCandidate): Promise<void> {
+    const correlationId = createCorrelationId();
+    if (candidate.latestInboundAt && candidate.latestInboundAt.getTime() > candidate.createdAt.getTime()) {
+      await this.repository.markCsatTimeoutSkipped(candidate.solutionActionId, 'client_responded_after_csat');
+      this.auditService?.recordAuditEventFireAndForget({
+        correlationId,
+        ticketId: candidate.ticketId,
+        conversationId: candidate.conversationId,
+        direction: 'system',
+        eventType: 'CSAT_TIMEOUT_CLOSE_SKIPPED',
+        status: 'ignored',
+        severity: 'info',
+        source: 'InactivityAutomationService',
+        payload: { reason: 'client_responded_after_csat' },
+      });
+      return;
+    }
+
+    const reserved = await this.repository.tryReserveCsatTimeoutClose(candidate.solutionActionId, this.nowProvider());
+    if (!reserved) {
+      return;
+    }
+
+    const ticketStatus = await this.loadTicketState(candidate.ticketId);
+    if (ticketStatus === 'open' || ticketStatus === 'pending') {
+      await this.glpiClient.solveTicketByInactivity(candidate.ticketId, CSAT_TIMEOUT_CLOSE_REASON);
+    }
+
+    await this.repository.markCsatTimeoutClosed(candidate.solutionActionId, this.nowProvider());
+    this.auditService?.recordAuditEventFireAndForget({
+      correlationId,
+      ticketId: candidate.ticketId,
+      conversationId: candidate.conversationId,
+      direction: 'system',
+      eventType: 'CSAT_TIMEOUT_CLOSED_NO_RATING',
+      status: 'success',
+      severity: 'info',
+      source: 'InactivityAutomationService',
+      payload: {
+        reason: 'sem_avaliacao_do_usuario',
+        glpi_status: CLOSED_STATUS,
+      },
     });
   }
 
@@ -1210,6 +1416,43 @@ function maskPhone(phone: string): string {
     return '****';
   }
   return `${digits.slice(0, 2)}******${digits.slice(-4)}`;
+}
+
+function extractProfileString(state: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = state[key];
+    if (typeof value === 'string' && value.trim() !== '') {
+      return value.trim().slice(0, 180);
+    }
+  }
+
+  return null;
+}
+
+function buildPreTicketTimeoutTitle(state: Record<string, unknown>): string {
+  const summary = extractProfileString(state, ['last_problem_summary', 'problem_summary', 'reason']);
+  const safeSummary = summary && summary.length > 0 ? summary : 'atendimento sem resposta';
+  return `[WA][Triagem] ${safeSummary.slice(0, 80)}`;
+}
+
+function buildPreTicketTimeoutContent(state: Record<string, unknown>): string {
+  const lines = [
+    '[Abertura automática por ausência de resposta]',
+    'O cliente iniciou o atendimento pelo WhatsApp, mas não respondeu às próximas solicitações no prazo operacional.',
+    'Chamado aberto com as informações disponíveis para revisão humana.',
+    '',
+  ];
+  const requester = extractProfileString(state, ['requester_name', 'company_name_raw', 'name']);
+  const email = extractProfileString(state, ['email_address']);
+  const tag = extractProfileString(state, ['last_equipment_tag', 'equipment_tag']);
+  const reason = extractProfileString(state, ['last_problem_summary', 'problem_summary', 'reason']);
+  if (requester) lines.push(`Nome informado: ${requester}`);
+  if (email) lines.push(`E-mail informado: ${email}`);
+  if (tag) lines.push(`Etiqueta/Patrimônio: ${tag}`);
+  if (reason) lines.push(`Motivo informado: ${reason}`);
+  if (!reason) lines.push('Motivo informado: não informado antes do timeout.');
+  lines.push('', 'Observação: informações incompletas por ausência de resposta.');
+  return lines.join('\n');
 }
 
 function normalizeProfileCollectionStep(state: Record<string, unknown>, conversationStatus?: string | null): string {
