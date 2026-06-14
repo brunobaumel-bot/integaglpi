@@ -192,6 +192,41 @@ export class PostgresLogmeinReadonlyRepository implements LogmeinReadonlyCacheRe
     );
   }
 
+  public async insertInventorySyncAudit(input: {
+    status: 'completed' | 'failed';
+    summary: Record<string, unknown>;
+    diffs: unknown[];
+    revertPlan: unknown[];
+    errorMessageSanitized?: string | null;
+  }): Promise<void> {
+    await this.executor.query(
+      `
+        INSERT INTO ${SYNC_AUDIT_TABLE} (
+          event_type,
+          status,
+          severity,
+          payload_json,
+          created_at
+        )
+        VALUES ($1::text, $2::text, $3::text, $4::jsonb, NOW())
+      `,
+      [
+        input.status === 'failed' ? 'LOGMEIN_INVENTORY_SYNC_FAILED' : 'LOGMEIN_INVENTORY_SYNC_COMPLETED',
+        input.status,
+        input.status === 'failed' ? 'warning' : 'info',
+        JSON.stringify({
+          summary: input.summary,
+          diffs: input.diffs,
+          revert_plan: input.revertPlan,
+          error_message_sanitized: input.errorMessageSanitized ?? null,
+          read_only: false,
+          write_path: 'glpi_php_bridge',
+          remote_execution: false,
+        }),
+      ],
+    );
+  }
+
   public async getHealthSummary(): Promise<LogmeinHealthSummary> {
     const empty = this.emptyHealthSummary();
 

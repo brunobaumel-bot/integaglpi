@@ -86,6 +86,9 @@ import { LogmeinCoverageReportService } from './domain/services/LogmeinCoverageR
 import { LogmeinAlarmCorrelationService } from './domain/services/LogmeinAlarmCorrelationService.js';
 import { ControlledAutomationService } from './domain/services/ControlledAutomationService.js';
 import { LogmeinAssetMatchingService } from './domain/services/LogmeinAssetMatchingService.js';
+import { LogmeinHardwareInventoryService } from './domain/services/LogmeinHardwareInventoryService.js';
+import { LogmeinFieldMappingService } from './domain/services/LogmeinFieldMappingService.js';
+import { PostgresLogmeinFieldMappingRepository } from './repositories/postgres/PostgresLogmeinFieldMappingRepository.js';
 
 const AI_SETTINGS_KEYS = [
   'ai_supervisor_enabled',
@@ -514,6 +517,18 @@ export function buildDependencies() {
   const logmeinAlarmCorrelationService = new LogmeinAlarmCorrelationService(logmeinAlarmRepository);
   const controlledAutomationService = new ControlledAutomationService();
   const logmeinAssetMatchingService = new LogmeinAssetMatchingService();
+  const logmeinFieldMappingRepository = new PostgresLogmeinFieldMappingRepository(postgresPool);
+  const logmeinFieldMappingService = new LogmeinFieldMappingService(logmeinFieldMappingRepository);
+  const logmeinHardwareInventoryService = new LogmeinHardwareInventoryService(
+    {
+      enabled: env.LOGMEIN_HARDWARE_INVENTORY_ENABLED,
+      baseUrl: process.env.LOGMEIN_API_BASE_URL,
+      companyId: process.env.LOGMEIN_COMPANY_ID,
+      psk: process.env.LOGMEIN_PSK,
+      timeoutMs: envInt('LOGMEIN_TIMEOUT_MS', envInt('LOGMEIN_HTTP_TIMEOUT_MS', 5_000, 1_000, 30_000), 1_000, 30_000),
+    },
+    logmeinFieldMappingService,
+  );
   const inactivityAutomationService = new InactivityAutomationService(
     inactivityTrackingRepository,
     outboundMessageService,
@@ -830,6 +845,7 @@ export function buildDependencies() {
     // F5 wiring fix: app.ts gates /automation/* on auditService being present.
     auditService,
     logmeinAssetMatchingService,
+    logmeinHardwareInventoryService,
     logmeinReadonlyRepository,
     integrationServiceApiKey: env.INTEGRATION_SERVICE_API_KEY,
     glpiClient,

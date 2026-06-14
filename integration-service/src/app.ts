@@ -76,8 +76,10 @@ import {
   createReconciliationMatchingReportController,
   createReconciliationCoverageGapsController,
   createReconciliationPreviewController,
+  createReconciliationSyncNowController,
 } from './controllers/reconciliation.controller.js';
 import type { LogmeinAssetMatchingService } from './domain/services/LogmeinAssetMatchingService.js';
+import type { LogmeinHardwareInventoryService } from './domain/services/LogmeinHardwareInventoryService.js';
 import type { SmartHelpService } from './domain/services/SmartHelpService.js';
 import type { ExternalResearchService } from './domain/services/ExternalResearchService.js';
 import type { CoachingService } from './domain/services/CoachingService.js';
@@ -144,6 +146,7 @@ export interface AppDependencies {
   controlledAutomationService?: ControlledAutomationService;
   // F6 Inventory Reconciliation
   logmeinAssetMatchingService?: LogmeinAssetMatchingService;
+  logmeinHardwareInventoryService?: LogmeinHardwareInventoryService;
   logmeinReadonlyRepository?: import('./repositories/postgres/PostgresLogmeinReadonlyRepository.js').PostgresLogmeinReadonlyRepository;
 }
 
@@ -473,6 +476,9 @@ export function createApp(dependencies: AppDependencies) {
       const reconciliationDeps = {
         matchingService: dependencies.logmeinAssetMatchingService,
         readonlyRepository: dependencies.logmeinReadonlyRepository,
+        hardwareInventoryService: dependencies.logmeinHardwareInventoryService,
+        glpiClient: dependencies.glpiClient,
+        integrationServiceApiKey: dependencies.integrationServiceApiKey,
       };
       app.get(
         '/internal/glpi/logmein/operations/inventory/matching-report',
@@ -489,6 +495,12 @@ export function createApp(dependencies: AppDependencies) {
         aiAuth,
         createJsonParser(),
         createReconciliationPreviewController(reconciliationDeps),
+      );
+      app.post(
+        '/internal/glpi/logmein/operations/inventory/sync-now',
+        aiAuth,
+        createJsonParser(),
+        createReconciliationSyncNowController(reconciliationDeps),
       );
     }
     if (dependencies.feedbackService) {

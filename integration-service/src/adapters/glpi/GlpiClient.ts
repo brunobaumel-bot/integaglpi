@@ -706,6 +706,38 @@ export class GlpiClient {
     return assets;
   }
 
+  /** Pesquisa computador GLPI por hostname/nome exato. Somente GET, sem mutar inventario. */
+  public async findComputersByName(name: string, limit = 10): Promise<GlpiComputerAssetCandidate[]> {
+    const normalized = name.trim();
+    if (normalized === '') {
+      return [];
+    }
+
+    const rows = await this.searchComputersByName(normalized, limit);
+
+    const assets: GlpiComputerAssetCandidate[] = [];
+    for (const row of rows) {
+      const id = readIdFromGlpiSearchRow(row);
+      if (id === null) {
+        continue;
+      }
+
+      const candidate = {
+        id,
+        name: readNameFromGlpiSearchRow(row),
+        serial: readStringField(row, '5') ?? readStringField(row, 'serial'),
+        otherserial: readStringField(row, '6') ?? readStringField(row, 'otherserial'),
+        entitiesId: readNumberField(row, '80') ?? readNumberField(row, 'entities_id'),
+      } satisfies GlpiComputerAssetCandidate;
+
+      assets.push(candidate.entitiesId === null
+        ? await this.fetchComputerAssetCandidate(id, candidate)
+        : candidate);
+    }
+
+    return assets;
+  }
+
   /**
    * Sends hardware inventory data to the internal PHP bridge (integaglpi-hw-bridge.php).
    *
@@ -1586,6 +1618,41 @@ export class GlpiClient {
     if (!response.ok) {
       throw new GlpiRequestError(
         'GLPI computer search request failed.',
+        response.status,
+        responseBody,
+        'glpi_contact_lookup',
+        requestUrl,
+      );
+    }
+
+    return normalizeEntityCollection(responseBody);
+  }
+
+  private async searchComputersByName(searchValue: string, limit: number): Promise<JsonObject[]> {
+    const safeLimit = Math.max(1, Math.min(Math.trunc(limit), 50));
+    const query = new URLSearchParams();
+    query.set('criteria[0][field]', '1');
+    query.set('criteria[0][searchtype]', 'equals');
+    query.set('criteria[0][value]', searchValue);
+    query.append('forcedisplay[0]', '2');
+    query.append('forcedisplay[1]', '1');
+    query.append('forcedisplay[2]', '5');
+    query.append('forcedisplay[3]', '6');
+    query.append('forcedisplay[4]', '80');
+    query.set('range', `0-${safeLimit - 1}`);
+
+    const path = `/search/Computer?${query.toString()}`;
+    const response = await this.send(path, { method: 'GET' }, { logStage: 'glpi_computer_lookup' });
+    const responseBody = await safeJson(response);
+    const requestUrl = sanitizeUrlForLog(joinApirestUrl(this.baseUrl, path));
+
+    if (response.status === 404) {
+      return [];
+    }
+
+    if (!response.ok) {
+      throw new GlpiRequestError(
+        'GLPI computer hostname search request failed.',
         response.status,
         responseBody,
         'glpi_contact_lookup',

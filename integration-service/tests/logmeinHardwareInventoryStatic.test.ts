@@ -13,6 +13,10 @@ const hwSvc = readFileSync('src/domain/services/LogmeinHardwareInventoryService.
 const glpiClient = readFileSync('src/adapters/glpi/GlpiClient.ts', 'utf8');
 const glpiTypes = readFileSync('src/adapters/glpi/glpiTypes.ts', 'utf8');
 const envTs = readFileSync('src/config/env.ts', 'utf8');
+const reconciliationController = readFileSync('src/controllers/reconciliation.controller.ts', 'utf8');
+const appTs = readFileSync('src/app.ts', 'utf8');
+const readonlyRepo = readFileSync('src/repositories/postgres/PostgresLogmeinReadonlyRepository.ts', 'utf8');
+const buildDeps = readFileSync('src/buildDependencies.ts', 'utf8');
 
 describe('LogmeinHardwareInventoryService static contract', () => {
   it('uses only GET and passive POST — no write or action endpoints', () => {
@@ -108,6 +112,46 @@ describe('LogmeinHardwareInventoryService static contract', () => {
     expect(envTs).toContain("value === 'true'");
   });
 
+  it('inventory reconciliation one-click sync is behind default-off feature flags', () => {
+    expect(envTs).toContain('INVENTORY_RECONCILIATION_ENABLED');
+    expect(reconciliationController).toContain('LOGMEIN_HARDWARE_INVENTORY_ENABLED');
+    expect(reconciliationController).toContain('INVENTORY_RECONCILIATION_ENABLED');
+    expect(reconciliationController).toContain("status: 'feature_disabled'");
+    expect(reconciliationController).toContain('mutated: false');
+  });
+
+  it('one-click sync uses GLPI REST/PHP bridge and never direct MariaDB access', () => {
+    expect(reconciliationController).toContain('syncComputerHardware');
+    expect(reconciliationController).toContain("write_path: 'glpi_php_bridge'");
+    expect(reconciliationController).not.toMatch(/createConnection|mysql2|knex|typeorm|mysqli|PDO/i);
+    expect(glpiClient).toContain('integaglpi-hw-bridge.php');
+  });
+
+  it('one-click sync matches by tag/service tag/hostname and blocks serial conflicts for review', () => {
+    expect(reconciliationController).toContain('findBestComputerMatch');
+    expect(reconciliationController).toContain('findComputersByOtherserial(equipmentTag');
+    expect(reconciliationController).toContain('findComputersByOtherserial(serviceTag');
+    expect(reconciliationController).toContain('findComputersByName');
+    expect(reconciliationController).toContain('serial_conflict_requires_review');
+    expect(reconciliationController).toContain('needs_review');
+  });
+
+  it('one-click sync returns a non-executed revert plan and persists sanitized diff audit', () => {
+    expect(reconciliationController).toContain('revert_plan');
+    expect(reconciliationController).toContain('auto_executed: false');
+    expect(reconciliationController).toContain('insertInventorySyncAudit');
+    expect(readonlyRepo).toContain('LOGMEIN_INVENTORY_SYNC_COMPLETED');
+    expect(readonlyRepo).toContain('LOGMEIN_INVENTORY_SYNC_FAILED');
+    expect(readonlyRepo).toContain('revert_plan');
+  });
+
+  it('one-click sync is wired in app dependencies without schema migration requirement', () => {
+    expect(appTs).toContain('/internal/glpi/logmein/operations/inventory/sync-now');
+    expect(appTs).toContain('createReconciliationSyncNowController');
+    expect(buildDeps).toContain('LogmeinHardwareInventoryService');
+    expect(buildDeps).toContain('LogmeinFieldMappingService');
+  });
+
   it('failure in hardware inventory does not block the webhook (graceful degradation)', () => {
     // fetchHardwareInventoryForHosts returns null entries, never throws.
     expect(hwSvc).toContain('return new Map(hostIds.map((id) => [id, null]))');
@@ -162,7 +206,7 @@ describe('LogmeinHardwareInventoryService static contract', () => {
     expect(hwSvc).toContain('LOGMEIN_SYNC_LOCAL_IP');
     expect(hwSvc).toContain('syncLocalIp === true');
     // IP is only passed when explicitly enabled — never by default.
-    expect(hwSvc).toContain('ip_address: input.syncLocalIp === true');
+    expect(hwSvc).toContain('ip_address: syncLocalIp === true');
   });
 
   // ── Hardening: PHP ComputerHardwareSyncService — frequence/frequency NOT NULL ─

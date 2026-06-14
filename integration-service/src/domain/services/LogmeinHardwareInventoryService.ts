@@ -259,34 +259,7 @@ export class LogmeinHardwareInventoryService {
         return { ok: false, status: 'no_hardware_data' };
       }
 
-      let payload: GlpiComputerHardwarePayload = {
-        service_tag: hw.serviceTag ?? undefined,
-        manufacturer: hw.manufacturer ?? undefined,
-        model: hw.model ?? undefined,
-        memory_mb: hw.memoryMb ?? undefined,
-        processors: hw.processors.map((p) => ({
-          type: p.type,
-          number_of_cores: p.numberOfCores,
-          number_of_processors: p.numberOfProcessors,
-          speed_mhz: p.speedMhz,
-        })),
-        drives: hw.drives.map((d) => ({
-          name: d.name,
-          capacity_mb: d.capacityMb,
-          serial_number: d.serialNumber,
-        })),
-        // IP only when explicitly allowed — MAC is hardware metadata, not PII.
-        network_connections: hw.networkConnections.map((n) => ({
-          name: n.name,
-          mac_address: n.macAddress,
-          ip_address: input.syncLocalIp === true ? n.ipAddress : undefined,
-        })),
-      };
-
-      // Apply field mapping governance if available.
-      if (this.fieldMappingService) {
-        payload = await this.fieldMappingService.filterPayloadByMappings(payload, input.syncLocalIp === true);
-      }
+      const payload = await this.toGlpiHardwarePayload(hw, input.syncLocalIp === true);
 
       const result = await input.glpiClient.syncComputerHardware(
         input.glpiComputerId,
@@ -306,6 +279,46 @@ export class LogmeinHardwareInventoryService {
       );
       return { ok: false, status: 'unexpected_error' };
     }
+  }
+
+  /**
+   * Builds the GLPI bridge payload from normalised LogMeIn inventory and applies
+   * field-mapping governance when configured.
+   */
+  public async toGlpiHardwarePayload(
+    hw: LogmeinHardwareInventory,
+    syncLocalIp: boolean,
+  ): Promise<GlpiComputerHardwarePayload> {
+    let payload: GlpiComputerHardwarePayload = {
+      service_tag: hw.serviceTag ?? undefined,
+      manufacturer: hw.manufacturer ?? undefined,
+      model: hw.model ?? undefined,
+      memory_mb: hw.memoryMb ?? undefined,
+      processors: hw.processors.map((p) => ({
+        type: p.type,
+        number_of_cores: p.numberOfCores,
+        number_of_processors: p.numberOfProcessors,
+        speed_mhz: p.speedMhz,
+      })),
+      drives: hw.drives.map((d) => ({
+        name: d.name,
+        capacity_mb: d.capacityMb,
+        serial_number: d.serialNumber,
+      })),
+      // IP only when explicitly allowed — MAC is hardware metadata, not PII.
+      network_connections: hw.networkConnections.map((n) => ({
+        name: n.name,
+        mac_address: n.macAddress,
+        ip_address: syncLocalIp === true ? n.ipAddress : undefined,
+      })),
+    };
+
+    // Apply field mapping governance if available.
+    if (this.fieldMappingService) {
+      payload = await this.fieldMappingService.filterPayloadByMappings(payload, syncLocalIp);
+    }
+
+    return payload;
   }
 
   /**
