@@ -348,6 +348,42 @@ export class PostgresLogmeinReconciliationRepository implements LogmeinReconcili
     );
   }
 
+  public async getLastSyncState(): Promise<{
+    lastAttemptAt: string | null;
+    lastSyncStatus: 'ok' | 'empty' | 'source_unavailable' | 'never_synced';
+  }> {
+    const rows = await this.safeQuery<{
+      status: string;
+      sessions_found: string | null;
+      created_at: string;
+    }>(
+      `
+        SELECT
+          status,
+          (payload_json->>'sessions_found')::text AS sessions_found,
+          created_at::text
+        FROM ${SYNC_AUDIT_TABLE}
+        WHERE status <> 'started'
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+    );
+    if (rows.length === 0) {
+      return { lastAttemptAt: null, lastSyncStatus: 'never_synced' };
+    }
+    const row = rows[0];
+    const sessionsFound = row.sessions_found !== null ? parseInt(row.sessions_found, 10) : null;
+    let lastSyncStatus: 'ok' | 'empty' | 'source_unavailable';
+    if (row.status === 'failed') {
+      lastSyncStatus = 'source_unavailable';
+    } else if (sessionsFound !== null && sessionsFound > 0) {
+      lastSyncStatus = 'ok';
+    } else {
+      lastSyncStatus = 'empty';
+    }
+    return { lastAttemptAt: row.created_at, lastSyncStatus };
+  }
+
   private async safeQuery<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> {
     try {
       const result = await this.executor.query<T>(sql, params);

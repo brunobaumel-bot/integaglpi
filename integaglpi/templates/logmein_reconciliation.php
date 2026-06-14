@@ -74,11 +74,31 @@ $confidenceLabels = [
                 </div>
             </form>
 
-            <?php if ($items === [] && $queueError === null) { ?>
-                <div class="alert alert-secondary mt-3">
-                    <i class="ti ti-info-circle me-1"></i>
-                    <?= $escape(__('Nenhuma sessão remota sincronizada ainda. Execute a sincronização manual acima para popular o ledger de acessos remotos.', 'glpiintegaglpi')); ?>
-                </div>
+            <?php if ($items === [] && $queueError === null) {
+                $lastSyncStatus = $queueData['last_sync_status'] ?? null;
+                $lastAttemptAt  = $queueData['last_attempt_at']  ?? null;
+                if ($lastSyncStatus === 'source_unavailable') { ?>
+                    <div class="alert alert-danger mt-3">
+                        <i class="ti ti-alert-triangle me-1"></i>
+                        <?= $escape(__('Fonte indisponível: a última sincronização não conseguiu acessar a API LogMeIn. Verifique conectividade e credenciais.', 'glpiintegaglpi')); ?>
+                        <?php if ($lastAttemptAt) { ?>
+                            <small class="d-block mt-1 text-muted"><?= $escape(__('Última tentativa:', 'glpiintegaglpi')); ?> <?= $escape($lastAttemptAt); ?></small>
+                        <?php } ?>
+                    </div>
+                <?php } elseif ($lastSyncStatus === 'empty') { ?>
+                    <div class="alert alert-info mt-3">
+                        <i class="ti ti-info-circle me-1"></i>
+                        <?= $escape(__('Sincronização executada, mas nenhuma sessão foi retornada pela API LogMeIn para o período configurado.', 'glpiintegaglpi')); ?>
+                        <?php if ($lastAttemptAt) { ?>
+                            <small class="d-block mt-1 text-muted"><?= $escape(__('Última sincronização:', 'glpiintegaglpi')); ?> <?= $escape($lastAttemptAt); ?></small>
+                        <?php } ?>
+                    </div>
+                <?php } else { ?>
+                    <div class="alert alert-secondary mt-3">
+                        <i class="ti ti-info-circle me-1"></i>
+                        <?= $escape(__('Nenhuma sessão remota sincronizada ainda. Execute a sincronização manual acima para popular o ledger de acessos remotos.', 'glpiintegaglpi')); ?>
+                    </div>
+                <?php } ?>
                 <?php /* D09: diagnóstico acionável de fonte/filtros quando a fila vem vazia */ ?>
                 <?php if (is_array($reconDiagnostics ?? null) && ($reconDiagnostics['checks'] ?? []) !== []) { ?>
                     <div class="alert alert-warning mt-2">

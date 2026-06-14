@@ -341,6 +341,7 @@ export function buildDependencies() {
           overlapMinutes: envInt('LOGMEIN_RECONCILIATION_OVERLAP_MINUTES', 10, 0, 119),
           maxRetries: envInt('LOGMEIN_RECONCILIATION_MAX_RETRIES', 2, 0, 3),
           circuitCooldownSeconds: envInt('LOGMEIN_RECONCILIATION_CIRCUIT_COOLDOWN_SECONDS', 900, 60, 3_600),
+          accountTz: process.env.LOGMEIN_ACCOUNT_TZ ?? 'America/Sao_Paulo',
     // LogMeIn allows 1 API call/min; enforce a minimum 62 s inter-chunk delay.
     // Allow 0 only in test environments (NODE_ENV=test) to keep the test suite fast.
     interChunkDelayMs: envInt('LOGMEIN_RECONCILIATION_INTER_CHUNK_DELAY_MS', 62_000, 62_000, 300_000),

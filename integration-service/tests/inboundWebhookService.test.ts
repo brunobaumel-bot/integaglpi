@@ -2922,6 +2922,7 @@ describe('InboundWebhookService', () => {
       to: '5511999999999',
       body: `${contactProfile.prompt}\n\nSe quiser encerrar este atendimento, digite cancelar a qualquer momento.`,
     });
+    expect(conversationRepository.touchedConversationIds).toContain('conv-awaiting-profile');
   });
 
   it('with contact profile enabled and existing profile, asks confirmation before ticket creation', async () => {
@@ -3097,6 +3098,7 @@ describe('InboundWebhookService', () => {
       step: 'awaiting_equipment_tag',
       requester_name: 'Bruno Baumel',
     });
+    expect(conversationRepository.touchedConversationIds).toContain('conv-asking-name');
   });
 
   it('treats legacy default entity mode as manual selection when the contact has no memory', async () => {

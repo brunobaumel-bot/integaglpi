@@ -312,6 +312,10 @@ export interface LogmeinReconciliationRepository {
     retryAfterSeconds?: number | null;
     rateLimitCooldownUntil?: string | null;
   }): Promise<void>;
+  getLastSyncState(): Promise<{
+    lastAttemptAt: string | null;
+    lastSyncStatus: 'ok' | 'empty' | 'source_unavailable' | 'never_synced';
+  }>;
 }
 
 // ── Default configuration ─────────────────────────────────────────────────────
@@ -511,14 +515,51 @@ function rawSessionKey(item: Record<string, unknown>): string {
   return '';
 }
 
-function isoDateString(date: Date): string {
-  return date.toISOString().slice(0, 10);
+function isoDateString(date: Date, tz: string): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(date);
 }
 
-function parseIsoDate(value: unknown): string | null {
+/**
+ * Convert an offset-free local timestamp string (as returned by the LogMeIn API,
+ * e.g. "2025-06-14 22:00:00") to a UTC ISO 8601 string, interpreting the input
+ * as a local time in the given IANA timezone.
+ *
+ * If the string already carries an offset or trailing Z it is parsed directly.
+ */
+function parseLocalTimestamp(value: unknown, tz: string): string | null {
   if (!value || typeof value !== 'string') return null;
-  const d = new Date(value);
-  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+  const str = value.trim();
+  // Already has offset or Z — parse directly, no TZ normalization needed.
+  if (/Z$|[+-]\d{2}:\d{2}$/.test(str)) {
+    const d = new Date(str);
+    return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+  }
+  // Treat the offset-free string as a local timestamp in `tz`.
+  // Trick: pretend it is UTC to get "fake" epoch ms, then compute the tz
+  // offset at that fake epoch, and shift to get the true UTC epoch.
+  const normalized = str.replace(' ', 'T');
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(normalized)) return null;
+  const fakeEpochMs = Date.parse(normalized + 'Z');
+  if (!Number.isFinite(fakeEpochMs)) return null;
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(fakeEpochMs));
+  const p: Record<string, string> = {};
+  for (const part of parts) {
+    if (part.type !== 'literal') p[part.type] = part.value;
+  }
+  // Some runtimes return hour=24 for midnight — normalise to 00.
+  const hour = p.hour === '24' ? '00' : (p.hour ?? '00');
+  const localAtFakeUtcMs = Date.parse(
+    `${p.year ?? '1970'}-${p.month ?? '01'}-${p.day ?? '01'}T${hour}:${p.minute ?? '00'}:${p.second ?? '00'}Z`,
+  );
+  if (!Number.isFinite(localAtFakeUtcMs)) return null;
+  // tzOffsetMs > 0 for timezones east of UTC; negative for west.
+  const tzOffsetMs = fakeEpochMs - localAtFakeUtcMs;
+  return new Date(fakeEpochMs + tzOffsetMs).toISOString();
 }
 
 function parseDurationSeconds(value: unknown, startAt: string | null, endAt: string | null): number {
@@ -551,6 +592,7 @@ export class LogmeinReconciliationService {
       overlapMinutes?: number;
       maxRetries?: number;
       circuitCooldownSeconds?: number;
+      accountTz?: string;
     },
     private readonly auditService?: AuditService,
     private readonly repository?: LogmeinReconciliationRepository,
@@ -740,8 +782,9 @@ export class LogmeinReconciliationService {
 
     const windowTo = overrideWindowTo ?? new Date();
     const windowFrom = overrideWindowFrom ?? new Date(windowTo.getTime() - this.timingConfig.lookbackHours * 3_600_000);
-    const windowFromStr = isoDateString(windowFrom);
-    const windowToStr = isoDateString(windowTo);
+    const accountTz = this.config.accountTz ?? 'America/Sao_Paulo';
+    const windowFromStr = isoDateString(windowFrom, accountTz);
+    const windowToStr = isoDateString(windowTo, accountTz);
 
     await this.repository.insertReconciliationAudit({
       status: 'started',
@@ -1044,6 +1087,17 @@ export class LogmeinReconciliationService {
     return this.repository.listQueue(input);
   }
 
+  /** Return last sync attempt timestamp and derived status for UI display. */
+  public async getLastSyncState(): Promise<{
+    lastAttemptAt: string | null;
+    lastSyncStatus: 'ok' | 'empty' | 'source_unavailable' | 'never_synced';
+  }> {
+    if (!this.repository) {
+      return { lastAttemptAt: null, lastSyncStatus: 'never_synced' };
+    }
+    return this.repository.getLastSyncState();
+  }
+
   /** Resolve a queue item (link ticket, create task, ignore). All actions are manual. */
   public async resolveQueueItem(
     id: number,
@@ -1089,7 +1143,8 @@ export class LogmeinReconciliationService {
     // per unique date pair, which is enough to retrieve all sessions for that day.
     const seenDatePairs = new Set<string>();
     const dedupedChunks = chunks.filter((chunk) => {
-      const key = `${isoDateString(chunk.from)}|${isoDateString(chunk.to)}`;
+      const tz = this.config.accountTz ?? 'America/Sao_Paulo';
+      const key = `${isoDateString(chunk.from, tz)}|${isoDateString(chunk.to, tz)}`;
       if (seenDatePairs.has(key)) return false;
       seenDatePairs.add(key);
       return true;
@@ -1217,8 +1272,9 @@ export class LogmeinReconciliationService {
     const allItems: Record<string, unknown>[] = [];
     const url = this.reportEndpoint(path);
     const authHeader = this.basicAuthHeader();
-    const startDate = isoDateString(from);
-    const endDate = isoDateString(to);
+    const tz = this.config.accountTz ?? 'America/Sao_Paulo';
+    const startDate = isoDateString(from, tz);
+    const endDate = isoDateString(to, tz);
     const body = {
       startDate,
       endDate,
@@ -1363,11 +1419,14 @@ export class LogmeinReconciliationService {
       this.firstString(raw, ['hostName', 'HostName', 'host_name', 'deviceName', 'DeviceName'], 160),
     );
 
-    const sessionStartAt = parseIsoDate(
+    const tz = this.config.accountTz ?? 'America/Sao_Paulo';
+    const sessionStartAt = parseLocalTimestamp(
       this.firstRaw(raw, ['startTime', 'StartTime', 'start_time', 'sessionStart', 'SessionStart']),
+      tz,
     );
-    const sessionEndAt = parseIsoDate(
+    const sessionEndAt = parseLocalTimestamp(
       this.firstRaw(raw, ['endTime', 'EndTime', 'end_time', 'sessionEnd', 'SessionEnd']),
+      tz,
     );
     const durationSeconds = parseDurationSeconds(
       this.firstRaw(raw, ['duration', 'Duration', 'durationSeconds', 'DurationSeconds']),

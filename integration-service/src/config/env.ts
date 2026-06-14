@@ -144,6 +144,11 @@ const envSchema = z.object({
     .default('false')
     .transform((value) => value === 'true'),
   /**
+   * Account timezone used to interpret offset-free session timestamps returned by the LogMeIn API
+   * and to compute the daily sync window boundary (YYYY-MM-DD). Default: America/Sao_Paulo (UTC-3).
+   */
+  LOGMEIN_ACCOUNT_TZ: z.string().default('America/Sao_Paulo'),
+  /**
    * Fontes de triagem nativa do GLPI usadas quando NATIVE_GLPI_TRIAGE_ENABLED=true.
    *   itilcategory (default) — apenas ITILCategory via REST API do GLPI.
    *   form                   — apenas Forms nativos via endpoint PHP form.catalog.php.

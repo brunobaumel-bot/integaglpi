@@ -111,9 +111,14 @@ export function createLogmeinReconciliationQueueController(service: LogmeinRecon
       const page = safeInt(query.page, 1, 200) ?? 1;
       const limit = Math.min(QUEUE_MAX_LIMIT, safeInt(query.limit, 1, QUEUE_MAX_LIMIT) ?? QUEUE_DEFAULT_LIMIT);
 
-      const result = await service.listQueue({ status, entityId, page, limit });
+      const [result, syncState] = await Promise.all([
+        service.listQueue({ status, entityId, page, limit }),
+        service.getLastSyncState(),
+      ]);
       return response.status(200).json({
         ...result,
+        last_attempt_at: syncState.lastAttemptAt,
+        last_sync_status: syncState.lastSyncStatus,
         read_only: true,
         non_punitive: true,
         technician_nominal_report: false,

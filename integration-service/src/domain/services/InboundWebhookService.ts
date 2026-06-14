@@ -1142,6 +1142,7 @@ export class InboundWebhookService {
               state: stepResult.state,
               conversationId: activeConversation.id,
             });
+            await this.conversationRepository.touch(activeConversation.id, new Date());
             logger.info(
               { conversation_id: activeConversation.id, profile_step: stepResult.state.step },
               '[integration-service][contact_profile][CONTACT_PROFILE_INCOMPLETE]',
@@ -1760,6 +1761,7 @@ export class InboundWebhookService {
                   state: profileState,
                   conversationId: lockedConversation.id,
                 });
+                await this.conversationRepository.touch(lockedConversation.id, new Date());
                 logger.info(
                   { conversation_id: lockedConversation.id, profile_step: profileState.step },
                   '[integration-service][contact_profile][CONTACT_PROFILE_COLLECTION_STARTED]',

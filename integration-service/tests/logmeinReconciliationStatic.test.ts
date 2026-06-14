@@ -347,6 +347,7 @@ describe('V7 LogMeIn remote-access reconciliation', () => {
         companyId: 'c',
         psk: 'p',
         timeoutMs: 100,
+        accountTz: 'UTC', // test focuses on URL security, not TZ; UTC keeps window dates simple
         baseUrl: 'https://secure.logmein.com/public-api/v1/hosts/123/connection?foo=bar#frag',
       },
       undefined,
