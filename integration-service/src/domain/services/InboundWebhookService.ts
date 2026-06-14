@@ -2038,7 +2038,7 @@ export class InboundWebhookService {
         const profileCollectionEnabled = this.contactProfileService
           ? await this.contactProfileService.isCollectionEnabled()
           : false;
-        if (profileCollectionEnabled && !activeConversation && routingOptions.length === 0) {
+        if (profileCollectionEnabled && !activeConversation && !existingConversation && routingOptions.length === 0) {
           const profileConversation = await this.conversationRepository.create({
             phoneE164: contact.phoneE164,
             contactId: contact.id,
