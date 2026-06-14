@@ -1105,15 +1105,29 @@ export class GlpiClient {
       'glpi_solution_reopen',
     );
 
-    const ticket = await this.getTicket(ticketId);
-    if (ticket.status !== 2) {
-      throw new GlpiRequestError(
-        'GLPI solution reopen did not return the ticket to processing.',
-        undefined,
-        { ticketId, finalTicketStatus: ticket.status },
-        'glpi_solution_reopen',
-        sanitizeUrlForLog(joinApirestUrl(this.baseUrl, path)),
+    const ticketAfterFollowup = await this.getTicket(ticketId);
+    if (ticketAfterFollowup.status !== 2) {
+      // add_reopen:1 was accepted but GLPI did not change status (permission or config).
+      // Explicitly set status to processing (2) as fallback.
+      logger.warn(
+        {
+          stage: 'glpi_solution_reopen',
+          ticketId,
+          statusAfterFollowup: ticketAfterFollowup.status,
+        },
+        '[GLPI PoC] add_reopen did not change ticket status; applying explicit status update',
       );
+      await this.updateTicketStatus(ticketId, 2);
+      const ticketAfterUpdate = await this.getTicket(ticketId);
+      if (ticketAfterUpdate.status !== 2) {
+        throw new GlpiRequestError(
+          'GLPI solution reopen did not return the ticket to processing.',
+          undefined,
+          { ticketId, statusAfterFollowup: ticketAfterFollowup.status, statusAfterUpdate: ticketAfterUpdate.status },
+          'glpi_solution_reopen',
+          sanitizeUrlForLog(joinApirestUrl(this.baseUrl, path)),
+        );
+      }
     }
   }
 

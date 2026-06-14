@@ -1054,13 +1054,15 @@ describe('GlpiClient', () => {
     );
   });
 
-  it('fails safely when reopen follow-up succeeds but GLPI ticket stays solved', async () => {
+  it('fails safely when reopen follow-up succeeds but GLPI ticket stays solved even after explicit status update', async () => {
     const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
     const responses = [
       new Response(JSON.stringify({ session_token: 'session-123' }), { status: 200 }),
-      new Response(JSON.stringify({ id: 2112319112, status: 5 }), { status: 200 }),
-      new Response(JSON.stringify({ id: 559 }), { status: 200 }),
-      new Response(JSON.stringify({ id: 2112319112, status: 5 }), { status: 200 }),
+      new Response(JSON.stringify({ id: 2112319112, status: 5 }), { status: 200 }),   // initial getTicket
+      new Response(JSON.stringify({ id: 559 }), { status: 200 }),                     // POST ITILFollowup
+      new Response(JSON.stringify({ id: 2112319112, status: 5 }), { status: 200 }),   // getTicket post-followup → still 5
+      new Response(JSON.stringify({ id: 2112319112 }), { status: 200 }),              // PUT updateTicketStatus fallback
+      new Response(JSON.stringify({ id: 2112319112, status: 5 }), { status: 200 }),   // getTicket after explicit update → still 5
     ];
 
     const httpClient = {
@@ -1073,7 +1075,28 @@ describe('GlpiClient', () => {
       name: 'GlpiRequestError',
       stage: 'glpi_solution_reopen',
     });
-    expect(httpClient.request).toHaveBeenCalledTimes(4);
+    expect(httpClient.request).toHaveBeenCalledTimes(6);
+  });
+
+  it('succeeds via explicit status update when add_reopen does not change ticket status', async () => {
+    const { GlpiClient } = await import('../src/adapters/glpi/GlpiClient.js');
+    const responses = [
+      new Response(JSON.stringify({ session_token: 'session-123' }), { status: 200 }),
+      new Response(JSON.stringify({ id: 2112319112, status: 5 }), { status: 200 }),   // initial getTicket
+      new Response(JSON.stringify({ id: 559 }), { status: 200 }),                     // POST ITILFollowup
+      new Response(JSON.stringify({ id: 2112319112, status: 5 }), { status: 200 }),   // getTicket post-followup → still 5
+      new Response(JSON.stringify({ id: 2112319112 }), { status: 200 }),              // PUT updateTicketStatus fallback
+      new Response(JSON.stringify({ id: 2112319112, status: 2 }), { status: 200 }),   // getTicket after update → processing
+    ];
+
+    const httpClient = {
+      request: vi.fn().mockImplementation(async () => responses.shift()),
+    };
+
+    const client = new GlpiClient('https://glpi.example.local/apirest.php', httpClient as never);
+
+    await client.reopenTicketSolution(2112319112, 'Audit');
+    expect(httpClient.request).toHaveBeenCalledTimes(6);
   });
 
   it('keeps throwing when GLPI rejects the solution reopen endpoint', async () => {
