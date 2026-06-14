@@ -46,6 +46,18 @@ Feature flags são controles operacionais. Alterar flag em TESTE, HOMOLOGAÇÃO 
 | `LOGMEIN_RECONCILIATION_MAX_RETRIES` | limitado por código | Proibido retry loop infinito. |
 | `LOGMEIN_RECONCILIATION_CIRCUIT_COOLDOWN_SECONDS` | limitado por código | Protege provider após HTTP 5xx. |
 
+### V9 Fase 2B — Flags LogMeIn Operacionais
+
+| Flag | Descrição | Default seguro | Owner | Estado em produção |
+| --- | --- | --- | --- | --- |
+| `LOGMEIN_ALARM_ENGINE_ENABLED` | Habilita o motor interno somente para sinais derivados do check-in sincronizado (`host_offline`, `host_not_seen_minutes`/legado `host_not_seen`). Thresholds de CPU/RAM/disco/AV/Windows Update/Event Log ficam delegados aos alertas nativos LogMeIn. | `false` | Infra + segurança | `off` |
+| `LOGMEIN_AUTO_TICKET_ENABLED` | Permite criar ticket a partir de alarme interno quando a regra, entidade, fila e categoria também autorizarem. Não altera o fluxo sugerido por padrão. | `false` | Operação + segurança | `off` |
+| `ALARM_CORRELATION_ENABLED` | Expõe correlação read-only de alarmes para análise operacional. Não cria ticket, não envia WhatsApp e não executa ação. | `false` | Supervisão + segurança | `off` |
+| `LOGMEIN_HARDWARE_INVENTORY_ENABLED` | Habilita consulta read-only de inventário LogMeIn para cache/preview de hardware. Escrita no GLPI exige fase e gate separados. | `false` | Infra + segurança | `off` |
+| `INVENTORY_RECONCILIATION_ENABLED` | Habilita a conciliação read-only de inventário LogMeIn ↔ GLPI nos painéis de análise. Mutação segue bloqueada sem gate explícito. | `false` | Infra + patrimônio | `off` |
+
+Ingestão de alertas nativos LogMeIn por e-mail/IMAP/webhook permanece fora desta fase e deve nascer em contrato próprio. Nenhuma dessas flags pode ser ativada em produção sem gate humano, smoke direcionado e rollback documentado.
+
 ## Operational Gates
 
 | Ambiente | Regra |

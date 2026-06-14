@@ -23,7 +23,7 @@
  * 20. buildEventHash: hash estável (determinístico)
  * 21. Ticket criado com gate duplo (global flag + rule flag + entity + category + queue)
  * 22. Sem snapshot: hardware_change create_ticket=true blocked in validation
- * 23. Tipo suportado missing_equipment_tag pode criar ticket com duplo gate
+ * 23. Tipo delegado missing_equipment_tag não cria ticket no motor interno
  * 24. Forbidden type: validation blocks high_cpu
  * 25. create_ticket=true sem category → erro de validação
  * 26. create_ticket=true sem queue → erro de validação
@@ -45,7 +45,7 @@ import { createHash } from 'node:crypto';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-type AlarmType = 'host_offline' | 'host_not_seen' | 'missing_equipment_tag' | 'missing_entity_mapping' | 'hardware_change' | 'low_disk' | 'low_memory';
+type AlarmType = 'host_offline' | 'host_not_seen' | 'host_not_seen_minutes' | 'missing_equipment_tag' | 'missing_entity_mapping' | 'hardware_change' | 'low_disk' | 'low_memory';
 
 interface MockRule {
   id: string;
@@ -421,6 +421,54 @@ describe('LogmeinAlarmEngineService — guards e avaliação de condições', ()
     });
   });
 
+  it('34. tipo delegado ao LogMeIn nativo não carrega alvos nem avalia threshold', async () => {
+    const { LogmeinAlarmEngineService } = await import('../src/domain/services/LogmeinAlarmEngineService.js');
+    const rule = makeRule({
+      alarmType: 'low_disk',
+      conditionPayload: { free_percent_threshold: 10 },
+    });
+    const repo = makeRepository({
+      listEnabledRules: vi.fn().mockResolvedValue([rule]),
+      listTargetsForRule: vi.fn().mockResolvedValue([makeTarget()]),
+      getHostsCurrentStatus: vi.fn().mockResolvedValue(new Map([[makeTarget().hostId, makeHost()]])),
+      insertEventIfNew: vi.fn().mockResolvedValue({ inserted: true }),
+    });
+
+    await withAlarmFlags(true, false, async () => {
+      const engine = new LogmeinAlarmEngineService(repo as never, makeRedis(), null);
+      const result = await engine.runOnce();
+      expect(result.processed).toBe(0);
+      expect(result.fired).toBe(0);
+      expect(repo.listTargetsForRule).not.toHaveBeenCalled();
+      expect(repo.getHostsCurrentStatus).not.toHaveBeenCalled();
+      expect(repo.insertEventIfNew).not.toHaveBeenCalled();
+    });
+  });
+
+  it('35. host_not_seen_minutes continua permitido como sinal derivado de check-in', async () => {
+    const { LogmeinAlarmEngineService } = await import('../src/domain/services/LogmeinAlarmEngineService.js');
+    const rule = makeRule({
+      alarmType: 'host_not_seen_minutes',
+      conditionPayload: { not_seen_minutes: 30 },
+    });
+    const target = makeTarget();
+    const oldDate = new Date(Date.now() - 90 * 60_000).toISOString();
+    const host = makeHost({ status: 'unknown', lastSeenAt: oldDate });
+    const repo = makeRepository({
+      listEnabledRules: vi.fn().mockResolvedValue([rule]),
+      listTargetsForRule: vi.fn().mockResolvedValue([target]),
+      getHostsCurrentStatus: vi.fn().mockResolvedValue(new Map([[target.hostId, host]])),
+      insertEventIfNew: vi.fn().mockResolvedValue({ inserted: true }),
+    });
+
+    await withAlarmFlags(true, false, async () => {
+      const engine = new LogmeinAlarmEngineService(repo as never, makeRedis(), null);
+      const result = await engine.runOnce();
+      expect(result.processed).toBe(1);
+      expect(result.fired).toBe(1);
+    });
+  });
+
 });
 
 // ── Tests: LogmeinAlarmRulesService validation ────────────────────────────────
@@ -610,7 +658,7 @@ describe('safety — static file checks', () => {
 describe('event_hash — dedupe por dia', () => {
 
   function buildEventHash(ruleId: string, hostId: string, alarmType: string, dateUtc: string): string {
-    return createHash('sha256').update(`${ruleId}|${hostId}|${alarmType}|${dateUtc}`).digest('hex');
+    return createHash('sha256').update(`${ruleId}|${hostId}|${alarmType}|${dateUtc}|`).digest('hex');
   }
 
   it('19. hashes distintos para datas diferentes', () => {
@@ -624,6 +672,30 @@ describe('event_hash — dedupe por dia', () => {
     const h2 = buildEventHash('rule-1', 'host-1', 'host_offline', '2026-06-07');
     expect(h1).toBe(h2);
     expect(h1).toHaveLength(64);
+  });
+
+  it('20b. helper de dedup mantém diário para host_offline e janela curta para tipo não diário', async () => {
+    const {
+      buildAlarmPayloadHash,
+      buildDedupWindowKey,
+      buildEventHash: serviceBuildEventHash,
+    } = await import('../src/domain/services/LogmeinAlarmEngineService.js');
+    const dayKey = buildDedupWindowKey('host_offline', new Date('2026-06-07T23:59:00Z'));
+    expect(dayKey).toBe('2026-06-07');
+
+    const bucketA = buildDedupWindowKey('cpu', new Date('2026-06-07T12:00:00Z'));
+    const bucketB = buildDedupWindowKey('cpu', new Date('2026-06-07T12:14:59Z'));
+    const bucketC = buildDedupWindowKey('cpu', new Date('2026-06-07T12:15:00Z'));
+    expect(bucketA).toBe(bucketB);
+    expect(bucketA).not.toBe(bucketC);
+
+    const payloadHashA = buildAlarmPayloadHash({ threshold: 90, nested: { a: 1, b: 2 } });
+    const payloadHashB = buildAlarmPayloadHash({ nested: { b: 2, a: 1 }, threshold: 90 });
+    const payloadHashC = buildAlarmPayloadHash({ threshold: 95, nested: { a: 1, b: 2 } });
+    expect(payloadHashA).toBe(payloadHashB);
+    expect(payloadHashA).not.toBe(payloadHashC);
+    expect(serviceBuildEventHash('r', 'h', 'cpu', bucketA, payloadHashA))
+      .not.toBe(serviceBuildEventHash('r', 'h', 'cpu', bucketA, payloadHashC));
   });
 
 });
@@ -663,7 +735,7 @@ describe('ticket creation — gate duplo + category + queue guard', () => {
     });
   });
 
-  it('23. tipo suportado por cache pode criar ticket com duplo gate', async () => {
+  it('23. tipo delegado por política não cria ticket mesmo com duplo gate', async () => {
     const { LogmeinAlarmEngineService } = await import('../src/domain/services/LogmeinAlarmEngineService.js');
     const rule = makeRule({
       alarmType: 'missing_equipment_tag',
@@ -687,10 +759,9 @@ describe('ticket creation — gate duplo + category + queue guard', () => {
     await withAlarmFlags(true, true, async () => {
       const engine = new LogmeinAlarmEngineService(repo as never, makeRedis(), glpiClient as never);
       const result = await engine.runOnce();
-      expect(result.ticketsCreated).toBe(1);
-      expect(glpiClient.createTicket).toHaveBeenCalledWith(expect.objectContaining({
-        entitiesId: 5,
-      }));
+      expect(result.ticketsCreated).toBe(0);
+      expect(result.fired).toBe(0);
+      expect(glpiClient.createTicket).not.toHaveBeenCalled();
     });
   });
 

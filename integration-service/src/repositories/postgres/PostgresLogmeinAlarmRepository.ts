@@ -38,6 +38,7 @@ const ASSET_CACHE_TABLE   = 'glpi_plugin_integaglpi_logmein_asset_cache';
 export type AlarmType =
   | 'host_offline'
   | 'host_not_seen'
+  | 'host_not_seen_minutes'
   | 'missing_equipment_tag'
   | 'missing_entity_mapping'
   | 'hardware_change'

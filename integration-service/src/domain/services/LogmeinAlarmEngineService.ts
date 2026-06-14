@@ -40,6 +40,34 @@ import type { LogmeinHostContext } from './LogmeinReadonlyContextService.js';
 import type { LogmeinHardwareInventoryService, LogmeinHardwareInventory } from './LogmeinHardwareInventoryService.js';
 import type { GlpiClient } from '../../adapters/glpi/GlpiClient.js';
 
+const CHECKIN_DERIVED_ALARM_TYPES = new Set<string>([
+  'host_offline',
+  'host_not_seen',
+  'host_not_seen_minutes',
+]);
+
+const DAILY_DEDUP_ALARM_TYPES = new Set<string>([
+  'host_offline',
+  'host_not_seen',
+  'host_not_seen_minutes',
+]);
+
+const DELEGATED_TO_LOGMEIN_NATIVE_TYPES = new Set<string>([
+  'cpu',
+  'ram',
+  'disk',
+  'antivirus',
+  'windows_update',
+  'event_log',
+  'low_disk',
+  'low_memory',
+  'hardware_change',
+  'missing_equipment_tag',
+  'missing_entity_mapping',
+]);
+
+const NON_DAILY_DEDUP_WINDOW_MS = 15 * 60 * 1000;
+
 // ── Redis facade ──────────────────────────────────────────────────────────────
 
 export interface AlarmRedisFacade {
@@ -134,6 +162,20 @@ export class LogmeinAlarmEngineService {
   private async evaluateRule(rule: LogmeinAlarmRule): Promise<AlarmEngineResult> {
     const result = emptyResult();
 
+    if (!isCheckinDerivedAlarmType(rule.alarmType)) {
+      logger.info(
+        {
+          rule_id: rule.id,
+          rule_name: rule.ruleName,
+          alarm_type: rule.alarmType,
+          reason: 'delegated_to_logmein_native',
+          delegated_type_known: DELEGATED_TO_LOGMEIN_NATIVE_TYPES.has(rule.alarmType),
+        },
+        '[logmein_alarm][engine] Regra delegada ao LogMeIn nativo — motor interno não avalia threshold.',
+      );
+      return result;
+    }
+
     let targets: LogmeinAlarmTarget[] = [];
     try {
       targets = await this.repository.listTargetsForRule(rule.id);
@@ -227,9 +269,13 @@ export class LogmeinAlarmEngineService {
       return { ...ZERO, cooldownSkipped: 1 };
     }
 
-    // 5. Dedupe via event_hash (daily granularity)
-    const dateUtc = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-    const eventHash = buildEventHash(rule.id, target.hostId, rule.alarmType, dateUtc);
+    // 5. Dedupe via event_hash.
+    // Check-in derived alarms keep daily granularity; future non-daily rules use a 15 min bucket + payload hash.
+    const dedupKey = buildDedupWindowKey(rule.alarmType);
+    const payloadHash = DAILY_DEDUP_ALARM_TYPES.has(rule.alarmType)
+      ? ''
+      : buildAlarmPayloadHash(rule.conditionPayload);
+    const eventHash = buildEventHash(rule.id, target.hostId, rule.alarmType, dedupKey, payloadHash);
 
     let glpiTicketId: number | null = null;
     let ticketsCreated = 0;
@@ -471,6 +517,16 @@ export class LogmeinAlarmEngineService {
         return elapsedDays >= (days as number);
       }
 
+      case 'host_not_seen_minutes': {
+        const minutes = (rule.conditionPayload as Record<string, unknown>)['not_seen_minutes'];
+        if (!Number.isInteger(minutes) || (minutes as number) < 1) return false;
+        if (host.lastSeenAt === null) return false;
+        const lastSeen = new Date(host.lastSeenAt).getTime();
+        if (Number.isNaN(lastSeen)) return false;
+        const elapsedMinutes = (Date.now() - lastSeen) / 60_000;
+        return elapsedMinutes >= (minutes as number);
+      }
+
       case 'missing_equipment_tag':
         // Alert-only: host exists in cache but equipmentTag is empty
         return host.equipmentTag === '' || host.equipmentTag == null;
@@ -561,13 +617,47 @@ function emptyResult(): AlarmEngineResult {
 }
 
 /**
- * event_hash = sha256(rule_id || host_id || alarm_type || date_utc)
- * Granularidade: 1 evento por regra/host/tipo/dia (UTC).
+ * event_hash = sha256(rule_id || host_id || alarm_type || dedup_key || payload_hash)
+ * Granularidade: check-in alarms por regra/host/tipo/dia (UTC); demais por janela curta.
  */
-function buildEventHash(ruleId: string, hostId: string, alarmType: string, dateUtc: string): string {
+export function buildEventHash(
+  ruleId: string,
+  hostId: string,
+  alarmType: string,
+  dedupKey: string,
+  payloadHash = '',
+): string {
   return createHash('sha256')
-    .update(`${ruleId}|${hostId}|${alarmType}|${dateUtc}`)
+    .update(`${ruleId}|${hostId}|${alarmType}|${dedupKey}|${payloadHash}`)
     .digest('hex');
+}
+
+export function buildDedupWindowKey(alarmType: string, now = new Date()): string {
+  if (DAILY_DEDUP_ALARM_TYPES.has(alarmType)) {
+    return now.toISOString().slice(0, 10);
+  }
+  return String(Math.floor(now.getTime() / NON_DAILY_DEDUP_WINDOW_MS));
+}
+
+export function buildAlarmPayloadHash(payload: Record<string, unknown>): string {
+  return createHash('sha256')
+    .update(stableJson(payload))
+    .digest('hex');
+}
+
+function isCheckinDerivedAlarmType(alarmType: string): boolean {
+  return CHECKIN_DERIVED_ALARM_TYPES.has(alarmType);
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(',')}]`;
+  }
+  if (value !== null && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    return `{${Object.keys(obj).sort().map((key) => `${JSON.stringify(key)}:${stableJson(obj[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function resolveTicketEntity(rule: LogmeinAlarmRule, host: LogmeinHostContext): number {
