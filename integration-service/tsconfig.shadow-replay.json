@@ -1,0 +1,12 @@
+{
+  "//": "V10 Shadow Replay Lab G2 — dedicated isolated build. Compiles ONLY src/shadowReplay (self-contained, node:crypto only). Separate output dir; never includes operational src or real adapters.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist-shadow-replay",
+    "rootDir": "src/shadowReplay",
+    "removeComments": true,
+    "noEmitOnError": true,
+    "tsBuildInfoFile": "dist-shadow-replay/.tsbuildinfo"
+  },
+  "include": ["src/shadowReplay/**/*.ts"]
+}

@@ -1,0 +1,23 @@
+# V10 Shadow Replay Lab — G2 per-Dockerfile build-context ignore (deny-all + allowlist).
+# BuildKit reads "<Dockerfile>.dockerignore" before the global .dockerignore, so this
+# hardens ONLY the Shadow Replay build context and never affects the operational image.
+#
+# Policy: deny EVERYTHING (**), then re-include the minimal inputs the isolated build
+# needs. src is re-included as a directory but its contents are re-denied (src/*) before
+# allowing ONLY src/shadowReplay. This guarantees operational source (src/adapters,
+# src/domain, ...), dist, dist-shadow-replay, node_modules, env files, tests, scripts,
+# docs, .git, .npmrc, credentials/keys/certs and backups never reach the daemon.
+
+# deny-all
+**
+
+# allowlist: minimal isolated build inputs
+!package.json
+!package-lock.json
+!tsconfig.json
+!tsconfig.shadow-replay.json
+!Dockerfile.shadow-replay
+!src
+src/*
+!src/shadowReplay
+!src/shadowReplay/**

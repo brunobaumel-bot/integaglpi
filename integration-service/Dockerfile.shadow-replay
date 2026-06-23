@@ -1,0 +1,26 @@
+# V10 Shadow Replay Lab — G2 Outbound-Null Isolation image.
+# Dedicated, isolated-by-construction. Multi-stage. Final image contains ONLY the
+# compiled isolated artifact (dist-shadow-replay), runs non-root, no credentials,
+# no operational source/dist, no published ports.
+# PHASE: integaglpi_v10_shadow_replay_lab_g2_outbound_null_isolation_001
+
+# ---- builder: compile only src/shadowReplay -> dist-shadow-replay ----
+FROM node:20-alpine AS builder
+WORKDIR /build
+# Reproducible install from the committed lockfile (TypeScript comes from devDependencies).
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY tsconfig.json tsconfig.shadow-replay.json ./
+COPY src/shadowReplay ./src/shadowReplay
+RUN npx tsc -p tsconfig.shadow-replay.json
+
+# ---- runtime: only the isolated artifact, non-root, no deps ----
+FROM node:20-alpine AS runtime
+ENV NODE_ENV=hml
+WORKDIR /app
+# Only the compiled isolated artifact (pure node builtins; no node_modules needed).
+COPY --from=builder /build/dist-shadow-replay ./dist-shadow-replay
+# Drop to the built-in unprivileged user.
+USER node
+# No EXPOSE, no published ports, no credentials, no operational code.
+ENTRYPOINT ["node", "dist-shadow-replay/ShadowReplayIsolationEntry.js"]
