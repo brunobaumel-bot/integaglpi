@@ -5,6 +5,9 @@ coverage/
 .DS_Store
 *.log
 package-lock.json
+# G2 Shadow Replay reproducibility: version ONLY this lockfile (npm ci in Dockerfile.shadow-replay).
+!integration-service/package-lock.json
+/integration-service/dist-shadow-replay/
 pnpm-lock.yaml
 yarn.lock
 .idea/
