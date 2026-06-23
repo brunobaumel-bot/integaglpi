@@ -358,8 +358,8 @@ Windows/HML. O algoritmo `g2_build_subset_hash_v1`:
 - imprime somente JSON e não lê `.env`, rede, docs, tests, dist, node_modules ou fonte operacional.
 
 ### 15.2 Build subset congelado
-`build_subset_hash local == HML`:
-`baafb11eb04a956eeaca0d0e332e115c21772f79b0c63bcc49bca093c467f25f`.
+`build_subset_hash local == HML` autoritativo para o commit `e933fda`:
+`04727b9a9919b9b1a1496a286323d4db68cb4d3fbb5ec17f9fc36dc0e3f99054`.
 
 Paths do subset:
 - `integration-service/Dockerfile.shadow-replay`
@@ -374,16 +374,20 @@ Paths do subset:
 - `integration-service/tsconfig.json`
 - `integration-service/tsconfig.shadow-replay.json`
 
-Hashes antigos de build subset foram superseded: eram evidências geradas por algoritmos/raízes/formato
-de manifesto diferentes, não o estado canônico atual.
+Hash anterior `baafb11eb04a956eeaca0d0e332e115c21772f79b0c63bcc49bca093c467f25f`
+fica marcado como `STALE`: foi calculado em checkout Windows com CRLF, diferente dos bytes usados
+por `git archive`/HML Linux para o build subset canônico. Hashes mais antigos de build subset
+continuam superseded: eram evidências geradas por algoritmos/raízes/formato de manifesto diferentes,
+não o estado canônico atual.
 
 ### 15.3 Prova Docker renovada
 - Modo real: `MINIMAL_BUILD_SUBSET_TAR`.
 - `docker_tar_sha256 = cdf605ca04f2ab91f44a27debf39caee91e8809756d2353c3affd222c2541383`.
-- HML recomputou o mesmo `build_subset_hash` antes do build.
+- HML recomputou o mesmo `build_subset_hash` autoritativo antes do build.
 - `named_ignore_exercised=false`; `full_context_ignore_exercised=false`.
-- Full-context ignore/canary permanece como smoke HML pós-commit; esta rodada prova build/runtime do
-  subset mínimo validado.
+- A nomeação `<Dockerfile>.dockerignore` não foi exercitada no builder legado HML.
+- Full-context ignore/canary não é a prova principal desta rodada; esta rodada prova build/runtime do
+  subset mínimo validado via `MINIMAL_BUILD_SUBSET_TAR`.
 - `docker build --no-cache` PASS.
 - Imagem final: `USER node`, sem portas expostas, entrypoint isolado, sem `/app/src`, sem
   `/app/node_modules`, somente `dist-shadow-replay`.
@@ -392,8 +396,8 @@ de manifesto diferentes, não o estado canônico atual.
   temporários removidos.
 
 ### 15.4 Status
-- **G2 = `FIXED_PENDING_CURSOR_007`**.
-- `g2_outbound_null_ready=false`.
+- **G2 = `READY_AFTER_HASH_RECONCILIATION_DOC_COMMIT`**.
+- `g2_outbound_null_ready=true` após este commit documental.
 - `shadow_replay_construction_allowed=false`.
 - Sem deploy HML, sem produção, sem schema/migration, sem Shadow Store/ingest/exporter/outbox/replay
   worker/live tee.
