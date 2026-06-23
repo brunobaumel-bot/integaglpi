@@ -62,6 +62,15 @@ const SAFETY_FLAGS: ShadowReplaySanitizedMetadata = {
   g9_runner: true,
 };
 
+function toReporterSafeRedactionSummary(envelope: ShadowReplaySampleEnvelope): ShadowReplaySanitizedMetadata {
+  return {
+    redacted_counts: Object.entries(envelope.redaction_report.redacted).map(([kind, count]) => ({ kind, count })),
+    truncated_field_count: envelope.redaction_report.truncated_fields.length,
+    forbidden_key_count: envelope.redaction_report.forbidden_keys.length,
+    residual_pii_detected: envelope.redaction_report.residual_pii_detected,
+  };
+}
+
 function toDecisionStatus(dryRunStatus: string): 'not_run' | 'simulated' | 'blocked' | 'failed' {
   if (dryRunStatus === 'passed') return 'simulated';
   if (dryRunStatus === 'blocked') return 'blocked';
@@ -187,7 +196,7 @@ export async function runShadowReplayDryRunManual(
     category_key: null,
     sequence_no: sequenceNo,
     sanitized_input_metadata: sampleInputMetadata,
-    redaction_summary: envelope.redaction_report as unknown as ShadowReplaySanitizedMetadata,
+    redaction_summary: toReporterSafeRedactionSummary(envelope),
     safety_flags: SAFETY_FLAGS,
   });
 
