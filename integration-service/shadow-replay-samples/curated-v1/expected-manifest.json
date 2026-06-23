@@ -1,0 +1,22 @@
+{
+  "schema_version": "g15_curated_sample_pack_v1",
+  "pack_name": "curated-v1",
+  "total_lines": 10,
+  "expected_valid": 8,
+  "expected_rejected": 2,
+  "rejection_codes": [
+    "raw_key_forbidden",
+    "source_ref_not_hash"
+  ],
+  "categories_covered": [
+    "email_issue",
+    "network_no_internet",
+    "password_login",
+    "printer",
+    "remote_access",
+    "slow_performance",
+    "system_error",
+    "vpn"
+  ],
+  "generated_at": "2026-06-23T00:00:00.000Z"
+}
