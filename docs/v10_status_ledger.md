@@ -37,7 +37,7 @@ Status final V10 HML: `V10_HML_CLOSED_WITH_RESSALVAS` — ver [`docs/v10_hml_fin
 | M6 | Autonomia controlada | **M6.1 HML_PASS_WITH_RESSALVAS @ `7e5b354`** (control plane por categoria) · **M6.2 HML_PASS @ `8735d71`** — piloto restrito sandbox/simulação, guard fake-only, `[MOCK_PILOT]`, `real_execution_allowed=false`, 43 testes, deploy/smoke HML Node PASS — [M6.1](v10_hml_m6_1_control_plane_category_autonomy.md) · [M6.2](v10_hml_m6_2_restricted_category_pilot.md); produção V10 bloqueada e M7 apenas como stub registrado, sem runtime | PARTIAL_HML_WITH_RESSALVAS |
 | M7 | Ações autônomas / classe de serviço | **HORIZON · STUB · NOT_PROMOTABLE** — stub type-only `ServiceClassAutonomyStub.ts`, allowlist de classes `[]`, literais `autonomy/real_execution/production/global_autonomy=false`, sem runtime/wiring (testado), 16 testes; sem produção, sem Meta/WhatsApp, sem ação externa, sem migration/schema — [M7](v10_hml_m7_autonomy_horizon_stub.md) | NOT_PROMOTABLE_BY_DESIGN |
 | V10 Closure | Fechamento final HML | **V10_HML_CLOSED_WITH_RESSALVAS** — M5.2/M6.1/M6.2 HML pass with ressalvas; M7 committed horizon/stub not_promotable; produção bloqueada; sem M8 — [closure](v10_hml_final_closure.md) | CLOSED_HML_WITH_RESSALVAS |
-| M5.x Shadow Replay Lab | Test tooling (prod→HML replay) | **G6_SAMPLE_ENVELOPE_SANITIZER_PENDING_CURSOR** — G0 documental assinado; GO humano registrado; retry 002 publicou o plugin canônico PHP em HML com baseline semântico `39`, 10 diretórios dormentes movidos para backup, ownership `glpie7867:glpie7867`, smoke S01-S10 PASS; G2 outbound-null READY após reconciliação documental do hash HML; G3 Shadow Store schema/contract commitado; G4 aplicou a migration 061 apenas no PostgreSQL HML; G5 provou insert/select sintético nas quatro tabelas `shadow_replay_*` dentro de transação com `ROLLBACK`, row count final `0`; G6 criou contrato puro de envelope/sanitização/validação para amostras sintéticas, sem DB/Redis/runtime/ingest/replay e sem produção — [design](v10_shadow_replay_lab_design_decision.md) · [G0 DPIA](v10_shadow_replay_lab_g0_dpia_pack.md) · [data contract](v10_shadow_replay_lab_data_contract.md) · [tenant/retention](v10_shadow_replay_lab_tenant_retention_policy.md) · [readiness](v10_shadow_replay_lab_readiness_matrix.md) · [G1 deploy](v10_shadow_replay_lab_g1_php_reproducible_deploy.md) · [G2 outbound-null](v10_shadow_replay_lab_g2_outbound_null_isolation.md) · [G3/G4/G5 store](v10_shadow_replay_lab_g3_shadow_store.md) · [G6 sanitizer](v10_shadow_replay_lab_g6_sample_envelope_sanitizer.md) | PARTIAL_HML_G6_CONTRACT_PENDING_CURSOR |
+| M5.x Shadow Replay Lab | Test tooling (prod→HML replay) | **G13_BATCH_SCORECARD_IMPLEMENTED_PENDING_CURSOR** — G0 documental assinado; G1 PHP HML deploy PASS (baseline `39`); G2 outbound-null READY; G3–G5 Shadow Store schema/migration/smoke PASS; G6 envelope/sanitizer contract; G7 envelope store smoke; G8 DryRun Engine contract; **G9 runner manual** `ddc75cc` HML smoke PASS; **G10 reporter manual read-only** agrega `shadow_replay_*`; **G11 batch runner manual** processa JSONL sanitizado via G9 e exporta via G10; **G13 scorecard manual read-only** consome JSON G11/G10 + manifesto esperado, gera PASS/PASS_WITH_RESSALVAS/FAIL e valida PII, credenciais, external action, runtime/worker, DB operacional e contadores; sem worker/app.ts/GLPI/Meta/Redis/IA; `shadow_replay_runtime_allowed=false`; produção intocada — [design](v10_shadow_replay_lab_design_decision.md) · [G0 DPIA](v10_shadow_replay_lab_g0_dpia_pack.md) · [data contract](v10_shadow_replay_lab_data_contract.md) · [tenant/retention](v10_shadow_replay_lab_tenant_retention_policy.md) · [readiness](v10_shadow_replay_lab_readiness_matrix.md) · [G1 deploy](v10_shadow_replay_lab_g1_php_reproducible_deploy.md) · [G2 outbound-null](v10_shadow_replay_lab_g2_outbound_null_isolation.md) · [G3/G4/G5 store](v10_shadow_replay_lab_g3_shadow_store.md) · [G6 sanitizer](v10_shadow_replay_lab_g6_sample_envelope_sanitizer.md) · [G9 runner](v10_shadow_replay_lab_g9_dry_run_runner.md) · [G10 reporter](v10_shadow_replay_lab_g10_results_reporter.md) · [G11 batch](v10_shadow_replay_lab_g11_manual_batch_runner.md) · [G13 scorecard](v10_shadow_replay_lab_g13_batch_scorecard.md) | PARTIAL_HML_G13_SCORECARD_PENDING_CURSOR |
 
 ---
 
@@ -876,3 +876,63 @@ Phase: `integaglpi_v10_shadow_replay_lab_g8_dry_run_replay_engine_contract_001`.
   ingest/exporter/replay worker/backfill/live tee.
 - Próximo gate:
   `integaglpi_v10_shadow_replay_lab_g8_dry_run_replay_engine_contract_cursor_review_001`.
+
+### G11 Manual batch runner — 2026-06-23
+
+Phase: `integaglpi_v10_shadow_replay_lab_g11_manual_batch_runner_001`.
+
+- Status: **G11 `IMPLEMENTED_PENDING_CURSOR_REVIEW`**.
+- Base: `39b0ed80095430b2aadfdff87e3e8c4c68fa4df6` (G10 reporter).
+- Arquivos Node novos:
+  `ShadowReplayManualBatchRunner.ts`,
+  `scripts/v10ShadowReplayManualBatchRunner.mjs`.
+- Teste novo: `tests/v10ShadowReplayManualBatchRunner.test.ts`.
+- Documento: [G11 manual batch runner](v10_shadow_replay_lab_g11_manual_batch_runner.md).
+- Entrada: JSONL local, uma amostra `ShadowReplaySampleEnvelope` G6 sanitizada
+  por linha.
+- Execução: cada envelope é processado pelo runner G9; relatório final reutiliza
+  o reporter G10 (`g10_results_reporter_v1`).
+- Opções CLI: `--input`, `--dry-run`, `--rollback`, `--synthetic-only`,
+  `--fail-fast`, `--report json|markdown`.
+- DB: env explícita `SHADOW_REPLAY_BATCH_DATABASE_URL`; `.env` não é carregado
+  e connection string não é impressa.
+- Escrita permitida somente em `shadow_replay_runs`, `shadow_replay_samples`,
+  `shadow_replay_results`, `shadow_replay_audit_events`; `--rollback` usa
+  transação `BEGIN`/`ROLLBACK`.
+- Segurança: bloqueia `raw_payload`, `messages`, `transcript` e `source_ref`
+  cru antes de chamar G9; PII residual é bloqueada por G6/G9 sem ecoar valores.
+- Ajuste G9: `redaction_summary` persistido em formato compatível com o PII
+  guard do G10, sem chaves como `email`/`phone` e sem perder contagens.
+- Bloqueios preservados: sem plugin GLPI, sem `app.ts`, sem worker/cron,
+  sem Redis, sem GLPI/Meta/WhatsApp/IA, sem runtime, sem deploy, sem produção,
+  sem migration/schema.
+- Próximo gate:
+  `integaglpi_v10_shadow_replay_lab_g11_manual_batch_runner_cursor_review_001`.
+
+### G13 Batch scorecard — 2026-06-23
+
+Phase: `integaglpi_v10_shadow_replay_lab_g13_batch_scorecard_001`.
+
+- Status: **G13 `IMPLEMENTED_PENDING_CURSOR_REVIEW`**.
+- Base: `f1ed0a1f6a71615941a6bbb30aa72597876c3c02` (G11 batch runner).
+- Arquivos Node novos:
+  `ShadowReplayBatchScorecard.ts`,
+  `scripts/v10ShadowReplayBatchScorecard.mjs`.
+- Teste novo: `tests/v10ShadowReplayBatchScorecard.test.ts`.
+- Documento: [G13 batch scorecard](v10_shadow_replay_lab_g13_batch_scorecard.md).
+- Entrada: JSON local gerado por G11/G10 e manifesto local sintético de
+  expectativas.
+- Saída: JSON ou Markdown com verdict determinístico `PASS`,
+  `PASS_WITH_RESSALVAS` ou `FAIL`.
+- Checks de segurança: PII, credenciais, external action, runtime/worker,
+  GLPI/Meta/Redis/IA, escrita operacional, contadores e safety flags.
+- Ressalva suportada: `generated_at_epoch_cosmetic` vira
+  `PASS_WITH_RESSALVAS` quando não houver falha de segurança.
+- CLI: `node scripts/v10ShadowReplayBatchScorecard.mjs --report <json>
+  --expect <json> --format json|markdown`; não carrega `.env`, não usa banco e
+  não imprime segredos.
+- Bloqueios preservados: sem plugin GLPI, sem `app.ts`, sem worker/cron,
+  sem PostgreSQL/Redis, sem GLPI/Meta/WhatsApp/IA, sem runtime, sem deploy,
+  sem produção, sem migration/schema.
+- Próximo gate:
+  `integaglpi_v10_shadow_replay_lab_g13_batch_scorecard_cursor_review_001`.
