@@ -2,7 +2,7 @@
 
 Phase: `integaglpi_v10_shadow_replay_lab_g3_shadow_store_schema_contract_001`
 
-Status: `HML_MIGRATION_APPLIED_PENDING_CURSOR_REVIEW`
+Status: `HML_SYNTHETIC_TRANSACTION_SMOKE_PENDING_CURSOR_REVIEW`
 
 ## 1. Scope
 
@@ -157,9 +157,44 @@ Post-apply checks:
 
 ## 9. Next Gate
 
+## 9. G5 HML Synthetic Transaction Smoke
+
+Phase:
+`integaglpi_v10_shadow_replay_lab_g5_shadow_store_synthetic_transaction_smoke_001`.
+
+Execution summary:
+
+- HML target container: `glpi-integaglpi-postgres`.
+- Production containers: not touched.
+- SQL execution: manual `psql` smoke using only `public.shadow_replay_*` tables.
+- Transaction mode: explicit `BEGIN` followed by explicit `ROLLBACK`.
+- `COMMIT` usage: `false`.
+- Forbidden operational reference scan on the final smoke SQL: `0`.
+- Synthetic run id used in the final smoke: `shadow-smoke-20260623012338`.
+- Synthetic metadata shape: `{"synthetic": true, "phase": "g5"}` only.
+
+Rows validated inside the transaction:
+
+- `shadow_replay_runs`: `1`
+- `shadow_replay_samples`: `1`
+- `shadow_replay_results`: `1`
+- `shadow_replay_audit_events`: `1`
+
+Post-rollback checks:
+
+- `shadow_replay_runs`: `0`
+- `shadow_replay_samples`: `0`
+- `shadow_replay_results`: `0`
+- `shadow_replay_audit_events`: `0`
+- No synthetic row persisted.
+- No operational table was read or written.
+- No real ticket, PII, raw payload, transcript, provider data or external action was used.
+
+## 10. Next Gate
+
 Required Cursor review:
 
-`integaglpi_v10_shadow_replay_lab_g4_shadow_store_hml_migration_smoke_cursor_review_001`
+`integaglpi_v10_shadow_replay_lab_g5_shadow_store_synthetic_transaction_smoke_cursor_review_001`
 
 Runtime worker, ingestion, exporter, replay, live tee or any production
 promotion still require a later explicit phase.

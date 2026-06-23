@@ -37,7 +37,7 @@ Status final V10 HML: `V10_HML_CLOSED_WITH_RESSALVAS` — ver [`docs/v10_hml_fin
 | M6 | Autonomia controlada | **M6.1 HML_PASS_WITH_RESSALVAS @ `7e5b354`** (control plane por categoria) · **M6.2 HML_PASS @ `8735d71`** — piloto restrito sandbox/simulação, guard fake-only, `[MOCK_PILOT]`, `real_execution_allowed=false`, 43 testes, deploy/smoke HML Node PASS — [M6.1](v10_hml_m6_1_control_plane_category_autonomy.md) · [M6.2](v10_hml_m6_2_restricted_category_pilot.md); produção V10 bloqueada e M7 apenas como stub registrado, sem runtime | PARTIAL_HML_WITH_RESSALVAS |
 | M7 | Ações autônomas / classe de serviço | **HORIZON · STUB · NOT_PROMOTABLE** — stub type-only `ServiceClassAutonomyStub.ts`, allowlist de classes `[]`, literais `autonomy/real_execution/production/global_autonomy=false`, sem runtime/wiring (testado), 16 testes; sem produção, sem Meta/WhatsApp, sem ação externa, sem migration/schema — [M7](v10_hml_m7_autonomy_horizon_stub.md) | NOT_PROMOTABLE_BY_DESIGN |
 | V10 Closure | Fechamento final HML | **V10_HML_CLOSED_WITH_RESSALVAS** — M5.2/M6.1/M6.2 HML pass with ressalvas; M7 committed horizon/stub not_promotable; produção bloqueada; sem M8 — [closure](v10_hml_final_closure.md) | CLOSED_HML_WITH_RESSALVAS |
-| M5.x Shadow Replay Lab | Test tooling (prod→HML replay) | **G4_SHADOW_STORE_HML_MIGRATION_APPLIED_PENDING_CURSOR** — G0 documental assinado; GO humano registrado; retry 002 publicou o plugin canônico PHP em HML com baseline semântico `39`, 10 diretórios dormentes movidos para backup, ownership `glpie7867:glpie7867`, smoke S01-S10 PASS; G2 outbound-null READY após reconciliação documental do hash HML; G3 Shadow Store schema/contract commitado; G4 aplicou a migration 061 apenas no PostgreSQL HML, criando somente tabelas/indexes `shadow_replay_*`, todas vazias, sem runtime/ingest/replay e sem produção — [design](v10_shadow_replay_lab_design_decision.md) · [G0 DPIA](v10_shadow_replay_lab_g0_dpia_pack.md) · [data contract](v10_shadow_replay_lab_data_contract.md) · [tenant/retention](v10_shadow_replay_lab_tenant_retention_policy.md) · [readiness](v10_shadow_replay_lab_readiness_matrix.md) · [G1 deploy](v10_shadow_replay_lab_g1_php_reproducible_deploy.md) · [G2 outbound-null](v10_shadow_replay_lab_g2_outbound_null_isolation.md) · [G3/G4 store](v10_shadow_replay_lab_g3_shadow_store.md) | PARTIAL_HML_G4_STORE_MIGRATED_PENDING_CURSOR |
+| M5.x Shadow Replay Lab | Test tooling (prod→HML replay) | **G5_SHADOW_STORE_SYNTHETIC_TX_SMOKE_PENDING_CURSOR** — G0 documental assinado; GO humano registrado; retry 002 publicou o plugin canônico PHP em HML com baseline semântico `39`, 10 diretórios dormentes movidos para backup, ownership `glpie7867:glpie7867`, smoke S01-S10 PASS; G2 outbound-null READY após reconciliação documental do hash HML; G3 Shadow Store schema/contract commitado; G4 aplicou a migration 061 apenas no PostgreSQL HML; G5 provou insert/select sintético nas quatro tabelas `shadow_replay_*` dentro de transação com `ROLLBACK`, row count final `0`, sem tabela operacional, sem runtime/ingest/replay e sem produção — [design](v10_shadow_replay_lab_design_decision.md) · [G0 DPIA](v10_shadow_replay_lab_g0_dpia_pack.md) · [data contract](v10_shadow_replay_lab_data_contract.md) · [tenant/retention](v10_shadow_replay_lab_tenant_retention_policy.md) · [readiness](v10_shadow_replay_lab_readiness_matrix.md) · [G1 deploy](v10_shadow_replay_lab_g1_php_reproducible_deploy.md) · [G2 outbound-null](v10_shadow_replay_lab_g2_outbound_null_isolation.md) · [G3/G4/G5 store](v10_shadow_replay_lab_g3_shadow_store.md) | PARTIAL_HML_G5_SYNTHETIC_TX_PENDING_CURSOR |
 
 ---
 
@@ -775,3 +775,23 @@ Phase: `integaglpi_v10_shadow_replay_lab_g4_shadow_store_hml_migration_smoke_001
   Meta/WhatsApp/LogMeIn/cloud, sem ingest/exporter/replay/backfill/live tee,
   sem leitura/mutação de chamado real e sem PII/credenciais.
 - Próximo gate: `integaglpi_v10_shadow_replay_lab_g4_shadow_store_hml_migration_smoke_cursor_review_001`.
+
+### G5 Shadow Store synthetic transaction smoke — 2026-06-23
+
+Phase: `integaglpi_v10_shadow_replay_lab_g5_shadow_store_synthetic_transaction_smoke_001`.
+
+- Status: **G5 `HML_SYNTHETIC_TRANSACTION_SMOKE_PENDING_CURSOR_REVIEW`**.
+- Target HML: `glpi-integaglpi-postgres`; containers `glpi-integaglpi-prod-*` não foram usados.
+- Smoke final: `BEGIN` → insert sintético em `shadow_replay_runs`,
+  `shadow_replay_samples`, `shadow_replay_results` e
+  `shadow_replay_audit_events` → select de validação → `ROLLBACK`.
+- `COMMIT` usado: `false`; scan do SQL final para referências operacionais/PII/payload: `0`.
+- Run sintética final: `shadow-smoke-20260623012338`.
+- Metadata sintética: somente `{"synthetic": true, "phase": "g5"}`.
+- Dentro da transação: quatro linhas visíveis (`1` em cada tabela shadow).
+- Pós-rollback: quatro tabelas com `0` linhas; nenhum dado sintético persistiu.
+- Escopo DB: somente `public.shadow_replay_*`; nenhuma tabela operacional lida ou escrita.
+- Segurança: sem produção, sem deploy, sem runtime Node/PHP, sem Redis/FSM, sem
+  Meta/WhatsApp/LogMeIn/cloud/IA, sem ingest/exporter/replay/backfill/live tee,
+  sem ticket real, sem PII, sem transcript e sem payload bruto.
+- Próximo gate: `integaglpi_v10_shadow_replay_lab_g5_shadow_store_synthetic_transaction_smoke_cursor_review_001`.
