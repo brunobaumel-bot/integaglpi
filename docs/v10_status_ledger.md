@@ -37,7 +37,7 @@ Status final V10 HML: `V10_HML_CLOSED_WITH_RESSALVAS` — ver [`docs/v10_hml_fin
 | M6 | Autonomia controlada | **M6.1 HML_PASS_WITH_RESSALVAS @ `7e5b354`** (control plane por categoria) · **M6.2 HML_PASS @ `8735d71`** — piloto restrito sandbox/simulação, guard fake-only, `[MOCK_PILOT]`, `real_execution_allowed=false`, 43 testes, deploy/smoke HML Node PASS — [M6.1](v10_hml_m6_1_control_plane_category_autonomy.md) · [M6.2](v10_hml_m6_2_restricted_category_pilot.md); produção V10 bloqueada e M7 apenas como stub registrado, sem runtime | PARTIAL_HML_WITH_RESSALVAS |
 | M7 | Ações autônomas / classe de serviço | **HORIZON · STUB · NOT_PROMOTABLE** — stub type-only `ServiceClassAutonomyStub.ts`, allowlist de classes `[]`, literais `autonomy/real_execution/production/global_autonomy=false`, sem runtime/wiring (testado), 16 testes; sem produção, sem Meta/WhatsApp, sem ação externa, sem migration/schema — [M7](v10_hml_m7_autonomy_horizon_stub.md) | NOT_PROMOTABLE_BY_DESIGN |
 | V10 Closure | Fechamento final HML | **V10_HML_CLOSED_WITH_RESSALVAS** — M5.2/M6.1/M6.2 HML pass with ressalvas; M7 committed horizon/stub not_promotable; produção bloqueada; sem M8 — [closure](v10_hml_final_closure.md) | CLOSED_HML_WITH_RESSALVAS |
-| M5.x Shadow Replay Lab | Test tooling (prod→HML replay) | **G13_BATCH_SCORECARD_IMPLEMENTED_PENDING_CURSOR** — G0 documental assinado; G1 PHP HML deploy PASS (baseline `39`); G2 outbound-null READY; G3–G5 Shadow Store schema/migration/smoke PASS; G6 envelope/sanitizer contract; G7 envelope store smoke; G8 DryRun Engine contract; **G9 runner manual** `ddc75cc` HML smoke PASS; **G10 reporter manual read-only** agrega `shadow_replay_*`; **G11 batch runner manual** processa JSONL sanitizado via G9 e exporta via G10; **G13 scorecard manual read-only** consome JSON G11/G10 + manifesto esperado, gera PASS/PASS_WITH_RESSALVAS/FAIL e valida PII, credenciais, external action, runtime/worker, DB operacional e contadores; sem worker/app.ts/GLPI/Meta/Redis/IA; `shadow_replay_runtime_allowed=false`; produção intocada — [design](v10_shadow_replay_lab_design_decision.md) · [G0 DPIA](v10_shadow_replay_lab_g0_dpia_pack.md) · [data contract](v10_shadow_replay_lab_data_contract.md) · [tenant/retention](v10_shadow_replay_lab_tenant_retention_policy.md) · [readiness](v10_shadow_replay_lab_readiness_matrix.md) · [G1 deploy](v10_shadow_replay_lab_g1_php_reproducible_deploy.md) · [G2 outbound-null](v10_shadow_replay_lab_g2_outbound_null_isolation.md) · [G3/G4/G5 store](v10_shadow_replay_lab_g3_shadow_store.md) · [G6 sanitizer](v10_shadow_replay_lab_g6_sample_envelope_sanitizer.md) · [G9 runner](v10_shadow_replay_lab_g9_dry_run_runner.md) · [G10 reporter](v10_shadow_replay_lab_g10_results_reporter.md) · [G11 batch](v10_shadow_replay_lab_g11_manual_batch_runner.md) · [G13 scorecard](v10_shadow_replay_lab_g13_batch_scorecard.md) | PARTIAL_HML_G13_SCORECARD_PENDING_CURSOR |
+| M5.x Shadow Replay Lab | Test tooling (prod→HML replay) | **G15_CURATED_SAMPLE_PACK_IMPLEMENTED_PENDING_CURSOR** — G0 documental assinado; G1 PHP HML deploy PASS (baseline `39`); G2 outbound-null READY; G3–G5 Shadow Store schema/migration/smoke PASS; G6 envelope/sanitizer contract; G7 envelope store smoke; G8 DryRun Engine contract; **G9 runner manual** `ddc75cc` HML smoke PASS; **G10 reporter manual read-only** agrega `shadow_replay_*`; **G11 batch runner manual** processa JSONL sanitizado via G9 e exporta via G10; **G13 scorecard manual read-only** consome JSON G11/G10 + manifesto esperado; **G15 pacote curado** — 10 envelopes G6 sintéticos (8 válidos/8 categorias + 2 inválidos esperados), manifesto, validador CLI file-only; sem worker/app.ts/GLPI/Meta/Redis/IA; `shadow_replay_runtime_allowed=false`; produção intocada — [design](v10_shadow_replay_lab_design_decision.md) · [G0 DPIA](v10_shadow_replay_lab_g0_dpia_pack.md) · [data contract](v10_shadow_replay_lab_data_contract.md) · [tenant/retention](v10_shadow_replay_lab_tenant_retention_policy.md) · [readiness](v10_shadow_replay_lab_readiness_matrix.md) · [G1 deploy](v10_shadow_replay_lab_g1_php_reproducible_deploy.md) · [G2 outbound-null](v10_shadow_replay_lab_g2_outbound_null_isolation.md) · [G3/G4/G5 store](v10_shadow_replay_lab_g3_shadow_store.md) · [G6 sanitizer](v10_shadow_replay_lab_g6_sample_envelope_sanitizer.md) · [G9 runner](v10_shadow_replay_lab_g9_dry_run_runner.md) · [G10 reporter](v10_shadow_replay_lab_g10_results_reporter.md) · [G11 batch](v10_shadow_replay_lab_g11_manual_batch_runner.md) · [G13 scorecard](v10_shadow_replay_lab_g13_batch_scorecard.md) · [G15 sample pack](v10_shadow_replay_lab_g15_curated_sample_pack.md) | PARTIAL_HML_G15_CURATED_PACK_PENDING_CURSOR |
 
 ---
 
@@ -936,3 +936,55 @@ Phase: `integaglpi_v10_shadow_replay_lab_g13_batch_scorecard_001`.
   sem produção, sem migration/schema.
 - Próximo gate:
   `integaglpi_v10_shadow_replay_lab_g13_batch_scorecard_cursor_review_001`.
+
+---
+
+## 35. Shadow Replay Lab Gate 15 — Curated Sample Pack (2026-06-23)
+
+Phase: `integaglpi_v10_shadow_replay_lab_g15_curated_sample_pack_001`.
+
+- Status: `IMPLEMENTED_PENDING_CURSOR_REVIEW`.
+- Documento: [G15 curated sample pack](v10_shadow_replay_lab_g15_curated_sample_pack.md).
+- Branch: `fix/shadow-replay-g15-curated-sample-pack-on-77ca5c2` (base `origin/main@77ca5c2`).
+
+### Pacote de amostras
+
+- `integration-service/shadow-replay-samples/curated-v1/samples.sanitized.jsonl`: 10 envelopes sintéticos G6 (8 válidos + 2 inválidos esperados).
+- `integration-service/shadow-replay-samples/curated-v1/expected-manifest.json`: manifesto de expectativas.
+- `integration-service/shadow-replay-samples/curated-v1/README.md`: instruções do pacote.
+
+Categorias cobertas (8): `vpn`, `remote_access`, `password_login`, `printer`, `network_no_internet`, `slow_performance`, `email_issue`, `system_error`.
+
+Samples inválidos:
+1. Linha 9: `raw_payload` → `raw_key_forbidden`.
+2. Linha 10: `source_ref` cru → `source_ref_not_hash`.
+
+### Validador
+
+- `integration-service/src/shadowReplay/ShadowReplaySamplePackValidator.ts`: TypeScript puro. Sem DB, sem Redis, sem HTTP, sem `process.env`, sem GLPI/Meta/IA.
+- `integration-service/scripts/v10ShadowReplayValidateSamplePack.mjs`: CLI validador. Sem `.env`, sem DB, sem rede. Exit 0 = PASS.
+- `integration-service/scripts/v10ShadowReplayGenerateSamplePack.mjs`: gerador dev (não é runtime).
+
+### Testes
+
+- `integration-service/tests/v10ShadowReplaySamplePackValidator.test.ts`: **20/20 PASS**.
+- Cobertura: pacote curado, categorias, rejeições, PII, JSON/Markdown, isolamento.
+
+### Validações locais
+
+- `tsc --noEmit` PASS.
+- `tsc -p tsconfig.shadow-replay.json --noEmit` PASS.
+- Vitest G15: **20/20 PASS**.
+- CLI curado: exit 0, `manifest_match=true`, `pii_detected=false`.
+- `git diff --check` PASS.
+- Scan PII no JSONL: nenhum e-mail/telefone/CPF detectado.
+
+### Segurança
+
+- Sem runtime, sem worker, sem `app.ts`.
+- Sem DB (validador é file-only).
+- Sem migration/schema.
+- Sem deploy HML.
+- Sem Meta/WhatsApp/GLPI/Redis/IA.
+- Sem produção.
+- `shadow_replay_runtime_allowed=false`; `production_blocked=true`.
