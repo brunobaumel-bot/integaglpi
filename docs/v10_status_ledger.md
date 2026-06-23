@@ -850,3 +850,29 @@ Phase: `integaglpi_v10_shadow_replay_lab_g7_sanitized_envelope_store_smoke_001`.
   [G7 envelope store smoke](v10_shadow_replay_lab_g7_sanitized_envelope_store_smoke.md).
 - Próximo gate:
   `integaglpi_v10_shadow_replay_lab_g7_sanitized_envelope_store_smoke_cursor_review_001`.
+
+### G8 Dry-run replay engine contract — 2026-06-23
+
+Phase: `integaglpi_v10_shadow_replay_lab_g8_dry_run_replay_engine_contract_001`.
+
+- Status: **G8 `IMPLEMENTED_PENDING_CURSOR_REVIEW`**.
+- Arquivos Node novos: `ShadowReplayDryRunEngineTypes.ts` e
+  `ShadowReplayDryRunEngine.ts`.
+- Teste novo: `tests/v10ShadowReplayDryRunEngineContract.test.ts`.
+- Documento: [G8 dry-run engine](v10_shadow_replay_lab_g8_dry_run_engine_contract.md).
+- Escopo: contrato puro para simular em memoria uma execucao de replay a partir
+  de envelope G6 sanitizado e validado.
+- Entrada aceita: somente `ShadowReplaySampleEnvelope` validado; envelope
+  contaminado, `raw_payload`, `transcript`, `messages` e `source_ref_hash`
+  nao-hash sao rejeitados.
+- Resultado: `result_hash` deterministico, operacoes verificadas, operacoes
+  bloqueadas, violacoes por codigo/path, summaries sanitizados e metadata
+  sintetica.
+- Flags literais: `would_persist=false`, `external_actions_allowed=false`,
+  `ai_called=false`, `runtime_worker_created=false`.
+- Seguranca: sem PostgreSQL, sem Redis, sem Shadow Store write, sem HML deploy,
+  sem producao, sem GLPI/plugin, sem runtime operacional Node, sem ticket real,
+  sem PII/payload bruto, sem Meta/WhatsApp/e-mail/LogMeIn/GLPI/cloud/IA e sem
+  ingest/exporter/replay worker/backfill/live tee.
+- Próximo gate:
+  `integaglpi_v10_shadow_replay_lab_g8_dry_run_replay_engine_contract_cursor_review_001`.
