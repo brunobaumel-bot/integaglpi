@@ -1,0 +1,36 @@
+# V10 Shadow Replay Lab — G2 Outbound-Null Isolation compose (HML proof, NOT auto-start).
+# Dedicated service, separate from the operational integration-service.
+# No operational env injection, no operational environment, no published ports, internal-only
+# network, read-only filesystem, non-root, cap_drop ALL, no-new-privileges, restart:no.
+# Gated behind an explicit profile so `docker compose up` never starts it implicitly.
+# PHASE: integaglpi_v10_shadow_replay_lab_g2_outbound_null_isolation_001
+
+services:
+  shadow-replay-proof:
+    profiles: ["shadow-replay-proof"]
+    build:
+      context: ./integration-service
+      dockerfile: Dockerfile.shadow-replay
+    image: integaglpi-shadow-replay-proof:local
+    container_name: integaglpi-shadow-replay-proof
+    # Only the documented isolation env allowlist — no injected env file, no operational secrets.
+    environment:
+      SHADOW_LAB_MODE: "true"
+      APP_ENV: "hml"
+      NODE_ENV: "hml"
+      LOG_LEVEL: "info"
+    read_only: true
+    user: "node"
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    networks:
+      - shadow_replay_isolated
+    tmpfs:
+      - /tmp
+    restart: "no"
+
+networks:
+  shadow_replay_isolated:
+    internal: true
