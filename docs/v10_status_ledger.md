@@ -37,7 +37,7 @@ Status final V10 HML: `V10_HML_CLOSED_WITH_RESSALVAS` — ver [`docs/v10_hml_fin
 | M6 | Autonomia controlada | **M6.1 HML_PASS_WITH_RESSALVAS @ `7e5b354`** (control plane por categoria) · **M6.2 HML_PASS @ `8735d71`** — piloto restrito sandbox/simulação, guard fake-only, `[MOCK_PILOT]`, `real_execution_allowed=false`, 43 testes, deploy/smoke HML Node PASS — [M6.1](v10_hml_m6_1_control_plane_category_autonomy.md) · [M6.2](v10_hml_m6_2_restricted_category_pilot.md); produção V10 bloqueada e M7 apenas como stub registrado, sem runtime | PARTIAL_HML_WITH_RESSALVAS |
 | M7 | Ações autônomas / classe de serviço | **HORIZON · STUB · NOT_PROMOTABLE** — stub type-only `ServiceClassAutonomyStub.ts`, allowlist de classes `[]`, literais `autonomy/real_execution/production/global_autonomy=false`, sem runtime/wiring (testado), 16 testes; sem produção, sem Meta/WhatsApp, sem ação externa, sem migration/schema — [M7](v10_hml_m7_autonomy_horizon_stub.md) | NOT_PROMOTABLE_BY_DESIGN |
 | V10 Closure | Fechamento final HML | **V10_HML_CLOSED_WITH_RESSALVAS** — M5.2/M6.1/M6.2 HML pass with ressalvas; M7 committed horizon/stub not_promotable; produção bloqueada; sem M8 — [closure](v10_hml_final_closure.md) | CLOSED_HML_WITH_RESSALVAS |
-| M5.x Shadow Replay Lab | Test tooling (prod→HML replay) | **G5_SHADOW_STORE_SYNTHETIC_TX_SMOKE_PENDING_CURSOR** — G0 documental assinado; GO humano registrado; retry 002 publicou o plugin canônico PHP em HML com baseline semântico `39`, 10 diretórios dormentes movidos para backup, ownership `glpie7867:glpie7867`, smoke S01-S10 PASS; G2 outbound-null READY após reconciliação documental do hash HML; G3 Shadow Store schema/contract commitado; G4 aplicou a migration 061 apenas no PostgreSQL HML; G5 provou insert/select sintético nas quatro tabelas `shadow_replay_*` dentro de transação com `ROLLBACK`, row count final `0`, sem tabela operacional, sem runtime/ingest/replay e sem produção — [design](v10_shadow_replay_lab_design_decision.md) · [G0 DPIA](v10_shadow_replay_lab_g0_dpia_pack.md) · [data contract](v10_shadow_replay_lab_data_contract.md) · [tenant/retention](v10_shadow_replay_lab_tenant_retention_policy.md) · [readiness](v10_shadow_replay_lab_readiness_matrix.md) · [G1 deploy](v10_shadow_replay_lab_g1_php_reproducible_deploy.md) · [G2 outbound-null](v10_shadow_replay_lab_g2_outbound_null_isolation.md) · [G3/G4/G5 store](v10_shadow_replay_lab_g3_shadow_store.md) | PARTIAL_HML_G5_SYNTHETIC_TX_PENDING_CURSOR |
+| M5.x Shadow Replay Lab | Test tooling (prod→HML replay) | **G6_SAMPLE_ENVELOPE_SANITIZER_PENDING_CURSOR** — G0 documental assinado; GO humano registrado; retry 002 publicou o plugin canônico PHP em HML com baseline semântico `39`, 10 diretórios dormentes movidos para backup, ownership `glpie7867:glpie7867`, smoke S01-S10 PASS; G2 outbound-null READY após reconciliação documental do hash HML; G3 Shadow Store schema/contract commitado; G4 aplicou a migration 061 apenas no PostgreSQL HML; G5 provou insert/select sintético nas quatro tabelas `shadow_replay_*` dentro de transação com `ROLLBACK`, row count final `0`; G6 criou contrato puro de envelope/sanitização/validação para amostras sintéticas, sem DB/Redis/runtime/ingest/replay e sem produção — [design](v10_shadow_replay_lab_design_decision.md) · [G0 DPIA](v10_shadow_replay_lab_g0_dpia_pack.md) · [data contract](v10_shadow_replay_lab_data_contract.md) · [tenant/retention](v10_shadow_replay_lab_tenant_retention_policy.md) · [readiness](v10_shadow_replay_lab_readiness_matrix.md) · [G1 deploy](v10_shadow_replay_lab_g1_php_reproducible_deploy.md) · [G2 outbound-null](v10_shadow_replay_lab_g2_outbound_null_isolation.md) · [G3/G4/G5 store](v10_shadow_replay_lab_g3_shadow_store.md) · [G6 sanitizer](v10_shadow_replay_lab_g6_sample_envelope_sanitizer.md) | PARTIAL_HML_G6_CONTRACT_PENDING_CURSOR |
 
 ---
 
@@ -563,7 +563,7 @@ Phase: `integaglpi_v10_hml_ai_deep_evaluation_prompt_tuning_001`.
 - Prompt tuning: **1/3 ciclos** — `stripPromptInjectionArtifacts()` em `KbSearchPlannerService.normalizeForPlan()` + correção de scoring UNSAFE no harness (output-only).
 - Testes locais: `tsc` PASS; subset V10 **87/87** PASS (`v10AiDeepEvaluation`, `kbSearchPlanner`, `queryExpansion`, `aiCategoryClassificationStatic`).
 - Cloud: DISABLED; sanitizer residual + bloqueio estrito por PII validados; HML retornou `provider_unavailable`; `local_vs_cloud.compared=false`.
-- Segurança: HML only; sem commit/deploy prod; sem migration/schema/.env; telefones `******66562`/`******34449`; ticket `2112319360` intacto.
+- Segurança: HML only; sem commit/deploy prod; sem migration/schema/.env; telefones mascarados; ticket real protegido intacto.
 
 ### Deploy/smoke HML pós-commit — 2026-06-21 BRT / 2026-06-22 UTC
 
@@ -795,3 +795,40 @@ Phase: `integaglpi_v10_shadow_replay_lab_g5_shadow_store_synthetic_transaction_s
   Meta/WhatsApp/LogMeIn/cloud/IA, sem ingest/exporter/replay/backfill/live tee,
   sem ticket real, sem PII, sem transcript e sem payload bruto.
 - Próximo gate: `integaglpi_v10_shadow_replay_lab_g5_shadow_store_synthetic_transaction_smoke_cursor_review_001`.
+
+### G6 Sample envelope sanitizer contract — 2026-06-23
+
+Phase: `integaglpi_v10_shadow_replay_lab_g6_sample_envelope_sanitizer_contract_001`.
+
+- Status: **G6 `IMPLEMENTED_PENDING_CURSOR_REVIEW`**.
+- Arquivos Node novos: `ShadowReplaySampleEnvelope.ts`,
+  `ShadowReplaySampleSanitizer.ts`, `ShadowReplaySampleValidation.ts`.
+- Teste novo: `tests/v10ShadowReplaySampleEnvelopeSanitizer.test.ts`.
+- Documento: [G6 sanitizer](v10_shadow_replay_lab_g6_sample_envelope_sanitizer.md).
+- Escopo: funções puras e contratos TypeScript para dados sintéticos, sem
+  adapter, sem `buildDependencies`, sem Docker, sem `.env`, sem schema/migration.
+- Sanitização: e-mail, telefone, CPF/CNPJ-like, token/API-key/secret-like, URL
+  com query sensível, ticket/protocolo, nome marcado, private key, base64 longo
+  e HTML/script.
+- Validação: bloqueia `raw_payload`, `payload_json`, `transcript`, `messages`,
+  `message_text`, source ref não hash, metadados contaminados e PII residual.
+- Redaction report: contadores por tipo, sem valores originais.
+- Segurança: sem PostgreSQL, sem Redis, sem HML deploy, sem produção, sem
+  GLPI/plugin, sem runtime operacional Node, sem ticket/conversa real, sem
+  Meta/WhatsApp/e-mail/LogMeIn/GLPI/cloud/IA, sem ingest/exporter/replay/backfill/live tee.
+- Próximo gate: `integaglpi_v10_shadow_replay_lab_g6_sample_envelope_sanitizer_contract_cursor_review_001`.
+
+#### G6 FIX 001 — synthetic fixture correction
+
+- Cursor Review G6 001 retornou `FIX` porque o fixture local inicial reutilizava
+  um ticket real protegido.
+- FIX 001 substituiu o fixture por referencias sinteticas:
+  `SYNTHETIC_TICKET_ID=9999000001` e `SYNTHETIC_PROTOCOL_ID=999900`.
+- O teste continua cobrindo redacao de ticket/protocolo sem depender de dado
+  real.
+- Cursor Review G6 002 retornou `CLOSE`.
+- Ressalva nao bloqueante: referencias historicas ao ticket protegido fora da
+  allowlist G6 permanecem como guardrails de governanca e nao entram neste
+  commit.
+- Ressalva nao bloqueante: `metadata_not_sanitized` permanece declarado como
+  codigo futuro de validacao e nao e emitido pelo validator atual.
