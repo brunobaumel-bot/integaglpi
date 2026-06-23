@@ -832,3 +832,21 @@ Phase: `integaglpi_v10_shadow_replay_lab_g6_sample_envelope_sanitizer_contract_0
   commit.
 - Ressalva nao bloqueante: `metadata_not_sanitized` permanece declarado como
   codigo futuro de validacao e nao e emitido pelo validator atual.
+
+### G7 Sanitized envelope store HML smoke — 2026-06-23
+
+Phase: `integaglpi_v10_shadow_replay_lab_g7_sanitized_envelope_store_smoke_001`.
+
+- Status: **G7 `HML_PASS_PENDING_CURSOR_REVIEW`**.
+- Target HML: `glpi-integaglpi-postgres`; containers `glpi-integaglpi-prod-*` não foram usados.
+- Smoke: G6 envelope validado (`ok=true`) → SQL `BEGIN` → inserts em quatro tabelas
+  `shadow_replay_*` → counts `1` por tabela → `ROLLBACK`.
+- Run sintética: `shadow-envelope-smoke-20260623130644`.
+- Metadata: `{"synthetic": true, "phase": "g7", "sanitized": true}`.
+- Pós-rollback: quatro tabelas shadow com `0` linhas; probe operacional
+  (`public.conversations`) inalterado.
+- `COMMIT` used: `false`; sem PII/ticket real no SQL emitido.
+- Arquivos: script/teste G7 + doc
+  [G7 envelope store smoke](v10_shadow_replay_lab_g7_sanitized_envelope_store_smoke.md).
+- Próximo gate:
+  `integaglpi_v10_shadow_replay_lab_g7_sanitized_envelope_store_smoke_cursor_review_001`.
