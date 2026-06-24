@@ -650,6 +650,101 @@
     };
   }
 
+  function safePlaybookForStorage(playbook) {
+    if (!playbook || typeof playbook !== 'object') { return null; }
+    return {
+      resumo_do_incidente: safeScalar(playbook.resumo_do_incidente, 800),
+      sintomas_identificados: safeListForStorage(playbook.sintomas_identificados || [], 8, 260),
+      hipoteses_por_camada: safeListForStorage(playbook.hipoteses_por_camada || [], 8, 320),
+      perguntas_de_triagem: safeListForStorage(playbook.perguntas_de_triagem || [], 8, 260),
+      verificacoes_ou_comandos_sugeridos: safeListForStorage(playbook.verificacoes_ou_comandos_sugeridos || [], 8, 320),
+      causas_possiveis: safeListForStorage(playbook.causas_possiveis || [], 8, 320),
+      resolucao_sugerida: safeListForStorage(playbook.resolucao_sugerida || [], 10, 360),
+      validacao: safeListForStorage(playbook.validacao || [], 8, 260),
+      escalonamento: safeListForStorage(playbook.escalonamento || [], 6, 260),
+      riscos_rollback: safeListForStorage(playbook.riscos_rollback || [], 6, 260),
+      nivel_de_confianca: Number(playbook.nivel_de_confianca || 0) || 0
+    };
+  }
+
+  // V9 (kb_ui_rendering): versões seguras (cap + sanitize) dos campos novos para storage.
+  function safeCustomResponseForStorage(cr) {
+    if (!cr || typeof cr !== 'object') { return null; }
+    var g = cr.guidance || {};
+    return {
+      mode: safeScalar(cr.mode || 'deterministic', 24),
+      gate_message: cr.gate_message ? safeScalar(cr.gate_message, 240) : null,
+      nivel_de_confianca: Number(cr.nivel_de_confianca || 0) || 0,
+      guidance: {
+        sintomas_identificados: safeListForStorage(g.sintomas_identificados || [], 8, 260),
+        hipoteses_por_camada: safeListForStorage(g.hipoteses_por_camada || [], 8, 320),
+        perguntas_de_triagem: safeListForStorage(g.perguntas_de_triagem || [], 8, 260),
+        verificacoes_consultivas: safeListForStorage(g.verificacoes_consultivas || [], 8, 320),
+        causa_provavel: safeScalar(g.causa_provavel || '', 400),
+        resolucao_sugerida: safeListForStorage(g.resolucao_sugerida || [], 10, 360),
+        validacao: safeListForStorage(g.validacao || [], 8, 260),
+        escalonamento: safeListForStorage(g.escalonamento || [], 6, 260),
+        riscos_rollback: safeListForStorage(g.riscos_rollback || [], 6, 260)
+      },
+      kb_sources: Array.isArray(cr.kb_sources)
+        ? cr.kb_sources.slice(0, 5).map(function (kb) {
+            kb = kb || {};
+            return {
+              id: Number(kb.id || 0) || 0,
+              title: safeScalar(kb.title, 180),
+              category: safeScalar(kb.category, 120),
+              score: Number(kb.score || 0) || 0
+            };
+          })
+        : []
+    };
+  }
+
+  function safeProblemProfilesForStorage(list) {
+    if (!Array.isArray(list)) { return []; }
+    return list.slice(0, 3).map(function (p) {
+      p = p || {};
+      return {
+        problem_id: Number(p.problem_id || 0) || 0,
+        sistema_afetado: safeScalar(p.sistema_afetado || 'Não informado', 120),
+        sintomas: safeListForStorage(p.sintomas || [], 6, 120),
+        evidencias: safeListForStorage(p.evidencias || [], 4, 240),
+        dados_faltantes: safeListForStorage(p.dados_faltantes || [], 6, 120),
+        query_para_busca: safeScalar(p.query_para_busca || '', 200)
+      };
+    });
+  }
+
+  function safeKbCoverageForStorage(list) {
+    if (!Array.isArray(list)) { return []; }
+    return list.slice(0, 3).map(function (c) {
+      c = c || {};
+      return {
+        problem_index: Number(c.problem_index || 0) || 0,
+        problem: safeScalar(c.problem || '', 160),
+        status: c.status === 'KB_FOUND' ? 'KB_FOUND' : 'KB_INSUFFICIENT'
+      };
+    });
+  }
+
+  function safeRagPerProblemForStorage(list) {
+    if (!Array.isArray(list)) { return []; }
+    return list.slice(0, 3).map(function (r) {
+      r = r || {};
+      return {
+        problem_index: r.problem_index === null || r.problem_index === undefined ? null : (Number(r.problem_index) || 0),
+        localResolved: r.localResolved === true,
+        kbsUsed: Array.isArray(r.kbsUsed)
+          ? r.kbsUsed.slice(0, 5).map(function (kb) {
+              kb = kb || {};
+              return { title: safeScalar(kb.title, 180), score: Number(kb.score || 0) || 0 };
+            })
+          : [],
+        message: safeScalar(r.message || '', 240)
+      };
+    });
+  }
+
   function safeSmartHelpViewModel(result) {
     result = result || {};
     var schema = result.schema044Status || result.schema_044_status || {};
@@ -670,12 +765,29 @@
         title: safeScalar(localSuggestion.title || 'Sugestão IA local — valide antes de aplicar', 160),
         content: safeScalar(localSuggestion.content || localSuggestion.summary || localSuggestion.text || localSuggestion.answer, 1200)
       } : null,
+      playbook: safePlaybookForStorage(result.playbook || null),
+      kbsUsed: Array.isArray(result.kbsUsed || result.kbs_used)
+        ? (result.kbsUsed || result.kbs_used).slice(0, 5).map(function (kb) {
+            kb = kb || {};
+            return {
+              id: Number(kb.id || 0) || 0,
+              title: safeScalar(kb.title, 180),
+              category: safeScalar(kb.category, 120),
+              score: Number(kb.score || 0) || 0
+            };
+          })
+        : [],
       cloudOffer: {
         available: offer.available === true,
         reason: safeScalar(offer.reason || '', 240)
       },
       message: safeScalar(result.message || '', 240),
-      workflow_step: safeScalar(result.workflow_step || result.workflowStep || '', 80)
+      workflow_step: safeScalar(result.workflow_step || result.workflowStep || '', 80),
+      // V9 — campos novos persistidos para restauração do painel (cap + sanitize).
+      customResponse: safeCustomResponseForStorage(result.customResponse || result.custom_response || null),
+      problemProfiles: safeProblemProfilesForStorage(result.problemProfiles || result.problem_profiles || []),
+      kbCoverage: safeKbCoverageForStorage(result.kbCoverage || result.kb_coverage || []),
+      ragPerProblem: safeRagPerProblemForStorage(result.ragPerProblem || result.rag_per_problem || [])
     };
   }
 
@@ -809,6 +921,283 @@
     }
   }
 
+  function renderPlaybookSection(title, items, code) {
+    items = viewList(items);
+    if (!items.length) { return ''; }
+    return '<div class="mt-2"><div class="fw-bold small mb-1">' + esc(title) + '</div><ul class="mb-1">'
+      + items.map(function (item) {
+          return '<li>' + (code ? '<code>' + esc(item) + '</code>' : esc(item)) + '</li>';
+        }).join('')
+      + '</ul></div>';
+  }
+
+  function renderLocalPlaybook(panel, result) {
+    var playbook = result.playbook || null;
+    var target = panel.querySelector('.js-smart-help-local-suggestion');
+    if (!target || !playbook || typeof playbook !== 'object') { return false; }
+    var kbs = result.kbsUsed || result.kbs_used || playbook.kbs_utilizadas || [];
+    var confidence = Number(playbook.nivel_de_confianca || 0) || 0;
+    var localResolved = !!(result.localResolved || result.local_resolved);
+
+    // At very low confidence (< 10%) and unresolved: a generic playbook is not actionable.
+    // Show a triage notice instead so the technician asks clarifying questions first.
+    if (confidence < 0.1 && !localResolved) {
+      target.innerHTML = '<div class="alert alert-secondary py-2 mb-0 small">'
+        + esc('Nenhuma KB local com confiança suficiente para este contexto. '
+          + 'Use as perguntas de triagem acima para coletar mais informações antes de consultar a nuvem.')
+        + '</div>';
+      return false;
+    }
+    var summary = viewText(playbook.resumo_do_incidente || '');
+    var copyText = [
+      summary ? ('Resumo: ' + summary) : '',
+      sectionText('Sintomas', playbook.sintomas_identificados),
+      sectionText('Hipóteses', playbook.hipoteses_por_camada),
+      sectionText('Perguntas de triagem', playbook.perguntas_de_triagem),
+      sectionText('Verificações/comandos', playbook.verificacoes_ou_comandos_sugeridos),
+      sectionText('Causas possíveis', playbook.causas_possiveis),
+      sectionText('Resolução sugerida', playbook.resolucao_sugerida),
+      sectionText('Validação', playbook.validacao),
+      'Revisão humana obrigatória. Nada é enviado ao cliente nem altera o chamado automaticamente.'
+    ].filter(Boolean).join('\n\n');
+
+    var html = '<div class="border border-warning rounded p-2 mt-1 js-smart-help-local-playbook">';
+    html += '<div class="d-flex justify-content-between align-items-start gap-2 flex-wrap">';
+    html += '<div class="fw-bold text-warning">' + esc('Playbook KB local — valide antes de aplicar') + '</div>';
+    html += '<span class="badge bg-warning text-dark">' + esc('confiança: ' + Math.round(confidence * 100) + '%') + '</span>';
+    html += '</div>';
+    html += '<div class="alert alert-warning py-1 mt-2 mb-2 small">' + esc('Uso interno do técnico. Não envia WhatsApp, não altera o chamado e não publica KB automaticamente.') + '</div>';
+    if (summary) {
+      html += '<div class="fw-bold small mb-1">' + esc('Resumo') + '</div><p class="mb-2">' + esc(summary) + '</p>';
+    }
+    html += renderPlaybookSection('Sintomas identificados', playbook.sintomas_identificados, false);
+    html += renderPlaybookSection('Hipóteses por camada', playbook.hipoteses_por_camada, false);
+    html += renderPlaybookSection('Perguntas de triagem', playbook.perguntas_de_triagem, false);
+    html += renderPlaybookSection('Verificações/comandos sugeridos', playbook.verificacoes_ou_comandos_sugeridos, true);
+    html += renderPlaybookSection('Causas possíveis', playbook.causas_possiveis, false);
+    html += renderPlaybookSection('Resolução sugerida', playbook.resolucao_sugerida, false);
+    html += renderPlaybookSection('Validação', playbook.validacao, false);
+    if (Array.isArray(kbs) && kbs.length) {
+      html += '<div class="mt-2"><div class="fw-bold small mb-1">' + esc('KBs usadas') + '</div><ul class="mb-1">';
+      html += kbs.slice(0, 5).map(function (kb) {
+        return '<li>' + esc(viewText(kb.title || 'KB local')) + ' <span class="text-muted">(' + esc(Math.round((Number(kb.score || 0) || 0) * 100) + '%') + ')</span></li>';
+      }).join('');
+      html += '</ul></div>';
+    }
+    html += '<button type="button" class="btn btn-sm btn-outline-primary js-smart-help-copy" data-text="' + esc(copyText) + '">' + esc('Copiar playbook') + '</button>';
+    html += ' <button type="button" class="btn btn-sm btn-outline-secondary js-smart-help-add-private-note" data-text="' + esc(copyText) + '">' + esc('Adicionar nota privada') + '</button>';
+    html += '</div>';
+    target.innerHTML = html;
+    return true;
+  }
+
+  /**
+   * V9 (integaglpi_v9_kb_ui_rendering_and_ranking_wiring_001):
+   * Renderiza os campos novos do backend — customResponse, problemProfiles,
+   * kbCoverage e ragPerProblem — em um container próprio, SEM tocar nas seções
+   * legadas. Tudo é texto consultivo: nada é enviado ao cliente, nenhum comando
+   * é executado e o KB original permanece visível (kb_sources + KBs usadas).
+   * Com CUSTOM_RESPONSE_ENABLED=false o backend envia customResponse=null e o
+   * bloco simplesmente não aparece (comportamento legado preservado).
+   */
+  function renderV9Insights(panel, result) {
+    var anchor = panel.querySelector('.js-smart-help-local-suggestion');
+    if (!anchor) { return; }
+    var container = panel.querySelector('.js-smart-help-v9');
+    if (!container) {
+      container = document.createElement('div');
+      container.className = 'js-smart-help-v9';
+      anchor.insertAdjacentElement('afterend', container);
+    }
+
+    var html = '';
+
+    // ── kbCoverage: status KB_FOUND / KB_INSUFFICIENT por problema ────────────
+    var coverage = result.kbCoverage || result.kb_coverage || [];
+    if (Array.isArray(coverage) && coverage.length > 0) {
+      html += '<div class="mt-2 js-smart-help-kb-coverage">';
+      html += '<div class="fw-bold small mb-1">' + esc('Cobertura de KB por problema') + '</div>';
+      html += coverage.slice(0, 3).map(function (c) {
+        c = c || {};
+        var found = c.status === 'KB_FOUND';
+        var badge = found
+          ? '<span class="badge bg-success">KB_FOUND</span>'
+          : '<span class="badge bg-warning text-dark">KB_INSUFFICIENT</span>';
+        return '<div class="d-flex align-items-center gap-2 py-1 small">'
+          + badge
+          + '<span>' + esc('Problema ' + (Number(c.problem_index || 0) || '?') + ': ' + viewText(c.problem || '')) + '</span>'
+          + '</div>';
+      }).join('');
+      html += '</div>';
+    }
+
+    // ── problemProfiles: perfil estruturado por problema ─────────────────────
+    var profiles = result.problemProfiles || result.problem_profiles || [];
+    if (Array.isArray(profiles) && profiles.length > 0) {
+      html += '<div class="mt-2 js-smart-help-problem-profiles">';
+      html += '<div class="fw-bold small mb-1">' + esc('Perfil por problema (insumo da busca)') + '</div>';
+      html += profiles.slice(0, 3).map(function (p) {
+        p = p || {};
+        var parts = '<div class="border rounded p-2 mb-1 small">';
+        parts += '<div><strong>' + esc('Problema ' + (Number(p.problem_id || 0) || '?')) + '</strong>'
+          + ' · ' + esc('Sistema: ' + viewText(p.sistema_afetado || 'Não informado')) + '</div>';
+        var sintomas = viewList(p.sintomas || []);
+        if (sintomas.length) {
+          parts += '<div>' + esc('Sintomas: ' + sintomas.join(', ')) + '</div>';
+        }
+        var evidencias = viewList(p.evidencias || []);
+        if (evidencias.length) {
+          parts += '<div>' + esc('Evidências: ' + evidencias.join('; ')) + '</div>';
+        }
+        var faltantes = viewList(p.dados_faltantes || []);
+        if (faltantes.length) {
+          parts += '<div class="text-muted">' + esc('Dados faltantes: ' + faltantes.join(', ')) + '</div>';
+        }
+        if (p.query_para_busca) {
+          parts += '<div class="text-muted">' + esc('Busca: ' + viewText(p.query_para_busca)) + '</div>';
+        }
+        parts += '</div>';
+        return parts;
+      }).join('');
+      html += '</div>';
+    }
+
+    // ── ragPerProblem: resultado RAG individual por problema ─────────────────
+    // R4 (cleanup): renderiza com 1+ entrada. Para 1 problema, bloco compacto
+    // "Detalhe RAG do problema" (evita duplicar o playbook acima); para 2+,
+    // seção completa por problema.
+    var ragPer = result.ragPerProblem || result.rag_per_problem || [];
+    if (Array.isArray(ragPer) && ragPer.length === 1) {
+      var single = ragPer[0] || {};
+      var singleKbs = Array.isArray(single.kbsUsed) ? single.kbsUsed : [];
+      var singleSummary = (single.localResolved ? 'KB local encontrada' : 'sem resolução local')
+        + (singleKbs.length
+          ? ' · KBs: ' + singleKbs.slice(0, 3).map(function (kb) {
+              return viewText((kb || {}).title || 'KB') + ' (' + Math.round(((kb || {}).score || 0) * 100) + '%)';
+            }).join('; ')
+          : '');
+      html += '<div class="mt-2 small text-muted js-smart-help-rag-per-problem js-smart-help-rag-single">'
+        + '<span class="fw-bold">' + esc('Detalhe RAG do problema') + ':</span> '
+        + esc(singleSummary)
+        + (single.message ? '<div>' + esc(viewText(single.message)) + '</div>' : '')
+        + '</div>';
+    } else if (Array.isArray(ragPer) && ragPer.length > 1) {
+      html += '<div class="mt-2 js-smart-help-rag-per-problem">';
+      html += '<div class="fw-bold small mb-1">' + esc('Resultado RAG por problema') + '</div>';
+      html += ragPer.slice(0, 3).map(function (r) {
+        r = r || {};
+        var kbs = Array.isArray(r.kbsUsed) ? r.kbsUsed : [];
+        var head = 'Problema ' + (r.problem_index === null || r.problem_index === undefined ? '?' : r.problem_index)
+          + ': ' + (r.localResolved ? 'KB local encontrada' : 'sem resolução local');
+        var body = kbs.length
+          ? '<div class="text-muted">' + esc('KBs: ' + kbs.slice(0, 3).map(function (kb) {
+              return viewText((kb || {}).title || 'KB') + ' (' + Math.round(((kb || {}).score || 0) * 100) + '%)';
+            }).join('; ')) + '</div>'
+          : '';
+        var note = r.message ? '<div class="text-muted">' + esc(viewText(r.message)) + '</div>' : '';
+        return '<div class="border-start ps-2 mb-1 small">'
+          + '<div>' + esc(head) + '</div>' + body + note + '</div>';
+      }).join('');
+      html += '</div>';
+    }
+
+    // ── customResponse: sugestão IA contextualizada (complementar) ───────────
+    var cr = result.customResponse || result.custom_response || null;
+    if (cr && typeof cr === 'object' && cr.guidance) {
+      var g = cr.guidance || {};
+      var crConfidence = Math.round((Number(cr.nivel_de_confianca || 0) || 0) * 100);
+      html += '<div class="border border-info rounded p-2 mt-2 js-smart-help-custom-response">';
+      html += '<div class="d-flex justify-content-between align-items-start gap-2 flex-wrap">';
+      html += '<div class="fw-bold text-info">' + esc('Sugestão IA contextualizada') + '</div>';
+      html += '<span class="badge bg-danger">' + esc('Revise antes de aplicar') + '</span>';
+      html += '</div>';
+      html += '<div class="small text-muted mb-1">'
+        + esc('Complementa o KB original (nunca substitui) · uso interno do técnico · confiança: ' + crConfidence + '%'
+          + (cr.mode === 'customized' ? ' · IA local' : ' · determinística'))
+        + '</div>';
+      if (cr.gate_message) {
+        html += '<div class="alert alert-secondary py-1 mb-2 small">' + esc(viewText(cr.gate_message)) + '</div>';
+      }
+      html += renderPlaybookSection('Sintomas identificados', g.sintomas_identificados, false);
+      html += renderPlaybookSection('Hipóteses por camada', g.hipoteses_por_camada, false);
+      html += renderPlaybookSection('Perguntas de triagem', g.perguntas_de_triagem, false);
+      html += renderPlaybookSection('Verificações consultivas (execução manual)', g.verificacoes_consultivas, true);
+      if (g.causa_provavel) {
+        html += '<div class="fw-bold small mb-1">' + esc('Causa provável') + '</div>'
+          + '<p class="mb-2 small">' + esc(viewText(g.causa_provavel)) + '</p>';
+      }
+      html += renderPlaybookSection('Resolução sugerida', g.resolucao_sugerida, false);
+      html += renderPlaybookSection('Validação', g.validacao, false);
+      html += renderPlaybookSection('Escalonamento', g.escalonamento, false);
+      html += renderPlaybookSection('Riscos / rollback', g.riscos_rollback, false);
+      var sources = Array.isArray(cr.kb_sources) ? cr.kb_sources : [];
+      if (sources.length) {
+        html += '<div class="mt-1"><div class="fw-bold small mb-1">'
+          + esc('KBs fonte (sempre visíveis — a sugestão complementa, nunca substitui)') + '</div><ul class="mb-1 small">';
+        html += sources.slice(0, 5).map(function (kb) {
+          kb = kb || {};
+          return '<li>' + esc(viewText(kb.title || 'KB local'))
+            + ' <span class="text-muted">(' + esc(Math.round((Number(kb.score || 0) || 0) * 100) + '%') + ')</span></li>';
+        }).join('');
+        html += '</ul></div>';
+      }
+      html += '</div>';
+    }
+
+    container.innerHTML = html;
+  }
+
+  function addPrivateNote(panel, content) {
+    content = viewText(content).trim();
+    if (content.length < 5) {
+      setStatus(panel, 'nota vazia', 'warning');
+      return;
+    }
+    if (!window.confirm('Adicionar este playbook como nota PRIVADA no chamado? Nada será enviado ao cliente.')) {
+      return;
+    }
+    var addNoteUrl = String(panel.dataset.actionUrl || '').replace(/smart\.help\.php(?:\?.*)?$/, 'kb.add_note.php');
+    if (!addNoteUrl || addNoteUrl === String(panel.dataset.actionUrl || '')) {
+      setStatus(panel, 'nota indisponível', 'warning');
+      return;
+    }
+    setStatus(panel, 'salvando nota privada', 'info');
+    refreshCsrfToken(panel).then(function () {
+      var token = panel.dataset.csrf || '';
+      return fetch(addNoteUrl, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+          'X-Glpi-Csrf-Token': token
+        },
+        body: JSON.stringify({
+          _glpi_csrf_token: token,
+          csrf_token: token,
+          ticket_id: Number(panel.dataset.ticketId || 0) || 0,
+          content: content
+        })
+      });
+    }).then(function (response) {
+      return response.json().catch(function () { return { ok: false, message: 'Resposta inválida ao salvar nota privada.' }; });
+    }).then(function (body) {
+      var msgEl = panel.querySelector('.js-smart-help-message');
+      if (body && body.ok) {
+        setStatus(panel, 'nota privada salva', 'success');
+        if (msgEl) { msgEl.textContent = 'Nota privada adicionada ao chamado.'; }
+        return;
+      }
+      setStatus(panel, 'erro na nota', 'danger');
+      if (msgEl) { msgEl.textContent = (body && body.message) ? body.message : 'Não foi possível adicionar a nota privada.'; }
+    }).catch(function () {
+      setStatus(panel, 'erro na nota', 'danger');
+      var msgEl = panel.querySelector('.js-smart-help-message');
+      if (msgEl) { msgEl.textContent = 'Não foi possível adicionar a nota privada.'; }
+    });
+  }
+
   function renderResult(panel, result, options) {
     options = options || {};
     var articlesEl = panel.querySelector('.js-smart-help-articles');
@@ -875,9 +1264,12 @@
       }).join('');
     }
 
+    var hasPlaybook = renderLocalPlaybook(panel, result);
     var localSuggestion = result.localSuggestion || result.local_suggestion || null;
     if (localSuggestionEl) {
-      if (localSuggestion && localSuggestion.unverified) {
+      if (hasPlaybook) {
+        // RAG playbook already rendered in this slot.
+      } else if (localSuggestion && localSuggestion.unverified) {
         var localSuggestionTitle = viewText(localSuggestion.title || 'Sugestão IA local — valide antes de aplicar')
           || 'Sugestão IA local — valide antes de aplicar';
         var localSuggestionContent = viewText(
@@ -895,6 +1287,10 @@
         localSuggestionEl.innerHTML = '';
       }
     }
+
+    // V9 — blocos novos (customResponse, problemProfiles, kbCoverage, ragPerProblem).
+    // Renderização aditiva: nunca substitui artigos/playbook/KB original acima.
+    renderV9Insights(panel, result);
 
     var offer = result.cloudOffer || result.cloud_offer || { available: false };
     if (externalBtn) {
@@ -963,11 +1359,9 @@
       setStatus(panel, 'erro', 'danger');
       renderResult(panel, { message: (error && error.message) ? error.message : 'Não foi possível consultar a Ajuda Inteligente. Revise permissões, schema 044 e configuração local.' });
     }).finally(function () {
-      if (isCurrentRequest(panel, requestId)) {
-        setButtonLoading(runBtn, '', false);
-        finishRequest(panel, requestId);
-        updateGuidedState(panel);
-      }
+      setButtonLoading(runBtn, '', false);
+      finishRequest(panel, requestId);
+      updateGuidedState(panel);
     });
   }
 
@@ -1001,11 +1395,9 @@
       setStatus(panel, 'erro', 'danger');
       renderResult(panel, { message: (error && error.message) ? error.message : 'Não foi possível executar a busca local.' });
     }).finally(function () {
-      if (isCurrentRequest(panel, requestId)) {
-        setButtonLoading(searchBtn, '', false);
-        finishRequest(panel, requestId);
-        updateGuidedState(panel);
-      }
+      setButtonLoading(searchBtn, '', false);
+      finishRequest(panel, requestId);
+      updateGuidedState(panel);
     });
   }
 
@@ -1016,15 +1408,31 @@
   function handleExternal(panel) {
     var requestId = nextRequestId(panel, 'external_preview');
     setStatus(panel, 'sanitizando contexto', 'info');
+    var cloudEl = panel.querySelector('.js-smart-help-cloud');
     var msgEl = panel.querySelector('.js-smart-help-message');
     post(panel, 'prepare_external_context', { technical_summary: currentSummary(panel) }, { refreshCsrfBeforePost: true }).then(function (resp) {
       if (!isCurrentRequest(panel, requestId)) { return; }
+      // Error at the PHP wrapper level (CSRF, permission, network).
       if (resp && resp.ok === false && resp.error && !resp.result) {
         if (msgEl) { msgEl.textContent = resp.message || 'Pré-visualização indisponível.'; }
         setStatus(panel, resp.error === 'timeout' ? 'tempo esgotado' : 'erro de rede', 'danger');
         return;
       }
       var r = resp && resp.result ? resp.result : {};
+      // Node service error (e.g. unconfigured, integration-service unreachable).
+      // Distinguish from PII-blocked: PII block has sanitized_text but safe_for_cloud=false;
+      // a service error has empty sanitized_text with no removed_kinds and ok=false.
+      var hasContent = !!(r.cloud_safe_context || r.sanitized_text || r.sanitizedText);
+      if (r.ok === false && !hasContent) {
+        var svcMsg = r.message || 'Pesquisa externa indisponível. Verifique a configuração do provider de IA externo.';
+        if (cloudEl) {
+          cloudEl.innerHTML = '<div class="alert alert-warning py-2 mb-0 small">'
+            + esc(svcMsg) + '</div>';
+        }
+        if (msgEl) { msgEl.textContent = ''; }
+        setStatus(panel, 'nuvem indisponível', 'secondary');
+        return;
+      }
       var preview = renderExternalPreview(panel, r);
       saveFlow(panel, { step: 'cloud_ready', view_model: preview }, 'external_preview');
       saveFlow(panel, { step: 'cloud_ready' }, 'workflow');
@@ -1119,10 +1527,18 @@
 
     var copyBtn = t.closest('.js-smart-help-copy');
     if (copyBtn) {
+      event.preventDefault();
       var text = copyBtn.getAttribute('data-text') || '';
       if (navigator.clipboard) { navigator.clipboard.writeText(text); }
       copyBtn.textContent = 'Copiado';
       setTimeout(function () { copyBtn.textContent = 'Copiar'; }, 1500);
+      return;
+    }
+
+    var addNoteBtn = t.closest('.js-smart-help-add-private-note');
+    if (addNoteBtn) {
+      event.preventDefault();
+      addPrivateNote(panel, addNoteBtn.getAttribute('data-text') || '');
       return;
     }
 
