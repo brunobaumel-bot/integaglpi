@@ -61,9 +61,14 @@ import { PostgresMessageFlowRepository } from './repositories/postgres/PostgresM
 import { PostgresLogmeinReadonlyRepository } from './repositories/postgres/PostgresLogmeinReadonlyRepository.js';
 import { PostgresKbFeedbackRepository } from './repositories/postgres/PostgresKbFeedbackRepository.js';
 import { PostgresCloudAuditRepository } from './repositories/postgres/PostgresCloudAuditRepository.js';
+import { PostgresKbCandidateSearchRepository } from './repositories/postgres/PostgresKbCandidateSearchRepository.js';
+import { PostgresRagAuditRepository } from './repositories/postgres/PostgresRagAuditRepository.js';
 import { FeedbackService } from './domain/services/FeedbackService.js';
 import { ExternalResearchService } from './domain/services/ExternalResearchService.js';
 import { SmartHelpService } from './domain/services/SmartHelpService.js';
+import { KbRagCopilotService } from './domain/services/KbRagCopilotService.js';
+import { KbCustomResponseService } from './domain/services/KbCustomResponseService.js';
+import type { KbRagCachePort } from './domain/services/KbRagCopilotService.js';
 import type { KbSearchPort } from './domain/services/SmartHelpService.js';
 import { CoachingService } from './domain/services/CoachingService.js';
 import { HttpKbSearchPort } from './infra/http/HttpKbSearchPort.js';
@@ -372,6 +377,33 @@ export function buildDependencies() {
       };
   // feedbackService doubles as the RankingBiasPort (it exposes getRankingBias).
   const smartHelpService = new SmartHelpService(nodeKbSearchPort, feedbackService);
+  const kbRagSearchRepo = new PostgresKbCandidateSearchRepository(postgresPool);
+  const ragAuditRepo = new PostgresRagAuditRepository(postgresPool);
+  const kbRagTimeoutMs = envInt('KB_RAG_TIMEOUT_MS', 8_000, 1_000, 30_000);
+  const kbRagModel = (process.env.KB_RAG_MODEL ?? '').trim() ||
+    (env.COPILOT_DRAFT_MODEL.trim() !== '' ? env.COPILOT_DRAFT_MODEL.trim() : env.AI_SUPERVISOR_MODEL);
+  const ollamaBaseUrl = env.AI_SUPERVISOR_BASE_URL.trim();
+  const ollamaRagPort = ollamaBaseUrl !== ''
+    ? new OllamaClient(ollamaBaseUrl, kbRagModel, kbRagTimeoutMs)
+    : null;
+  const kbRagCache: KbRagCachePort = {
+    get: (key: string) => redisClient.get(key),
+    set: async (key: string, value: string, ttlSeconds: number): Promise<void> => {
+      await redisClient.set(key, value, 'EX', ttlSeconds);
+    },
+  };
+  const kbCustomResponseService = new KbCustomResponseService(ollamaRagPort);
+  const kbRagCopilotService = new KbRagCopilotService(
+    kbRagSearchRepo,
+    ollamaRagPort,
+    ragAuditRepo,
+    kbRagCache,
+    undefined,
+    undefined,
+    undefined,
+    kbCustomResponseService,
+    null,
+  );
 
   // LOCAL-AI technical summarizer (Ollama free-text). Used ONLY on the manual
   // "Ajuda Inteligente" click path; never on auto-run (PHP gates on ai_summary=1).
@@ -735,6 +767,7 @@ export function buildDependencies() {
     externalResearchService,
     cloudAuditRepository,
     smartHelpService,
+    kbRagCopilotService,
     technicalSummarizer,
     coachingService,
     integrationServiceApiKey: env.INTEGRATION_SERVICE_API_KEY,

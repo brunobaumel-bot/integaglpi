@@ -224,6 +224,30 @@ const envSchema = z.object({
    * PHASE: integaglpi_logmein_alarm_rules_and_auto_ticket_implementation_001
    */
   LOGMEIN_ALARM_WORKER_INTERVAL_SECONDS: z.coerce.number().int().min(30).max(3600).default(60),
+  /**
+   * KB RAG: resposta customizada complementar para técnico.
+   * Default false; nunca substitui KB fonte nem envia mensagem automaticamente.
+   */
+  CUSTOM_RESPONSE_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /**
+   * KB RAG: bias agregado de feedback no ranking.
+   * Default false; sem ranking punitivo de técnico.
+   */
+  FEEDBACK_RANKING_ENABLED: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /**
+   * KB RAG: incluir needs_review somente em HML/test.
+   * Default false e bloqueado em production pela policy de busca.
+   */
+  KB_SEARCH_INCLUDE_NEEDS_REVIEW_HML_ONLY: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((value) => value === 'true'),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
